@@ -5,10 +5,11 @@ import { commands } from './commands/index.js'
 
 export async function startBot(): Promise<Client> {
   const client = new Client({
-    // Guilds достаточно для slash-команд. Если понадобится читать сообщения —
-    // добавь GuildMessages + MessageContent и включи Message Content Intent
-    // в Developer Portal (Bot → Privileged Gateway Intents).
-    intents: [GatewayIntentBits.Guilds],
+    // Guilds — slash-команды, GuildVoiceStates — кто сидит в голосовых
+    // каналах (не privileged, в Developer Portal включать ничего не надо).
+    // Если понадобится читать сообщения — добавь GuildMessages +
+    // MessageContent и включи Message Content Intent в Developer Portal.
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
   })
 
   client.once(Events.ClientReady, (readyClient) => {

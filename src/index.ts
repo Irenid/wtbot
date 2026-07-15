@@ -1,6 +1,7 @@
 import { config } from './config.js'
 import { closeDb, initDb } from './db/index.js'
 import { startBot } from './bot/index.js'
+import { startVoiceTracker } from './bot/voice-tracker.js'
 import { buildServer } from './web/index.js'
 import { startParsers, stopParsers } from './parsers/index.js'
 
@@ -12,8 +13,9 @@ import { startParsers, stopParsers } from './parsers/index.js'
 initDb(config.dbPath)
 console.log(`[db] SQLite: ${config.dbPath}`)
 
-// 2. Discord-бот
+// 2. Discord-бот (+трекер голосовых каналов — пишет присутствие в БД)
 const client = await startBot()
+const voiceTracker = startVoiceTracker(client, config.voiceChannelIds)
 
 // 3. Веб-дашборд
 const app = buildServer({
@@ -23,6 +25,7 @@ const app = buildServer({
     guilds: client.guilds.cache.size,
     uptimeSec: Math.floor(process.uptime()),
   }),
+  refreshVoice: () => voiceTracker.refresh(),
 })
 await app.listen({ port: config.port, host: '0.0.0.0' })
 console.log(`[web] Дашборд: http://localhost:${config.port}`)

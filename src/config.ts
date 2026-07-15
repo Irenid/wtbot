@@ -19,4 +19,9 @@ export const config = {
   dbPath: process.env['DB_PATH'] ?? './data/wtbot.db',
   /** Куки залогиненной сессии warthunder.com (identity_*) для парсера wt-replays */
   wtCookie: process.env['WT_COOKIE'] ?? '',
+  /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
+  voiceChannelIds: (process.env['WT_VOICE_CHANNELS'] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== ''),
 }

@@ -2,8 +2,9 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { config } from '../config.js'
 import { closeDb, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
 import { levelId } from '../wrpl/battle-assets.js'
+import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 import { fetchReplayResults, normalizeSessionId, replayPartUrls } from '../wrpl/replay.js'
-import { renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
+import { buildRosters, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
 import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 
 // Результаты боя из файла реплея .wrpl. Запуск:
@@ -40,12 +41,13 @@ if (!item) {
   closeDb()
   process.exit(1)
 }
-closeDb()
+// БД остаётся открытой: ниже в неё пишутся снимки кланового рейтинга
 
 const data = item.data as { missionName?: string; replayParts?: string[] | null; url?: string; partsCount?: number }
 const parts = replayPartUrls(data)
 if (parts.length === 0) {
   console.error('У записи нет ссылок на части реплея (replayParts)')
+  closeDb()
   process.exit(1)
 }
 
@@ -54,6 +56,7 @@ const dict = await ensureVehicleDict()
 
 if (flags.has('--json')) {
   console.log(JSON.stringify({ header, results }, null, 2))
+  closeDb()
   process.exit(0)
 }
 
@@ -80,29 +83,38 @@ const mmss = (sec: number): string => `${Math.floor(sec / 60)}:${String(Math.flo
 console.log()
 console.log(item.title)
 console.log(
-  `${new Date(header.startTime * 1000).toLocaleString()} · длительность ${mmss(results.timePlayed)}` +
+  `Match ID: ${header.sessionId} · ${new Date(header.startTime * 1000).toLocaleString()}` +
+    ` · длительность ${mmss(results.timePlayed)}` +
     ` · ${header.environment}/${header.visibility} · карта ${levelId(header.level)} · сессия ${header.sessionIdHex}`,
 )
 
-const humans = results.players.filter((p) => !p.name.startsWith('coop/'))
-const teams = [...new Set(humans.map((p) => p.team))].sort()
 const teamSummaries = summarizeTeams(results, dict)
-for (const [ti, team] of teams.entries()) {
-  const roster = humans.filter((p) => p.team === team).sort((a, b) => b.score - a.score)
+// ПКР обеих команд (пишет снимки в БД); без сети таблица выйдет с прочерками
+const ratings = await fetchRatingsForTags(teamSummaries.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+
+// Ростеры в том же порядке, что и на картинке (и в teamSummaries):
+// первой идёт команда с большей суммой очков
+const rosters = buildRosters(results)
+for (const [ti, roster] of rosters.entries()) {
   const summary = teamSummaries[ti]
-  const label = summary ? `${summary.clan ?? `Команда ${team}`} (${summary.composition})` : `Команда ${team}`
+  const teamNo = roster[0]?.team ?? ti + 1
+  const label = summary ? `${summary.clan ?? `Команда ${teamNo}`} (${summary.composition})` : `Команда ${teamNo}`
   console.log()
   console.log(`— ${label} ${'—'.repeat(96)}`.slice(0, 100))
   console.log(
-    `${pad('Игрок', 28)} ${pad('Техника', 30)} ${pad('Возд', 5)} ${pad('Назем', 6)} ${pad('Ассист', 7)} ${pad('Захв', 5)} ${pad('Смерти', 7)} ${pad('Очки', 6)}`,
+    `${pad('Игрок', 28)} ${pad('Техника', 30)} ${pad('ПКР', 10)} ${pad('Возд', 5)} ${pad('Назем', 6)} ${pad('Ассист', 7)} ${pad('Захв', 5)} ${pad('Смерти', 7)} ${pad('Очки', 6)}`,
   )
   for (const p of roster) {
-    const name = p.clanTag ? `${p.clanTag} ${p.name}` : p.name
-    const craftNames = p.vehicles.map((v) => vehicleInfo(dict, v).name).join(', ')
+    const displayName = p.name || 'Unknown Player'
+    const name = p.clanTag ? `${p.clanTag} ${displayName}` : displayName
+    const disconnected = p.name === '' || p.vehicles.length === 0
+    const craftNames = disconnected ? 'Disconnected' : p.vehicles.map((v) => vehicleInfo(dict, v).name).join(', ')
+    const r = ratings.get(p.name) ?? ratings.get(p.name.replace(/@(psn|live|epic)$/i, ''))
+    const rStr = r ? `${r.rating}${r.delta ? ` (${r.delta > 0 ? '+' : ''}${r.delta})` : ''}` : '—'
     console.log(
-      `${pad(cut(name, 28), 28)} ${pad(cut(craftNames || '—', 30), 30)} ` +
-        `${pad(String(p.kills), 5)} ${pad(String(p.groundKills), 6)} ${pad(String(p.assists), 7)} ` +
-        `${pad(String(p.captureZone), 5)} ${pad(String(p.deaths), 7)} ${pad(String(p.score), 6)}`,
+      `${pad(cut(name, 28), 28)} ${pad(cut(craftNames || '—', 30), 30)} ${pad(rStr, 10)} ` +
+        `${pad(String(Math.max(p.kills, 0)), 5)} ${pad(String(Math.max(p.groundKills, 0)), 6)} ${pad(String(Math.max(p.assists, 0)), 7)} ` +
+        `${pad(String(Math.max(p.captureZone, 0)), 5)} ${pad(String(Math.max(p.deaths, 0)), 7)} ${pad(String(Math.max(p.score, 0)), 6)}`,
     )
   }
 }
@@ -116,9 +128,12 @@ if (flags.has('--image')) {
     header,
     results,
     dict,
+    ratings,
   })
   mkdirSync('./data/battles', { recursive: true })
   const file = `./data/battles/${header.sessionIdHex}.png`
   writeFileSync(file, png)
   console.log(`Картинка: ${file}`)
 }
+
+closeDb()
