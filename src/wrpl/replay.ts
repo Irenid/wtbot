@@ -119,12 +119,8 @@ export function parseReplayResults(resultsBlk: Buffer): ReplayResults {
   const matchingInfo = asMap(root['matchingInfo'])
   const players: ReplayPlayerResult[] = []
 
-  for (const p of asArray(root['player'])) {
-    const pm = asMap(p)
-    const userId = str(pm, 'userId')
-    if (!userId) continue
-
-    // Техника: matchingInfo.<userId>.crafts_info.{array0, array1, ...}.name
+  // Техника: matchingInfo.<userId>.crafts_info.{array0, array1, ...}.name
+  const vehiclesOf = (userId: string): string[] => {
     const vehicles: string[] = []
     const craftsInfo = asMap(asMap(matchingInfo[userId])['crafts_info'])
     const slots = Object.keys(craftsInfo)
@@ -134,6 +130,13 @@ export function parseReplayResults(resultsBlk: Buffer): ReplayResults {
       const name = str(asMap(craftsInfo[slot]), 'name')
       if (name) vehicles.push(name)
     }
+    return vehicles
+  }
+
+  for (const p of asArray(root['player'])) {
+    const pm = asMap(p)
+    const userId = str(pm, 'userId')
+    if (!userId) continue
 
     players.push({
       userId,
@@ -154,7 +157,36 @@ export function parseReplayResults(resultsBlk: Buffer): ReplayResults {
       teamKills: num(pm, 'teamKills'),
       squadId: num(pm, 'squadId'),
       autoSquad: pm['autoSquad'] === true,
-      vehicles,
+      vehicles: vehiclesOf(userId),
+    })
+  }
+
+  // Игрок попал в матч (есть в matchingInfo), но строки результатов нет —
+  // отключился до конца боя, ник в реплее не сохранился. Добавляем запись
+  // с пустым именем: рендер покажет её как «Unknown Player · Disconnected».
+  const knownIds = new Set(players.map((p) => p.userId))
+  for (const userId of Object.keys(matchingInfo)) {
+    if (knownIds.has(userId)) continue
+    players.push({
+      userId,
+      name: '',
+      clanTag: '',
+      team: -1,
+      kills: -1,
+      groundKills: -1,
+      navalKills: -1,
+      aiKills: -1,
+      aiGroundKills: -1,
+      assists: -1,
+      deaths: -1,
+      captureZone: -1,
+      damageZone: -1,
+      score: -1,
+      awardDamage: -1,
+      teamKills: -1,
+      squadId: -1,
+      autoSquad: false,
+      vehicles: vehiclesOf(userId),
     })
   }
 

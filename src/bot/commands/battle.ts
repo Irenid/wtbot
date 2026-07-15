@@ -1,6 +1,7 @@
 import { AttachmentBuilder, SlashCommandBuilder, escapeMarkdown } from 'discord.js'
 import type { Command } from '../types.js'
 import { getItemByExternalId, getLatestItems } from '../../db/index.js'
+import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
 import { fetchReplayResults, normalizeSessionId, replayPartUrls } from '../../wrpl/replay.js'
 import { renderBattleImage, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
@@ -40,22 +41,30 @@ export const battle: Command = {
 
     const { header, results } = await fetchReplayResults(parts)
     const dict = await ensureVehicleDict()
+    const teams = summarizeTeams(results, dict)
+
+    // Личный клановый рейтинг обеих команд — с сайта; сбой сети не должен
+    // ломать команду, тогда картинка выходит без колонки ПКР
+    const ratings = await fetchRatingsForTags(teams.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+
     const png = await renderBattleImage({
       missionName: data.missionName ?? item.title,
       header,
       results,
       dict,
+      ratings,
     })
 
-    // Текст рядом с картинкой: кланы, состав и игроки обеих команд
-    const teams = summarizeTeams(results, dict)
-    let content = teams
-      .map((t, i) => {
-        const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
-        const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
-        return `**${clan}** (${t.composition}): ${players}`
-      })
-      .join('\n')
+    // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
+    let content =
+      `Match ID: \`${header.sessionId}\`\n` +
+      teams
+        .map((t, i) => {
+          const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
+          const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
+          return `**${clan}** (${t.composition}): ${players}`
+        })
+        .join('\n')
     if (content.length > 1990) content = content.slice(0, 1990) + '…'
 
     await interaction.editReply({
