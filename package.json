@@ -1,0 +1,30 @@
+{
+  "name": "wtbot",
+  "version": "1.0.0",
+  "description": "Discord-бот с веб-дашбордом и фоновыми парсерами",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "deploy:commands": "tsx src/bot/deploy-commands.ts",
+    "analyze": "tsx src/analysis/analyze-items.ts",
+    "battle": "tsx src/analysis/battle-summary.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "discord.js": "^14.26.5",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.10.0"
+  }
+}
