@@ -8,4 +8,6 @@ export interface BotStatus {
 /** Зависимости веб-модуля: сайт не знает про discord.js напрямую, только про этот интерфейс */
 export interface WebDeps {
   getBotStatus(): BotStatus
+  /** Пересканировать голосовые каналы и освежить ПКР — кнопка «Обновить» на дашборде */
+  refreshVoice(): Promise<{ players: number; clans: number }>
 }

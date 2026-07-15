@@ -1,19 +1,27 @@
 import { Resvg } from '@resvg/resvg-js'
 import { ensureUnitIcons, loadMapBackground } from './battle-assets.js'
+import type { ClanRating } from './clan-info.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
+import { ensureGameFonts, GAME_SYMBOLS_FAMILY } from './wt-fonts.js'
 
 /**
  * Рендер таблицы результатов боя в PNG в стиле Boris Stats:
  * фон — скриншот карты (data/maps/, если положен) с затемнением,
- * шапка с картой/режимом/временем, две команды с клан-тегами
- * (украшения ⚔…⚔ приходят прямо в теге из реплея), флаги наций,
- * состав (4F/3T/1AA), силуэты техники из датамайна, значки платформ
- * (@psn/@live) и колонки возд./назем./ассисты/захваты/смерти.
+ * шапка с картой/режимом/временем, две команды с клан-тегами,
+ * флаги наций, состав (4F/3T/1AA), силуэты техники из датамайна,
+ * значки платформ (@psn/@live), колонка личного кланового рейтинга
+ * (⊛: дельта сверху, рейтинг снизу) и возд./назем./ассисты/захваты/смерти.
+ * Отключившиеся игроки помечаются красным значком и словом Disconnected,
+ * запись без строки результатов — «Unknown Player».
+ *
+ * Украшения клан-тегов (⚔, львы, пламя…) — box-drawing символы, которые
+ * рисуются фирменным шрифтом игры (см. wt-fonts.ts); если шрифта нет,
+ * подменяются ближайшим юникодом по DECOR_MAP.
  *
  * SVG собирается строками и растеризуется через resvg (без браузера).
- * Шрифты системные — Segoe UI + Microsoft YaHei, поэтому русские,
- * китайские ники и клановые украшения рисуются нормально.
+ * Шрифты системные — Segoe UI + Microsoft YaHei, поэтому русские и
+ * китайские ники рисуются нормально.
  */
 
 const W = 1920
@@ -45,16 +53,65 @@ const FONTS = `Segoe UI, Segoe UI Symbol, Microsoft YaHei, Malgun Gothic, Yu Got
 const NATION_ORDER = ['usa', 'germany', 'ussr', 'britain', 'japan', 'china', 'italy', 'france', 'sweden', 'israel']
 
 /**
- * Украшения клан-тегов: в реплее лежат обычные unicode-символы, которые
- * фирменный шрифт Gaijin рисует спецглифами. Подменяем на ближайшие
- * стандартные (сверено с Boris Stats по одному и тому же бою).
+ * Украшения клан-тегов: в реплее лежат box-drawing символы (U+253A…U+2560),
+ * которые фирменный шрифт игры рисует спецглифами. Для текстов (Discord,
+ * консоль) и рендера без шрифта игры подменяем на ближайший юникод —
+ * соответствия сверены по глифам symbols_skyquake.ttf из клиента.
  */
 const DECOR_MAP: Record<string, string> = {
-  '╖': '⚔',
+  '┺': '▬', '┻': '▬', // плашки-полосы
+  '┼': '≈', '┽': '≈', // волны
+  '┾': '⚑', '┿': '⚑', // флажки
+  '╀': '◈', // ромб
+  '╁': '🔥', '╂': '🔥', // пламя
+  '╃': '🔥', '╄': '🔥', // перья пламени
+  '╆': '⋙', '╇': '⋘', // тройные шевроны-крылья
+  '╈': '≣', '╉': '≣', // стопки полос
+  '╊': '≋', '╋': '≋', // наклонные полосы
+  '╌': '💣', // бомба
+  '╍': '⚡', '╎': '⚡', // молнии
+  '╏': '✚', // крест с лучами
+  '═': '🦁', '║': '🦁', // львы
+  '╒': '🪓', '╓': '🪓', // алебарды
+  '╔': '»', '╕': '«', // шевроны
+  '╖': '⚔', // скрещённые мечи
+  '╛': '♜', // башня
+  '╜': '✊', // кулак
+  '╝': '🪓', // двусторонний топор
+  '╞': '🪖', '╟': '🪖', // солдаты
 }
 
-function decorateTag(tag: string): string {
+/** Диапазон, который в игре отдан под украшения тегов (fonts.dynfont.blk) */
+const DECOR_RE = /[─-◿]/
+
+/** Тег с юникод-заменами украшений — для текстов вне картинки (Discord, сайт, консоль) */
+export function decorateTag(tag: string): string {
   return [...tag].map((ch) => DECOR_MAP[ch] ?? ch).join('')
+}
+
+/**
+ * SVG-разметка клан-тега: украшения — отдельными tspan со шрифтом игры
+ * (глифы как в игре), остальной текст — обычным стеком. Без шрифта игры —
+ * юникод-замены из DECOR_MAP.
+ */
+function tagMarkup(tag: string, gameFont: boolean): string {
+  if (!gameFont) return esc(decorateTag(tag))
+  let out = ''
+  let plain = ''
+  const flush = (): void => {
+    if (plain) out += esc(plain)
+    plain = ''
+  }
+  for (const ch of tag) {
+    if (DECOR_RE.test(ch)) {
+      flush()
+      out += `<tspan font-family="${GAME_SYMBOLS_FAMILY}">${esc(ch)}</tspan>`
+    } else {
+      plain += ch
+    }
+  }
+  flush()
+  return out
 }
 
 export interface BattleImageInput {
@@ -63,28 +120,44 @@ export interface BattleImageInput {
   header: WrplHeader
   results: ReplayResults
   dict: VehicleDict
+  /** ПКР и дельта по никам (см. clan-info.ts); нет карты — колонка с прочерками */
+  ratings?: Map<string, ClanRating>
 }
 
 interface BattleAssets {
   unitIcons: Map<string, string>
   mapImage: string | null
+  /** Подключён ли фирменный шрифт игры для украшений тегов */
+  gameFont: boolean
 }
 
 export async function renderBattleImage(input: BattleImageInput): Promise<Buffer> {
   const rosters = buildRosters(input.results)
-  const iconIds = rosters.flat().flatMap((p) => (p.vehicles[0] ? [p.vehicles[0]] : []))
+  const iconIds = rosters
+    .flat()
+    .filter((p) => !isDisconnected(p))
+    .flatMap((p) => (p.vehicles[0] ? [p.vehicles[0]] : []))
   const unitIcons = await ensureUnitIcons(iconIds)
   const mapImage = loadMapBackground(input.header.level)
-  const svg = buildBattleSvg(input, { unitIcons, mapImage })
+  const fontFiles = await ensureGameFonts()
+  const svg = buildBattleSvg(input, { unitIcons, mapImage, gameFont: fontFiles.length > 0 })
   const resvg = new Resvg(svg, {
-    font: { loadSystemFonts: true, defaultFontFamily: 'Segoe UI' },
+    font: { loadSystemFonts: true, fontFiles, defaultFontFamily: 'Segoe UI' },
   })
   return resvg.render().asPng()
 }
 
+/** Отключился: нет строки результатов (пустое имя) или ни одной машины в бою */
+function isDisconnected(p: ReplayPlayerResult): boolean {
+  return p.name === '' || p.vehicles.length === 0
+}
+
 /** Кланы, состав и игроки по командам — для текста рядом с картинкой */
 export interface TeamSummary {
+  /** Тег с юникод-украшениями — для Discord и консоли */
   clan: string | null
+  /** Сырой тег из реплея (украшения как есть) — ключ для словаря кланов */
+  rawTag: string | null
   composition: string
   players: string[]
 }
@@ -98,15 +171,16 @@ export function summarizeTeams(results: ReplayResults, dict: VehicleDict): TeamS
     const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
     return {
       clan: clan !== undefined ? decorateTag(clan) : null,
+      rawTag: clan ?? null,
       composition,
-      players: roster.map((p) => splitPlatform(p.name).name),
+      players: roster.filter((p) => p.name !== '').map((p) => splitPlatform(p.name).name),
     }
   })
 }
 
 export function buildBattleSvg(
-  { missionName, header, results, dict }: BattleImageInput,
-  assets: BattleAssets = { unitIcons: new Map(), mapImage: null },
+  { missionName, header, results, dict, ratings }: BattleImageInput,
+  assets: BattleAssets = { unitIcons: new Map(), mapImage: null, gameFont: false },
 ): string {
   // " [Conquest #1] Fire Arc" → режим и имя карты
   const m = /^\s*\[(.+?)\]\s*(.+)$/.exec(missionName.trim())
@@ -162,7 +236,7 @@ export function buildBattleSvg(
 
   rosters.forEach((roster, i) => {
     const theme = TEAM_THEME[Math.min(i, TEAM_THEME.length - 1)]!
-    parts.push(renderTeam(roster, i === 0 ? 60 : W / 2 + 60, dict, theme, assets.unitIcons, i))
+    parts.push(renderTeam(roster, i === 0 ? 60 : W / 2 + 60, dict, theme, assets, i, ratings))
   })
 
   parts.push(text(W / 2, H - 26, `Match ID: ${header.sessionId}`, 30, '#aab4c0', 'middle'))
@@ -175,17 +249,20 @@ function renderTeam(
   ox: number,
   dict: VehicleDict,
   theme: { clan: string; player: string },
-  unitIcons: Map<string, string>,
+  assets: BattleAssets,
   teamIndex: number,
+  ratings?: Map<string, ClanRating>,
 ): string {
   const parts: string[] = []
-  const statX = [560, 640, 720, 800, 880].map((v) => ox + v)
+  // Первая колонка — личный клановый рейтинг (⊛), дальше статистика боя
+  const ratingX = ox + 490
+  const statX = [584, 656, 728, 800, 872].map((v) => ox + v)
 
-  // Клан-тег: украшения (⚔…⚔ и т.п.) уже входят в строку тега из реплея
+  // Клан-тег: украшения рисует шрифт игры (или юникод-замены без него)
   const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
   const teamNo = roster[0]?.team ?? teamIndex + 1
-  const clanLabel = clan !== undefined ? decorateTag(clan) : `Команда ${teamNo}`
-  parts.push(text(ox + 10, CONTENT_TOP + 52, esc(clanLabel), 46, theme.clan, 'start', 600))
+  const clanLabel = clan !== undefined ? tagMarkup(clan, assets.gameFont) : esc(`Команда ${teamNo}`)
+  parts.push(text(ox + 10, CONTENT_TOP + 52, clanLabel, 46, theme.clan, 'start', 600))
 
   // Состав: (4F/3T/1AA) — по первой машине каждого игрока
   const counts = classCounts(roster, dict)
@@ -205,12 +282,13 @@ function renderTeam(
     .filter((c) => c !== '?')
     .sort((a, b) => NATION_ORDER.indexOf(a) - NATION_ORDER.indexOf(b))
     .slice(0, 6)
-  const flagsRight = statX[4]! + 22
+  const flagsRight = statX[4]! + 18
   nations.forEach((country, i) => {
     parts.push(flagSvg(flagsRight - (nations.length - i) * 46, CONTENT_TOP + 8, country, `fl${teamIndex}_${i}`))
   })
 
-  // Значки колонок статистики
+  // Значки колонок: рейтинг, возд, назем, ассисты, захваты, смерти
+  parts.push(iconStarCircle(ratingX - 14, CONTENT_TOP + 58, 28, '#e6edf3'))
   const icons = [iconPlane, iconTank, iconStar, iconDiamond, iconSkull]
   icons.forEach((icon, i) => {
     parts.push(icon(statX[i]! - 14, CONTENT_TOP + 58, 28, '#e6edf3'))
@@ -219,13 +297,17 @@ function renderTeam(
   // Игроки
   roster.forEach((p, row) => {
     const y = CONTENT_TOP + TEAM_HEADER_H + row * ROW_H
+    const disconnected = isDisconnected(p)
     const firstId = p.vehicles[0] ?? ''
     const first = vehicleInfo(dict, firstId)
     const color = CLASS_COLOR[first.cls] ?? CLASS_COLOR['?']!
 
-    // Силуэт машины из датамайна; нет иконки — рисуем значок класса
-    const icon = unitIcons.get(firstId)
-    if (icon) {
+    // Силуэт машины из датамайна; отключившимся — красный значок,
+    // остальным без силуэта — значок класса
+    const icon = assets.unitIcons.get(firstId)
+    if (disconnected) {
+      parts.push(iconDisconnect(ox + 26, y + 10, 46))
+    } else if (icon) {
       parts.push(
         `<image x="${ox}" y="${y + 6}" width="96" height="56" preserveAspectRatio="xMidYMid meet" href="${icon}"/>`,
       )
@@ -244,10 +326,29 @@ function renderTeam(
       parts.push(iconPs(nameX, y + 12, 27, '#dfe6ee'))
       nameX += 36
     }
-    parts.push(text(nameX, y + 36, esc(trimToWidth(name, 22)), 34, theme.player))
+    parts.push(text(nameX, y + 36, esc(trimToWidth(name || 'Unknown Player', 20)), 34, theme.player))
 
-    const extra = p.vehicles.length > 1 ? ` +${p.vehicles.length - 1}` : ''
-    parts.push(text(ox + 112, y + 70, esc(trimToWidth(first.name, 28)) + extra, 26, color))
+    // Под ником: техника или пометка отключения
+    if (disconnected) {
+      parts.push(text(ox + 112, y + 70, 'Disconnected', 26, '#9aa2b1'))
+    } else {
+      const extra = p.vehicles.length > 1 ? ` +${p.vehicles.length - 1}` : ''
+      parts.push(text(ox + 112, y + 70, esc(trimToWidth(first.name, 26)) + extra, 26, color))
+    }
+
+    // Личный клановый рейтинг: дельта за бой сверху, текущее значение снизу
+    const rating = name ? ratings?.get(p.name) ?? ratings?.get(name) : undefined
+    if (rating) {
+      if (rating.delta !== null && rating.delta !== 0) {
+        const up = rating.delta > 0
+        parts.push(
+          text(ratingX, y + 24, `${up ? '+' : '−'}${Math.abs(rating.delta)}`, 22, up ? '#7ee787' : '#ff7b72', 'middle', 600),
+        )
+      }
+      parts.push(text(ratingX, y + 56, String(rating.rating), 30, '#ffffff', 'middle', 600))
+    } else if (ratings) {
+      parts.push(text(ratingX, y + 48, '—', 30, ZERO_COLOR, 'middle'))
+    }
 
     // Статистика: возд, назем, ассисты, захваты, смерти
     const vals = [p.kills, p.groundKills, p.assists, p.captureZone, p.deaths]
@@ -266,11 +367,25 @@ function renderTeam(
  * Люди без ботов, сгруппированы по командам, внутри — по очкам.
  * Первой (слева, «золотой») идёт команда с большей суммой очков — как у
  * Boris Stats; честного признака победителя в results-BLK нет.
+ * Экспортируется для консольной таблицы (battle-summary) — порядок команд
+ * всюду одинаковый и совпадает с summarizeTeams.
  */
-function buildRosters(results: ReplayResults): ReplayPlayerResult[][] {
+export function buildRosters(results: ReplayResults): ReplayPlayerResult[][] {
   const humans = results.players.filter((p) => !p.name.startsWith('coop/'))
-  const teams = [...new Set(humans.map((p) => p.team))].sort()
-  const rosters = teams.map((t) => humans.filter((p) => p.team === t).sort((a, b) => b.score - a.score))
+  const known = humans.filter((p) => p.team >= 0)
+  const teams = [...new Set(known.map((p) => p.team))].sort()
+  const rosters = teams.map((t) => known.filter((p) => p.team === t).sort((a, b) => b.score - a.score))
+
+  // Отключившиеся без строки результатов (team неизвестен): клановые бои
+  // идут 8×8, так что дописываем их в неполную команду; при равных
+  // размерах команду не угадать — такую запись не показываем.
+  for (const ghost of humans.filter((p) => p.team < 0)) {
+    const sizes = rosters.map((r) => r.length)
+    const min = Math.min(...sizes)
+    const smaller = rosters.filter((r) => r.length === min)
+    if (smaller.length === 1) smaller[0]!.push(ghost)
+  }
+
   const total = (r: ReplayPlayerResult[]): number => r.reduce((acc, p) => acc + Math.max(p.score, 0), 0)
   return rosters.sort((a, b) => total(b) - total(a))
 }
@@ -460,6 +575,34 @@ function iconTank(x: number, y: number, size: number, fill: string): string {
     `<rect x="7" y="7.5" width="9" height="5.5" rx="1.2" fill="${fill}"/>` +
       `<rect x="14.5" y="8.8" width="8.5" height="2" fill="${fill}"/>` +
       `<rect x="2" y="13" width="20" height="7" rx="3.5" fill="${fill}"/>`,
+  )
+}
+
+/** Звезда в круге — колонка личного кланового рейтинга (как у Boris) */
+function iconStarCircle(x: number, y: number, size: number, fill: string): string {
+  return iconGroup(
+    x,
+    y,
+    size,
+    `<circle cx="12" cy="12" r="10.4" fill="none" stroke="${fill}" stroke-width="1.9"/>` +
+      `<polygon fill="${fill}" points="${starPoints(12, 12, 6.4)}"/>`,
+  )
+}
+
+/** Красный кружок с перечёркнутой вилкой — игрок отключился */
+function iconDisconnect(x: number, y: number, size: number): string {
+  return iconGroup(
+    x,
+    y,
+    size,
+    `<circle cx="12" cy="12" r="11" fill="#c93a3a"/>` +
+      `<g transform="rotate(45 12 12)" fill="#ffffff">` +
+      `<rect x="9.4" y="6.2" width="5.2" height="5.6" rx="1.1"/>` +
+      `<rect x="10.2" y="3.2" width="1.3" height="3"/>` +
+      `<rect x="12.5" y="3.2" width="1.3" height="3"/>` +
+      `<rect x="11.35" y="11.8" width="1.3" height="3.4"/>` +
+      `<rect x="11.35" y="17" width="1.3" height="3.6"/>` +
+      `</g>`,
   )
 }
 

@@ -68,6 +68,45 @@ export function initDb(dbPath: string): void {
       model      TEXT    NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+
+    -- Словарь кланов с лидерборда сайта: полный тег (с украшениями) → имя
+    -- для страницы claninfo. Обновляет источник wt-clans.
+    CREATE TABLE IF NOT EXISTS clans (
+      tag        TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- Снимки личного кланового рейтинга (ПКР) участников: новая строка
+    -- пишется только когда рейтинг изменился, поэтому два последних снимка
+    -- ника дают дельту «за последний бой».
+    CREATE TABLE IF NOT EXISTS clan_rating_snapshots (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      clan_tag TEXT    NOT NULL,
+      nick     TEXT    NOT NULL,
+      rating   INTEGER NOT NULL,
+      seen_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_snapshots_clan_nick
+      ON clan_rating_snapshots (clan_tag, nick, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_snapshots_nick
+      ON clan_rating_snapshots (nick, id DESC);
+
+    -- Кто сейчас сидит в голосовых каналах Discord: пишет бот
+    -- (voice-tracker), читает дашборд. Строка удаляется при выходе.
+    CREATE TABLE IF NOT EXISTS voice_presence (
+      guild_id     TEXT NOT NULL,
+      guild_name   TEXT NOT NULL,
+      channel_id   TEXT NOT NULL,
+      channel_name TEXT NOT NULL,
+      user_id      TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      wt_nick      TEXT NOT NULL,
+      joined_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (guild_id, user_id)
+    );
   `)
 }
 
@@ -342,6 +381,230 @@ export function saveAnalysis(itemId: number, result: string, model: string): voi
         created_at = unixepoch()
     `)
     .run(itemId, result, model)
+}
+
+// ---------- Кланы и личный клановый рейтинг (ПКР) ----------
+
+/** Пакетное обновление словаря «тег → имя клана» (источник wt-clans) */
+export function upsertClans(entries: { tag: string; name: string }[]): void {
+  const database = getDb()
+  const stmt = database.prepare(`
+    INSERT INTO clans (tag, name) VALUES (?, ?)
+    ON CONFLICT (tag) DO UPDATE SET name = excluded.name, updated_at = unixepoch()
+  `)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    for (const e of entries) stmt.run(e.tag, e.name)
+    database.exec('COMMIT')
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+/** Имя клана по полному тегу (с украшениями) — null, если клана нет в словаре */
+export function getClanNameByTag(tag: string): string | null {
+  const row = getDb().prepare('SELECT name FROM clans WHERE tag = ?').get(tag) as { name: string } | undefined
+  return row?.name ?? null
+}
+
+/** Размер словаря кланов и время последнего обновления (для пропуска лишних обходов) */
+export function getClansStats(): { count: number; newestAt: number } {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS newest FROM clans')
+    .get() as { count: number; newest: number } | undefined
+  return { count: row?.count ?? 0, newestAt: row?.newest ?? 0 }
+}
+
+/**
+ * Снимок ПКР участников клана: строка добавляется только если рейтинг ника
+ * изменился с прошлого снимка (или ника ещё не было) — история не пухнет.
+ */
+export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string; rating: number }[]): void {
+  const database = getDb()
+  const lastStmt = database.prepare(`
+    SELECT rating FROM clan_rating_snapshots
+    WHERE clan_tag = ? AND nick = ?
+    ORDER BY id DESC LIMIT 1
+  `)
+  const insertStmt = database.prepare(
+    'INSERT INTO clan_rating_snapshots (clan_tag, nick, rating) VALUES (?, ?, ?)',
+  )
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    for (const r of ratings) {
+      const last = lastStmt.get(clanTag, r.nick) as { rating: number } | undefined
+      if (last === undefined || last.rating !== r.rating) insertStmt.run(clanTag, r.nick, r.rating)
+    }
+    database.exec('COMMIT')
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+export interface ClanRating {
+  rating: number
+  /** Изменение с прошлого снимка; null — истории ещё нет */
+  delta: number | null
+}
+
+// ---------- Голосовые каналы Discord ----------
+
+export interface VoicePresenceEntry {
+  guildId: string
+  guildName: string
+  channelId: string
+  channelName: string
+  userId: string
+  displayName: string
+  /** Ник в игре, вытащенный из серверного ника «WTНик (Имя)» */
+  wtNick: string
+}
+
+/** Полный снимок голосовых каналов при старте бота — заменяет всё содержимое */
+export function syncVoicePresence(entries: VoicePresenceEntry[]): void {
+  const database = getDb()
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec('DELETE FROM voice_presence')
+    for (const e of entries) insertVoiceStmt(e)
+    database.exec('COMMIT')
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+/** Игрок зашёл в канал или перешёл между каналами */
+export function upsertVoicePresence(e: VoicePresenceEntry): void {
+  insertVoiceStmt(e)
+}
+
+function insertVoiceStmt(e: VoicePresenceEntry): void {
+  getDb()
+    .prepare(`
+      INSERT INTO voice_presence (guild_id, guild_name, channel_id, channel_name, user_id, display_name, wt_nick)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (guild_id, user_id) DO UPDATE SET
+        guild_name = excluded.guild_name,
+        channel_name = excluded.channel_name,
+        display_name = excluded.display_name,
+        wt_nick = excluded.wt_nick,
+        -- время захода сохраняется, если человек остался в том же канале
+        joined_at = CASE
+          WHEN voice_presence.channel_id <> excluded.channel_id THEN unixepoch()
+          ELSE voice_presence.joined_at
+        END,
+        channel_id = excluded.channel_id
+    `)
+    .run(e.guildId, e.guildName, e.channelId, e.channelName, e.userId, e.displayName, e.wtNick)
+}
+
+export function removeVoicePresence(guildId: string, userId: string): void {
+  getDb().prepare('DELETE FROM voice_presence WHERE guild_id = ? AND user_id = ?').run(guildId, userId)
+}
+
+export interface VoicePresenceRow extends VoicePresenceEntry {
+  joinedAt: number
+}
+
+/** Кто сейчас в голосовых каналах — для /api/voice */
+export function getVoicePresence(): VoicePresenceRow[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT guild_id, guild_name, channel_id, channel_name, user_id, display_name, wt_nick, joined_at
+      FROM voice_presence
+      ORDER BY guild_id, channel_id, joined_at
+    `)
+    .all() as unknown as {
+    guild_id: string
+    guild_name: string
+    channel_id: string
+    channel_name: string
+    user_id: string
+    display_name: string
+    wt_nick: string
+    joined_at: number
+  }[]
+  return rows.map((r) => ({
+    guildId: r.guild_id,
+    guildName: r.guild_name,
+    channelId: r.channel_id,
+    channelName: r.channel_name,
+    userId: r.user_id,
+    displayName: r.display_name,
+    wtNick: r.wt_nick,
+    joinedAt: r.joined_at,
+  }))
+}
+
+/** ПКР игрока по нику: последний снимок любого его клана (+дельта в рамках клана) */
+export function getPlayerRating(nick: string): (ClanRating & { clanTag: string }) | null {
+  const stmt = getDb().prepare(`
+    SELECT clan_tag, rating FROM clan_rating_snapshots
+    WHERE nick = ?
+    ORDER BY id DESC LIMIT 2
+  `)
+  let rows = stmt.all(nick) as unknown as { clan_tag: string; rating: number }[]
+  if (rows.length === 0) {
+    // консольные игроки на странице клана могут быть с суффиксом ника (@psn/@live)
+    rows = getDb()
+      .prepare(`
+        SELECT clan_tag, rating FROM clan_rating_snapshots
+        WHERE nick LIKE ? ESCAPE '\\'
+        ORDER BY id DESC LIMIT 2
+      `)
+      .all(escapeLike(nick) + '@%') as unknown as { clan_tag: string; rating: number }[]
+  }
+  const last = rows[0]
+  if (!last) return null
+  const prev = rows[1]
+  return {
+    clanTag: last.clan_tag,
+    rating: last.rating,
+    delta: prev && prev.clan_tag === last.clan_tag ? last.rating - prev.rating : null,
+  }
+}
+
+/** Сколько клановых боёв игрока есть в собранных реплеях и когда был последний */
+export function getPlayerBattleStats(nick: string): { battles: number; lastBattleAt: number | null } {
+  const esc = escapeLike(nick)
+  const row = getDb()
+    .prepare(`
+      SELECT COUNT(*) AS battles, MAX(json_extract(data, '$.startTime')) AS last
+      FROM items
+      WHERE source = 'wt-replays'
+        AND (data LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\')
+    `)
+    .get(`%"name":"${esc}"%`, `%"name":"${esc}@%`) as { battles: number; last: number | null } | undefined
+  return { battles: row?.battles ?? 0, lastBattleAt: row?.last ?? null }
+}
+
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (ch) => '\\' + ch)
+}
+
+/** Текущий ПКР и дельта по каждому нику клана (по двум последним снимкам) */
+export function getClanRatingsWithDelta(clanTag: string): Map<string, ClanRating> {
+  const rows = getDb()
+    .prepare(`
+      SELECT nick, rating FROM clan_rating_snapshots
+      WHERE clan_tag = ?
+      ORDER BY id DESC
+    `)
+    .all(clanTag) as unknown as { nick: string; rating: number }[]
+  const result = new Map<string, ClanRating>()
+  for (const row of rows) {
+    const existing = result.get(row.nick)
+    if (!existing) {
+      result.set(row.nick, { rating: row.rating, delta: null })
+    } else if (existing.delta === null) {
+      // вторая по свежести запись — из неё считается дельта
+      existing.delta = existing.rating - row.rating
+    }
+  }
+  return result
 }
 
 

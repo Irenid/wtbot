@@ -29,6 +29,11 @@ const dashboardHtml = `<!doctype html>
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; }
   .dot.on { background: #9ece6a; } .dot.off { background: #f7768e; }
   .full { grid-column: 1 / -1; }
+  .head-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .btn { background: #2f3549; border: 1px solid #414868; color: #c0caf5; border-radius: 8px;
+         padding: 4px 14px; font-size: 12px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+  .btn:hover { background: #414868; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
@@ -53,6 +58,10 @@ const dashboardHtml = `<!doctype html>
       <div id="items-by-source"></div>
     </div>
     <div class="card full">
+      <h2 class="head-row">В голосовых каналах <button id="voice-refresh" class="btn">Обновить</button></h2>
+      <div id="voice-list" class="muted">Загрузка…</div>
+    </div>
+    <div class="card full">
       <h2>Парсеры</h2>
       <div id="parser-list" class="muted">Загрузка…</div>
     </div>
@@ -75,6 +84,38 @@ function row(left, right, cls) {
   div.append(l, r);
   return div;
 }
+// Строка игрока в голосовом канале: «WTНик (Имя)» + статистика War Thunder
+function voicePlayerRow(p) {
+  const div = document.createElement('div');
+  div.className = 'row';
+  const left = document.createElement('span');
+  left.textContent = p.displayName.includes('(') ? p.displayName : p.wtNick;
+  const right = document.createElement('span');
+  right.className = 'muted';
+  if (p.rating !== null) {
+    const delta = p.delta ? ' (' + (p.delta > 0 ? '+' : '') + p.delta + ')' : '';
+    const battles = p.battles ? ' · боёв: ' + p.battles : '';
+    right.textContent = (p.clanTag ? p.clanTag + ' · ' : '') + 'ПКР ' + p.rating + delta + battles;
+  } else {
+    right.textContent = p.battles ? 'боёв: ' + p.battles : 'нет данных WT';
+  }
+  div.append(left, right);
+  return div;
+}
+function voiceChannelBlock(ch) {
+  const wrap = document.createElement('div');
+  const head = document.createElement('div');
+  head.className = 'row';
+  const name = document.createElement('span');
+  name.textContent = '🔊 ' + ch.channelName;
+  const guild = document.createElement('span');
+  guild.className = 'muted';
+  guild.textContent = ch.guildName + ' · ' + ch.players.length + ' чел.';
+  head.append(name, guild);
+  wrap.appendChild(head);
+  ch.players.forEach(function (p) { wrap.appendChild(voicePlayerRow(p)); });
+  return wrap;
+}
 function itemRow(it) {
   const div = document.createElement('div');
   div.className = 'row';
@@ -94,9 +135,10 @@ function itemRow(it) {
 }
 async function refresh() {
   try {
-    const responses = await Promise.all([fetch('/api/stats'), fetch('/api/items?limit=8')]);
+    const responses = await Promise.all([fetch('/api/stats'), fetch('/api/items?limit=8'), fetch('/api/voice')]);
     const data = await responses[0].json();
     const itemsData = await responses[1].json();
+    const voiceData = await responses[2].json();
 
     document.getElementById('bot-dot').className = 'dot ' + (data.bot.online ? 'on' : 'off');
     document.getElementById('bot-tag').textContent = data.bot.tag || 'offline';
@@ -114,6 +156,15 @@ async function refresh() {
     bySource.replaceChildren.apply(bySource, data.items.bySource.slice(0, 5).map(function (s) {
       return row(s.source, String(s.count));
     }));
+
+    const voiceList = document.getElementById('voice-list');
+    if (voiceData.channels.length === 0) {
+      voiceList.classList.add('muted');
+      voiceList.textContent = 'В отслеживаемых голосовых каналах никого нет';
+    } else {
+      voiceList.classList.remove('muted');
+      voiceList.replaceChildren.apply(voiceList, voiceData.channels.map(voiceChannelBlock));
+    }
 
     const parserList = document.getElementById('parser-list');
     if (data.parsers.length === 0) {
@@ -137,6 +188,20 @@ async function refresh() {
 }
 refresh();
 setInterval(refresh, 10000);
+
+// Принудительное обновление: сервер пересканирует каналы и заново
+// запрашивает клановые рейтинги, затем страница перечитывает данные
+document.getElementById('voice-refresh').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = 'Обновляю…';
+  try {
+    await fetch('/api/voice/refresh', { method: 'POST' });
+    await refresh();
+  } catch (e) { console.error(e); }
+  btn.disabled = false;
+  btn.textContent = 'Обновить';
+});
 </script>
 </body>
 </html>`
