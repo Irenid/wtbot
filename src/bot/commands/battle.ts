@@ -9,10 +9,10 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import type { Command } from '../types.js'
-import { getItemByExternalId, getLatestItems } from '../../db/index.js'
-import { buildBattleMedia, cachedBattleMedia, type BattleMediaKind } from '../../wrpl/battle-media.js'
+import { getItemByExternalId, getLatestItems, type StoredItem } from '../../db/index.js'
+import { buildBattleMedia, cachedBattleMedia, cachedBattleMeta, type BattleMediaKind } from '../../wrpl/battle-media.js'
 import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
-import { fetchReplayResults, normalizeSessionId, replayPartUrls } from '../../wrpl/replay.js'
+import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../../wrpl/replay.js'
 import { renderBattleImage, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 
@@ -32,6 +32,8 @@ interface ReplayItemData {
   replayParts?: string[] | null
   url?: string
   partsCount?: number
+  /** Списки игроков сайта с userId/name/fakeName (см. realNamesFromItem) */
+  players?: unknown
 }
 
 export const battle: Command = {
@@ -55,65 +57,127 @@ export const battle: Command = {
       return
     }
 
-    const data = item.data as ReplayItemData
-    const parts = replayPartUrls(data)
-    if (parts.length === 0) {
+    const post = await renderBattlePost(item)
+    if (!post) {
       await interaction.editReply('У этой записи нет ссылок на файлы реплея.')
       return
     }
+    await interaction.editReply(post.payload)
+    queueWinnerUpdate(post, (p) => interaction.editReply(p))
+  },
+}
 
-    const { header, results } = await fetchReplayResults(parts)
-    const dict = await ensureVehicleDict()
-    const teams = summarizeTeams(results, dict)
+export interface BattlePostPayload {
+  content: string
+  files: AttachmentBuilder[]
+  components: ActionRowBuilder<ButtonBuilder>[]
+}
 
-    // Личный клановый рейтинг обеих команд — с сайта; сбой сети не должен
-    // ломать команду, тогда картинка выходит без колонки ПКР
-    const ratings = await fetchRatingsForTags(teams.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+export interface BattlePost {
+  payload: BattlePostPayload
+  sessionIdHex: string
+  /** null — победитель уже на картинке; иначе сборка материалов вернёт payload с отметкой (или null) */
+  buildWinnerPayload: (() => Promise<BattlePostPayload | null>) | null
+}
 
-    const png = await renderBattleImage({
-      missionName: data.missionName ?? item.title,
-      header,
-      results,
-      dict,
-      ratings,
-    })
+/**
+ * Сообщение с результатами боя по записи БД: картинка, текст с составами
+ * и кнопки материалов. Общий код /battle и автоанонса. null — у записи
+ * нет ссылок на файлы реплея.
+ */
+export async function renderBattlePost(item: StoredItem): Promise<BattlePost | null> {
+  const data = item.data as ReplayItemData
+  const parts = replayPartUrls(data)
+  if (parts.length === 0) return null
 
-    // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
-    let content =
-      `Match ID: \`${header.sessionId}\`\n` +
-      teams
-        .map((t, i) => {
-          const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
-          const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
-          return `**${clan}** (${t.composition}): ${players}`
-        })
-        .join('\n')
-    if (content.length > 1990) content = content.slice(0, 1990) + '…'
+  const { header, results } = await fetchReplayResults(parts)
+  // Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
+  const realNames = realNamesFromItem(data)
+  applyRealNames(results, realNames)
+  const dict = await ensureVehicleDict()
+  const teams = summarizeTeams(results, dict)
+  const missionName = data.missionName ?? item.title
 
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setLabel('View Replay')
-        .setStyle(ButtonStyle.Link)
-        .setURL(`https://warthunder.com/en/tournament/replay/${header.sessionId}`),
-      new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel('View Chat').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel('Battle Log').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`battle:heatmap-ground:${header.sessionId}`)
-        .setLabel('Heatmap (Ground)')
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`battle:heatmap-air:${header.sessionId}`)
-        .setLabel('Heatmap (Air)')
-        .setStyle(ButtonStyle.Secondary),
-    )
+  // Личный клановый рейтинг обеих команд — с сайта; сбой сети не должен
+  // ломать команду, тогда картинка выходит без колонки ПКР
+  const ratings = await fetchRatingsForTags(teams.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
 
-    await interaction.editReply({
+  // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
+  let content =
+    `Match ID: \`${header.sessionId}\`\n` +
+    teams
+      .map((t, i) => {
+        const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
+        const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
+        return `**${clan}** (${t.composition}): ${players}`
+      })
+      .join('\n')
+  if (content.length > 1990) content = content.slice(0, 1990) + '…'
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setLabel('View Replay')
+      .setStyle(ButtonStyle.Link)
+      .setURL(`https://warthunder.com/en/tournament/replay/${header.sessionId}`),
+    new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel('View Chat').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel('Battle Log').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`battle:heatmap-ground:${header.sessionId}`)
+      .setLabel('Heatmap (Ground)')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`battle:heatmap-air:${header.sessionId}`)
+      .setLabel('Heatmap (Air)')
+      .setStyle(ButtonStyle.Secondary),
+  )
+
+  const makePayload = async (winnerTeam: number | null): Promise<BattlePostPayload> => {
+    const png = await renderBattleImage({ missionName, header, results, dict, ratings, winnerTeam })
+    return {
       content,
       files: [new AttachmentBuilder(png, { name: `battle-${header.sessionIdHex}.png` })],
       components: [row],
-    })
-  },
+    }
+  }
+
+  // Победителя в results-BLK нет — он берётся из меты, которую пишет
+  // сборка материалов (пакетный поток)
+  const meta = cachedBattleMeta(header.sessionIdHex)
+  const payload = await makePayload(meta?.teamWon ?? null)
+  const buildWinnerPayload = meta
+    ? null
+    : async (): Promise<BattlePostPayload | null> => {
+        await buildBattleMedia(parts, missionName, realNames)
+        const fresh = cachedBattleMeta(header.sessionIdHex)
+        if (!fresh || fresh.teamWon <= 0) return null
+        return makePayload(fresh.teamWon)
+      }
+  return { payload, sessionIdHex: header.sessionIdHex, buildWinnerPayload }
 }
+
+/**
+ * Меты ещё нет — собирает материалы в фоне (даёт победителя и мгновенные
+ * кнопки) и передаёт apply обновлённое сообщение с отметкой «Победа».
+ * Защищено от параллельных сборок одной сессии.
+ */
+export function queueWinnerUpdate(post: BattlePost, apply: (p: BattlePostPayload) => Promise<unknown>): void {
+  const build = post.buildWinnerPayload
+  if (!build || buildingMeta.has(post.sessionIdHex)) return
+  buildingMeta.add(post.sessionIdHex)
+  void (async () => {
+    try {
+      const payload = await build()
+      if (payload) await apply(payload)
+    } catch (err) {
+      console.warn(`[bot] фоновая сборка меты ${post.sessionIdHex}: ${(err as Error).message}`)
+    } finally {
+      buildingMeta.delete(post.sessionIdHex)
+    }
+  })()
+}
+
+/** Сессии, для которых уже идёт фоновая сборка материалов */
+const buildingMeta = new Set<string>()
 
 const KIND_NAMES: Record<BattleMediaKind, string> = {
   log: 'battle log',
@@ -142,7 +206,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
       return
     }
     try {
-      const built = await buildBattleMedia(parts, data?.missionName ?? item.title)
+      const built = await buildBattleMedia(parts, data?.missionName ?? item.title, realNamesFromItem(data ?? {}))
       media =
         kind === 'log' ? built.log
         : kind === 'heatmap-ground' ? built.heatmapGround

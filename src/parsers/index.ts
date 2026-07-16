@@ -13,12 +13,14 @@ async function runOnce(source: ParserSource): Promise<void> {
   try {
     const output = await source.run()
     let summary = output.summary
-    if (output.items && output.items.length > 0) {
-      const saved = saveItems(source.name, output.items)
+    const gotItems = output.items !== undefined && output.items.length > 0
+    if (gotItems) {
+      const saved = saveItems(source.name, output.items!)
       summary += ` · сохранено: ${saved.changed}, без изменений: ${saved.unchanged}`
     }
     recordParseResult(source.name, true, summary, null)
-    console.log(`[parser:${source.name}] OK — ${summary}`)
+    // при частых интервалах пустые прогоны не логируем — только находки
+    if (gotItems) console.log(`[parser:${source.name}] OK — ${summary}`)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     recordParseResult(source.name, false, null, message)
