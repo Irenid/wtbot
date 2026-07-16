@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js'
 import { config } from '../config.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
+import { handleBattleButton } from './commands/battle.js'
 
 export async function startBot(): Promise<Client> {
   const client = new Client({
@@ -17,6 +18,22 @@ export async function startBot(): Promise<Client> {
   })
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    // Кнопки под сообщением /battle (battle log, хитмапы, чат)
+    if (interaction.isButton() && interaction.customId.startsWith('battle:')) {
+      try {
+        await handleBattleButton(interaction)
+      } catch (err) {
+        console.error('[bot] Ошибка кнопки', interaction.customId, err)
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply('Произошла ошибка при сборке материалов боя.').catch(() => {})
+        } else {
+          await interaction
+            .reply({ content: 'Произошла ошибка при сборке материалов боя.', flags: MessageFlags.Ephemeral })
+            .catch(() => {})
+        }
+      }
+      return
+    }
     if (!interaction.isChatInputCommand()) return
 
     const command = commands.get(interaction.commandName)

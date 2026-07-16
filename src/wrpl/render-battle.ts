@@ -92,9 +92,9 @@ export function decorateTag(tag: string): string {
 /**
  * SVG-разметка клан-тега: украшения — отдельными tspan со шрифтом игры
  * (глифы как в игре), остальной текст — обычным стеком. Без шрифта игры —
- * юникод-замены из DECOR_MAP.
+ * юникод-замены из DECOR_MAP. Используется и хитмапой (легенда команд).
  */
-function tagMarkup(tag: string, gameFont: boolean): string {
+export function tagMarkup(tag: string, gameFont: boolean): string {
   if (!gameFont) return esc(decorateTag(tag))
   let out = ''
   let plain = ''
