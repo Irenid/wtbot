@@ -14,8 +14,10 @@ import { ensureGameFonts } from './wt-fonts.js'
  * ИК/ПАРЛ/АРЛ/ЗУР; звезда — разбился; ободок — цвет убийцы), пунктирные
  * линии фрагов от убийцы к жертве, пятна долгих стоянок с длительностью,
  * точки в конце пути выживших, метки минут вдоль траекторий, ромбы зон
- * захвата (A/B/C из файла миссии), легенда по командам внизу (колонка —
- * по фактической стороне команды на карте, у имени — фраги/смерти).
+ * захвата (A/B/C из файла миссии). Справа — информационная панель:
+ * карта/режим/дата, команды в порядке сторон на карте (победитель,
+ * игроки с фрагами/смертями, техникой, очками и временем гибели) и
+ * блок условных обозначений.
  *
  * mode='ground' — наземная техника (GMSync), mode='air' — авиация
  * (пакеты лётной модели). Наземная карта занимает весь кадр (ровно
@@ -34,7 +36,8 @@ import { ensureGameFonts } from './wt-fonts.js'
  */
 
 const MAP_W = 1400
-const LEGEND_ROW_H = 46
+/** Ширина информационной панели справа от карты */
+const PANEL_W = 480
 
 /**
  * Палитра траекторий: 16 уникальных цветов, подобраны жадным max-min
@@ -129,16 +132,11 @@ export function buildHeatmapSvg(input: HeatmapInput, gameFont = false, tacticalM
   const px = (x: number): number => ((x - cx) / half) * (MAP_W / 2) * view + MAP_W / 2
   const pz = (z: number): number => MAP_W / 2 - ((z - cz) / half) * (MAP_W / 2) * view
 
-  const legendRows = Math.max(
-    players.filter((p) => p.team === 0).length,
-    players.filter((p) => p.team === 1).length,
-    1,
-  )
-  const legendH = 100 + legendRows * LEGEND_ROW_H
-  const H = MAP_W + legendH
+  const W = MAP_W + PANEL_W
+  const H = MAP_W
 
   const parts: string[] = []
-  parts.push(`<svg width="${MAP_W}" height="${H}" viewBox="0 0 ${MAP_W} ${H}" xmlns="http://www.w3.org/2000/svg">`)
+  parts.push(`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`)
 
   // Фон карты: снимок игровой карты режима → ручной скриншот → сетка.
   // Оба изображения покрывают ровно battleArea, поэтому кладутся на его
@@ -375,10 +373,33 @@ export function buildHeatmapSvg(input: HeatmapInput, gameFont = false, tacticalM
     }
   }
 
-  // Легенда: колонка команды соответствует её стороне на карте
-  // (по медиане стартовых точек траекторий)
-  parts.push(`<rect y="${MAP_W}" width="${MAP_W}" height="${legendH}" fill="#0c0d0f"/>`)
-  const columnX = [40, MAP_W / 2 + 40]
+  // ---------- панель справа: заголовок, команды, обозначения ----------
+  parts.push(
+    `<rect x="${MAP_W}" width="${PANEL_W}" height="${H}" fill="#0c0d0f"/>`,
+    `<line x1="${MAP_W + 1}" y1="0" x2="${MAP_W + 1}" y2="${H}" stroke="#2a2e35" stroke-width="2"/>`,
+  )
+  const PX = MAP_W + 30
+  const PR = MAP_W + PANEL_W - 30
+
+  // Заголовок: карта, режим, дата и длительность боя
+  const title = /^\s*(?:\[(?:arcade|realistic|simulation|hardcore)\]\s*)?(?:\[([^\]]+)\]\s*)?(.+)$/i.exec(
+    input.missionName.trim(),
+  )
+  const gameMode = title?.[1] ?? 'Бой'
+  const mapName = title?.[2] ?? input.missionName
+  const when = new Date(input.header.startTime * 1000)
+  const dateText =
+    `${when.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}, ` +
+    when.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const durText = endTime > 60000 ? ` · бой ${fmtTime(endTime)}` : ''
+  parts.push(
+    `<text x="${PX}" y="66" font-family="${FONTS}" font-size="33" font-weight="700" fill="#ffffff">${esc(trimTo(mapName, 22))}</text>`,
+    `<text x="${PX}" y="100" font-family="${FONTS}" font-size="19" fill="#9aa2b1">${esc(gameMode)} · ${mode === 'ground' ? 'наземная техника' : 'авиация'}</text>`,
+    `<text x="${PX}" y="127" font-family="${FONTS}" font-size="19" fill="#9aa2b1">${esc(dateText)}${durText}</text>`,
+    `<line x1="${PX}" y1="150" x2="${PR}" y2="150" stroke="#2a2e35" stroke-width="1.5"/>`,
+  )
+
+  // Команды сверху вниз в порядке сторон на карте (по медиане стартов)
   const teamSideX = [0, 1].map((ti) => {
     const xs = players
       .filter((p) => p.team === ti)
@@ -386,35 +407,92 @@ export function buildHeatmapSvg(input: HeatmapInput, gameFont = false, tacticalM
       .sort((a, b) => a - b)
     return xs.length > 0 ? xs[Math.floor(xs.length / 2)]! : null
   })
-  const columnTeams =
-    teamSideX[0] !== null && teamSideX[1] !== null && teamSideX[0]! > teamSideX[1]! ? [1, 0] : [0, 1]
-  columnTeams.forEach((ti, col) => {
+  const sidesKnown = teamSideX[0] !== null && teamSideX[1] !== null
+  const orderTeams = sidesKnown && teamSideX[0]! > teamSideX[1]! ? [1, 0] : [0, 1]
+  const resultById = new Map(rosters.flat().map((rp) => [rp.userId, rp]))
+
+  let py = 192
+  orderTeams.forEach((ti, order) => {
     const roster = rosters[ti]
     if (!roster) return
     const teamPlayers = players.filter((p) => p.team === ti)
-    const clan = mostCommonTag(roster.map((p) => p.clanTag))
+    const clan = mostCommonTag(roster.map((rp) => rp.clanTag))
     const label = clan ? tagMarkup(clan, gameFont) : `Команда ${roster[0]?.team ?? ti + 1}`
+    const won = events.teamWon > 0 && roster[0]?.team === events.teamWon
+    const side = sidesKnown ? (order === 0 ? 'слева на карте' : 'справа на карте') : ''
     parts.push(
-      `<text x="${columnX[col]}" y="${MAP_W + 58}" font-family="${FONTS}" font-size="40" font-weight="700" fill="#ffffff">${label}</text>`,
+      `<text x="${PX}" y="${py}" font-family="${FONTS}" font-size="29" font-weight="700" fill="#ffffff">${label}</text>`,
+      `<text x="${PR}" y="${py}" font-family="${FONTS}" font-size="17" text-anchor="end">` +
+        (won ? `<tspan fill="#f2c811" font-weight="700">победа</tspan>` : '') +
+        (won && side ? `<tspan fill="#5a616e"> · </tspan>` : '') +
+        `<tspan fill="#9aa2b1">${side}</tspan></text>`,
     )
-    teamPlayers.forEach((p, row) => {
-      const y = MAP_W + 100 + row * LEGEND_ROW_H
-      const name = trimTo(p.name, 16)
-      const vehicles = p.models.map((m) => vehicleInfo(dict, m).name).join(', ')
+    py += 16
+    for (const p of teamPlayers) {
+      const rp = resultById.get(p.userId)
       const [kills, deaths] = killsDeaths.get(p.userId) ?? [0, 0]
-      const kdText = `${kills}/${deaths}`
-      const kdX = columnX[col]! + 42 + textWidth(name, 27) + 14
+      const vehicles = p.models.map((m) => vehicleInfo(dict, m).name).join(', ')
+      const deathsAt = events.kills.filter((k) => k.victimId === p.userId).map((k) => k.time)
+      const fate = deathsAt.length > 0 ? `✝ ${fmtTime(Math.max(...deathsAt))}` : 'жив'
+      const fateColor = deathsAt.length > 0 ? '#d98c8c' : '#9fd6a4'
       parts.push(
-        `<rect x="${columnX[col]}" y="${y - 24}" width="28" height="28" rx="4" fill="${p.color}"/>`,
-        `<text x="${columnX[col]! + 42}" y="${y}" font-family="${FONTS}" font-size="27" fill="#f2f4f7">${esc(name)}</text>`,
-        `<text x="${kdX}" y="${y}" font-family="${FONTS}" font-size="22" font-weight="700" fill="#d7dce4">${kdText}</text>`,
-        `<text x="${kdX + textWidth(kdText, 22) + 16}" y="${y}" font-family="${FONTS}" font-size="22" fill="#9aa2b1">${esc(trimTo(vehicles, 20))}</text>`,
+        `<rect x="${PX}" y="${py + 6}" width="20" height="20" rx="4" fill="${p.color}"/>`,
+        `<text x="${PX + 32}" y="${py + 23}" font-family="${FONTS}" font-size="23" fill="#f2f4f7">${esc(trimTo(p.name, 18))}</text>`,
+        `<text x="${PR}" y="${py + 23}" font-family="${FONTS}" font-size="21" font-weight="700" text-anchor="end" fill="#d7dce4">${kills}/${deaths}</text>`,
+        `<text x="${PX + 32}" y="${py + 46}" font-family="${FONTS}" font-size="17" fill="#8f97a6">${esc(trimTo(vehicles, 27))}</text>`,
+        `<text x="${PR}" y="${py + 46}" font-family="${FONTS}" font-size="17" text-anchor="end">` +
+          (rp ? `<tspan fill="#8f97a6">${rp.score} очк · </tspan>` : '') +
+          `<tspan fill="${fateColor}">${fate}</tspan></text>`,
+      )
+      py += 58
+    }
+    if (teamPlayers.length === 0) {
+      parts.push(
+        `<text x="${PX}" y="${py + 20}" font-family="${FONTS}" font-size="18" fill="#5a616e">без траекторий в этом режиме</text>`,
+      )
+      py += 34
+    }
+    py += 30
+  })
+
+  // Обозначения — прижаты к низу панели, если осталось место
+  const glyphColor = '#19c2c9'
+  const symbols: [string, string][] = [
+    [`<path d="M-11 4 C-5 -7, 3 9, 11 -2" fill="none" stroke="${glyphColor}" stroke-width="3" stroke-linecap="round"/>`, 'траектория'],
+    [
+      `<circle r="9" fill="#10130d" fill-opacity="0.74" stroke="${glyphColor}" stroke-width="2"/>` +
+        `<text y="4" font-family="${FONTS}" font-size="11" font-weight="700" fill="#f2f4f7" text-anchor="middle">4</text>`,
+      'минута боя',
+    ],
+    [`<circle r="9.5" fill="${glyphColor}" fill-opacity="0.26" stroke="${glyphColor}" stroke-width="1.6"/>`, 'стоянка и её время'],
+    [`<line x1="-11" y1="3" x2="11" y2="-3" stroke="${glyphColor}" stroke-width="1.8" stroke-dasharray="5 4"/>`, 'выстрел убийцы'],
+    [
+      `<circle cy="-1" r="7" fill="${glyphColor}" stroke="#15181c" stroke-width="1.4"/>` +
+        `<circle cx="-2.6" cy="-1.6" r="1.8" fill="#15181c"/><circle cx="2.6" cy="-1.6" r="1.8" fill="#15181c"/>` +
+        `<rect x="-3.4" y="4.4" width="6.8" height="3.6" rx="1.4" fill="${glyphColor}" stroke="#15181c" stroke-width="1"/>`,
+      'гибель (цвет — чей)',
+    ],
+    [causeBadge(0, 0, { icon: 'tank' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), 'чем убит'],
+    [`<circle r="6.5" fill="${glyphColor}" stroke="#10130d" stroke-width="1.8"/>`, 'жив в конце боя'],
+  ]
+  const symRows = Math.ceil(symbols.length / 2)
+  const symH = 40 + symRows * 34
+  const symY = H - 30 - symH
+  if (py <= symY - 4) {
+    parts.push(
+      `<line x1="${PX}" y1="${symY}" x2="${PR}" y2="${symY}" stroke="#2a2e35" stroke-width="1.5"/>`,
+      `<text x="${PX}" y="${symY + 30}" font-family="${FONTS}" font-size="19" font-weight="600" fill="#cfd4dc">Обозначения</text>`,
+    )
+    const colW = (PANEL_W - 60) / 2
+    symbols.forEach(([glyph, text], i) => {
+      const gx = PX + (i % 2) * colW + 12
+      const gy = symY + 58 + Math.floor(i / 2) * 34
+      parts.push(
+        `<g transform="translate(${gx} ${gy})">${glyph}</g>`,
+        `<text x="${gx + 24}" y="${gy + 6}" font-family="${FONTS}" font-size="16.5" fill="#9aa2b1">${text}</text>`,
       )
     })
-  })
-  parts.push(
-    `<text x="${MAP_W - 40}" y="${MAP_W + legendH - 16}" font-family="${FONTS}" font-size="19" fill="#7d8493" text-anchor="end">цифры — минуты · пятна — стоянки · пунктир — от убийцы · у черепа — чем убит и техника убийцы · у имени — фраги/смерти</text>`,
-  )
+  }
 
   parts.push('</svg>')
   return parts.join('\n')
@@ -432,12 +510,9 @@ function trimTo(s: string, n: number): string {
   return [...s].length > n ? [...s].slice(0, n - 1).join('') + '…' : s
 }
 
-/** Грубая ширина текста в px (для сдвига серой подписи техники) */
-function textWidth(s: string, size: number): number {
-  let w = 0
-  for (const ch of s) w += /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) ? size : size * 0.64
-  return Math.round(w)
-}
+/** мс от начала боя → «м:сс» */
+const fmtTime = (ms: number): string =>
+  `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`
 
 /** Шаг меток времени в минутах: не больше ~6 меток на траекторию */
 function tickStepMinutes(durationMs: number): number {
