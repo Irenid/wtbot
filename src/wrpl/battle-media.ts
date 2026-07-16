@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fetchMissionInfo } from './mission-info.js'
 import { extractReplayEvents, fetchReplayParts, type ReplayEvents } from './replay-events.js'
-import { parseReplayResults, parseWrplHeader, type ReplayResults, type WrplHeader } from './replay.js'
+import { applyRealNames, parseReplayResults, parseWrplHeader, type ReplayResults, type WrplHeader } from './replay.js'
 import { renderBattleLogImage } from './render-battle-log.js'
 import { renderHeatmapImage } from './render-heatmap.js'
 import { decorateTag } from './render-battle.js'
@@ -36,15 +36,56 @@ export function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaKind): 
   return existsSync(file) ? readFileSync(file) : null
 }
 
+/** Крохи из пакетного потока, которых нет в results-BLK (победитель) */
+export interface BattleMeta {
+  /** Номер победившей команды (как team в results) или 0 — не определён */
+  teamWon: number
+  /** Длительность записи, мс */
+  endTimeMs: number
+}
+
+/** Мета из кэша (пишется при сборке материалов), не собирая ничего */
+export function cachedBattleMeta(sessionIdHex: string): BattleMeta | null {
+  const file = path.join(CACHE_DIR, `${sessionIdHex}-meta.json`)
+  if (!existsSync(file)) return null
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as BattleMeta
+  } catch {
+    return null
+  }
+}
+
+type BuiltBattleMedia = BattleMedia & { events: ReplayEvents; header: WrplHeader }
+
+/** Сессии, которые уже собираются: параллельные вызовы (две кнопки разом,
+ * автоанонс + кнопка) получают общий промис вместо второй скачки и сборки */
+const inflightBuilds = new Map<string, Promise<BuiltBattleMedia>>()
+
 /**
  * Собирает все материалы боя: скачивает части реплея, разбирает пакетный
  * поток и рендерит картинки. Результат кэшируется; повторный вызов отдаёт
- * кэш. missionName — как в записи парсера (" [Domination #2] North Holland").
+ * кэш. missionName — как в записи парсера (" [Domination #2] North Holland"),
+ * realNames — реальные ники по userId (см. realNamesFromItem): в results-BLK
+ * у игроков с анонимайзером лежат выдуманные.
  */
-export async function buildBattleMedia(
+export function buildBattleMedia(
   partUrls: string[],
   missionName: string,
-): Promise<BattleMedia & { events: ReplayEvents; header: WrplHeader }> {
+  realNames: Map<string, string> = new Map(),
+): Promise<BuiltBattleMedia> {
+  const key = partUrls[0] ?? ''
+  const running = inflightBuilds.get(key)
+  if (running) return running
+  const build = doBuildBattleMedia(partUrls, missionName, realNames).finally(() => inflightBuilds.delete(key))
+  inflightBuilds.set(key, build)
+  return build
+}
+
+async function doBuildBattleMedia(
+  partUrls: string[],
+  missionName: string,
+  realNames: Map<string, string>,
+): Promise<BuiltBattleMedia> {
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
   const parts = await fetchReplayParts(partUrls)
 
@@ -58,6 +99,7 @@ export async function buildBattleMedia(
     }
   }
   if (!results) throw new Error('ни одна часть реплея не содержит results-BLK')
+  applyRealNames(results, realNames)
 
   const events = await extractReplayEvents(parts)
   if (events.errors.length > 0) {
@@ -78,6 +120,10 @@ export async function buildBattleMedia(
   writeFileSync(cacheFile(header.sessionIdHex, 'heatmap-ground'), heatmapGround)
   writeFileSync(cacheFile(header.sessionIdHex, 'heatmap-air'), heatmapAir)
   writeFileSync(cacheFile(header.sessionIdHex, 'chat'), chat)
+  writeFileSync(
+    path.join(CACHE_DIR, `${header.sessionIdHex}-meta.json`),
+    JSON.stringify({ teamWon: events.teamWon, endTimeMs: events.endTime } satisfies BattleMeta),
+  )
 
   return { log, heatmapGround, heatmapAir, chat, events, header }
 }

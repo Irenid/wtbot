@@ -24,4 +24,6 @@ export const config = {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s !== ''),
+  /** ID текстового канала для автоанонса новых боёв; пусто — выключено */
+  battlesChannelId: process.env['WT_BATTLES_CHANNEL'] ?? '',
 }

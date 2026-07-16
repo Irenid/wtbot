@@ -9,6 +9,7 @@ import {
   SKIP_FIELD,
   type RawPacket,
 } from './packet-stream.js'
+import { fetchReplayPart } from './replay-cache.js'
 import { parseWrplHeader } from './replay.js'
 
 /**
@@ -756,27 +757,11 @@ export async function extractReplayEvents(parts: Buffer[]): Promise<ReplayEvents
 }
 
 /**
- * Скачивает ВСЕ части реплея (для событий нужен весь поток пакетов).
- * CDN отвечает 429 на частые запросы — качаем последовательно с паузами.
+ * Все части реплея (для событий нужен весь поток пакетов) — через
+ * дисковый кэш data/replays/; паузы и ретраи к CDN внутри fetchReplayPart.
  */
 export async function fetchReplayParts(partUrls: string[]): Promise<Buffer[]> {
   const parts: Buffer[] = []
-  for (const [i, url] of partUrls.entries()) {
-    let attempt = 0
-    for (;;) {
-      const res = await fetch(url)
-      if (res.ok) {
-        parts.push(Buffer.from(await res.arrayBuffer()))
-        break
-      }
-      if (res.status === 429 && attempt < 5) {
-        attempt++
-        await new Promise((resolve) => setTimeout(resolve, 700 * attempt))
-        continue
-      }
-      throw new Error(`HTTP ${res.status} при скачивании части ${i} (${url})`)
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150))
-  }
+  for (const url of partUrls) parts.push(await fetchReplayPart(url))
   return parts
 }

@@ -107,6 +107,13 @@ export function initDb(dbPath: string): void {
       joined_at    INTEGER NOT NULL DEFAULT (unixepoch()),
       PRIMARY KEY (guild_id, user_id)
     );
+
+    -- Служебное состояние бота (например, id последнего
+    -- проанонсированного боя) — переживает перезапуски.
+    CREATE TABLE IF NOT EXISTS bot_state (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `)
 }
 
@@ -176,6 +183,16 @@ export function recordParseResult(
   getDb()
     .prepare('INSERT INTO parse_results (source, ok, summary, error) VALUES (?, ?, ?, ?)')
     .run(source, ok ? 1 : 0, summary, error)
+  // при частых интервалах (wt-replays раз в 20 с) история не должна
+  // расти бесконечно — держим последние 1000 запусков на источник
+  getDb()
+    .prepare(`
+      DELETE FROM parse_results
+      WHERE source = ? AND id NOT IN (
+        SELECT id FROM parse_results WHERE source = ? ORDER BY id DESC LIMIT 1000
+      )
+    `)
+    .run(source, source)
 }
 
 /** Последний результат каждого источника — для дашборда и команды /stats */
@@ -337,6 +354,44 @@ export function getItemByExternalId(source: string, externalId: string): StoredI
     `)
     .get(source, externalId) as unknown as ItemRow | undefined
   return row ? toStoredItem(row) : null
+}
+
+/** Записи источника новее заданного id, старые первыми (для автоанонса) */
+export function getItemsAfter(source: string, afterId: number, limit = 10): StoredItem[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at, a.result AS analysis
+      FROM items i
+      LEFT JOIN analyses a ON a.item_id = i.id
+      WHERE i.source = ? AND i.id > ?
+      ORDER BY i.id ASC
+      LIMIT ?
+    `)
+    .all(source, afterId, limit) as unknown as ItemRow[]
+  return rows.map(toStoredItem)
+}
+
+/** Максимальный id записей источника (0 — записей нет) */
+export function getMaxItemId(source: string): number {
+  const row = getDb().prepare('SELECT MAX(id) AS m FROM items WHERE source = ?').get(source) as
+    | { m: number | null }
+    | undefined
+  return row?.m ?? 0
+}
+
+// ---------- Служебное состояние бота ----------
+
+export function getBotState(key: string): string | null {
+  const row = getDb().prepare('SELECT value FROM bot_state WHERE key = ?').get(key) as
+    | { value: string }
+    | undefined
+  return row?.value ?? null
+}
+
+export function setBotState(key: string, value: string): void {
+  getDb()
+    .prepare('INSERT INTO bot_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(key, value)
 }
 
 export function getLatestItems(limit = 20, source?: string): StoredItem[] {
