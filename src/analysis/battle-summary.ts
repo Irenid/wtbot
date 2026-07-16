@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { config } from '../config.js'
 import { closeDb, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
 import { levelId } from '../wrpl/battle-assets.js'
+import { buildBattleMedia } from '../wrpl/battle-media.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 import { fetchReplayResults, normalizeSessionId, replayPartUrls } from '../wrpl/replay.js'
 import { buildRosters, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
@@ -11,10 +12,12 @@ import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 //   npm run battle                        — последний собранный реплей
 //   npm run battle -- 498256029276764042  — конкретный бой (sessionId из БД)
 //   npm run battle -- --image             — ещё и PNG-картинка (data/battles/)
+//   npm run battle -- --media             — battle log, хитмапы и чат (data/battles/)
 //   npm run battle -- ... --json          — сырой JSON вместо таблицы
 //
 // Данные берутся из results-BLK в конце последней части реплея —
 // это та же таблица, которую показывает сайт и Discord-боты вроде Boris Stats.
+// --media скачивает ВСЕ части и разбирает пакетный поток (см. replay-events.ts).
 
 const flags = new Set(process.argv.slice(2).filter((a) => a.startsWith('--')))
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
@@ -134,6 +137,21 @@ if (flags.has('--image')) {
   const file = `./data/battles/${header.sessionIdHex}.png`
   writeFileSync(file, png)
   console.log(`Картинка: ${file}`)
+}
+
+if (flags.has('--media')) {
+  console.log('Скачиваю все части реплея и разбираю пакетный поток...')
+  const media = await buildBattleMedia(parts, data.missionName ?? item.title)
+  const ev = media.events
+  const won = ev.teamWon > 0 ? `команда ${ev.teamWon}` : 'не определён'
+  console.log(
+    `События: убийств ${ev.kills.length}, повреждений ${ev.damage.length}, сообщений в чате ${ev.chat.length},` +
+      ` траекторий ${ev.units.length} · победитель: ${won}` +
+      (ev.errors.length > 0 ? ` · ошибок разбора: ${ev.errors.length}` : ''),
+  )
+  for (const kind of ['log', 'heatmap-ground', 'heatmap-air', 'chat'] as const) {
+    console.log(`  data/battles/${header.sessionIdHex}-${kind}${kind === 'chat' ? '.txt' : '.png'}`)
+  }
 }
 
 closeDb()
