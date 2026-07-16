@@ -122,6 +122,8 @@ export interface BattleImageInput {
   dict: VehicleDict
   /** ПКР и дельта по никам (см. clan-info.ts); нет карты — колонка с прочерками */
   ratings?: Map<string, ClanRating>
+  /** Номер победившей команды (team из results; см. cachedBattleMeta) или null */
+  winnerTeam?: number | null
 }
 
 interface BattleAssets {
@@ -179,7 +181,7 @@ export function summarizeTeams(results: ReplayResults, dict: VehicleDict): TeamS
 }
 
 export function buildBattleSvg(
-  { missionName, header, results, dict, ratings }: BattleImageInput,
+  { missionName, header, results, dict, ratings, winnerTeam }: BattleImageInput,
   assets: BattleAssets = { unitIcons: new Map(), mapImage: null, gameFont: false },
 ): string {
   // " [Conquest #1] Fire Arc" → режим и имя карты
@@ -210,6 +212,13 @@ export function buildBattleSvg(
     `<linearGradient id="botfade" x1="0" y1="0" x2="0" y2="1">`,
     `<stop offset="0" stop-color="#05070b" stop-opacity="0"/><stop offset="1" stop-color="#05070b" stop-opacity="0.7"/>`,
     `</linearGradient>`,
+    // Разделители с растворяющимися краями — аккуратнее сплошных линий
+    `<linearGradient id="sepH" x1="0" y1="0" x2="1" y2="0">`,
+    `<stop offset="0" stop-color="#ffffff" stop-opacity="0"/><stop offset="0.5" stop-color="#ffffff" stop-opacity="0.6"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/>`,
+    `</linearGradient>`,
+    `<linearGradient id="sepV" x1="0" y1="0" x2="0" y2="1">`,
+    `<stop offset="0" stop-color="#ffffff" stop-opacity="0"/><stop offset="0.5" stop-color="#ffffff" stop-opacity="0.45"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/>`,
+    `</linearGradient>`,
     `</defs>`,
   )
 
@@ -228,15 +237,16 @@ export function buildBattleSvg(
   parts.push(
     // Заголовок
     text(W / 2, 92, esc(mapName), 66, '#ffffff', 'middle', 600),
-    text(W / 2, 148, `[${esc(mode)}] - ${dateStr} (${dur})`, 34, '#dbe3ec', 'middle'),
-    `<line x1="200" y1="182" x2="${W - 200}" y2="182" stroke="#ffffff" stroke-opacity="0.7" stroke-width="2"/>`,
+    text(W / 2, 148, `[${esc(mode)}] · ${dateStr} · бой ${dur}`, 34, '#dbe3ec', 'middle'),
+    `<rect x="200" y="${CONTENT_TOP - 28}" width="${W - 400}" height="2" fill="url(#sepH)"/>`,
     // Разделитель команд
-    `<line x1="${W / 2}" y1="${CONTENT_TOP + 10}" x2="${W / 2}" y2="${H - 80}" stroke="#ffffff" stroke-opacity="0.45" stroke-width="2"/>`,
+    `<rect x="${W / 2 - 1}" y="${CONTENT_TOP + 10}" width="2" height="${H - 90 - (CONTENT_TOP + 10)}" fill="url(#sepV)"/>`,
   )
 
   rosters.forEach((roster, i) => {
     const theme = TEAM_THEME[Math.min(i, TEAM_THEME.length - 1)]!
-    parts.push(renderTeam(roster, i === 0 ? 60 : W / 2 + 60, dict, theme, assets, i, ratings))
+    const won = winnerTeam != null && winnerTeam > 0 && roster[0]?.team === winnerTeam
+    parts.push(renderTeam(roster, i === 0 ? 60 : W / 2 + 60, CONTENT_TOP, dict, theme, assets, i, won, ratings))
   })
 
   parts.push(text(W / 2, H - 26, `Match ID: ${header.sessionId}`, 30, '#aab4c0', 'middle'))
@@ -247,10 +257,12 @@ export function buildBattleSvg(
 function renderTeam(
   roster: ReplayPlayerResult[],
   ox: number,
+  contentTop: number,
   dict: VehicleDict,
   theme: { clan: string; player: string },
   assets: BattleAssets,
   teamIndex: number,
+  won: boolean,
   ratings?: Map<string, ClanRating>,
 ): string {
   const parts: string[] = []
@@ -258,11 +270,15 @@ function renderTeam(
   const ratingX = ox + 490
   const statX = [584, 656, 728, 800, 872].map((v) => ox + v)
 
-  // Клан-тег: украшения рисует шрифт игры (или юникод-замены без него)
+  // Клан-тег: украшения рисует шрифт игры (или юникод-замены без него);
+  // у победителя рядом с тегом — золотое «Победа»
   const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
   const teamNo = roster[0]?.team ?? teamIndex + 1
   const clanLabel = clan !== undefined ? tagMarkup(clan, assets.gameFont) : esc(`Команда ${teamNo}`)
-  parts.push(text(ox + 10, CONTENT_TOP + 52, clanLabel, 46, theme.clan, 'start', 600))
+  const wonLabel = won
+    ? `<tspan fill="#8f97a6" font-size="34"> · </tspan><tspan fill="#f2cc60" font-size="32" font-weight="700">Победа</tspan>`
+    : ''
+  parts.push(text(ox + 10, contentTop + 52, clanLabel + wonLabel, 46, theme.clan, 'start', 600))
 
   // Состав: (4F/3T/1AA) — по первой машине каждого игрока
   const counts = classCounts(roster, dict)
@@ -272,7 +288,7 @@ function renderTeam(
     if (n) compo.push(`<tspan fill="${CLASS_COLOR[cls]}">${n}${cls}</tspan>`)
   }
   parts.push(
-    `<text x="${ox + 10}" y="${CONTENT_TOP + 94}" font-family="${FONTS}" font-size="30" fill="#c6cfda">(${compo.join(
+    `<text x="${ox + 10}" y="${contentTop + 94}" font-family="${FONTS}" font-size="30" fill="#c6cfda">(${compo.join(
       '<tspan fill="#c6cfda">/</tspan>',
     )})</text>`,
   )
@@ -284,19 +300,19 @@ function renderTeam(
     .slice(0, 6)
   const flagsRight = statX[4]! + 18
   nations.forEach((country, i) => {
-    parts.push(flagSvg(flagsRight - (nations.length - i) * 46, CONTENT_TOP + 8, country, `fl${teamIndex}_${i}`))
+    parts.push(flagSvg(flagsRight - (nations.length - i) * 46, contentTop + 8, country, `fl${teamIndex}_${i}`))
   })
 
   // Значки колонок: рейтинг, возд, назем, ассисты, захваты, смерти
-  parts.push(iconStarCircle(ratingX - 14, CONTENT_TOP + 58, 28, '#e6edf3'))
+  parts.push(iconStarCircle(ratingX - 14, contentTop + 58, 28, '#e6edf3'))
   const icons = [iconPlane, iconTank, iconStar, iconDiamond, iconSkull]
   icons.forEach((icon, i) => {
-    parts.push(icon(statX[i]! - 14, CONTENT_TOP + 58, 28, '#e6edf3'))
+    parts.push(icon(statX[i]! - 14, contentTop + 58, 28, '#e6edf3'))
   })
 
   // Игроки
   roster.forEach((p, row) => {
-    const y = CONTENT_TOP + TEAM_HEADER_H + row * ROW_H
+    const y = contentTop + TEAM_HEADER_H + row * ROW_H
     const disconnected = isDisconnected(p)
     const firstId = p.vehicles[0] ?? ''
     const first = vehicleInfo(dict, firstId)

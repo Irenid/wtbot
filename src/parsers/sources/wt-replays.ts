@@ -117,7 +117,9 @@ async function fetchParts(sessionId: string): Promise<string[] | null> {
 
 export const wtReplays: ParserSource = {
   name: 'wt-replays',
-  intervalMs: 5 * 60_000,
+  // Частый опрос дешёвый: парсинг инкрементальный, без новых реплеев
+  // это один запрос первой страницы списка
+  intervalMs: 20_000,
   async run() {
     if (!config.wtCookie) {
       throw new Error('WT_COOKIE не задан в .env — скопируй куки identity_* из браузера (см. README)')

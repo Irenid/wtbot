@@ -1,4 +1,5 @@
 import { parseBlk, type BlkMap, type BlkValue } from './blk.js'
+import { fetchReplayPart } from './replay-cache.js'
 
 /**
  * Разбор контейнера .wrpl (серверный реплей War Thunder).
@@ -216,6 +217,43 @@ export function replayPartUrls(data: {
 }
 
 /**
+ * Реальные ники по userId из данных записи сайта. Игровой анонимайзер
+ * (премиум-фича) подменяет ник в бою: в results-BLK реплея лежит
+ * выдуманный (fakeName с сайта), из-за чего ломается показ ника и
+ * поиск ПКР на клановой странице. Сайт отдаёт и настоящее имя, и подмену.
+ */
+export function realNamesFromItem(data: { players?: unknown }): Map<string, string> {
+  const map = new Map<string, string>()
+  if (data.players === null || typeof data.players !== 'object') return map
+  for (const list of Object.values(data.players)) {
+    if (!Array.isArray(list)) continue
+    for (const raw of list) {
+      const p = raw as { userId?: unknown; name?: unknown; fakeName?: unknown } | null
+      if (
+        p !== null &&
+        typeof p.userId === 'string' &&
+        typeof p.name === 'string' &&
+        typeof p.fakeName === 'string' &&
+        p.fakeName !== ''
+      ) {
+        map.set(p.userId, p.name)
+      }
+    }
+  }
+  return map
+}
+
+/** Подменяет анонимные ники в results на реальные (по userId) */
+export function applyRealNames(results: ReplayResults, names: Map<string, string>): void {
+  if (names.size === 0) return
+  for (const p of results.players) {
+    const real = names.get(p.userId)
+    // пустое имя — признак отключившегося, его не трогаем
+    if (real !== undefined && p.name !== '') p.name = real
+  }
+}
+
+/**
  * Скачивает части реплея и возвращает результаты боя.
  * Идёт с конца списка: results-BLK лежит в последней части.
  */
@@ -225,9 +263,7 @@ export async function fetchReplayResults(
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
   for (let i = partUrls.length - 1; i >= 0; i--) {
     const url = partUrls[i]!
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`HTTP ${res.status} при скачивании ${url}`)
-    const buf = Buffer.from(await res.arrayBuffer())
+    const buf = await fetchReplayPart(url)
     const header = parseWrplHeader(buf)
     if (header.resultsBlkOffset > 0 && header.resultsBlkOffset < buf.length) {
       const results = parseReplayResults(buf.subarray(header.resultsBlkOffset))

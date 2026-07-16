@@ -2,9 +2,9 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { config } from '../config.js'
 import { closeDb, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
 import { levelId } from '../wrpl/battle-assets.js'
-import { buildBattleMedia } from '../wrpl/battle-media.js'
+import { buildBattleMedia, cachedBattleMeta } from '../wrpl/battle-media.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
-import { fetchReplayResults, normalizeSessionId, replayPartUrls } from '../wrpl/replay.js'
+import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../wrpl/replay.js'
 import { buildRosters, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
 import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 
@@ -46,7 +46,13 @@ if (!item) {
 }
 // БД остаётся открытой: ниже в неё пишутся снимки кланового рейтинга
 
-const data = item.data as { missionName?: string; replayParts?: string[] | null; url?: string; partsCount?: number }
+const data = item.data as {
+  missionName?: string
+  replayParts?: string[] | null
+  url?: string
+  partsCount?: number
+  players?: unknown
+}
 const parts = replayPartUrls(data)
 if (parts.length === 0) {
   console.error('У записи нет ссылок на части реплея (replayParts)')
@@ -55,6 +61,9 @@ if (parts.length === 0) {
 }
 
 const { header, results } = await fetchReplayResults(parts)
+// Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
+const realNames = realNamesFromItem(data)
+applyRealNames(results, realNames)
 const dict = await ensureVehicleDict()
 
 if (flags.has('--json')) {
@@ -132,6 +141,8 @@ if (flags.has('--image')) {
     results,
     dict,
     ratings,
+    // победитель — из меты, если материалы уже собирались (--media)
+    winnerTeam: cachedBattleMeta(header.sessionIdHex)?.teamWon ?? null,
   })
   mkdirSync('./data/battles', { recursive: true })
   const file = `./data/battles/${header.sessionIdHex}.png`
@@ -141,7 +152,7 @@ if (flags.has('--image')) {
 
 if (flags.has('--media')) {
   console.log('Скачиваю все части реплея и разбираю пакетный поток...')
-  const media = await buildBattleMedia(parts, data.missionName ?? item.title)
+  const media = await buildBattleMedia(parts, data.missionName ?? item.title, realNames)
   const ev = media.events
   const won = ev.teamWon > 0 ? `команда ${ev.teamWon}` : 'не определён'
   console.log(

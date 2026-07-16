@@ -3,6 +3,7 @@ import { config } from '../config.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton } from './commands/battle.js'
+import { startBattleAnnouncer } from './battle-announcer.js'
 
 export async function startBot(): Promise<Client> {
   const client = new Client({
@@ -15,6 +16,8 @@ export async function startBot(): Promise<Client> {
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`[bot] Готов! Вошёл как ${readyClient.user.tag}`)
+    // Автоанонс новых боёв в канал WT_BATTLES_CHANNEL (если задан)
+    startBattleAnnouncer(readyClient)
   })
 
   client.on(Events.InteractionCreate, async (interaction) => {
