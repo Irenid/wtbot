@@ -38,11 +38,11 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
   }
   const html = await readResponseText(res, 4 * 1024 * 1024, `страница клана ${clanName}`)
 
-  // Строка таблицы: <a href="...userinfo/?nick=NICK">NICK</a></div>
-  //                 <div class="squadrons-members__grid-item">ПКР</div>
+  // Между ссылкой участника и ячейкой ПКР у офицеров могут быть обёртки
+  // noindex/robots-nocontent, которых нет у обычных участников.
   const members: { nick: string; rating: number }[] = []
   const rowRe =
-    /userinfo\/\?nick=[^"]*"\s*>\s*([^<]+?)\s*<\/a>\s*<\/div>\s*<div class="squadrons-members__grid-item">\s*(\d+)\s*<\/div>/g
+    /userinfo\/\?nick=[^"]*"\s*>\s*([^<]+?)\s*<\/a>(?:(?!userinfo\/\?nick=)[\s\S]){0,1024}?<div class="squadrons-members__grid-item">\s*(\d+)\s*<\/div>/g
   for (const m of html.matchAll(rowRe)) {
     members.push({ nick: decodeHtml(m[1]!), rating: Number(m[2]) })
   }

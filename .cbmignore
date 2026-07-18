@@ -1,0 +1,68 @@
+@'
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+*.pyc
+*.pyo
+*.pyd
+
+# Node
+node_modules/
+.next/
+.nuxt/
+.turbo/
+.nx/
+.pnpm-store/
+
+# Build artifacts
+dist/
+build/
+out/
+coverage/
+.cache/
+tmp/
+temp/
+logs/
+
+# IDE
+.idea/
+.vscode/
+
+# Binary and generated data
+*.exe
+*.dll
+*.so
+*.dylib
+*.class
+*.jar
+*.zip
+*.7z
+*.tar
+*.gz
+*.map
+*.min.js
+
+# Databases and large runtime data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.parquet
+*.jsonl
+*.log
+
+# Dependency lock files
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+poetry.lock
+uv.lock
+'@ | Set-Content ".cbmignore" -Encoding UTF8
