@@ -5,7 +5,8 @@ import {
   saveBattle,
   type StoredItem,
 } from '../db/index.js'
-import { buildBattleInput, loadBattleData } from './battle-data.js'
+import { loadBattleData } from './battle-data.js'
+import { isWorkerPoolSchedulingError } from '../workers/pool.js'
 import { dropReplayCache } from './replay-cache.js'
 import { realNamesFromItem, replayPartUrls } from './replay.js'
 
@@ -38,6 +39,9 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 let timer: NodeJS.Timeout | null = null
 let busy = false
+let stopping = false
+let activeTick: Promise<void> | null = null
+let currentAbort: AbortController | null = null
 /** Логируем размер бэклога один раз, чтобы не спамить в консоль каждый тик */
 let backlogLogged = false
 
@@ -47,7 +51,10 @@ function isExpired(err: unknown): boolean {
   return /HTTP (404|410)\b/.test(msg)
 }
 
-async function ingestOne(item: StoredItem): Promise<'ok' | 'no_parts' | 'expired' | 'error'> {
+async function ingestOne(
+  item: StoredItem,
+  signal: AbortSignal,
+): Promise<'ok' | 'no_parts' | 'expired' | 'error' | 'cancelled' | 'deferred'> {
   const data = item.data as {
     missionName?: string
     gameMode?: string
@@ -64,24 +71,31 @@ async function ingestOne(item: StoredItem): Promise<'ok' | 'no_parts' | 'expired
   }
 
   try {
-    const loaded = await loadBattleData(parts, realNamesFromItem(data))
-    saveBattle(
-      buildBattleInput(
-        { missionName: data.missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
-        loaded,
-      ),
+    const loaded = await loadBattleData(
+      parts,
+      realNamesFromItem(data),
+      { missionName: data.missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
+      'background',
+      signal,
     )
+    if (signal.aborted) return 'cancelled'
+    saveBattle(loaded.battle)
     markBattleIngest(item.externalId, 'ok')
-    dropReplayCache(loaded.header.sessionIdHex)
-    const ev = loaded.events
+    await dropReplayCache(loaded.header.sessionIdHex)
+    const events = loaded.summary
     console.log(
       `[ingest] бой ${item.externalId} (${item.title.trim()}): ` +
-        `игроков ${loaded.results.players.length}, убийств ${ev.kills.length}, ` +
-        `победитель ${ev.teamWon > 0 ? `команда ${ev.teamWon}` : '?'}`,
+        `игроков ${loaded.results.players.length}, убийств ${events.kills}, ` +
+        `победитель ${events.teamWon > 0 ? `команда ${events.teamWon}` : '?'}`,
     )
     return 'ok'
   } catch (err) {
+    if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) return 'cancelled'
     const message = err instanceof Error ? err.message : String(err)
+    if (isWorkerPoolSchedulingError(err)) {
+      console.warn(`[ingest] бой ${item.externalId}: CPU scheduler занят (${message}); попытка не расходуется`)
+      return 'deferred'
+    }
     if (isExpired(err)) {
       markBattleIngest(item.externalId, 'expired', message)
       console.warn(`[ingest] бой ${item.externalId}: части ушли с CDN — пропускаю`)
@@ -94,8 +108,10 @@ async function ingestOne(item: StoredItem): Promise<'ok' | 'no_parts' | 'expired
 }
 
 async function tick(): Promise<void> {
-  if (busy) return
+  if (busy || stopping) return
   busy = true
+  const controller = new AbortController()
+  currentAbort = controller
   try {
     const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, BATCH)
     if (pending.length === 0) return
@@ -107,25 +123,39 @@ async function tick(): Promise<void> {
     }
 
     for (let i = 0; i < pending.length; i++) {
+      if (controller.signal.aborted || stopping) break
       if (i > 0) await sleep(PAUSE_MS)
-      await ingestOne(pending[i]!)
+      if (controller.signal.aborted || stopping) break
+      await ingestOne(pending[i]!, controller.signal)
     }
   } catch (err) {
     console.error(`[ingest] сбой тика: ${(err as Error).message}`)
   } finally {
+    if (currentAbort === controller) currentAbort = null
     busy = false
   }
 }
 
 export function startIngestWorker(): void {
+  stopping = false
   const s = getIngestStats()
   console.log(`[ingest] воркер запущен · разобрано боёв: ${s.ingested}, в очереди: ${s.pending}`)
-  void tick()
-  timer = setInterval(() => void tick(), TICK_MS)
+  scheduleTick()
+  timer = setInterval(scheduleTick, TICK_MS)
   timer.unref()
 }
 
-export function stopIngestWorker(): void {
+function scheduleTick(): void {
+  if (activeTick || stopping) return
+  activeTick = tick().finally(() => {
+    activeTick = null
+  })
+}
+
+export async function stopIngestWorker(): Promise<void> {
+  stopping = true
+  currentAbort?.abort()
   if (timer) clearInterval(timer)
   timer = null
+  await activeTick
 }

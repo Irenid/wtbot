@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { writeFileAtomic as writeAtomic } from '../atomic-file.js'
+import { readResponseBuffer, readResponseJson, readResponseText } from '../http-response.js'
 
 /**
  * Внешние ресурсы для картинки боя.
@@ -33,53 +35,72 @@ export function levelId(headerLevel: string): string {
   return headerLevel.replace(/^.*[/\\]/, '').replace(/\.bin$/i, '')
 }
 
-/** Возвращает id → data-URI силуэта; недоступные иконки в Map не попадают */
-export async function ensureUnitIcons(ids: string[]): Promise<Map<string, string>> {
-  mkdirSync(ICONS_DIR, { recursive: true })
-  const icons = new Map<string, string>()
+/** Возвращает id → бинарный PNG силуэта; недоступные иконки в Map не попадают */
+export async function ensureUnitIcons(ids: string[]): Promise<Map<string, Buffer>> {
+  await mkdir(ICONS_DIR, { recursive: true })
+  const icons = new Map<string, Buffer>()
   const unique = [...new Set(ids.filter((id) => /^[a-z0-9_.-]+$/i.test(id)))]
 
   await Promise.all(
     unique.map(async (id) => {
-      const file = path.join(ICONS_DIR, `${id}.png`)
-      const miss = path.join(ICONS_DIR, `${id}.miss`)
-      if (existsSync(file)) {
-        icons.set(id, toDataUri(readFileSync(file)))
-        return
-      }
-      if (existsSync(miss)) return
-      try {
-        const res = await fetch(`${ICONS_BASE}/${id}.png`)
-        if (!res.ok) {
-          // 404 — такой иконки в датамайне нет, запоминаем и не пробуем снова
-          if (res.status === 404) writeFileSync(miss, '')
-          return
-        }
-        const buf = Buffer.from(await res.arrayBuffer())
-        writeFileSync(file, buf)
-        icons.set(id, toDataUri(buf))
-      } catch {
-        // сеть недоступна — просто рисуем без иконки, в другой раз получится
-      }
+      const uri = await ensureUnitIcon(id)
+      if (uri) icons.set(id, uri)
     }),
   )
   return icons
 }
 
-/** Фон карты из data/maps/<level>.(jpg|jpeg|png) → data-URI или null */
-export function loadMapBackground(headerLevel: string): string | null {
+const iconInflight = new Map<string, Promise<Buffer | null>>()
+
+function ensureUnitIcon(id: string): Promise<Buffer | null> {
+  const running = iconInflight.get(id)
+  if (running) return running
+  const task = loadUnitIcon(id).finally(() => iconInflight.delete(id))
+  iconInflight.set(id, task)
+  return task
+}
+
+async function loadUnitIcon(id: string): Promise<Buffer | null> {
+  const file = path.join(ICONS_DIR, `${id}.png`)
+  const miss = path.join(ICONS_DIR, `${id}.miss`)
+  const cached = await readOptional(file)
+  if (cached && isPng(cached) && cached.length <= 2 * 1024 * 1024) return cached
+  if (cached) await rm(file, { force: true }).catch(() => undefined)
+  if (await exists(miss)) return null
+  try {
+    const response = await fetch(`${ICONS_BASE}/${id}.png`, { signal: AbortSignal.timeout(20_000) })
+    if (!response.ok) {
+      if (response.status === 404) await writeAtomic(miss, '')
+      return null
+    }
+    const data = await readResponseBuffer(response, 2 * 1024 * 1024, `иконка ${id}`)
+    if (!isPng(data) || data.length > 2 * 1024 * 1024) return null
+    await writeAtomic(file, data)
+    return data
+  } catch {
+    return null
+  }
+}
+
+export interface BinaryImage {
+  mime: 'image/png' | 'image/jpeg'
+  data: Buffer
+}
+
+/** Фон карты из data/maps/<level>.(jpg|jpeg|png); base64 кодирует CPU worker. */
+export async function loadMapBackground(headerLevel: string): Promise<BinaryImage | null> {
   const id = levelId(headerLevel)
   for (const ext of ['jpg', 'jpeg', 'png']) {
     const file = path.join(MAPS_DIR, `${id}.${ext}`)
-    if (!existsSync(file)) continue
-    const mime = ext === 'png' ? 'image/png' : 'image/jpeg'
-    return `data:${mime};base64,${readFileSync(file).toString('base64')}`
+    try {
+      const data = await readFile(file)
+      const mime = ext === 'png' ? 'image/png' : 'image/jpeg'
+      return { mime, data }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
   }
   return null
-}
-
-function toDataUri(buf: Buffer): string {
-  return `data:image/png;base64,${buf.toString('base64')}`
 }
 
 // ---------- ГСН ракет (для значков причины смерти на хитмапе) ----------
@@ -97,14 +118,21 @@ const ROCKETGUNS_BASE =
  * снаряды, пули и ЗУР зениток отдельных файлов не имеют — для них в
  * кэш пишется "none" и в ответ они не попадают. Кэш — data/weapons.json.
  */
-export async function ensureWeaponSeekers(ids: string[]): Promise<Map<string, MissileSeeker>> {
+let weaponQueue: Promise<void> = Promise.resolve()
+
+export function ensureWeaponSeekers(ids: string[]): Promise<Map<string, MissileSeeker>> {
+  const result = weaponQueue.then(() => loadWeaponSeekers(ids), () => loadWeaponSeekers(ids))
+  weaponQueue = result.then(() => undefined, () => undefined)
+  return result
+}
+
+async function loadWeaponSeekers(ids: string[]): Promise<Map<string, MissileSeeker>> {
   let cache: Record<string, string> = {}
-  if (existsSync(WEAPONS_FILE)) {
-    try {
-      cache = JSON.parse(readFileSync(WEAPONS_FILE, 'utf8')) as Record<string, string>
-    } catch {
-      cache = {}
-    }
+  try {
+    const parsed: unknown = JSON.parse(await readFile(WEAPONS_FILE, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object') cache = parsed as Record<string, string>
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
   }
   const unique = [...new Set(ids.filter((id) => /^[a-z0-9_.-]+$/i.test(id)))]
   const missing = unique.filter((id) => !(id in cache))
@@ -112,14 +140,14 @@ export async function ensureWeaponSeekers(ids: string[]): Promise<Map<string, Mi
   await Promise.all(
     missing.map(async (id) => {
       try {
-        const res = await fetch(`${ROCKETGUNS_BASE}/${id}.blkx`)
+        const res = await fetch(`${ROCKETGUNS_BASE}/${id}.blkx`, { signal: AbortSignal.timeout(20_000) })
         if (!res.ok) {
           if (res.status === 404) cache[id] = 'none'
           return
         }
-        const blk = (await res.json()) as {
+        const blk = await readResponseJson<{
           rocket?: { guidance?: { radarSeeker?: { active?: unknown }; opticalSeeker?: unknown } }
-        }
+        }>(res, 2 * 1024 * 1024, `оружие ${id}`)
         const guidance = blk.rocket?.guidance
         cache[id] =
           guidance?.radarSeeker ? (guidance.radarSeeker.active === true ? 'arh' : 'sarh')
@@ -131,8 +159,7 @@ export async function ensureWeaponSeekers(ids: string[]): Promise<Map<string, Mi
     }),
   )
   if (missing.some((id) => id in cache)) {
-    mkdirSync(path.dirname(WEAPONS_FILE), { recursive: true })
-    writeFileSync(WEAPONS_FILE, JSON.stringify(cache))
+    await writeAtomic(WEAPONS_FILE, JSON.stringify(cache))
   }
 
   const seekers = new Map<string, MissileSeeker>()
@@ -168,39 +195,53 @@ export function tacticalMapKeys(missionName: string): { mapKey: string; modeKey:
 }
 
 /** Манифест wt-tools: кэш с обновлением раз в неделю; сбой сети → старый кэш */
-async function loadWtToolsManifest(): Promise<WtToolsManifest | null> {
-  const fresh = existsSync(MANIFEST_FILE) && Date.now() - statSync(MANIFEST_FILE).mtimeMs < MANIFEST_TTL_MS
+let manifestInflight: Promise<WtToolsManifest | null> | null = null
+
+function loadWtToolsManifest(): Promise<WtToolsManifest | null> {
+  if (manifestInflight) return manifestInflight
+  manifestInflight = doLoadWtToolsManifest().finally(() => {
+    manifestInflight = null
+  })
+  return manifestInflight
+}
+
+async function doLoadWtToolsManifest(): Promise<WtToolsManifest | null> {
+  let fresh = false
+  try {
+    fresh = Date.now() - (await stat(MANIFEST_FILE)).mtimeMs < MANIFEST_TTL_MS
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   if (!fresh) {
     try {
-      const res = await fetch(WTTOOLS_MANIFEST_URL)
+      const res = await fetch(WTTOOLS_MANIFEST_URL, { signal: AbortSignal.timeout(20_000) })
       if (res.ok) {
-        const body = await res.text()
+        const body = await readResponseText(res, 4 * 1024 * 1024, 'manifest wt-tools')
         JSON.parse(body) // валидация до записи
-        mkdirSync(MAPS_DIR, { recursive: true })
-        writeFileSync(MANIFEST_FILE, body)
+        await writeAtomic(MANIFEST_FILE, body)
       }
     } catch {
       // нет сети — попробуем отдать старый кэш ниже
     }
   }
-  if (!existsSync(MANIFEST_FILE)) return null
   try {
-    return JSON.parse(readFileSync(MANIFEST_FILE, 'utf8')) as WtToolsManifest
-  } catch {
+    return JSON.parse(await readFile(MANIFEST_FILE, 'utf8')) as WtToolsManifest
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
     return null
   }
 }
 
 /**
  * Снимок игровой тактической карты для конкретного режима миссии
- * (data-URI PNG) или null, если карты/режима нет в коллекции.
+ * (бинарный PNG) или null, если карты/режима нет в коллекции.
  * Картинка покрывает ровно battleArea миссии — накладывать по нему.
  * Чужой режим не подставляем: на снимке запечены зоны и спавны,
  * для другой миссии они врут.
  */
-export function ensureTacticalMap(missionName: string): Promise<string | null> {
+export async function ensureTacticalMap(missionName: string): Promise<Buffer | null> {
   const keys = tacticalMapKeys(missionName)
-  if (!keys) return Promise.resolve(null)
+  if (!keys) return null
   // хитмапы наземки и авиации собираются параллельно — не качаем дважды
   const id = `${keys.mapKey}__${keys.modeKey}`
   let pending = inflightMaps.get(id)
@@ -208,7 +249,14 @@ export function ensureTacticalMap(missionName: string): Promise<string | null> {
     pending = fetchTacticalMap(keys).finally(() => inflightMaps.delete(id))
     inflightMaps.set(id, pending)
   }
-  return pending
+  const file = await pending
+  if (!file) return null
+  try {
+    return await readFile(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
 }
 
 const inflightMaps = new Map<string, Promise<string | null>>()
@@ -216,31 +264,67 @@ const inflightMaps = new Map<string, Promise<string | null>>()
 async function fetchTacticalMap(keys: { mapKey: string; modeKey: string }): Promise<string | null> {
   const file = path.join(MAPS_DIR, `${keys.mapKey}__${keys.modeKey}.png`)
   const miss = path.join(MAPS_DIR, `${keys.mapKey}__${keys.modeKey}.miss`)
-  if (existsSync(file)) return toDataUri(readFileSync(file))
-  if (existsSync(miss)) return null
+  const cached = await readOptional(file)
+  if (cached && isPng(cached) && cached.length <= 32 * 1024 * 1024) return file
+  if (cached) await rm(file, { force: true }).catch(() => undefined)
+  if (await exists(miss)) return null
 
   const manifest = await loadWtToolsManifest()
   const entry = manifest?.[keys.mapKey]?.[keys.modeKey]
   if (!entry) {
     if (manifest) {
-      mkdirSync(MAPS_DIR, { recursive: true })
-      writeFileSync(miss, '')
+      await writeAtomic(miss, '')
       console.log(`[maps] в коллекции wt-tools нет ${keys.mapKey}/${keys.modeKey} — хитмапа будет без карты`)
     }
     return null
   }
   try {
-    const res = await fetch(`${WTTOOLS_MAPS_BASE}/${keys.mapKey}/${keys.modeKey}/${entry.image}`)
+    const res = await fetch(`${WTTOOLS_MAPS_BASE}/${keys.mapKey}/${keys.modeKey}/${entry.image}`, {
+      signal: AbortSignal.timeout(30_000),
+    })
     if (!res.ok) {
-      if (res.status === 404) writeFileSync(miss, '')
+      if (res.status === 404) await writeAtomic(miss, '')
       return null
     }
-    const buf = Buffer.from(await res.arrayBuffer())
-    mkdirSync(MAPS_DIR, { recursive: true })
-    writeFileSync(file, buf)
+    const buf = await readResponseBuffer(res, 32 * 1024 * 1024, 'тактическая карта')
+    if (!isPng(buf) || buf.length > 32 * 1024 * 1024) return null
+    await writeAtomic(file, buf)
     console.log(`[maps] тактическая карта ${keys.mapKey}/${keys.modeKey} сохранена (${Math.round(buf.length / 1024)} КБ)`)
-    return toDataUri(buf)
+    return file
   } catch {
     return null // сеть недоступна — в другой раз получится
   }
+}
+
+async function readOptional(file: string): Promise<Buffer | null> {
+  try {
+    return await readFile(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await stat(file)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+function isPng(data: Uint8Array): boolean {
+  return (
+    data.length >= 8 &&
+    data[0] === 0x89 &&
+    data[1] === 0x50 &&
+    data[2] === 0x4e &&
+    data[3] === 0x47 &&
+    data[4] === 0x0d &&
+    data[5] === 0x0a &&
+    data[6] === 0x1a &&
+    data[7] === 0x0a
+  )
 }

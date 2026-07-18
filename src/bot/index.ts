@@ -1,21 +1,25 @@
-import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, RESTJSONErrorCodes } from 'discord.js'
+import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, RESTJSONErrorCodes, type Interaction } from 'discord.js'
 import { config } from '../config.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
-import { handleBattleButton } from './commands/battle.js'
-import { startBattleAnnouncer } from './battle-announcer.js'
+import { handleBattleButton, stopWinnerUpdates } from './commands/battle.js'
+import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
+
+let acceptingInteractions = true
+const activeInteractions = new Set<Promise<void>>()
 
 /**
  * 10062 Unknown interaction — токен нажатия/команды протух. У Discord всего
- * 3 секунды на подтверждение (defer/reply); если бот в этот момент был занят
- * синхронным разбором реплея или рендером, поток заморожен и мы не успеваем.
- * Отвечать уже некому — это не ошибка бота, просто спокойно логируем и выходим.
+ * 3 секунды на подтверждение (defer/reply). CPU-разбор и рендер вынесены в
+ * workers, но токен всё ещё может протухнуть при сетевой/Discord-задержке или
+ * во время остановки процесса. Отвечать уже некому — спокойно выходим.
  */
 function isExpiredInteraction(err: unknown): boolean {
   return err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownInteraction
 }
 
 export async function startBot(): Promise<Client> {
+  acceptingInteractions = true
   const client = new Client({
     // Guilds — slash-команды, GuildVoiceStates — кто сидит в голосовых
     // каналах (не privileged, в Developer Portal включать ничего не надо).
@@ -30,7 +34,7 @@ export async function startBot(): Promise<Client> {
     startBattleAnnouncer(readyClient)
   })
 
-  client.on(Events.InteractionCreate, async (interaction) => {
+  const handleInteraction = async (interaction: Interaction): Promise<void> => {
     // Кнопки под сообщением /battle (battle log, хитмапы, чат)
     if (interaction.isButton() && interaction.customId.startsWith('battle:')) {
       try {
@@ -77,8 +81,48 @@ export async function startBot(): Promise<Client> {
           .catch(() => {})
       }
     }
+  }
+
+  client.on(Events.InteractionCreate, (interaction) => {
+    if (!acceptingInteractions) return
+    const task = handleInteraction(interaction)
+    activeInteractions.add(task)
+    task.then(
+      () => activeInteractions.delete(task),
+      () => activeInteractions.delete(task),
+    )
   })
 
   await client.login(config.token)
   return client
+}
+
+/**
+ * Останавливает фоновые Discord producers и ждёт handlers с верхней границей.
+ * После дедлайна shutdown уничтожит Discord client и CPU pool; атомарные кэши
+ * допускают обрыв незавершённой сетевой сборки без публикации битого поколения.
+ */
+export async function stopBotWork(graceMs = 10_000): Promise<void> {
+  acceptingInteractions = false
+  // Вызовы сразу выставляют stopping-флаги, поэтому запускаем их до ожидания.
+  const drain = Promise.allSettled([
+    stopBattleAnnouncer(),
+    stopWinnerUpdates(),
+    Promise.allSettled([...activeInteractions]),
+  ])
+  if (graceMs <= 0) {
+    await drain
+    return
+  }
+  let timer: NodeJS.Timeout | undefined
+  const drained = await Promise.race([
+    drain.then(() => true),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), graceMs)
+    }),
+  ])
+  if (timer) clearTimeout(timer)
+  if (!drained) {
+    console.warn(`[bot] Discord-задачи не завершились за ${graceMs} мс — прерываю их вместе с client/CPU pool`)
+  }
 }

@@ -1,18 +1,19 @@
 import { config } from './config.js'
 import { closeDb, initDb } from './db/index.js'
-import { startBot } from './bot/index.js'
+import { startBot, stopBotWork } from './bot/index.js'
 import { startVoiceTracker } from './bot/voice-tracker.js'
 import { buildServer } from './web/index.js'
 import { startParsers, stopParsers } from './parsers/index.js'
 import { startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
+import { closeWorkerPool } from './workers/pool.js'
 
-// Точка входа: один процесс поднимает три модуля — бота, сайт и парсеры.
-// Общаются они не напрямую, а через общую БД (src/db) и явные интерфейсы,
-// поэтому при необходимости их легко разнести на отдельные процессы.
+// Точка входа: main thread владеет Discord, Fastify и SQLite; тяжёлые
+// WRPL/zlib/Resvg-задачи уходят в ограниченный пул worker_threads.
 
 // 1. База данных
 initDb(config.dbPath)
 console.log(`[db] SQLite: ${config.dbPath}`)
+console.log(`[workers] CPU pool: ${config.workerThreads} поток(а)`)
 
 // 2. Discord-бот (+трекер голосовых каналов — пишет присутствие в БД)
 const client = await startBot()
@@ -40,14 +41,39 @@ startIngestWorker()
 
 // Аккуратная остановка по Ctrl+C
 let shuttingDown = false
+const PRODUCER_DRAIN_MS = 10_000
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
   console.log(`\n[core] Получен ${signal} — останавливаюсь...`)
   stopParsers()
-  stopIngestWorker()
-  await app.close()
+  const ingestStopped = stopIngestWorker()
+  // Все вызовы сначала запрещают новую работу. Общий deadline важен: один
+  // voice refresh может последовательно ждать несколько сетевых timeout, а
+  // Fastify.close — тот же незавершённый request. После дедлайна process всё
+  // равно безопасно закрывает client/pool/DB; кэши публикуются атомарно.
+  const producerDrain = Promise.allSettled([
+    app.close(),
+    stopBotWork(PRODUCER_DRAIN_MS),
+    voiceTracker.stop(),
+    ingestStopped,
+  ])
+  let drainTimer: NodeJS.Timeout | undefined
+  const drained = await Promise.race([
+    producerDrain.then((results) => {
+      for (const result of results) {
+        if (result.status === 'rejected') console.warn('[core] ошибка остановки producer:', result.reason)
+      }
+      return true
+    }),
+    new Promise<boolean>((resolve) => {
+      drainTimer = setTimeout(() => resolve(false), PRODUCER_DRAIN_MS)
+    }),
+  ])
+  if (drainTimer) clearTimeout(drainTimer)
+  if (!drained) console.warn(`[core] producers не завершились за ${PRODUCER_DRAIN_MS} мс — продолжаю shutdown`)
   await client.destroy()
+  await closeWorkerPool(10_000)
   closeDb()
   process.exit(0)
 }

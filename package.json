@@ -10,12 +10,18 @@
     "deploy:commands": "tsx src/bot/deploy-commands.ts",
     "analyze": "tsx src/analysis/analyze-items.ts",
     "battle": "tsx src/analysis/battle-summary.ts",
-    "backfill": "tsx src/parsers/backfill.ts"
+    "backfill": "tsx src/parsers/backfill.ts",
+    "verify:workers": "tsx src/analysis/worker-smoke.ts",
+    "verify:workers:dist": "node dist/analysis/worker-smoke.js",
+    "benchmark:workers": "tsx src/analysis/worker-replay-check.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "tsx": "^4.23.1",

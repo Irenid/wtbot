@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Что это
 
-wtbot — Discord-бот + веб-дашборд + фоновые парсеры в одном процессе
-(модульный монолит). Собирает реплеи клановых боёв War Thunder с
+wtbot — Discord-бот + веб-дашборд + фоновые парсеры (модульный монолит).
+Discord/Fastify/SQLite живут в main thread, тяжёлые CPU-задачи — в
+ограниченном пуле `worker_threads`. Проект собирает реплеи клановых боёв с
 warthunder.com, разбирает бинарные файлы реплеев `.wrpl` и рисует
 картинки с результатами боя (аналог закрытого бота «Boris Stats»).
 Данные копятся в SQLite как датасет для будущего обучения нейросети.
@@ -19,21 +20,25 @@ npm run dev               # бот + сайт (:3000) + парсеры, пере
 npm run deploy:commands   # регистрация slash-команд (после любого изменения команд!)
 npm run battle            # таблица боя из реплея; флаги: -- <sessionId> --image --media --json
 npm run analyze           # анализ записей через Claude API (нужен ANTHROPIC_API_KEY)
+npm run verify:workers    # безопасный smoke worker pool + Resvg (source)
+npm run verify:workers:dist # тот же smoke после npm run build
+npm run benchmark:workers -- data/replays/<sid> [--render] # локальный WRPL/PNG без сети/БД
 npm run build && npm start  # продакшен-сборка
 ```
 
-Тестов и линтера нет. Проверка — запуском: рецепт в `.claude/skills/verify/SKILL.md`
-(готовность `curl http://localhost:3000/health`, что смотреть в логах и API).
+Юнит-тестов и линтера нет. Минимум — `npm run build`; для WRPL/рендера также
+оба `verify:workers`. Живой рецепт — в `.claude/skills/verify/SKILL.md`.
 
-Нужен Node ≥ 22.5 (`node:sqlite`, `zstdDecompressSync`). Предупреждение
+Нужен Node ≥ 22.15 (`node:sqlite`, `zstdDecompressSync`). Предупреждение
 `ExperimentalWarning: SQLite` при старте — норма.
 
 ## Архитектура
 
-Один процесс (`src/index.ts`) поднимает три модуля, которые общаются
-**только через `src/db/`** (node:sqlite, WAL, без ORM) и явные интерфейсы
-(`WebDeps`, `ParserSource`). Это осознанно: модули можно разнести на
-отдельные процессы, а SQLite заменить на Postgres, трогая только `src/db/`.
+`src/index.ts` поднимает Discord, Fastify, parsers и синхронную SQLite.
+Модули используют типизированный DB API, но границы не строгие. Пул из
+`src/workers/` получает только cloneable данные/transferable `ArrayBuffer`:
+никаких Discord/Fastify/SQLite handles в worker. Число потоков задаёт
+`WT_WORKER_THREADS` (1–8, по умолчанию до двух).
 
 Конвейер данных:
 
@@ -47,7 +52,8 @@ npm run build && npm start  # продакшен-сборка
   → сайт и бот только читают готовое из БД
 ```
 
-- `src/parsers/sources/` — активен только `wt-replays`. Новый источник:
+- `src/parsers/sources/` — активны `wt-replays` и `wt-clans`; `wt-cookies`
+  обслуживает их сессию, но не является source. Новый источник:
   файл, экспортирующий `ParserSource` (скелет — в README, «Как добавить
   парсер») + запись в массив в `sources/index.ts`.
 - `src/bot/commands/` — команда: файл + запись в массив в `commands/index.ts`
@@ -56,21 +62,20 @@ npm run build && npm start  # продакшен-сборка
   и дашборд (одна HTML-страница строкой в `pages.ts`, без сборщика).
 - `src/wrpl/ingest.ts` — фоновый разбор боёв в БД. Раз в 20 с берёт
   нераспарсенные записи wt-replays (свежие первыми — их части живы на CDN),
-  через `battle-data.ts` (`loadBattleData` → `buildBattleInput`) скачивает и
-  разбирает реплей и пишет нормализованные строки (`saveBattle`); части с
+  через `battle-data.ts` скачивает replay асинхронно, а `parse-battle` в CPU
+  worker разбирает WRPL/zlib/zstd, округляет координаты, делает gzip blob и
+  готовит DB input. Main вызывает `saveBattle`; части с
   диска удаляет. Статус каждого боя — в `battle_ingest` (ok / error с лимитом
   попыток / expired — части ушли с CDN / no_parts). Тот же разбор пополняет
   датасет и при нажатии кнопки/автоанонсе (`buildBattleMedia` тоже зовёт
   `saveBattle`). Поиск боёв игрока (`getPlayerBattleStats`) читает
   `battle_players` по индексу, а не сканирует JSON в items; победитель для
   `/battle` берётся из `battles.team_won`.
-- `battle-data.ts` — общий разбор боя: `loadBattleData` (скачать+распарсить),
-  `buildBattleInput` (строки для БД; координаты траекторий округляются до
-  целых метров — blob сжимается вдвое, на карте в километры доли метра не
-  видны) и `reconstructBattle(sessionId)` — собирает `{header, results,
-  events}` обратно из БД. Благодаря последнему картинки боя рисуются **из
-  БД, без реплея**: `buildBattleMedia`/`renderBattlePost` сперва пробуют
-  `reconstructBattle`, и только если боя в БД нет — качают реплей. Поэтому
+- `battle-data.ts` — main-thread orchestration: сеть/cache + передача частей
+  worker-у; чистая CPU-трансформация находится в `battle-transform.ts`.
+  `reconstructBattleSummary()` читает scoreboard без `events_blob`, а media
+  передаёт сжатый blob worker-у без gunzip на main. Поэтому картинки боя
+  рисуются **из БД, без реплея**, а
   `data/battles/` теперь чистый LRU-кэш готовых картинок (не хранилище):
   его размер ограничен `WT_BATTLE_CACHE_MB` (по умолчанию 400 МБ), при
   переполнении вытесняются давно не открывавшиеся файлы (`enforceCacheCap`),
@@ -78,6 +83,14 @@ npm run build && npm start  # продакшен-сборка
   восстановимо. `events_blob` в `battles` (gzip полного `ReplayEvents`) —
   то, что нужно для перерисовки хитмапов; `mission_settings` хранит путь к
   файлу миссии для границ карты.
+- `src/workers/pool.ts` — долгоживущий пул с очередью, ограниченной числом
+  задач и суммой transferable bytes, приоритетом interactive > normal >
+  background, promotion общей фоновой задачи, reservation слота и graceful
+  shutdown. Queue timeout — scheduler error без расхода ingest/announce retry;
+  execution timeout делает terminate+replacement. `entry.ts` выполняет
+  parse-results/parse-battle/parse-mission, JSON+gzip/gunzip, base64+SVG+Resvg,
+  распаковку игрового шрифта и первичную сборку словаря техники. Media — одна
+  bundle-задача: один decode событий и три PNG.
 - `src/bot/battle-announcer.ts` — автоанонс боёв: раз в 20 с проверяет
   новые items wt-replays (сам парсер тоже опрашивает сайт раз в 20 с,
   инкрементально — без новья это один запрос) и постит каждый бой в
@@ -112,7 +125,9 @@ npm run build && npm start  # продакшен-сборка
   сервер продлевает её каждым ответом (+14 дней), `wt-cookies.ts` подхватывает
   Set-Cookie и хранит актуальные куки в `data/wt-cookies.json` — куку вставляют
   один раз, обновление нужно только после простоя >14 дней или отзыва сессии.
-  Новая строка в `.env` имеет приоритет над сохранённым состоянием (поле seed).
+  Новая строка в `.env` имеет приоритет над сохранённым состоянием (сравнение
+  по SHA-256 seed, сам секрет второй раз не пишется). Jar использует
+  атомарный replace и межпроцессный lock для bot + backfill.
   Протухла кука → источник кидает ошибку «обнови WT_COOKIE», видно на дашборде.
   User-agent в парсере должен соответствовать браузеру, из которого кука.
 - Парсинг инкрементальный: `hasItem()` по sessionId, обход страниц
@@ -186,8 +201,8 @@ npm run build && npm start  # продакшен-сборка
   при первом запуске качает ~40 МБ из датамайна War-Thunder-Datamine,
   кэширует в `data/wt-vehicles.json`, исходники удаляет.
 - `src/wrpl/render-battle.ts` — картинка боя в стиле Boris Stats: SVG
-  собирается строками, растеризуется через `@resvg/resvg-js` с системными
-  шрифтами (CJK-ники рендерит Microsoft YaHei). Боты `coop/*` в таблицу
+  собирается чистой функцией, а `@resvg/resvg-js` с системными шрифтами
+  запускается в CPU worker (CJK-ники рендерит Microsoft YaHei). Боты `coop/*` в таблицу
   не попадают. Команда с большей суммой очков — слева («золотая»).
   Победителя в results-BLK нет: его пишет сборка материалов в
   `data/battles/<sid>-meta.json` (`cachedBattleMeta`), у победителя

@@ -4,6 +4,7 @@ import {
   saveClanRatingSnapshots,
   type ClanRating,
 } from '../db/index.js'
+import { readResponseText } from '../http-response.js'
 
 /**
  * Личный клановый рейтинг (ПКР) участников — со страницы клана
@@ -29,9 +30,13 @@ export type { ClanRating }
 export async function fetchClanMembers(clanName: string): Promise<{ nick: string; rating: number }[]> {
   const res = await fetch(`https://warthunder.com/en/community/claninfo/${encodeURIComponent(clanName)}`, {
     headers: { accept: 'text/html', 'user-agent': UA },
+    signal: AbortSignal.timeout(15_000),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status} на странице клана ${clanName}`)
-  const html = await res.text()
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined)
+    throw new Error(`HTTP ${res.status} на странице клана ${clanName}`)
+  }
+  const html = await readResponseText(res, 4 * 1024 * 1024, `страница клана ${clanName}`)
 
   // Строка таблицы: <a href="...userinfo/?nick=NICK">NICK</a></div>
   //                 <div class="squadrons-members__grid-item">ПКР</div>

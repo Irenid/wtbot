@@ -1,6 +1,6 @@
 import { inflateSync, zstdDecompressSync } from 'node:zlib'
 import { BitReader, EofError } from './bit-reader.js'
-import { EcsParser, ensureEcsHashes, type EcsEntity } from './ecs.js'
+import { EcsParser, type ComponentHashMaps, type EcsEntity } from './ecs.js'
 import { GmSyncParser } from './gm-sync.js'
 import {
   deserializeIdFields32,
@@ -577,8 +577,7 @@ function modelOf(entity: EcsEntity | null): string {
  * Извлекает события боя из скачанных частей реплея.
  * Ошибки разбора отдельных пакетов не прерывают обработку — копятся в errors.
  */
-export async function extractReplayEvents(parts: Buffer[]): Promise<ReplayEvents> {
-  const hashes = await ensureEcsHashes()
+export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps): ReplayEvents {
   const ecs = new EcsParser(hashes)
   const slot = new SlotParser()
   const movement = new MovementParser()
@@ -760,8 +759,36 @@ export async function extractReplayEvents(parts: Buffer[]): Promise<ReplayEvents
  * Все части реплея (для событий нужен весь поток пакетов) — через
  * дисковый кэш data/replays/; паузы и ретраи к CDN внутри fetchReplayPart.
  */
-export async function fetchReplayParts(partUrls: string[]): Promise<Buffer[]> {
+export async function fetchReplayParts(partUrls: string[], signal?: AbortSignal): Promise<Buffer[]> {
   const parts: Buffer[] = []
-  for (const url of partUrls) parts.push(await fetchReplayPart(url))
+  for (const url of partUrls) {
+    if (signal?.aborted) throw abortError()
+    parts.push(await waitWithSignal(fetchReplayPart(url), signal))
+  }
   return parts
+}
+
+function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(abortError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+function abortError(): Error {
+  const error = new Error('Разбор replay отменён при остановке')
+  error.name = 'AbortError'
+  return error
 }

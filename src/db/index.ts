@@ -1079,6 +1079,42 @@ export interface BattleForRender {
   eventsBlob: Buffer | null
 }
 
+export interface BattleSummaryForRender {
+  battle: BattleRow
+  players: BattlePlayerRow[]
+}
+
+/** Таблица результатов без большого events_blob — для /battle и анонсов. */
+export function getBattleSummaryForRender(sessionId: string): BattleSummaryForRender | null {
+  const battle = getDb()
+    .prepare(`
+      SELECT session_id, session_hex, mission_name, level, game_mode, battle_type,
+             environment, status, start_time, duration_sec, end_time_ms, team_won,
+             mission_settings
+      FROM battles WHERE session_id = ? OR session_hex = ?
+    `)
+    .get(sessionId, sessionId.toLowerCase()) as BattleRow | undefined
+  if (!battle) return null
+
+  const players = getDb()
+    .prepare(`
+      SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
+             ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
+             award_damage, team_kills, squad_id, vehicles
+      FROM battle_players WHERE session_id = ?
+    `)
+    .all(battle.session_id) as unknown as BattlePlayerRow[]
+  return { battle, players }
+}
+
+/** Уникальные id оружия нужны main thread для подготовки иконок ГСН. */
+export function getBattleWeaponIds(sessionId: string): string[] {
+  const rows = getDb()
+    .prepare("SELECT DISTINCT weapon FROM battle_kills WHERE session_id = ? AND weapon <> ''")
+    .all(sessionId) as { weapon: string }[]
+  return rows.map((row) => row.weapon)
+}
+
 /**
  * Всё, что нужно, чтобы перерисовать картинки боя из БД без реплея:
  * строка battles, игроки и blob событий. null — бой не разобран.

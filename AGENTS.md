@@ -2,10 +2,11 @@
 
 ## О проекте
 
-`wtbot` — модульный монолит на TypeScript: Discord-бот, Fastify-дашборд,
-фоновые парсеры War Thunder и разбор `.wrpl` работают в одном Node.js
-процессе. Общая точка входа — `src/index.ts`, хранилище — синхронная SQLite
-из `src/db/index.ts`.
+`wtbot` — модульный монолит на TypeScript: Discord-бот, Fastify-дашборд и
+фоновые парсеры работают в основном Node.js-потоке, а тяжёлый разбор `.wrpl`,
+zlib/zstd/gzip и SVG -> PNG выполняет ограниченный пул `worker_threads`.
+Общая точка входа — `src/index.ts`, хранилище — синхронная SQLite из
+`src/db/index.ts`.
 
 Основной поток данных:
 
@@ -32,7 +33,12 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
   добирает три дня и оставляет разбор `.wrpl` ingest-воркеру.
 - `data/battles/` — ограниченный LRU-кэш, а не вечное хранилище. Источник
   правды — нормализованные таблицы и `events_blob` в SQLite; материалы старых
-  боёв восстанавливаются через `reconstructBattle()` без реплея.
+  боёв восстанавливаются без реплея, а `/battle` читает summary без blob.
+- CPU-пул находится в `src/workers/`: очередь ограничена количеством задач и
+  суммой transferable bytes, интерактивный потребитель повышает приоритет уже
+  общей фоновой сборки, а ingest не занимает все готовые слоты. Timeout
+  выполнения завершает и заменяет worker; timeout/переполнение очереди не
+  расходуют попытки ingest и автоанонса.
 - Модули связаны не только через БД: bot/web/WRPL напрямую импортируют DB API и
   друг друга. Замена синхронной SQLite на async Postgres затронет вызывающий
   код, а не только `src/db/`.
@@ -64,6 +70,7 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 - `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` — фильтры Discord
   и автоанонса.
 - `WT_BATTLE_CACHE_MB`, `WT_GAME_DIR` — кэш изображений и путь к игре.
+- `WT_WORKER_THREADS` — число CPU workers (1–8; по умолчанию до двух).
 - `ANTHROPIC_API_KEY` — только для `npm run analyze`; вызовы платные.
 
 При добавлении новой переменной одновременно обновляй `src/config.ts`,
@@ -73,6 +80,9 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 
 ```bash
 npm run build             # обязательная статическая проверка TypeScript
+npm run verify:workers    # безопасный source-smoke CPU pool + Resvg
+npm run verify:workers:dist # тот же smoke после build, из dist
+npm run benchmark:workers -- data/replays/<sid> [--render] # локальный WRPL/PNG без сети/БД
 npm run dev               # живой бот + web + parsers, watch-режим
 npm start                 # запуск dist/index.js
 npm run deploy:commands   # изменяет slash-команды в Discord
@@ -81,9 +91,11 @@ npm run backfill -- 3     # сетевой добор боёв и запись �
 npm run analyze -- 3      # платные запросы к Anthropic и запись анализов
 ```
 
-Тестов, линтера и CI пока нет. Минимальная проверка любого изменения —
-`npm run build`. Для web/DB предпочитай изолированный smoke-тест через
-Fastify `inject()` и SQLite `:memory:`.
+Юнит-тестов, линтера и CI пока нет. Минимальная проверка любого изменения —
+`npm run build`; изменений worker-пула/WRPL/рендера — ещё
+`npm run verify:workers` и `npm run verify:workers:dist`. Для web/DB
+предпочитай изолированный smoke-тест через Fastify `inject()` и SQLite
+`:memory:`.
 
 Если пользователь явно разрешил живой запуск, рецепт из
 `.claude/skills/verify/SKILL.md` такой:
@@ -115,6 +127,7 @@ Fastify `inject()` и SQLite `:memory:`.
 - `src/web/` — Fastify API и встроенный HTML-дашборд.
 - `src/parsers/` — scheduler, `wt-replays`, `wt-clans`, cookie jar, backfill.
 - `src/wrpl/` — загрузка, бинарный разбор, ingest, assets и рендер боя.
+- `src/workers/` — типизированный CPU pool, wire-протокол и worker entry.
 - `src/analysis/` — ручные CLI для боя и Claude-анализа.
 - `data/` — рабочая БД, cookie, реплеи и восстанавливаемые кэши.
 
@@ -124,8 +137,12 @@ web и WRPL-код напрямую импортируют `src/db/index.ts`. SQ
 
 Порядок старта в `src/index.ts`: инициализация SQLite -> Discord client ->
 voice tracker -> Fastify -> parser scheduler -> ingest worker. Автоанонсер
-запускается по Discord `ClientReady`. При shutdown сначала останавливаются
-таймеры parser/ingest, затем Fastify и Discord, после чего закрывается БД.
+запускается по Discord `ClientReady`. При shutdown сначала запрещается новая
+работа parser/ingest/Fastify/Discord/voice, затем всему producer-drain
+(включая Fastify request и voice refresh) даётся до 10 секунд, уничтожается
+Discord client, закрывается CPU pool и последней — БД. Не закрывай pool до
+начала остановки производителей worker-задач; общая верхняя граница drain
+нужна для SIGTERM.
 
 ## Сбор данных и ingest
 
@@ -133,9 +150,10 @@ voice tracker -> Fastify -> parser scheduler -> ingest worker. Автоанон�
   запрос может вернуть HTTP 200 с пустым списком, поэтому пустой результат не
   доказывает исправность авторизации.
 - Сессия скользящая: `wt-cookies.ts` поглощает `Set-Cookie`, а актуальное
-  состояние хранит в `data/wt-cookies.json`. Значение `WT_COOKIE` является
-  seed; его изменение должно сбрасывать сохранённый jar. User-Agent должен
-  соответствовать браузеру, из которого взята cookie.
+  состояние хранит в `data/wt-cookies.json`. На диске хранится SHA-256 seed,
+  а не вторая копия `WT_COOKIE`; запись атомарная и защищена межпроцессным
+  lock для одновременного bot/backfill. User-Agent должен соответствовать
+  браузеру, из которого взята cookie.
 - Сбор инкрементальный: `hasItem(source, sessionId)` останавливает обход на
   первой известной записи; между страницами выдерживается пауза 400 мс.
   Scheduler использует `running`-guard, поэтому длинный catch-up не должен
@@ -144,9 +162,13 @@ voice tracker -> Fastify -> parser scheduler -> ingest worker. Автоанон�
   первыми; большой пропуск закрывай `npm run backfill -- <days>`, пока части
   ещё существуют.
 - Ingest раз в 20 секунд берёт небольшую пачку, вызывает
-  `loadBattleData()` -> `buildBattleInput()` -> `saveBattle()` и заполняет
+  `loadBattleData()` (скачивание main + `parse-battle` в CPU worker), затем
+  `saveBattle()` и заполняет
   `battles`, `battle_players`, `battle_kills`, `battle_chat`. Состояние живёт
-  в `battle_ingest`: `ok`, `error`, `expired`, `no_parts`.
+  в `battle_ingest`: `ok`, `error`, `expired`, `no_parts`. Переполнение,
+  startup-сбой и queue timeout CPU scheduler откладывают бой без увеличения
+  `attempts`; ошибка уже выполнявшегося parser и одиночная задача больше
+  лимита transferable bytes считаются обычной попыткой.
 - После успешного ingest части конкретной сессии удаляются из replay-cache:
   нормализованные строки и gzip `events_blob` уже позволяют восстановить бой.
 
@@ -166,15 +188,18 @@ voice tracker -> Fastify -> parser scheduler -> ingest worker. Автоанон�
   меняться после патчей игры; если на свежих реплеях исчезли траектории,
   сравнивай сигнатуры с актуальным `WrplReplayParser` и обновляй тестовые
   fixtures/документацию.
-- `loadBattleData()` скачивает и разбирает реплей. `buildBattleInput()` готовит
-  DB-строки и округляет координаты до целых метров. `reconstructBattle()`
-  восстанавливает `{header, results, events}` из SQLite.
+- `loadBattleData()` асинхронно скачивает replay, передаёт точные
+  `ArrayBuffer` в `parse-battle`, а worker разбирает WRPL, округляет
+  координаты, готовит DB-строки и gzip blob. `reconstructBattleSummary()`
+  не читает `events_blob`; media передаёт сжатый blob прямо worker-у.
 - `buildBattleMedia()` сначала пытается восстановить бой из БД и только затем
   обращается к CDN. Параллельные сборки одной session дедуплицируются через
-  `inflightBuilds`.
+  `inflightBuilds`; интерактивный join повышает все активные worker-зависимости.
 - `render-battle.ts` строит основную SVG-таблицу; `render-battle-log.ts` —
   хронологию; `render-heatmap.ts` — ground/air trajectories, смерти, зоны и
-  стоянки. Растеризация SVG -> PNG выполняется `@resvg/resvg-js`.
+  стоянки. SVG builders чистые; `@resvg/resvg-js` создаётся только в worker.
+  Log + две heatmap рендерятся одной bundle-задачей, чтобы не клонировать и
+  не распаковывать траектории трижды.
 - Победитель отсутствует в results-BLK и берётся из разобранных событий/БД.
   Реальные имена анонимизированных игроков восстанавливаются по `userId` из
   metadata сайта; не сопоставляй их только по display name.
@@ -184,8 +209,10 @@ voice tracker -> Fastify -> parser scheduler -> ingest worker. Автоанон�
 - `data/wtbot.db` — источник правды и датасет.
 - `data/replays/<sid>/` — временные части `.wrpl`, ленивый TTL-кэш.
 - `data/battles/` — ограниченный `WT_BATTLE_CACHE_MB` LRU готовых PNG/TXT и
-  meta; файлы восстановимы из БД.
-- `data/missions/` — JSON миссий и импортов для battleArea/зон.
+  meta; файлы восстановимы из БД. Meta публикуется последней как commit marker,
+  а eviction удаляет весь session-bundle, начиная с meta.
+- `data/missions/` — JSON миссий и импортов для battleArea/зон; имя включает
+  хэш полного относительного пути, а parse/deep scan выполняет worker.
 - `data/maps/` — tactical maps нужного режима из wt-tools; чужой режим нельзя
   подставлять, потому что на изображении уже нанесены зоны/spawn points.
 - `data/unit-icons/`, `data/weapons.json` — силуэты и типы ГСН.
@@ -236,8 +263,9 @@ runtime-зависимости, через явный `WebDeps`, а не скр�
 - SQL держи в `src/db/index.ts`; запросы должны быть параметризованы, пакетные
   записи — в транзакции.
 - Сохраняй дедупликацию по `(source, external_id)` и `content_hash`.
-- Не выполняй тяжёлый sync-разбор или рендер в HTTP/Discord handler без
-  раннего `deferReply`; предпочтительное направление — worker thread/очередь.
+- Не выполняй тяжёлый sync-разбор, большие JSON, компрессию, base64 изображений
+  или Resvg вне `src/workers/entry.ts`.
+  Discord-кнопки всё равно должны делать ранний `deferReply`.
 - Все внешние `fetch` должны иметь timeout, ограничение размера ответа и
   проверку формата до помещения в постоянный кэш.
 - Для новых фоновых задач обязателен guard от наложения запусков и обработка
