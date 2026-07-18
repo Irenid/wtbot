@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import type { WebDeps } from '../types.js'
 import {
   getCommandStats,
+  getIngestStats,
   getItemStats,
   getLatestItems,
   getLatestParsePerSource,
@@ -22,6 +23,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
     commands: getCommandStats(),
     parsers: getLatestParsePerSource(),
     items: getItemStats(),
+    ingest: getIngestStats(),
   }))
 
   // Собранные записи (с результатом анализа, если есть):

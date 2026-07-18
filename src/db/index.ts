@@ -114,7 +114,134 @@ export function initDb(dbPath: string): void {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- ===== Разобранные бои (ingest пакетного потока .wrpl) =====
+    -- Раньше содержимое боя (фраги, очки, техника, победитель, траектории)
+    -- жило только в PNG-кэше и разбиралось на лету при нажатии кнопки.
+    -- Теперь воркер ingest разбирает каждый бой один раз и раскладывает
+    -- его по нормализованным таблицам — это и датасет, и быстрый поиск,
+    -- и возможность перерисовать картинки, когда части реплея ушли с CDN.
+
+    -- Один бой: метаданные + победитель + счётчики. session_id совпадает
+    -- с items.external_id. events_blob — gzip(JSON) полного ReplayEvents
+    -- (траектории, зоны, урон) для перерисовки хитмапов без реплея.
+    CREATE TABLE IF NOT EXISTS battles (
+      session_id   TEXT PRIMARY KEY,
+      session_hex  TEXT NOT NULL,
+      mission_name TEXT NOT NULL,
+      level        TEXT NOT NULL,
+      game_mode    TEXT,
+      battle_type  TEXT,
+      environment  TEXT,
+      status       TEXT,
+      start_time   INTEGER NOT NULL,
+      duration_sec INTEGER NOT NULL,
+      end_time_ms  INTEGER NOT NULL DEFAULT 0,
+      team_won     INTEGER NOT NULL DEFAULT 0,
+      game_version TEXT,
+      player_count INTEGER NOT NULL DEFAULT 0,
+      kill_count   INTEGER NOT NULL DEFAULT 0,
+      -- путь к файлу миссии из заголовка реплея (для границ карты хитмапа
+      -- при перерисовке из БД, когда самого реплея уже нет)
+      mission_settings TEXT,
+      events_blob  BLOB,
+      ingested_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_battles_start ON battles (start_time DESC);
+
+    -- Результаты игрока в бою (из results-BLK, с восстановленными никами).
+    -- Индекс по нику делает статистику игрока мгновенной вместо LIKE-скана
+    -- всех JSON-блобов в items.
+    CREATE TABLE IF NOT EXISTS battle_players (
+      session_id      TEXT    NOT NULL,
+      user_id         TEXT    NOT NULL,
+      nick            TEXT    NOT NULL,
+      clan_tag        TEXT    NOT NULL DEFAULT '',
+      team            INTEGER NOT NULL,
+      kills           INTEGER NOT NULL DEFAULT 0,
+      ground_kills    INTEGER NOT NULL DEFAULT 0,
+      naval_kills     INTEGER NOT NULL DEFAULT 0,
+      ai_kills        INTEGER NOT NULL DEFAULT 0,
+      ai_ground_kills INTEGER NOT NULL DEFAULT 0,
+      assists         INTEGER NOT NULL DEFAULT 0,
+      deaths          INTEGER NOT NULL DEFAULT 0,
+      capture_zone    INTEGER NOT NULL DEFAULT 0,
+      damage_zone     INTEGER NOT NULL DEFAULT 0,
+      score           INTEGER NOT NULL DEFAULT 0,
+      award_damage    INTEGER NOT NULL DEFAULT 0,
+      team_kills      INTEGER NOT NULL DEFAULT 0,
+      squad_id        INTEGER NOT NULL DEFAULT -1,
+      vehicle         TEXT,
+      vehicles        TEXT    NOT NULL DEFAULT '[]',
+      disconnected    INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (session_id, user_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bp_nick ON battle_players (nick);
+    CREATE INDEX IF NOT EXISTS idx_bp_clan ON battle_players (clan_tag);
+
+    -- Убийства с координатами: датасет + перерисовка battle log/хитмапа.
+    CREATE TABLE IF NOT EXISTS battle_kills (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id   TEXT    NOT NULL,
+      time_ms      INTEGER NOT NULL,
+      killer_id    TEXT    NOT NULL,
+      killer_model TEXT    NOT NULL DEFAULT '',
+      victim_id    TEXT    NOT NULL,
+      victim_model TEXT    NOT NULL DEFAULT '',
+      weapon       TEXT,
+      killer_x REAL, killer_y REAL, killer_z REAL,
+      victim_x REAL, victim_y REAL, victim_z REAL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bk_session ON battle_kills (session_id, time_ms);
+
+    -- Чат матча.
+    CREATE TABLE IF NOT EXISTS battle_chat (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT    NOT NULL,
+      time_ms    INTEGER NOT NULL,
+      sender     TEXT    NOT NULL,
+      channel    INTEGER NOT NULL,
+      message    TEXT    NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bchat_session ON battle_chat (session_id, time_ms);
+
+    -- Статус разбора каждого боя: чтобы воркер знал, что уже сделано,
+    -- что провалилось (и сколько раз), а что бесполезно повторять
+    -- (нет ссылок на части / части ушли с CDN).
+    CREATE TABLE IF NOT EXISTS battle_ingest (
+      session_id TEXT    PRIMARY KEY,
+      status     TEXT    NOT NULL,
+      attempts   INTEGER NOT NULL DEFAULT 0,
+      error      TEXT,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    -- Статус автоанонса по каждому бою (а не одна общая отметка «докуда
+    -- дошли»): упавший анонс тогда ретраится, а не теряется навсегда.
+    -- ok — отправлен, failed — не удалось (с числом попыток; после лимита
+    -- бой пропускается, чтобы битая запись не блокировала очередь).
+    CREATE TABLE IF NOT EXISTS announce_state (
+      item_id    INTEGER PRIMARY KEY,
+      status     TEXT    NOT NULL,
+      attempts   INTEGER NOT NULL DEFAULT 0,
+      error      TEXT,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `)
+
+  // Миграции для баз, созданных прошлой версией схемы: ADD COLUMN на уже
+  // существующей таблице бросает ошибку «duplicate column» — глушим её.
+  for (const sql of ['ALTER TABLE battles ADD COLUMN mission_settings TEXT']) {
+    try {
+      db.exec(sql)
+    } catch {
+      // колонка уже есть — так и надо
+    }
+  }
 }
 
 export function closeDb(): void {
@@ -174,6 +301,10 @@ function toParseRecord(row: ParseRow): ParseRecord {
   }
 }
 
+/** Когда в последний раз подрезали историю каждого источника (в памяти) */
+const lastParseCleanup = new Map<string, number>()
+const PARSE_CLEANUP_INTERVAL_MS = 60 * 60_000
+
 export function recordParseResult(
   source: string,
   ok: boolean,
@@ -183,8 +314,13 @@ export function recordParseResult(
   getDb()
     .prepare('INSERT INTO parse_results (source, ok, summary, error) VALUES (?, ?, ?, ?)')
     .run(source, ok ? 1 : 0, summary, error)
-  // при частых интервалах (wt-replays раз в 20 с) история не должна
-  // расти бесконечно — держим последние 1000 запусков на источник
+
+  // История не должна расти бесконечно (wt-replays пишет раз в 20 с), но и
+  // подрезать её на каждой вставке — 4320 DELETE в сутки на источник — ни к
+  // чему. Чистим не чаще раза в час на источник; держим последние 1000 строк.
+  const now = Date.now()
+  if (now - (lastParseCleanup.get(source) ?? 0) < PARSE_CLEANUP_INTERVAL_MS) return
+  lastParseCleanup.set(source, now)
   getDb()
     .prepare(`
       DELETE FROM parse_results
@@ -356,20 +492,6 @@ export function getItemByExternalId(source: string, externalId: string): StoredI
   return row ? toStoredItem(row) : null
 }
 
-/** Записи источника новее заданного id, старые первыми (для автоанонса) */
-export function getItemsAfter(source: string, afterId: number, limit = 10): StoredItem[] {
-  const rows = getDb()
-    .prepare(`
-      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at, a.result AS analysis
-      FROM items i
-      LEFT JOIN analyses a ON a.item_id = i.id
-      WHERE i.source = ? AND i.id > ?
-      ORDER BY i.id ASC
-      LIMIT ?
-    `)
-    .all(source, afterId, limit) as unknown as ItemRow[]
-  return rows.map(toStoredItem)
-}
 
 /** Максимальный id записей источника (0 — записей нет) */
 export function getMaxItemId(source: string): number {
@@ -377,6 +499,64 @@ export function getMaxItemId(source: string): number {
     | { m: number | null }
     | undefined
   return row?.m ?? 0
+}
+
+// ---------- Очередь автоанонса боёв (announce_state) ----------
+
+export type AnnounceStatus = 'ok' | 'failed'
+
+/** Записывает исход анонса боя; при повторе увеличивает счётчик попыток */
+export function markAnnounce(itemId: number, status: AnnounceStatus, error: string | null = null): void {
+  getDb()
+    .prepare(`
+      INSERT INTO announce_state (item_id, status, attempts, error, updated_at)
+      VALUES (?, ?, 1, ?, unixepoch())
+      ON CONFLICT (item_id) DO UPDATE SET
+        status = excluded.status,
+        attempts = announce_state.attempts + 1,
+        error = excluded.error,
+        updated_at = unixepoch()
+    `)
+    .run(itemId, status, error)
+}
+
+/**
+ * Бои для автоанонса: новее baseline (первый запуск ставит его на текущий
+ * максимум — историю не постим), ещё не отправленные и не исчерпавшие
+ * попытки. Старые первыми — постим в хронологическом порядке.
+ */
+export function getPendingAnnounce(baselineId: number, maxAttempts: number, limit: number): StoredItem[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at, NULL AS analysis
+      FROM items i
+      LEFT JOIN announce_state a ON a.item_id = i.id
+      WHERE i.source = 'wt-replays' AND i.id > ?
+        AND (a.item_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
+      ORDER BY i.id ASC
+      LIMIT ?
+    `)
+    .all(baselineId, maxAttempts, limit) as unknown as ItemRow[]
+  return rows.map(toStoredItem)
+}
+
+/**
+ * Новое значение baseline: id самого старого ещё не решённого боя минус 1
+ * (всё до него уже отправлено или окончательно пропущено), а если решены
+ * все — текущий максимум. Так окно сканирования не растёт бесконечно, но
+ * ни один ждущий бой не перепрыгивается.
+ */
+export function nextAnnounceBaseline(currentBaseline: number, maxAttempts: number): number {
+  const row = getDb()
+    .prepare(`
+      SELECT MIN(i.id) AS oldest
+      FROM items i
+      LEFT JOIN announce_state a ON a.item_id = i.id
+      WHERE i.source = 'wt-replays' AND i.id > ?
+        AND (a.item_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
+    `)
+    .get(currentBaseline, maxAttempts) as { oldest: number | null } | undefined
+  return row?.oldest != null ? row.oldest - 1 : getMaxItemId('wt-replays')
 }
 
 // ---------- Служебное состояние бота ----------
@@ -622,17 +802,22 @@ export function getPlayerRating(nick: string): (ClanRating & { clanTag: string }
   }
 }
 
-/** Сколько клановых боёв игрока есть в собранных реплеях и когда был последний */
+/**
+ * Сколько клановых боёв игрока разобрано и когда был последний.
+ * Читает из battle_players по индексу idx_bp_nick — мгновенно и не зависит
+ * от размера базы (раньше был LIKE-скан всех JSON-блобов в items).
+ * Консольный ник на клановой странице бывает с суффиксом (@psn/@live),
+ * поэтому ловим и «ник», и «ник@…».
+ */
 export function getPlayerBattleStats(nick: string): { battles: number; lastBattleAt: number | null } {
-  const esc = escapeLike(nick)
   const row = getDb()
     .prepare(`
-      SELECT COUNT(*) AS battles, MAX(json_extract(data, '$.startTime')) AS last
-      FROM items
-      WHERE source = 'wt-replays'
-        AND (data LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\')
+      SELECT COUNT(*) AS battles, MAX(b.start_time) AS last
+      FROM battle_players bp
+      JOIN battles b ON b.session_id = bp.session_id
+      WHERE bp.nick = ? OR bp.nick LIKE ? ESCAPE '\\'
     `)
-    .get(`%"name":"${esc}"%`, `%"name":"${esc}@%`) as { battles: number; last: number | null } | undefined
+    .get(nick, escapeLike(nick) + '@%') as { battles: number; last: number | null } | undefined
   return { battles: row?.battles ?? 0, lastBattleAt: row?.last ?? null }
 }
 
@@ -660,6 +845,345 @@ export function getClanRatingsWithDelta(clanTag: string): Map<string, ClanRating
     }
   }
   return result
+}
+
+// ---------- Разобранные бои (ingest) ----------
+
+/** Результат игрока в бою для записи в battle_players */
+export interface BattlePlayerInput {
+  userId: string
+  nick: string
+  clanTag: string
+  team: number
+  kills: number
+  groundKills: number
+  navalKills: number
+  aiKills: number
+  aiGroundKills: number
+  assists: number
+  deaths: number
+  captureZone: number
+  damageZone: number
+  score: number
+  awardDamage: number
+  teamKills: number
+  squadId: number
+  /** Первая машина сетапа (null — отключился) */
+  vehicle: string | null
+  /** Все машины игрока */
+  vehicles: string[]
+  disconnected: boolean
+}
+
+/** Убийство с координатами для записи в battle_kills */
+export interface BattleKillInput {
+  timeMs: number
+  killerId: string
+  killerModel: string
+  victimId: string
+  victimModel: string
+  weapon: string
+  killerPos: { x: number; y: number; z: number } | null
+  victimPos: { x: number; y: number; z: number } | null
+}
+
+/** Сообщение чата для записи в battle_chat */
+export interface BattleChatInput {
+  timeMs: number
+  sender: string
+  channel: number
+  message: string
+}
+
+/** Всё, что ingest достаёт из одного боя */
+export interface BattleInput {
+  sessionId: string
+  sessionHex: string
+  missionName: string
+  level: string
+  gameMode: string | null
+  battleType: string | null
+  environment: string | null
+  status: string | null
+  startTime: number
+  durationSec: number
+  endTimeMs: number
+  teamWon: number
+  gameVersion: string | null
+  /** Путь к файлу миссии из заголовка (для границ карты при перерисовке из БД) */
+  missionSettings: string | null
+  players: BattlePlayerInput[]
+  kills: BattleKillInput[]
+  chat: BattleChatInput[]
+  /** gzip(JSON) полного ReplayEvents — для перерисовки картинок без реплея */
+  eventsBlob: Buffer
+}
+
+/** Разобран ли уже этот бой (есть строка в battles) */
+export function hasBattle(sessionId: string): boolean {
+  return getDb().prepare('SELECT 1 FROM battles WHERE session_id = ?').get(sessionId) !== undefined
+}
+
+/** Клан-теги (сырые, с украшениями) участников боя — для фильтра автоанонса */
+export function getBattleClanTags(sessionId: string): string[] {
+  const rows = getDb()
+    .prepare("SELECT DISTINCT clan_tag FROM battle_players WHERE session_id = ? AND clan_tag <> ''")
+    .all(sessionId) as { clan_tag: string }[]
+  return rows.map((r) => r.clan_tag)
+}
+
+/**
+ * Пишет разобранный бой одной транзакцией: сам бой + игроки + убийства +
+ * чат. Повторный вызов заменяет данные (сначала удаляет старые строки),
+ * поэтому переразбор боя идемпотентен.
+ */
+export function saveBattle(b: BattleInput): void {
+  const database = getDb()
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database
+      .prepare(`
+        INSERT INTO battles (
+          session_id, session_hex, mission_name, level, game_mode, battle_type,
+          environment, status, start_time, duration_sec, end_time_ms, team_won,
+          game_version, player_count, kill_count, mission_settings, events_blob, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+        ON CONFLICT (session_id) DO UPDATE SET
+          session_hex = excluded.session_hex,
+          mission_name = excluded.mission_name,
+          level = excluded.level,
+          game_mode = excluded.game_mode,
+          battle_type = excluded.battle_type,
+          environment = excluded.environment,
+          status = excluded.status,
+          start_time = excluded.start_time,
+          duration_sec = excluded.duration_sec,
+          end_time_ms = excluded.end_time_ms,
+          team_won = excluded.team_won,
+          game_version = excluded.game_version,
+          player_count = excluded.player_count,
+          kill_count = excluded.kill_count,
+          mission_settings = excluded.mission_settings,
+          events_blob = excluded.events_blob,
+          ingested_at = unixepoch()
+      `)
+      .run(
+        b.sessionId, b.sessionHex, b.missionName, b.level, b.gameMode, b.battleType,
+        b.environment, b.status, b.startTime, b.durationSec, b.endTimeMs, b.teamWon,
+        b.gameVersion, b.players.length, b.kills.length, b.missionSettings, b.eventsBlob,
+      )
+
+    database.prepare('DELETE FROM battle_players WHERE session_id = ?').run(b.sessionId)
+    database.prepare('DELETE FROM battle_kills WHERE session_id = ?').run(b.sessionId)
+    database.prepare('DELETE FROM battle_chat WHERE session_id = ?').run(b.sessionId)
+
+    const pStmt = database.prepare(`
+      INSERT INTO battle_players (
+        session_id, user_id, nick, clan_tag, team, kills, ground_kills, naval_kills,
+        ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
+        award_damage, team_kills, squad_id, vehicle, vehicles, disconnected
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const p of b.players) {
+      pStmt.run(
+        b.sessionId, p.userId, p.nick, p.clanTag, p.team, p.kills, p.groundKills, p.navalKills,
+        p.aiKills, p.aiGroundKills, p.assists, p.deaths, p.captureZone, p.damageZone, p.score,
+        p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
+      )
+    }
+
+    const kStmt = database.prepare(`
+      INSERT INTO battle_kills (
+        session_id, time_ms, killer_id, killer_model, victim_id, victim_model, weapon,
+        killer_x, killer_y, killer_z, victim_x, victim_y, victim_z
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const k of b.kills) {
+      kStmt.run(
+        b.sessionId, k.timeMs, k.killerId, k.killerModel, k.victimId, k.victimModel, k.weapon,
+        k.killerPos?.x ?? null, k.killerPos?.y ?? null, k.killerPos?.z ?? null,
+        k.victimPos?.x ?? null, k.victimPos?.y ?? null, k.victimPos?.z ?? null,
+      )
+    }
+
+    const cStmt = database.prepare(
+      'INSERT INTO battle_chat (session_id, time_ms, sender, channel, message) VALUES (?, ?, ?, ?, ?)',
+    )
+    for (const m of b.chat) cStmt.run(b.sessionId, m.timeMs, m.sender, m.channel, m.message)
+
+    database.exec('COMMIT')
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+/** Номер победившей команды из разобранного боя (null — бой не разобран) */
+export function getBattleWinner(sessionId: string): number | null {
+  const row = getDb().prepare('SELECT team_won FROM battles WHERE session_id = ?').get(sessionId) as
+    | { team_won: number }
+    | undefined
+  return row ? row.team_won : null
+}
+
+/** Сжатый blob событий боя (по десятичному id или hex) — null, если боя нет */
+export function getBattleEventsBlob(sessionId: string): Buffer | null {
+  const row = getDb()
+    .prepare('SELECT events_blob FROM battles WHERE session_id = ? OR session_hex = ?')
+    .get(sessionId, sessionId.toLowerCase()) as { events_blob: Uint8Array | null } | undefined
+  return row?.events_blob ? Buffer.from(row.events_blob) : null
+}
+
+/** Строка боя из battles (для перерисовки картинок из БД) */
+export interface BattleRow {
+  session_id: string
+  session_hex: string
+  mission_name: string
+  level: string
+  game_mode: string | null
+  battle_type: string | null
+  environment: string | null
+  status: string | null
+  start_time: number
+  duration_sec: number
+  end_time_ms: number
+  team_won: number
+  mission_settings: string | null
+}
+
+/** Строка игрока из battle_players (для перерисовки) */
+export interface BattlePlayerRow {
+  user_id: string
+  nick: string
+  clan_tag: string
+  team: number
+  kills: number
+  ground_kills: number
+  naval_kills: number
+  ai_kills: number
+  ai_ground_kills: number
+  assists: number
+  deaths: number
+  capture_zone: number
+  damage_zone: number
+  score: number
+  award_damage: number
+  team_kills: number
+  squad_id: number
+  vehicles: string
+}
+
+export interface BattleForRender {
+  battle: BattleRow
+  players: BattlePlayerRow[]
+  eventsBlob: Buffer | null
+}
+
+/**
+ * Всё, что нужно, чтобы перерисовать картинки боя из БД без реплея:
+ * строка battles, игроки и blob событий. null — бой не разобран.
+ */
+export function getBattleForRender(sessionId: string): BattleForRender | null {
+  const battle = getDb()
+    .prepare(`
+      SELECT session_id, session_hex, mission_name, level, game_mode, battle_type,
+             environment, status, start_time, duration_sec, end_time_ms, team_won,
+             mission_settings, events_blob
+      FROM battles WHERE session_id = ? OR session_hex = ?
+    `)
+    .get(sessionId, sessionId.toLowerCase()) as (BattleRow & { events_blob: Uint8Array | null }) | undefined
+  if (!battle) return null
+
+  const players = getDb()
+    .prepare(`
+      SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
+             ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
+             award_damage, team_kills, squad_id, vehicles
+      FROM battle_players WHERE session_id = ?
+    `)
+    .all(battle.session_id) as unknown as BattlePlayerRow[]
+
+  const { events_blob, ...row } = battle
+  return { battle: row, players, eventsBlob: events_blob ? Buffer.from(events_blob) : null }
+}
+
+// ---------- Очередь разбора боёв (battle_ingest) ----------
+
+export type BattleIngestStatus = 'ok' | 'error' | 'no_parts' | 'expired'
+
+/** Записывает исход разбора боя; при повторе увеличивает счётчик попыток */
+export function markBattleIngest(sessionId: string, status: BattleIngestStatus, error: string | null = null): void {
+  getDb()
+    .prepare(`
+      INSERT INTO battle_ingest (session_id, status, attempts, error, updated_at)
+      VALUES (?, ?, 1, ?, unixepoch())
+      ON CONFLICT (session_id) DO UPDATE SET
+        status = excluded.status,
+        attempts = battle_ingest.attempts + 1,
+        error = excluded.error,
+        updated_at = unixepoch()
+    `)
+    .run(sessionId, status, error)
+}
+
+/** Статус разбора боя (null — ещё не брались) — для решения автоанонса «ждать или пропустить» */
+export function getBattleIngestState(sessionId: string): { status: BattleIngestStatus; attempts: number } | null {
+  const row = getDb()
+    .prepare('SELECT status, attempts FROM battle_ingest WHERE session_id = ?')
+    .get(sessionId) as { status: BattleIngestStatus; attempts: number } | undefined
+  return row ?? null
+}
+
+/**
+ * Записи wt-replays, которые ещё надо разобрать: не разобранные успешно,
+ * не помеченные бесполезными (нет частей / части ушли с CDN) и не
+ * исчерпавшие лимит попыток. Новые (большой id) первыми — их части ещё
+ * живы на CDN.
+ */
+export function getPendingBattleItems(maxAttempts: number, limit: number): StoredItem[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at, NULL AS analysis
+      FROM items i
+      LEFT JOIN battle_ingest bi ON bi.session_id = i.external_id
+      WHERE i.source = 'wt-replays'
+        AND (
+          bi.session_id IS NULL
+          OR (bi.status = 'error' AND bi.attempts < ?)
+        )
+      ORDER BY i.id DESC
+      LIMIT ?
+    `)
+    .all(maxAttempts, limit) as unknown as ItemRow[]
+  return rows.map(toStoredItem)
+}
+
+/** Сводка разбора для дашборда: сколько боёв разобрано, в очереди, провалено */
+export interface IngestStats {
+  ingested: number
+  pending: number
+  failed: number
+  players: number
+  kills: number
+}
+
+export function getIngestStats(): IngestStats {
+  const db2 = getDb()
+  const ingested = (db2.prepare('SELECT COUNT(*) AS c FROM battles').get() as { c: number }).c
+  const total = (db2.prepare("SELECT COUNT(*) AS c FROM items WHERE source = 'wt-replays'").get() as { c: number }).c
+  const failed = (
+    db2
+      .prepare("SELECT COUNT(*) AS c FROM battle_ingest WHERE status IN ('error', 'expired', 'no_parts')")
+      .get() as { c: number }
+  ).c
+  const skipped = (
+    db2.prepare("SELECT COUNT(*) AS c FROM battle_ingest WHERE status IN ('expired', 'no_parts')").get() as {
+      c: number
+    }
+  ).c
+  const players = (db2.prepare('SELECT COUNT(*) AS c FROM battle_players').get() as { c: number }).c
+  const kills = (db2.prepare('SELECT COUNT(*) AS c FROM battle_kills').get() as { c: number }).c
+  return { ingested, pending: Math.max(0, total - ingested - skipped), failed, players, kills }
 }
 
 

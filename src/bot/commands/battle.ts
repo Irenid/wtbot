@@ -9,10 +9,11 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import type { Command } from '../types.js'
-import { getItemByExternalId, getLatestItems, type StoredItem } from '../../db/index.js'
+import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, type StoredItem } from '../../db/index.js'
 import { buildBattleMedia, cachedBattleMedia, cachedBattleMeta, type BattleMediaKind } from '../../wrpl/battle-media.js'
+import { reconstructBattle } from '../../wrpl/battle-data.js'
 import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
-import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../../wrpl/replay.js'
+import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { renderBattleImage, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 
@@ -29,6 +30,8 @@ import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 
 interface ReplayItemData {
   missionName?: string
+  gameMode?: string
+  gameVersion?: string
   replayParts?: string[] | null
   url?: string
   partsCount?: number
@@ -87,13 +90,27 @@ export interface BattlePost {
  */
 export async function renderBattlePost(item: StoredItem): Promise<BattlePost | null> {
   const data = item.data as ReplayItemData
-  const parts = replayPartUrls(data)
-  if (parts.length === 0) return null
-
-  const { header, results } = await fetchReplayResults(parts)
-  // Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
+  const sessionId = item.externalId
   const realNames = realNamesFromItem(data)
-  applyRealNames(results, realNames)
+
+  // Бой уже разобран — берём результаты из БД, реплей не качаем. Иначе
+  // скачиваем results-BLK из последней части (parts нужны только тут).
+  let header: WrplHeader
+  let results: ReplayResults
+  let parts: string[] = []
+  const recon = reconstructBattle(sessionId)
+  if (recon) {
+    header = recon.header
+    results = recon.results // ники в БД уже настоящие
+  } else {
+    parts = replayPartUrls(data)
+    if (parts.length === 0) return null
+    const fetched = await fetchReplayResults(parts)
+    header = fetched.header
+    results = fetched.results
+    // Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
+    applyRealNames(results, realNames)
+  }
   const dict = await ensureVehicleDict()
   const teams = summarizeTeams(results, dict)
   const missionName = data.missionName ?? item.title
@@ -140,17 +157,21 @@ export async function renderBattlePost(item: StoredItem): Promise<BattlePost | n
     }
   }
 
-  // Победителя в results-BLK нет — он берётся из меты, которую пишет
-  // сборка материалов (пакетный поток)
-  const meta = cachedBattleMeta(header.sessionIdHex)
-  const payload = await makePayload(meta?.teamWon ?? null)
-  const buildWinnerPayload = meta
+  // Победителя в results-BLK нет. Берём его из БД (воркер ingest уже мог
+  // разобрать бой) или из кэша меты. Если ни там, ни там — собираем материалы
+  // в фоне: это и даст победителя, и подготовит кнопки к мгновенному ответу.
+  const dbWinner = getBattleWinner(sessionId) // null — бой ещё не разобран
+  const metaWinner = cachedBattleMeta(header.sessionIdHex)?.teamWon ?? null
+  const known = dbWinner !== null || metaWinner !== null
+  const winner = dbWinner ?? metaWinner ?? 0
+  const payload = await makePayload(winner > 0 ? winner : null)
+  const buildWinnerPayload = known
     ? null
     : async (): Promise<BattlePostPayload | null> => {
-        await buildBattleMedia(parts, missionName, realNames)
-        const fresh = cachedBattleMeta(header.sessionIdHex)
-        if (!fresh || fresh.teamWon <= 0) return null
-        return makePayload(fresh.teamWon)
+        await buildBattleMedia(sessionId, parts, { missionName, gameMode: data.gameMode, gameVersion: data.gameVersion }, realNames)
+        const fresh = getBattleWinner(sessionId) ?? cachedBattleMeta(header.sessionIdHex)?.teamWon ?? 0
+        if (fresh <= 0) return null
+        return makePayload(fresh)
       }
   return { payload, sessionIdHex: header.sessionIdHex, buildWinnerPayload }
 }
@@ -191,7 +212,10 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
   const [, kind, sessionId] = interaction.customId.split(':') as [string, BattleMediaKind, string]
   if (!KIND_NAMES[kind] || !sessionId) return
 
-  // Ответы видны только нажавшему — иначе кнопки быстро замусорят канал
+  // Ответы видны только нажавшему — иначе кнопки быстро замусорят канал.
+  // Подтвердить нажатие нужно за 3 с; если бот в этот момент был занят
+  // синхронным разбором и токен протух (10062), это ловит роутер кнопок
+  // (bot/index.ts) — нажатие просто повторяют.
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   const sessionIdHex = BigInt(sessionId).toString(16).padStart(16, '0')
@@ -201,12 +225,18 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     const item = getItemByExternalId('wt-replays', sessionId)
     const data = item?.data as ReplayItemData | undefined
     const parts = data ? replayPartUrls(data) : []
-    if (!item || parts.length === 0) {
+    // Бой в БД собирается из неё (реплей не нужен); иначе нужны части реплея
+    if (!hasBattle(sessionId) && (!item || parts.length === 0)) {
       await interaction.editReply('Реплей этого боя не найден в базе — собрать материалы не из чего.')
       return
     }
     try {
-      const built = await buildBattleMedia(parts, data?.missionName ?? item.title, realNamesFromItem(data ?? {}))
+      const built = await buildBattleMedia(
+        sessionId,
+        parts,
+        { missionName: data?.missionName ?? item?.title ?? '', gameMode: data?.gameMode, gameVersion: data?.gameVersion },
+        realNamesFromItem(data ?? {}),
+      )
       media =
         kind === 'log' ? built.log
         : kind === 'heatmap-ground' ? built.heatmapGround
