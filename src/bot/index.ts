@@ -1,9 +1,19 @@
-import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js'
+import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, RESTJSONErrorCodes } from 'discord.js'
 import { config } from '../config.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton } from './commands/battle.js'
 import { startBattleAnnouncer } from './battle-announcer.js'
+
+/**
+ * 10062 Unknown interaction — токен нажатия/команды протух. У Discord всего
+ * 3 секунды на подтверждение (defer/reply); если бот в этот момент был занят
+ * синхронным разбором реплея или рендером, поток заморожен и мы не успеваем.
+ * Отвечать уже некому — это не ошибка бота, просто спокойно логируем и выходим.
+ */
+function isExpiredInteraction(err: unknown): boolean {
+  return err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownInteraction
+}
 
 export async function startBot(): Promise<Client> {
   const client = new Client({
@@ -26,6 +36,10 @@ export async function startBot(): Promise<Client> {
       try {
         await handleBattleButton(interaction)
       } catch (err) {
+        if (isExpiredInteraction(err)) {
+          console.warn(`[bot] нажатие ${interaction.customId} устарело — бот был занят, нужно нажать ещё раз`)
+          return
+        }
         console.error('[bot] Ошибка кнопки', interaction.customId, err)
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply('Произошла ошибка при сборке материалов боя.').catch(() => {})
@@ -48,6 +62,10 @@ export async function startBot(): Promise<Client> {
     try {
       await command.execute(interaction)
     } catch (err) {
+      if (isExpiredInteraction(err)) {
+        console.warn(`[bot] вызов /${interaction.commandName} устарел — бот был занят, повтори команду`)
+        return
+      }
       console.error(`[bot] Ошибка в /${interaction.commandName}:`, err)
       if (interaction.deferred || interaction.replied) {
         await interaction
