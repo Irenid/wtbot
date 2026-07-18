@@ -1,5 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { writeFileAtomic as writeAtomic } from '../atomic-file.js'
+import { readResponseBuffer } from '../http-response.js'
+import {
+  runWorkerTask,
+  transferableBuffer,
+  type WorkerPriority,
+  type WorkerTaskControl,
+} from '../workers/pool.js'
 
 /**
  * Данные миссии из датамайна: границы поля боя и зоны захвата.
@@ -39,51 +48,101 @@ export interface MissionInfo {
 
 type Json = { [k: string]: unknown } | Json[] | string | number | boolean | null
 
-/** Достаёт данные миссии по пути из заголовка реплея; null — не нашли */
-export async function fetchMissionInfo(levelSettings: string): Promise<MissionInfo | null> {
-  const rel = levelSettings.trim().toLowerCase()
-  if (!rel.startsWith('gamedata/')) return null
-  const root = await fetchMissionJson(rel)
-  if (root === null) return null
-
-  // Импортируемые шаблоны (рекурсивно): в них живут battleArea и зоны
-  const docs: Json[] = [root]
-  const visited = new Set([rel])
-  const queue = findImportFiles(root)
-  while (queue.length > 0 && docs.length < 16) {
-    const imp = queue.shift()!
-    if (visited.has(imp)) continue
-    visited.add(imp)
-    const doc = await fetchMissionJson(imp)
-    if (doc === null) continue
-    docs.push(doc)
-    queue.push(...findImportFiles(doc))
-  }
-  return extractMissionInfo(docs)
+export interface MissionAreaDef {
+  pos: [number, number, number]
+  /** Диагональ tm — размеры Box; у Point нулевая */
+  size: [number, number, number] | null
 }
 
-/** JSON-разбор BLK из датамайна; кэш в data/missions/ навсегда */
-async function fetchMissionJson(rel: string): Promise<Json | null> {
-  const cacheFile = path.join(MISSIONS_DIR, path.basename(rel) + 'x')
-  let raw: string
-  if (existsSync(cacheFile)) {
-    raw = readFileSync(cacheFile, 'utf8')
-  } else {
+/** Компактный результат одного большого JSON-документа для main thread. */
+export interface MissionDocSummary {
+  imports: string[]
+  areas: [string, MissionAreaDef][]
+  battleAreaTargets: string[]
+  zoneIcons: { letter: string; target: string }[]
+}
+
+/** Достаёт данные миссии по пути из заголовка реплея; null — не нашли */
+export async function fetchMissionInfo(
+  levelSettings: string,
+  priority: WorkerPriority | (() => WorkerPriority) = 'normal',
+  onWorkerControl?: (control: WorkerTaskControl | null) => void,
+): Promise<MissionInfo | null> {
+  const rel = levelSettings.trim().toLowerCase()
+  if (!rel.startsWith('gamedata/')) return null
+  const currentPriority = (): WorkerPriority => (typeof priority === 'function' ? priority() : priority)
+
+  // Импортируемые шаблоны обходятся рекурсивно, но JSON.parse и глубокие
+  // сканы каждого документа выполняет CPU worker.
+  const docs: MissionDocSummary[] = []
+  const visited = new Set<string>()
+  const queue = [rel]
+  while (queue.length > 0 && docs.length < 16) {
+    const current = queue.shift()!
+    if (visited.has(current)) continue
+    visited.add(current)
+    const source = await fetchMissionRaw(current)
+    if (source === null) {
+      if (current === rel) return null
+      continue
+    }
+    const document = transferableBuffer(source.data)
+    let controlled = false
     try {
-      const res = await fetch(`${DATAMINE_BASE}/${rel}x`)
-      if (!res.ok) return null
-      raw = await res.text()
-      mkdirSync(MISSIONS_DIR, { recursive: true })
-      writeFileSync(cacheFile, raw)
-    } catch {
-      return null
+      const summary = await runWorkerTask(
+        { kind: 'parse-mission', input: { document } },
+        {
+          priority: currentPriority(),
+          transferList: [document],
+          timeoutMs: 30_000,
+          onControl: (control) => {
+            controlled = true
+            onWorkerControl?.(control)
+            control.promote(currentPriority())
+          },
+        },
+      )
+      docs.push(summary)
+      queue.push(...summary.imports)
+    } catch (error) {
+      // Очередь/timeout/shutdown не означают, что дисковый JSON битый.
+      if (error instanceof Error && error.name === 'SyntaxError') {
+        await rm(source.cacheFile, { force: true }).catch(() => undefined)
+        if (current === rel) return null
+        continue
+      }
+      throw error
+    } finally {
+      if (controlled) onWorkerControl?.(null)
     }
   }
+  return extractMissionSummaries(docs)
+}
+
+/** Сырые BLKX-байты; JSON-разбор выполняется только в CPU worker. */
+async function fetchMissionRaw(rel: string): Promise<{ data: Buffer; cacheFile: string } | null> {
+  // basename недостаточен: в датамайне есть одноимённые шаблоны из разных
+  // каталогов (например sinai и sinai_sands). Хэш полного rel исключает коллизии.
+  const stem = path.basename(rel).replace(/\.blk$/i, '')
+  const relHash = createHash('sha256').update(rel).digest('hex').slice(0, 16)
+  const cacheFile = path.join(MISSIONS_DIR, `${stem}-${relHash}.blkx`)
   try {
-    return JSON.parse(raw) as Json
+    return { data: await readFile(cacheFile), cacheFile }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  let data: Buffer
+  try {
+    const res = await fetch(`${DATAMINE_BASE}/${rel}x`, { signal: AbortSignal.timeout(20_000) })
+    if (!res.ok) return null
+    data = await readResponseBuffer(res, 8 * 1024 * 1024, `миссия ${path.basename(rel)}`)
   } catch {
     return null
   }
+  await writeAtomic(cacheFile, data).catch((error: unknown) => {
+    console.warn(`[missions] не удалось сохранить ${path.basename(rel)}: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  return { data, cacheFile }
 }
 
 /** Пути BLK-файлов из imports/import_record, у которых importAreas не выключен */
@@ -108,19 +167,37 @@ function findImportFiles(node: Json, out: string[] = []): string[] {
   return out
 }
 
+/** CPU worker entry: JSON.parse + глубокий обход одного BLKX. */
+export function summarizeMissionDocument(raw: string): MissionDocSummary {
+  return summarizeMissionJson(JSON.parse(raw) as Json)
+}
+
+function summarizeMissionJson(doc: Json): MissionDocSummary {
+  const target = findBattleAreaTarget(doc)
+  return {
+    imports: findImportFiles(doc),
+    areas: [...findAreas(doc)],
+    battleAreaTargets: target ? [target] : [],
+    zoneIcons: findZoneIcons(doc),
+  }
+}
+
 export function extractMissionInfo(docs: Json[]): MissionInfo {
+  return extractMissionSummaries(docs.map(summarizeMissionJson))
+}
+
+export function extractMissionSummaries(docs: MissionDocSummary[]): MissionInfo {
   // Области миссии и её импортов; при совпадении имён миссия главнее
-  const areas = new Map<string, AreaDef>()
+  const areas = new Map<string, MissionAreaDef>()
   for (const doc of docs) {
-    for (const [name, def] of findAreas(doc)) {
+    for (const [name, def] of doc.areas) {
       if (!areas.has(name)) areas.set(name, def)
     }
   }
 
   // Границы: явный battleArea.target, иначе кандидаты по имени
   const candidates = docs
-    .map((doc) => findBattleAreaTarget(doc))
-    .filter((t): t is string => t !== null)
+    .flatMap((doc) => doc.battleAreaTargets)
     .concat(rankedBattleAreaNames(areas))
   let area: MissionInfo['area'] = null
   for (const name of candidates) {
@@ -140,7 +217,7 @@ export function extractMissionInfo(docs: Json[]): MissionInfo {
   const zones: MissionZone[] = []
   const seen = new Set<string>()
   for (const doc of docs) {
-    for (const icon of findZoneIcons(doc)) {
+    for (const icon of doc.zoneIcons) {
       const def = areas.get(icon.target.toLowerCase())
       if (!def || seen.has(icon.letter)) continue
       seen.add(icon.letter)
@@ -157,7 +234,7 @@ export function extractMissionInfo(docs: Json[]): MissionInfo {
  * классические имена вроде briefing_battlearea. battlearea_exclude_* —
  * вырезы внутри поля боя, не границы.
  */
-function rankedBattleAreaNames(areas: Map<string, AreaDef>): string[] {
+function rankedBattleAreaNames(areas: Map<string, MissionAreaDef>): string[] {
   const rank = (n: string): number =>
     n.includes('realistic') ? 0
     : n.includes('arcade') ? 1
@@ -168,14 +245,12 @@ function rankedBattleAreaNames(areas: Map<string, AreaDef>): string[] {
     .sort((a, b) => rank(a) - rank(b))
 }
 
-interface AreaDef {
-  pos: [number, number, number]
-  /** Диагональ tm — размеры Box; у Point нулевая */
-  size: [number, number, number] | null
-}
-
 /** Все области миссии: имя (в нижнем регистре) → позиция и размер */
-function findAreas(node: Json, out = new Map<string, AreaDef>(), inAreas = false): Map<string, AreaDef> {
+function findAreas(
+  node: Json,
+  out = new Map<string, MissionAreaDef>(),
+  inAreas = false,
+): Map<string, MissionAreaDef> {
   if (Array.isArray(node)) {
     for (const item of node) findAreas(item, out, inAreas)
     return out

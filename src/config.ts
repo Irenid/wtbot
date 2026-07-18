@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { workerThreadCount } from './runtime-options.js'
 
 function required(name: string): string {
   const value = process.env[name]
@@ -33,4 +34,6 @@ export const config = {
   clanTag: (process.env['WT_CLAN_TAG'] ?? '').trim(),
   /** Лимит кэша картинок боёв data/battles в МБ (перерисовываются из БД) */
   battleCacheMb: process.env['WT_BATTLE_CACHE_MB'] ?? '400',
+  /** CPU workers для WRPL/zlib/Resvg; 1–8, по умолчанию min(2, CPU−1) */
+  workerThreads: workerThreadCount(),
 }

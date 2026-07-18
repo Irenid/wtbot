@@ -22,10 +22,12 @@ async function runOnce(source: ParserSource): Promise<void> {
     if (gotItems) {
       const saved = saveItems(source.name, output.items!)
       summary += ` · сохранено: ${saved.changed}, без изменений: ${saved.unchanged}`
+    } else if (source.name === 'wt-replays') {
+      summary += ' · сохранено: 0'
     }
     recordParseResult(source.name, true, summary, null)
-    // при частых интервалах пустые прогоны не логируем — только находки
-    if (gotItems) console.log(`[parser:${source.name}] OK — ${summary}`)
+    // Для replay показываем и нулевой результат: так видна исправность частого опроса.
+    if (gotItems || source.name === 'wt-replays') console.log(`[parser:${source.name}] OK — ${summary}`)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     recordParseResult(source.name, false, null, message)

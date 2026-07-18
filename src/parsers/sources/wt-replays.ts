@@ -1,5 +1,6 @@
 import { config } from '../../config.js'
 import { hasItem, type ParsedItem } from '../../db/index.js'
+import { readResponseJson } from '../../http-response.js'
 import type { ParserSource } from '../types.js'
 import { absorbSetCookies, cookieHeader } from './wt-cookies.js'
 
@@ -30,8 +31,10 @@ const UA =
  * для разового бэкфилла (npm run backfill), а не для 20-секундного цикла.
  */
 const MAX_CATCHUP_PAGES = 25
-/** Пауза между запросами, чтобы не создавать нагрузку на сайт */
-const PAUSE_MS = 400
+/** Минимальный интервал между любыми запросами replay API. */
+const REQUEST_INTERVAL_MS = 1_500
+const RATE_LIMIT_RETRIES = 2
+const DEFAULT_RATE_LIMIT_DELAY_MS = 30_000
 
 interface WtPlayer {
   userId: string
@@ -65,23 +68,46 @@ interface WtDetailResponse {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+let nextRequestAt = 0
 
-function baseHeaders(): Record<string, string> {
+async function waitForRequestSlot(): Promise<void> {
+  const waitMs = nextRequestAt - Date.now()
+  if (waitMs > 0) await sleep(waitMs)
+  nextRequestAt = Date.now() + REQUEST_INTERVAL_MS
+}
+
+function retryAfterMs(res: Response): number {
+  const value = res.headers.get('retry-after')
+  if (value) {
+    const seconds = Number(value)
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000
+
+    const date = Date.parse(value)
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now())
+  }
+  return DEFAULT_RATE_LIMIT_DELAY_MS
+}
+
+async function baseHeaders(): Promise<Record<string, string>> {
   return {
     accept: 'application/json, text/plain, */*',
     'user-agent': UA,
     referer: 'https://warthunder.com/en/tournament/replay/',
-    cookie: cookieHeader(),
+    cookie: await cookieHeader(),
   }
 }
 
 async function fetchPage(page: number): Promise<WtListResponse> {
-  const res = await fetch(LIST_URL, {
-    method: 'POST',
-    headers: { ...baseHeaders(), 'content-type': 'application/json' },
+  for (let attempt = 0; ; attempt++) {
+    await waitForRequestSlot()
+    const headers = await baseHeaders()
+    const res = await fetch(LIST_URL, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(20_000),
     // Тело повторяет запрос сайта; при пустых timeRangeFrom/To
     // поля дат игнорируются и API отдаёт просто последние бои
-    body: JSON.stringify({
+      body: JSON.stringify({
       gameMode: ['arcade', 'realistic', 'simulation'],
       gameType: 'clanBattle',
       techType: 'all',
@@ -100,20 +126,40 @@ async function fetchPage(page: number): Promise<WtListResponse> {
       timeRangeToTime: '14:00',
       limit: 20,
       page,
-    }),
-  })
-  absorbSetCookies(res)
-  if (!res.ok) throw new Error(`HTTP ${res.status} на странице ${page}`)
-  return (await res.json()) as WtListResponse
+      }),
+    })
+    await absorbSetCookies(res)
+    if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+      const delayMs = retryAfterMs(res)
+      await res.body?.cancel().catch(() => undefined)
+      nextRequestAt = Math.max(nextRequestAt, Date.now() + delayMs)
+      continue
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined)
+      throw new Error(`HTTP ${res.status} на странице ${page}`)
+    }
+    return readResponseJson<WtListResponse>(res, 4 * 1024 * 1024, `список replay, страница ${page}`)
+  }
 }
 
 /** Ссылки на файлы .wrpl реплея; при ошибке — null, реплей сохранится без них */
 async function fetchParts(sessionId: string): Promise<string[] | null> {
+  await waitForRequestSlot()
+  const headers = await baseHeaders()
+  let res: Response
   try {
-    const res = await fetch(`${LIST_URL}/${sessionId}`, { headers: baseHeaders() })
-    absorbSetCookies(res)
-    if (!res.ok) return null
-    const detail = (await res.json()) as WtDetailResponse
+    res = await fetch(`${LIST_URL}/${sessionId}`, { headers, signal: AbortSignal.timeout(20_000) })
+  } catch {
+    return null
+  }
+  await absorbSetCookies(res)
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined)
+    return null
+  }
+  try {
+    const detail = await readResponseJson<WtDetailResponse>(res, 2 * 1024 * 1024, 'детали replay')
     return detail.replay_parts ?? null
   } catch {
     return null
@@ -163,7 +209,6 @@ export async function collectFreshReplays(opts: CollectOpts): Promise<CollectRes
   let pagesRead = 0
   let hitCap = true // сбросится, если выйдем по нормальной границе, а не по пределу
   for (let page = 1; page <= opts.maxPages; page++) {
-    if (page > 1) await sleep(PAUSE_MS)
     const data = await fetchPage(page)
     totalOnSite = data.total_count
     pagesRead = page
@@ -194,7 +239,6 @@ export async function collectFreshReplays(opts: CollectOpts): Promise<CollectRes
   for (const replay of fresh) {
     let parts: string[] | null = null
     if (opts.fetchDetails !== false) {
-      await sleep(PAUSE_MS)
       parts = await fetchParts(replay.sessionId)
     }
     items.push({
@@ -219,6 +263,9 @@ export const wtReplays: ParserSource = {
     const { items, totalOnSite, pagesRead, hitCap } = await collectFreshReplays({
       maxPages: MAX_CATCHUP_PAGES,
       stopAtKnown: true,
+      // Точные URL частей восстанавливаются из url + partsCount. Отдельный
+      // запрос на каждый новый бой замедляет догон и быстро приводит к 429.
+      fetchDetails: false,
     })
 
     let summary = `Новых реплеев: ${items.length} (всего на сайте: ${totalOnSite})`

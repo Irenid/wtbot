@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { config } from '../config.js'
 import { closeDb, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
 import { levelId } from '../wrpl/battle-assets.js'
@@ -62,11 +62,11 @@ if (parts.length === 0) {
   process.exit(1)
 }
 
-const { header, results } = await fetchReplayResults(parts)
+const { header, results } = await fetchReplayResults(parts, 'normal')
 // Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
 const realNames = realNamesFromItem(data)
 applyRealNames(results, realNames)
-const dict = await ensureVehicleDict()
+const dict = await ensureVehicleDict('normal')
 
 if (flags.has('--json')) {
   console.log(JSON.stringify({ header, results }, null, 2))
@@ -137,18 +137,21 @@ console.log()
 console.log(`Игроков: ${results.players.length} · статус: ${results.status || '—'}`)
 
 if (flags.has('--image')) {
-  const png = await renderBattleImage({
-    missionName: data.missionName ?? item.title,
-    header,
-    results,
-    dict,
-    ratings,
-    // победитель — из меты, если материалы уже собирались (--media)
-    winnerTeam: cachedBattleMeta(header.sessionIdHex)?.teamWon ?? null,
-  })
-  mkdirSync('./data/battles', { recursive: true })
+  const png = await renderBattleImage(
+    {
+      missionName: data.missionName ?? item.title,
+      header,
+      results,
+      dict,
+      ratings,
+      // победитель — из меты, если материалы уже собирались (--media)
+      winnerTeam: (await cachedBattleMeta(header.sessionIdHex))?.teamWon ?? null,
+    },
+    'normal',
+  )
+  await mkdir('./data/battles', { recursive: true })
   const file = `./data/battles/${header.sessionIdHex}.png`
-  writeFileSync(file, png)
+  await writeFile(file, png)
   console.log(`Картинка: ${file}`)
 }
 
@@ -159,13 +162,14 @@ if (flags.has('--media')) {
     parts,
     { missionName: data.missionName ?? item.title, gameMode: data.gameMode, gameVersion: data.gameVersion },
     realNames,
+    'normal',
   )
-  const ev = media.events
-  const won = ev.teamWon > 0 ? `команда ${ev.teamWon}` : 'не определён'
+  const events = media.summary
+  const won = events.teamWon > 0 ? `команда ${events.teamWon}` : 'не определён'
   console.log(
-    `События: убийств ${ev.kills.length}, повреждений ${ev.damage.length}, сообщений в чате ${ev.chat.length},` +
-      ` траекторий ${ev.units.length} · победитель: ${won}` +
-      (ev.errors.length > 0 ? ` · ошибок разбора: ${ev.errors.length}` : ''),
+    `События: убийств ${events.kills}, повреждений ${events.damage}, сообщений в чате ${events.chat},` +
+      ` траекторий ${events.units} · победитель: ${won}` +
+      (events.errors.length > 0 ? ` · ошибок разбора: ${events.errors.length}` : ''),
   )
   for (const kind of ['log', 'heatmap-ground', 'heatmap-air', 'chat'] as const) {
     console.log(`  data/battles/${header.sessionIdHex}-${kind}${kind === 'chat' ? '.txt' : '.png'}`)
