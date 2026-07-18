@@ -1,5 +1,6 @@
 import { parseBlk, type BlkMap, type BlkValue } from './blk.js'
 import { fetchReplayPart } from './replay-cache.js'
+import { runWorkerTask, transferableBuffer, type WorkerPriority } from '../workers/pool.js'
 
 /**
  * Разбор контейнера .wrpl (серверный реплей War Thunder).
@@ -259,16 +260,18 @@ export function applyRealNames(results: ReplayResults, names: Map<string, string
  */
 export async function fetchReplayResults(
   partUrls: string[],
+  priority: WorkerPriority = 'interactive',
 ): Promise<{ header: WrplHeader; results: ReplayResults }> {
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
   for (let i = partUrls.length - 1; i >= 0; i--) {
     const url = partUrls[i]!
     const buf = await fetchReplayPart(url)
-    const header = parseWrplHeader(buf)
-    if (header.resultsBlkOffset > 0 && header.resultsBlkOffset < buf.length) {
-      const results = parseReplayResults(buf.subarray(header.resultsBlkOffset))
-      return { header, results }
-    }
+    const part = transferableBuffer(buf)
+    const parsed = await runWorkerTask(
+      { kind: 'parse-results', input: { part, realNames: [] } },
+      { priority, transferList: [part] },
+    )
+    if (parsed) return parsed
     // в этой части результатов нет — пробуем предыдущую
   }
   throw new Error('ни одна часть реплея не содержит results-BLK')

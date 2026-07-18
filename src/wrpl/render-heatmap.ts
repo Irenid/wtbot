@@ -1,11 +1,9 @@
-import { Resvg } from '@resvg/resvg-js'
-import { ensureTacticalMap, ensureWeaponSeekers, loadMapBackground, type MissileSeeker } from './battle-assets.js'
+import type { MissileSeeker } from './battle-assets.js'
 import type { MissionInfo } from './mission-info.js'
 import type { ReplayEvents, ReplayKill, ReplayUnitPath, SpaceTime } from './replay-events.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
 import { buildRosters, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
-import { ensureGameFonts } from './wt-fonts.js'
 
 /**
  * Хитмапа боя в стиле Boris Stats: траектории игроков поверх карты,
@@ -78,19 +76,12 @@ interface PlayerPaths {
 /** "tankModels/ussr_2s38" → "ussr_2s38" (ключ словаря техники) */
 const modelId = (model: string): string => model.replace(/^.*\//, '')
 
-export async function renderHeatmapImage(input: HeatmapInput): Promise<Buffer> {
-  const fontFiles = await ensureGameFonts()
-  // Привязка снимка карты требует границ battleArea из файла миссии
-  const tacticalMap = input.mission?.area ? await ensureTacticalMap(input.missionName) : null
-  const seekers = await ensureWeaponSeekers(input.events.kills.map((k) => k.weapon).filter(Boolean))
-  const svg = buildHeatmapSvg({ ...input, seekers }, fontFiles.length > 0, tacticalMap)
-  const resvg = new Resvg(svg, {
-    font: { loadSystemFonts: true, fontFiles, defaultFontFamily: 'Segoe UI' },
-  })
-  return resvg.render().asPng()
-}
-
-export function buildHeatmapSvg(input: HeatmapInput, gameFont = false, tacticalMap: string | null = null): string {
+export function buildHeatmapSvg(
+  input: HeatmapInput,
+  gameFont = false,
+  tacticalMap: string | null = null,
+  fallbackMap: string | null = null,
+): string {
   const { events, results, dict, mission, mode, seekers } = input
 
   // Игроки в порядке команд со скриншота результатов (слева — «золотая»)
@@ -141,7 +132,7 @@ export function buildHeatmapSvg(input: HeatmapInput, gameFont = false, tacticalM
   // Фон карты: снимок игровой карты режима → ручной скриншот → сетка.
   // Оба изображения покрывают ровно battleArea, поэтому кладутся на его
   // прямоугольник в мировых координатах (на воздушной карте он меньше кадра).
-  const mapImage = tacticalMap ?? loadMapBackground(input.header.level)
+  const mapImage = tacticalMap ?? fallbackMap
   parts.push(`<rect width="${MAP_W}" height="${MAP_W}" fill="#3c4034"/>`)
   if (mapImage && mission?.area) {
     const a = mission.area

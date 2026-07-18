@@ -1,9 +1,9 @@
-import { Resvg } from '@resvg/resvg-js'
 import { ensureUnitIcons, loadMapBackground } from './battle-assets.js'
 import type { ClanRating } from './clan-info.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 import { ensureGameFonts, GAME_SYMBOLS_FAMILY } from './wt-fonts.js'
+import { runWorkerTask, transferableBuffer, transferableCopy, type WorkerPriority } from '../workers/pool.js'
 
 /**
  * Рендер таблицы результатов боя в PNG в стиле Boris Stats:
@@ -135,27 +135,47 @@ export interface BattleImageInput {
   winnerTeam?: number | null
 }
 
-interface BattleAssets {
+export interface BattleAssets {
   unitIcons: Map<string, string>
   mapImage: string | null
   /** Подключён ли фирменный шрифт игры для украшений тегов */
   gameFont: boolean
 }
 
-export async function renderBattleImage(input: BattleImageInput): Promise<Buffer> {
+export async function renderBattleImage(
+  input: BattleImageInput,
+  priority: WorkerPriority = 'interactive',
+): Promise<Buffer> {
   const rosters = buildRosters(input.results)
   const iconIds = rosters
     .flat()
     .filter((p) => !isDisconnected(p))
     .flatMap((p) => (p.vehicles[0] ? [p.vehicles[0]] : []))
   const unitIcons = await ensureUnitIcons(iconIds)
-  const mapImage = loadMapBackground(input.header.level)
-  const fontFiles = await ensureGameFonts()
-  const svg = buildBattleSvg(input, { unitIcons, mapImage, gameFont: fontFiles.length > 0 })
-  const resvg = new Resvg(svg, {
-    font: { loadSystemFonts: true, fontFiles, defaultFontFamily: 'Segoe UI' },
-  })
-  return resvg.render().asPng()
+  const mapImage = await loadMapBackground(input.header.level)
+  const fontFiles = await ensureGameFonts(priority)
+  const wireIcons: [string, ArrayBuffer][] = [...unitIcons].map(([id, data]) => [id, transferableCopy(data)])
+  const wireMap = mapImage
+    ? { mime: mapImage.mime, data: transferableBuffer(mapImage.data) }
+    : null
+  const transferList = wireIcons.map(([, data]) => data)
+  if (wireMap) transferList.push(wireMap.data)
+  const png = await runWorkerTask(
+    {
+      kind: 'render-scoreboard',
+      input: {
+        input,
+        assets: {
+          unitIcons: wireIcons,
+          mapImage: wireMap,
+          gameFont: fontFiles.length > 0,
+          fontFiles,
+        },
+      },
+    },
+    { priority, transferList },
+  )
+  return Buffer.from(png)
 }
 
 /** Отключился: нет строки результатов (пустое имя) или ни одной машины в бою */

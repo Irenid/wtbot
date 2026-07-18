@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import path from 'node:path'
+import { readFile, rm } from 'node:fs/promises'
+import { writeFileAtomic } from '../atomic-file.js'
+import { readResponseText } from '../http-response.js'
 import { BitReader } from './bit-reader.js'
 import { lz4DecompressBlock } from './lz4.js'
 import { readEID } from './packet-stream.js'
@@ -76,16 +77,59 @@ export interface ComponentHashMaps {
   dataComponentParsers: Map<number, ComponentParser>
 }
 
-/** Словарь хэшей ECS-компонентов: качается один раз, кэш в data/ */
-export async function ensureEcsHashes(): Promise<ComponentHashMaps> {
-  if (!existsSync(HASHES_FILE)) {
-    const res = await fetch(HASHES_URL)
-    if (!res.ok) throw new Error(`HTTP ${res.status} при скачивании ecshashes.json`)
-    mkdirSync(path.dirname(HASHES_FILE), { recursive: true })
-    writeFileSync(HASHES_FILE, Buffer.from(await res.arrayBuffer()))
-    console.log('[wrpl] словарь ECS-хэшей сохранён в', HASHES_FILE)
+/** Сырой JSON готовится в main thread; тяжёлый JSON.parse остаётся в CPU worker. */
+let hashesJsonPromise: Promise<string> | null = null
+
+export function ensureEcsHashesJson(): Promise<string> {
+  if (hashesJsonPromise) return hashesJsonPromise
+  hashesJsonPromise = loadEcsHashesJson().catch((error: unknown) => {
+    hashesJsonPromise = null
+    throw error
+  })
+  return hashesJsonPromise
+}
+
+/** Offline-проверка/benchmark: не обращается к сети при пустом cache. */
+export async function readCachedEcsHashesJson(): Promise<string> {
+  const json = await readFile(HASHES_FILE, 'utf8').catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Для offline-проверки нужен ${HASHES_FILE}; один раз запусти обычный разбор с сетью`)
+    }
+    throw error
+  })
+  validateHashesEnvelope(json)
+  return json
+}
+
+async function loadEcsHashesJson(): Promise<string> {
+  let cached: string | null = null
+  try {
+    cached = await readFile(HASHES_FILE, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  return parseComponentHashMaps(readFileSync(HASHES_FILE, 'utf8'))
+  if (cached) {
+    try {
+      validateHashesEnvelope(cached)
+      return cached
+    } catch {
+      await rm(HASHES_FILE, { force: true }).catch(() => undefined)
+    }
+  }
+
+  const response = await fetch(HASHES_URL, { signal: AbortSignal.timeout(20_000) })
+  if (!response.ok) throw new Error(`HTTP ${response.status} при скачивании ecshashes.json`)
+  const json = await readResponseText(response, 8 * 1024 * 1024, 'ecshashes.json')
+  validateHashesEnvelope(json)
+  await writeFileAtomic(HASHES_FILE, json)
+  console.log('[wrpl] словарь ECS-хэшей сохранён в', HASHES_FILE)
+  return json
+}
+
+function validateHashesEnvelope(json: string): void {
+  if (!/^\s*\{/.test(json) || !/"components"\s*:/.test(json) || !/"dataComponents"\s*:/.test(json)) {
+    throw new Error('ecshashes.json имеет неверный формат')
+  }
 }
 
 export function parseComponentHashMaps(json: string): ComponentHashMaps {

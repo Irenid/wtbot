@@ -1,9 +1,7 @@
-import { Resvg } from '@resvg/resvg-js'
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { buildRosters, decorateTag } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
-import { ensureGameFonts } from './wt-fonts.js'
 
 /**
  * Battle Log — картинка с хронологией боя:
@@ -58,15 +56,6 @@ interface LogRow {
 }
 
 const modelId = (model: string): string => model.replace(/^.*\//, '')
-
-export async function renderBattleLogImage(input: BattleLogInput): Promise<Buffer> {
-  const fontFiles = await ensureGameFonts()
-  const svg = buildBattleLogSvg(input)
-  const resvg = new Resvg(svg, {
-    font: { loadSystemFonts: true, fontFiles, defaultFontFamily: 'Segoe UI' },
-  })
-  return resvg.render().asPng()
-}
 
 /** Собирает строки лога в хронологическом порядке */
 export function collectLogRows(input: BattleLogInput): LogRow[] {

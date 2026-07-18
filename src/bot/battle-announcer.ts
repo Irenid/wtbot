@@ -14,6 +14,7 @@ import {
 } from '../db/index.js'
 import { INGEST_MAX_ATTEMPTS } from '../wrpl/ingest.js'
 import { plainClanTag } from '../wrpl/render-battle.js'
+import { isWorkerPoolSchedulingError } from '../workers/pool.js'
 import { queueWinnerUpdate, renderBattlePost } from './commands/battle.js'
 
 /**
@@ -44,12 +45,17 @@ const TICK_MS = 20_000
 const MAX_ATTEMPTS = 3
 /** Клан для фильтра (ядро тега без украшений); пусто — анонсим все бои */
 const TARGET_CLAN = plainClanTag(config.clanTag)
+let announceTimer: NodeJS.Timeout | null = null
+let activeTick: Promise<void> | null = null
+let stopping = false
 
 export function startBattleAnnouncer(client: Client): void {
+  if (announceTimer) return
   if (!config.battlesChannelId) {
     console.log('[bot] WT_BATTLES_CHANNEL не задан — автоанонс боёв выключен')
     return
   }
+  stopping = false
   if (getBotState(BASELINE_KEY) === null) {
     setBotState(BASELINE_KEY, String(getMaxItemId('wt-replays')))
   }
@@ -60,16 +66,15 @@ export function startBattleAnnouncer(client: Client): void {
       : '[bot] анонс всех клановых боёв (WT_CLAN_TAG не задан)',
   )
 
-  let busy = false
   const tick = async (): Promise<void> => {
-    if (busy) return
-    busy = true
+    if (stopping) return
     try {
       const baseline = Number(getBotState(BASELINE_KEY) ?? '0')
       const fresh = getPendingAnnounce(baseline, MAX_ATTEMPTS, 5)
       if (fresh.length === 0) return
 
       const channel = await client.channels.fetch(config.battlesChannelId)
+      if (stopping) return
       if (!channel?.isSendable()) {
         console.warn('[bot] канал автоанонса недоступен или не текстовый — проверь WT_BATTLES_CHANNEL')
         return
@@ -78,6 +83,7 @@ export function startBattleAnnouncer(client: Client): void {
       // Постим в хронологическом порядке боёв (в очереди — по возрастанию id)
       const ordered = [...fresh].sort((a, b) => startTimeOf(a) - startTimeOf(b))
       for (const item of ordered) {
+        if (stopping) break
         if (TARGET_CLAN) {
           const decision = clanDecision(item)
           // ждём разбора ingest — не помечаем, перепроверим на следующем тике
@@ -89,7 +95,8 @@ export function startBattleAnnouncer(client: Client): void {
           }
         }
         try {
-          const post = await renderBattlePost(item)
+          const post = await renderBattlePost(item, 'background')
+          if (stopping) break
           if (!post) {
             // нет ссылок на реплей — считаем попыткой, после лимита пропустим
             markAnnounce(item.id, 'failed', 'нет ссылок на реплей')
@@ -97,10 +104,19 @@ export function startBattleAnnouncer(client: Client): void {
             continue
           }
           const message = await channel.send(post.payload)
+          // Если сообщение уже ушло, фиксируем успех даже при SIGTERM: иначе
+          // после рестарта оно отправится второй раз.
           markAnnounce(item.id, 'ok')
-          queueWinnerUpdate(post, (p) => message.edit(p))
+          if (!stopping) queueWinnerUpdate(post, (p) => message.edit(p))
           console.log(`[bot] автоанонс боя ${item.externalId} (${item.title.trim()})`)
         } catch (err) {
+          if (stopping) break
+          if (isWorkerPoolSchedulingError(err)) {
+            console.warn(
+              `[bot] автоанонс ${item.externalId}: CPU scheduler занят (${err.message}); попытка не расходуется`,
+            )
+            continue
+          }
           // Отметка не сдвигается через бой: следующий тик попробует снова,
           // пока не выйдет или не кончатся попытки — анонс не теряется молча
           markAnnounce(item.id, 'failed', (err as Error).message)
@@ -109,13 +125,31 @@ export function startBattleAnnouncer(client: Client): void {
       }
 
       // Сдвигаем baseline за решённые бои — окно сканирования не растёт
-      setBotState(BASELINE_KEY, String(nextAnnounceBaseline(baseline, MAX_ATTEMPTS)))
+      if (!stopping) setBotState(BASELINE_KEY, String(nextAnnounceBaseline(baseline, MAX_ATTEMPTS)))
     } finally {
-      busy = false
+      // activeTick очищает scheduleTick после полного завершения.
     }
   }
 
-  setInterval(() => void tick(), TICK_MS)
+  const scheduleTick = (): void => {
+    if (stopping || activeTick) return
+    activeTick = tick()
+      .catch((error: unknown) => {
+        if (!stopping) console.error(`[bot] сбой тика автоанонса: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => {
+        activeTick = null
+      })
+  }
+  announceTimer = setInterval(scheduleTick, TICK_MS)
+  announceTimer.unref()
+}
+
+export async function stopBattleAnnouncer(): Promise<void> {
+  stopping = true
+  if (announceTimer) clearInterval(announceTimer)
+  announceTimer = null
+  await activeTick
 }
 
 const startTimeOf = (item: StoredItem): number => {

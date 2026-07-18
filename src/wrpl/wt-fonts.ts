@@ -1,83 +1,107 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { unpackVromfs } from './vromfs.js'
+import { writeFileAtomic as writeAtomic } from '../atomic-file.js'
+import {
+  runWorkerTask,
+  transferableBuffer,
+  type WorkerPriority,
+  type WorkerTaskControl,
+} from '../workers/pool.js'
 
-/**
- * Фирменный шрифт War Thunder для украшений клан-тегов.
- *
- * Украшения (⚔, львы, пламя и т.п.) — это обычные box-drawing символы
- * (U+2530…U+2560), которые игра рисует спецглифами из ttfs/symbols_skyquake.ttf
- * (диапазоны прописаны в fonts.dynfont.blk). Достаём этот TTF из
- * ui/fonts.vromfs.bin установленной игры и подключаем к resvg — украшения
- * на картинках выглядят ровно как в игре.
- *
- * Кэш: data/fonts/symbols_skyquake.ttf (одноразово). Если игры на машине
- * нет — можно скопировать файл руками с другой машины или задать путь
- * к игре в WT_GAME_DIR; без шрифта рендер заменяет украшения юникодом
- * (DECOR_MAP в render-battle.ts).
- */
+/** Фирменный шрифт War Thunder для украшений клан-тегов. */
 
 export const GAME_SYMBOLS_FAMILY = 'symbols_skyquake'
 
 const CACHE_FILE = './data/fonts/symbols_skyquake.ttf'
-const FONT_IN_VROMFS = 'ttfs/symbols_skyquake.ttf'
-
 let cachedPaths: string[] | null = null
-let attempted = false
+let fontPromise: Promise<string[]> | null = null
+let retryAfter = 0
+let fontPriority: WorkerPriority = 'normal'
+let fontControl: WorkerTaskControl | null = null
 
-/** Пути к TTF для resvg (пустой массив — шрифта нет, работает фолбэк) */
-export async function ensureGameFonts(): Promise<string[]> {
-  if (cachedPaths) return cachedPaths
-  if (existsSync(CACHE_FILE)) {
-    cachedPaths = [path.resolve(CACHE_FILE)]
-    return cachedPaths
+/** Пути к TTF для Resvg. Чтение VROMFS асинхронно, распаковка — в CPU worker. */
+export function ensureGameFonts(priority: WorkerPriority = 'normal'): Promise<string[]> {
+  if (cachedPaths) return Promise.resolve(cachedPaths)
+  if (retryAfter > Date.now()) return Promise.resolve([])
+  if (fontPromise) {
+    promoteFont(priority)
+    return fontPromise
   }
-  // Одна попытка распаковки за процесс: не найдена игра — не долбимся в диск
-  if (attempted) return []
-  attempted = true
+  fontPriority = priority
+  fontPromise = loadGameFonts()
+    .then(({ paths, definitive }) => {
+      if (definitive) cachedPaths = paths
+      else retryAfter = Date.now() + 60_000
+      return paths
+    })
+    .finally(() => {
+      fontPromise = null
+      fontControl = null
+    })
+  return fontPromise
+}
 
-  const gameDir = findGameDir()
+/** Повышает уже запущенную распаковку, когда её результат стал нужен интерактивной задаче. */
+export function promoteGameFontLoad(priority: WorkerPriority): void {
+  promoteFont(priority)
+}
+
+async function loadGameFonts(): Promise<{ paths: string[]; definitive: boolean }> {
+  if (await exists(CACHE_FILE)) return { paths: [path.resolve(CACHE_FILE)], definitive: true }
+
+  const gameDir = await findGameDir()
   if (!gameDir) {
     console.warn('[fonts] Клиент War Thunder не найден — украшения клан-тегов будут юникодом (см. WT_GAME_DIR в .env)')
-    return []
+    return { paths: [], definitive: true }
   }
-  const vromfs = path.join(gameDir, 'ui', 'fonts.vromfs.bin')
-  if (!existsSync(vromfs)) {
-    console.warn(`[fonts] Нет файла ${vromfs} — украшения клан-тегов будут юникодом`)
-    return []
-  }
+  const vromfsFile = path.join(gameDir, 'ui', 'fonts.vromfs.bin')
   try {
-    const files = unpackVromfs(readFileSync(vromfs))
-    const font = files.find((f) => f.name === FONT_IN_VROMFS)
-    if (!font) throw new Error(`в контейнере нет ${FONT_IN_VROMFS}`)
-    await mkdir(path.dirname(CACHE_FILE), { recursive: true })
-    await writeFile(CACHE_FILE, font.data)
-    console.log(`[fonts] Шрифт игры извлечён: ${CACHE_FILE} (${font.data.length} байт) — теги рисуются как в игре`)
-    cachedPaths = [path.resolve(CACHE_FILE)]
-    return cachedPaths
-  } catch (err) {
-    console.warn(`[fonts] Не удалось распаковать шрифты игры: ${err instanceof Error ? err.message : String(err)}`)
-    return []
+    const vromfs = transferableBuffer(await readFile(vromfsFile))
+    const font = await runWorkerTask(
+      { kind: 'extract-game-font', input: { vromfs } },
+      {
+        priority: fontPriority,
+        transferList: [vromfs],
+        timeoutMs: 90_000,
+        onControl: (control) => {
+          fontControl = control
+          control.promote(fontPriority)
+        },
+      },
+    )
+    if (!font) throw new Error('в контейнере нет ttfs/symbols_skyquake.ttf')
+    await writeAtomic(CACHE_FILE, new Uint8Array(font))
+    console.log(`[fonts] Шрифт игры извлечён: ${CACHE_FILE} (${font.byteLength} байт) — теги рисуются как в игре`)
+    return { paths: [path.resolve(CACHE_FILE)], definitive: true }
+  } catch (error) {
+    console.warn(`[fonts] Не удалось распаковать шрифты игры: ${error instanceof Error ? error.message : String(error)}`)
+    return { paths: [], definitive: false }
   }
 }
 
-/** Каталог игры: WT_GAME_DIR из .env → библиотеки Steam → типовые пути Gaijin */
-function findGameDir(): string | null {
+function promoteFont(priority: WorkerPriority): void {
+  const order: WorkerPriority[] = ['interactive', 'normal', 'background']
+  if (order.indexOf(priority) >= order.indexOf(fontPriority)) return
+  fontPriority = priority
+  fontControl?.promote(priority)
+}
+
+async function findGameDir(): Promise<string | null> {
   const fromEnv = process.env['WT_GAME_DIR']
-  if (fromEnv && existsSync(fromEnv)) return fromEnv
+  if (fromEnv && await exists(path.join(fromEnv, 'ui', 'fonts.vromfs.bin'))) return fromEnv
 
   const candidates: string[] = []
   for (const steam of ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']) {
     const vdf = path.join(steam, 'steamapps', 'libraryfolders.vdf')
-    if (!existsSync(vdf)) continue
     try {
-      // "path"  "D:\\SteamLibrary" — вытаскиваем все библиотеки
-      for (const m of readFileSync(vdf, 'utf8').matchAll(/"path"\s+"([^"]+)"/g)) {
-        candidates.push(path.join(m[1]!.replace(/\\\\/g, '\\'), 'steamapps', 'common', 'War Thunder'))
+      const text = await readFile(vdf, 'utf8')
+      for (const match of text.matchAll(/"path"\s+"([^"]+)"/g)) {
+        candidates.push(path.join(match[1]!.replace(/\\\\/g, '\\'), 'steamapps', 'common', 'War Thunder'))
       }
-    } catch {
-      // повреждённый vdf — просто пропускаем
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        // Повреждённый/недоступный VDF просто не участвует в поиске.
+      }
     }
   }
   candidates.push(
@@ -86,5 +110,18 @@ function findGameDir(): string | null {
     'D:\\Games\\WarThunder',
     'D:\\WarThunder',
   )
-  return candidates.find((c) => existsSync(path.join(c, 'ui', 'fonts.vromfs.bin'))) ?? null
+  for (const candidate of candidates) {
+    if (await exists(path.join(candidate, 'ui', 'fonts.vromfs.bin'))) return candidate
+  }
+  return null
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await stat(file)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    return false
+  }
 }

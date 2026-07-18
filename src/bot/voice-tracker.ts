@@ -38,10 +38,19 @@ export function parseWtNick(displayName: string): string {
 export interface VoiceTracker {
   /** Пересканировать каналы и принудительно освежить ПКР — для кнопки на дашборде */
   refresh(): Promise<{ players: number; clans: number }>
+  /** Остановить таймеры/listeners и дождаться уже начатых REST-запросов. */
+  stop(): Promise<void>
 }
 
 export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTracker {
   const watched = new Set(channelIds)
+  const active = new Set<Promise<unknown>>()
+  let stopping = false
+  const track = <T>(promise: Promise<T>): Promise<T> => {
+    active.add(promise)
+    promise.then(() => active.delete(promise), () => active.delete(promise))
+    return promise
+  }
   const isTracked = (channelId: string | null): channelId is string =>
     channelId !== null && (watched.size === 0 || watched.has(channelId))
 
@@ -87,19 +96,20 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
     return tags.size
   }
 
-  if (client.isReady()) {
-    void snapshot().then((n) =>
+  const readyHandler = (): void => {
+    if (stopping) return
+    void track(snapshot()).then((n) =>
       console.log(`[voice] Каналы под наблюдением: ${watched.size === 0 ? 'все' : watched.size}, сейчас в голосе: ${n}`),
-    )
+    ).catch((error: unknown) => console.warn(`[voice] Не удалось получить начальный снимок: ${(error as Error).message}`))
+  }
+  if (client.isReady()) {
+    readyHandler()
   } else {
-    client.once(Events.ClientReady, () => {
-      void snapshot().then((n) =>
-        console.log(`[voice] Каналы под наблюдением: ${watched.size === 0 ? 'все' : watched.size}, сейчас в голосе: ${n}`),
-      )
-    })
+    client.once(Events.ClientReady, readyHandler)
   }
 
-  client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  const voiceHandler = (oldState: VoiceState, newState: VoiceState): void => {
+    if (stopping) return
     const member = newState.member ?? oldState.member
     if (!member || member.user.bot) return
     try {
@@ -112,25 +122,36 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
     } catch (err) {
       console.error('[voice] Не смог обновить присутствие:', err)
     }
-  })
+  }
+  client.on(Events.VoiceStateUpdate, voiceHandler)
 
   // Периодически освежаем ПКР кланов тех, кто сидит в каналах
   const timer = setInterval(() => {
-    void refreshRatings(false).catch((err) => console.error('[voice] Не смог обновить рейтинги:', err))
+    if (!stopping) void track(refreshRatings(false)).catch((err) => console.error('[voice] Не смог обновить рейтинги:', err))
   }, RATINGS_REFRESH_MS)
   timer.unref()
 
   // Принудительное обновление с дашборда — с троттлингом от спама кнопкой
   let lastForceAt = 0
   return {
-    async refresh() {
-      const players = await snapshot()
-      let clans = 0
-      if (Date.now() - lastForceAt > FORCE_THROTTLE_MS) {
-        lastForceAt = Date.now()
-        clans = await refreshRatings(true)
-      }
-      return { players, clans }
+    refresh() {
+      return track((async () => {
+        if (stopping) return { players: 0, clans: 0 }
+        const players = await snapshot()
+        let clans = 0
+        if (Date.now() - lastForceAt > FORCE_THROTTLE_MS) {
+          lastForceAt = Date.now()
+          clans = await refreshRatings(true)
+        }
+        return { players, clans }
+      })())
+    },
+    async stop() {
+      stopping = true
+      clearInterval(timer)
+      client.off(Events.ClientReady, readyHandler)
+      client.off(Events.VoiceStateUpdate, voiceHandler)
+      await Promise.allSettled([...active])
     },
   }
 }
