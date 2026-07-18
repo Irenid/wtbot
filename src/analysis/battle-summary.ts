@@ -48,6 +48,8 @@ if (!item) {
 
 const data = item.data as {
   missionName?: string
+  gameMode?: string
+  gameVersion?: string
   replayParts?: string[] | null
   url?: string
   partsCount?: number
@@ -151,8 +153,13 @@ if (flags.has('--image')) {
 }
 
 if (flags.has('--media')) {
-  console.log('Скачиваю все части реплея и разбираю пакетный поток...')
-  const media = await buildBattleMedia(parts, data.missionName ?? item.title, realNames)
+  console.log('Собираю материалы боя (из БД, если уже разобран; иначе скачиваю реплей)...')
+  const media = await buildBattleMedia(
+    sessionId,
+    parts,
+    { missionName: data.missionName ?? item.title, gameMode: data.gameMode, gameVersion: data.gameVersion },
+    realNames,
+  )
   const ev = media.events
   const won = ev.teamWon > 0 ? `команда ${ev.teamWon}` : 'не определён'
   console.log(

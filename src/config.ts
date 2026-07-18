@@ -26,4 +26,11 @@ export const config = {
     .filter((s) => s !== ''),
   /** ID текстового канала для автоанонса новых боёв; пусто — выключено */
   battlesChannelId: process.env['WT_BATTLES_CHANNEL'] ?? '',
+  /**
+   * Клан-тег, бои которого анонсировать (например, WLILY); пусто — анонсим
+   * все клановые бои. Сравнивается по «ядру» тега без украшений/регистра.
+   */
+  clanTag: (process.env['WT_CLAN_TAG'] ?? '').trim(),
+  /** Лимит кэша картинок боёв data/battles в МБ (перерисовываются из БД) */
+  battleCacheMb: process.env['WT_BATTLE_CACHE_MB'] ?? '400',
 }

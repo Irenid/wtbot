@@ -57,6 +57,11 @@ const dashboardHtml = `<!doctype html>
       <div class="big" id="items-total">—</div>
       <div id="items-by-source"></div>
     </div>
+    <div class="card">
+      <h2>Разбор боёв</h2>
+      <div class="big" id="ingest-done">—</div>
+      <div id="ingest-detail"></div>
+    </div>
     <div class="card full">
       <h2 class="head-row">В голосовых каналах <button id="voice-refresh" class="btn">Обновить</button></h2>
       <div id="voice-list" class="muted">Загрузка…</div>
@@ -156,6 +161,17 @@ async function refresh() {
     bySource.replaceChildren.apply(bySource, data.items.bySource.slice(0, 5).map(function (s) {
       return row(s.source, String(s.count));
     }));
+
+    if (data.ingest) {
+      document.getElementById('ingest-done').textContent = data.ingest.ingested;
+      const det = document.getElementById('ingest-detail');
+      det.replaceChildren(
+        row('в очереди', String(data.ingest.pending), data.ingest.pending ? '' : 'ok'),
+        row('не удалось', String(data.ingest.failed), data.ingest.failed ? 'fail' : 'muted'),
+        row('игроков', data.ingest.players.toLocaleString('ru')),
+        row('убийств', data.ingest.kills.toLocaleString('ru'))
+      );
+    }
 
     const voiceList = document.getElementById('voice-list');
     if (voiceData.channels.length === 0) {

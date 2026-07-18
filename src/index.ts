@@ -4,6 +4,7 @@ import { startBot } from './bot/index.js'
 import { startVoiceTracker } from './bot/voice-tracker.js'
 import { buildServer } from './web/index.js'
 import { startParsers, stopParsers } from './parsers/index.js'
+import { startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
 
 // Точка входа: один процесс поднимает три модуля — бота, сайт и парсеры.
 // Общаются они не напрямую, а через общую БД (src/db) и явные интерфейсы,
@@ -33,6 +34,10 @@ console.log(`[web] Дашборд: http://localhost:${config.port}`)
 // 4. Фоновые парсеры
 startParsers()
 
+// 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
+// фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)
+startIngestWorker()
+
 // Аккуратная остановка по Ctrl+C
 let shuttingDown = false
 async function shutdown(signal: string): Promise<void> {
@@ -40,6 +45,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true
   console.log(`\n[core] Получен ${signal} — останавливаюсь...`)
   stopParsers()
+  stopIngestWorker()
   await app.close()
   await client.destroy()
   closeDb()

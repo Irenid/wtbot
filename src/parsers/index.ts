@@ -8,8 +8,13 @@ import type { ParserSource } from './types.js'
 // его видно на дашборде и в /stats.
 
 const timers: NodeJS.Timeout[] = []
+/** Источники, чей прошлый запуск ещё не завершился — чтобы догон парсера
+ *  (может листать десятки страниц) не наложился на следующий тик */
+const running = new Set<string>()
 
 async function runOnce(source: ParserSource): Promise<void> {
+  if (running.has(source.name)) return
+  running.add(source.name)
   try {
     const output = await source.run()
     let summary = output.summary
@@ -25,6 +30,8 @@ async function runOnce(source: ParserSource): Promise<void> {
     const message = err instanceof Error ? err.message : String(err)
     recordParseResult(source.name, false, null, message)
     console.error(`[parser:${source.name}] Ошибка — ${message}`)
+  } finally {
+    running.delete(source.name)
   }
 }
 

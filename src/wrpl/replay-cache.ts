@@ -60,6 +60,16 @@ export async function fetchReplayPart(url: string): Promise<Buffer> {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** Удаляет кэш частей одной сессии (после ingest — данные уже в БД) */
+export function dropReplayCache(sessionIdHex: string): void {
+  const dir = path.join(CACHE_DIR, sessionIdHex.toLowerCase())
+  try {
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // не смогли удалить — не критично, TTL-чистка снесёт позже
+  }
+}
+
 /** Раз за процесс сносит сессии старше REPLAY_CACHE_DAYS */
 function cleanupOnce(): void {
   if (cleanedUp) return
