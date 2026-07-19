@@ -31,7 +31,11 @@ export async function startBot(): Promise<Client> {
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`[bot] Готов! Вошёл как ${readyClient.user.tag}`)
     // Автоанонс новых боёв в канал WT_BATTLES_CHANNEL (если задан)
-    startBattleAnnouncer(readyClient)
+    if (config.battleBackgroundEnabled) {
+      startBattleAnnouncer(readyClient)
+    } else {
+      console.log('[announce] Автоанонс боёв отключён')
+    }
   })
 
   const handleInteraction = async (interaction: Interaction): Promise<void> => {

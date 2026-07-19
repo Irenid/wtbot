@@ -59,6 +59,8 @@ export interface HeatmapInput {
   dict: VehicleDict
   mission: MissionInfo | null
   mode: 'ground' | 'air'
+  /** Индекс команды из buildRosters; без значения рисуются обе команды. */
+  teamIndex?: number
   /** Тип ГСН по id оружия (для значков причины смерти) */
   seekers?: Map<string, MissileSeeker>
 }
@@ -82,11 +84,11 @@ export function buildHeatmapSvg(
   tacticalMap: string | null = null,
   fallbackMap: string | null = null,
 ): string {
-  const { events, results, dict, mission, mode, seekers } = input
+  const { events, results, dict, mission, mode, seekers, teamIndex } = input
 
   // Игроки в порядке команд со скриншота результатов (слева — «золотая»)
   const rosters = buildRosters(results)
-  const players: PlayerPaths[] = []
+  const allPlayers: PlayerPaths[] = []
   rosters.forEach((roster, ti) => {
     roster.forEach((p, pi) => {
       const paths = events.units
@@ -94,7 +96,7 @@ export function buildHeatmapSvg(
         .map((u) => (mode === 'air' ? truncateAtDeath(u, events, p.userId) : u))
         .filter((u) => u.path.length >= 2)
       if (paths.length === 0) return
-      players.push({
+      allPlayers.push({
         userId: p.userId,
         name: p.name.replace(/@(psn|live|epic)$/i, ''),
         clanTag: p.clanTag,
@@ -105,11 +107,14 @@ export function buildHeatmapSvg(
       })
     })
   })
+  const players = teamIndex === undefined ? allPlayers : allPlayers.filter((player) => player.team === teamIndex)
 
   // Границы мира: battleArea миссии, иначе габариты траекторий; всегда квадрат.
   // Наземная карта с известным battleArea кладётся на весь кадр (снимок
   // покрывает ровно его), остальные режимы — с небольшим полем.
-  const allPoints = players.flatMap((p) => p.paths.flatMap((q) => q.path))
+  // Масштаб командной карты совпадает с общей: границы считаются по обеим
+  // командам, а цвета назначаются до фильтрации.
+  const allPoints = allPlayers.flatMap((p) => p.paths.flatMap((q) => q.path))
   let bounds = mission?.area ?? null
   const fullBleed = mode === 'ground' && bounds !== null
   if (!fullBleed) {
@@ -271,7 +276,7 @@ export function buildHeatmapSvg(
   const skulls: string[] = []
   const causeBadges: string[] = []
   const causeLabels: string[] = []
-  const playerById = new Map(players.map((p) => [p.userId, p]))
+  const playerById = new Map(allPlayers.map((p) => [p.userId, p]))
   for (const p of players) {
     const ranges = p.paths.map((u) => ({
       from: u.path[0]!.t - 5000,
@@ -347,6 +352,66 @@ export function buildHeatmapSvg(
       }
     }
   }
+
+  // На поле карты одного клана показываем уничтоженных им противников только
+  // точкой гибели, без чужого маршрута; в панели остаются оба состава.
+  if (teamIndex !== undefined) {
+    for (const killer of players) {
+      for (const k of events.kills) {
+        if (k.killerId !== killer.userId || k.victimId === killer.userId) continue
+        const victim = playerById.get(k.victimId)
+        if (!victim || victim.team === teamIndex) continue
+        if (!killer.models.includes(modelId(k.killerModel)) || !victim.models.includes(modelId(k.victimModel))) continue
+
+        const killerActive = killer.paths.some(
+          (unit) => k.time >= unit.path[0]!.t - 5000 && k.time <= unit.path[unit.path.length - 1]!.t + 45000,
+        )
+        const victimRange = victim.paths
+          .map((unit) => ({
+            from: unit.path[0]!.t - 5000,
+            to: unit.path[unit.path.length - 1]!.t + 45000,
+            last: unit.path[unit.path.length - 1]!,
+          }))
+          .find((range) => k.time >= range.from && k.time <= range.to)
+        if (!killerActive || !victimRange) continue
+
+        const pos =
+          k.victimPos && isNear(k.victimPos, victimRange.last)
+            ? k.victimPos
+            : nearestPoint(victim.paths, k.time)
+        if (!pos) continue
+
+        const tx = px(pos.x)
+        const ty = pz(pos.z)
+        skulls.push(skullIcon(tx, ty, victim.color))
+        const cause = deathCause(k, mode, dict, seekers)
+        if (cause) causeBadges.push(causeBadge(tx + 15, ty + 14, cause, killer.color))
+
+        // Пунктир повторяет обозначение общей карты: цветом убийцы клана.
+        const from = pointAtTime(killer.paths, k.time) ?? nearestPoint(killer.paths, k.time) ?? k.killerPos
+        if (!from) continue
+        let fx = px(from.x)
+        let fy = pz(from.z)
+        let clipped = false
+        if (fx < 0 || fx > MAP_W || fy < 0 || fy > MAP_W) {
+          const t = Math.max(
+            fx < 0 ? -fx / (tx - fx) : fx > MAP_W ? (MAP_W - fx) / (tx - fx) : 0,
+            fy < 0 ? -fy / (ty - fy) : fy > MAP_W ? (MAP_W - fy) / (ty - fy) : 0,
+          )
+          if (!Number.isFinite(t) || t <= 0 || t >= 1) continue
+          fx += (tx - fx) * t
+          fy += (ty - fy) * t
+          clipped = true
+        }
+        killLines.push(
+          `<line x1="${r1(fx)}" y1="${r1(fy)}" x2="${r1(tx)}" y2="${r1(ty)}" stroke="${killer.color}" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"/>`,
+        )
+        if (!clipped) {
+          killLines.push(`<circle cx="${r1(fx)}" cy="${r1(fy)}" r="4.5" fill="${killer.color}" stroke="#10130d" stroke-width="1.6"/>`)
+        }
+      }
+    }
+  }
   parts.push(...killLines, ...survivorDots, ...skulls, ...causeBadges, ...causeLabels)
 
   // Фраги/смерти за весь бой для легенды (самострел фрагом не считается)
@@ -382,7 +447,7 @@ export function buildHeatmapSvg(
   const dateText =
     `${when.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}, ` +
     when.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-  const durText = endTime > 60000 ? ` · бой ${fmtTime(endTime)}` : ''
+  const durText = endTime > 60000 ? ` · Длительность: ${fmtTime(endTime)}` : ''
   parts.push(
     `<text x="${PX}" y="66" font-family="${FONTS}" font-size="33" font-weight="700" fill="#ffffff">${esc(trimTo(mapName, 22))}</text>`,
     `<text x="${PX}" y="100" font-family="${FONTS}" font-size="19" fill="#9aa2b1">${esc(gameMode)} · ${mode === 'ground' ? 'наземная техника' : 'авиация'}</text>`,
@@ -390,41 +455,43 @@ export function buildHeatmapSvg(
     `<line x1="${PX}" y1="150" x2="${PR}" y2="150" stroke="#2a2e35" stroke-width="1.5"/>`,
   )
 
-  // Команды сверху вниз в порядке сторон на карте (по медиане стартов)
-  const teamSideX = [0, 1].map((ti) => {
-    const xs = players
-      .filter((p) => p.team === ti)
-      .map((p) => p.paths[0]!.path[0]!.x)
-      .sort((a, b) => a - b)
-    return xs.length > 0 ? xs[Math.floor(xs.length / 2)]! : null
+  // Медиана первых позиций игроков даёт устойчивую точку спавна команды.
+  // Порядок в панели повторяет чтение карты: сверху вниз, затем слева направо.
+  const teamSpawns = [0, 1].map((ti) => teamSpawn(allPlayers.filter((p) => p.team === ti), cx, cz, half))
+  const orderTeams = [0, 1].sort((a, b) => {
+    const sa = teamSpawns[a]
+    const sb = teamSpawns[b]
+    if (!sa || !sb) return sa ? -1 : sb ? 1 : a - b
+    const dy = pz(sa.z) - pz(sb.z)
+    return Math.abs(dy) > MAP_W * 0.15 ? dy : px(sa.x) - px(sb.x)
   })
-  const sidesKnown = teamSideX[0] !== null && teamSideX[1] !== null
-  const orderTeams = sidesKnown && teamSideX[0]! > teamSideX[1]! ? [1, 0] : [0, 1]
   const resultById = new Map(rosters.flat().map((rp) => [rp.userId, rp]))
 
   let py = 192
-  orderTeams.forEach((ti, order) => {
+  orderTeams.forEach((ti) => {
     const roster = rosters[ti]
     if (!roster) return
-    const teamPlayers = players.filter((p) => p.team === ti)
+    // Панель всегда повторяет общую heatmap; teamIndex фильтрует только поле карты.
+    const teamPlayers = allPlayers.filter((p) => p.team === ti)
     const clan = mostCommonTag(roster.map((rp) => rp.clanTag))
     const label = clan ? tagMarkup(clan, gameFont) : `Команда ${roster[0]?.team ?? ti + 1}`
     const won = events.teamWon > 0 && roster[0]?.team === events.teamWon
-    const side = sidesKnown ? (order === 0 ? 'слева на карте' : 'справа на карте') : ''
+    const spawn = teamSpawns[ti]
+    const spawnText = spawn?.label ?? ''
     parts.push(
-      `<text x="${PX}" y="${py}" font-family="${FONTS}" font-size="29" font-weight="700" fill="#ffffff">${label}</text>`,
-      `<text x="${PR}" y="${py}" font-family="${FONTS}" font-size="17" text-anchor="end">` +
-        (won ? `<tspan fill="#f2c811" font-weight="700">победа</tspan>` : '') +
-        (won && side ? `<tspan fill="#5a616e"> · </tspan>` : '') +
-        `<tspan fill="#9aa2b1">${side}</tspan></text>`,
+      `<text x="${PX}" y="${py}" font-family="${FONTS}" font-size="29" font-weight="700" fill="${won ? '#f2c811' : '#ffffff'}">${label}</text>`,
+      won
+        ? `<text x="${PR}" y="${py}" font-family="${FONTS}" font-size="17" font-weight="700" text-anchor="end" fill="#f2c811">победа</text>`
+        : '',
+      `<text x="${PR}" y="${py + 21}" font-family="${FONTS}" font-size="16" text-anchor="end" fill="#9aa2b1">${spawnText}</text>`,
     )
-    py += 16
+    py += 30
     for (const p of teamPlayers) {
       const rp = resultById.get(p.userId)
       const [kills, deaths] = killsDeaths.get(p.userId) ?? [0, 0]
       const vehicles = p.models.map((m) => vehicleInfo(dict, m).name).join(', ')
       const deathsAt = events.kills.filter((k) => k.victimId === p.userId).map((k) => k.time)
-      const fate = deathsAt.length > 0 ? `✝ ${fmtTime(Math.max(...deathsAt))}` : 'жив'
+      const fate = deathsAt.length > 0 ? `погиб ${fmtTime(Math.max(...deathsAt))}` : 'жив'
       const fateColor = deathsAt.length > 0 ? '#d98c8c' : '#9fd6a4'
       parts.push(
         `<rect x="${PX}" y="${py + 6}" width="20" height="20" rx="4" fill="${p.color}"/>`,
@@ -432,7 +499,7 @@ export function buildHeatmapSvg(
         `<text x="${PR}" y="${py + 23}" font-family="${FONTS}" font-size="21" font-weight="700" text-anchor="end" fill="#d7dce4">${kills}/${deaths}</text>`,
         `<text x="${PX + 32}" y="${py + 46}" font-family="${FONTS}" font-size="17" fill="#8f97a6">${esc(trimTo(vehicles, 27))}</text>`,
         `<text x="${PR}" y="${py + 46}" font-family="${FONTS}" font-size="17" text-anchor="end">` +
-          (rp ? `<tspan fill="#8f97a6">${rp.score} очк · </tspan>` : '') +
+          (rp ? `<tspan fill="#8f97a6">${rp.score} очк. · </tspan>` : '') +
           `<tspan fill="${fateColor}">${fate}</tspan></text>`,
       )
       py += 58
@@ -504,6 +571,54 @@ function trimTo(s: string, n: number): string {
 /** мс от начала боя → «м:сс» */
 const fmtTime = (ms: number): string =>
   `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`
+
+interface TeamSpawn {
+  x: number
+  z: number
+  label: string
+}
+
+/** Медианный начальный спавн команды и его направление относительно центра карты. */
+function teamSpawn(players: PlayerPaths[], cx: number, cz: number, half: number): TeamSpawn | null {
+  const starts = players.flatMap((player) => {
+    const first = player.paths
+      .map((unit) => unit.path[0])
+      .filter((point): point is SpaceTime => point !== undefined)
+      .sort((a, b) => a.t - b.t)[0]
+    return first ? [first] : []
+  })
+  if (starts.length === 0) return null
+
+  const median = (values: number[]): number => {
+    const sorted = [...values].sort((a, b) => a - b)
+    const middle = Math.floor(sorted.length / 2)
+    return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2
+  }
+  const x = median(starts.map((point) => point.x))
+  const z = median(starts.map((point) => point.z))
+  const dx = (x - cx) / half
+  const dz = (z - cz) / half
+  if (Math.hypot(dx, dz) < 0.12) return { x, z, label: 'спавн в центре' }
+
+  const sector = Math.round(Math.atan2(dz, dx) / (Math.PI / 4))
+  const direction =
+    sector === 0
+      ? 'справа'
+      : sector === 1
+        ? 'сверху справа'
+        : sector === 2
+          ? 'сверху'
+          : sector === 3
+            ? 'сверху слева'
+            : Math.abs(sector) === 4
+              ? 'слева'
+              : sector === -3
+                ? 'снизу слева'
+                : sector === -2
+                  ? 'снизу'
+                  : 'снизу справа'
+  return { x, z, label: `спавн ${direction}` }
+}
 
 /** Шаг меток времени в минутах: не больше ~6 меток на траекторию */
 function tickStepMinutes(durationMs: number): number {

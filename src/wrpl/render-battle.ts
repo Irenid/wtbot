@@ -89,6 +89,11 @@ export function decorateTag(tag: string): string {
   return [...tag].map((ch) => DECOR_MAP[ch] ?? ch).join('')
 }
 
+/** Убирает только игровые рамки клан-тега, сохраняя обычные дефисы и знаки. */
+export function stripClanDecorators(tag: string): string {
+  return [...tag].filter((ch) => !DECOR_RE.test(ch)).join('')
+}
+
 /**
  * Клан-тег без украшений — только ядро из букв и цифр в нижнем регистре.
  * В реплее тег обёрнут символами рамок (╊xFUBx╋, -AURI-, ═Astrx║), поэтому

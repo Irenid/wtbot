@@ -5,8 +5,10 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:bot": "tsx watch src/index.ts --no-battle-background",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:bot": "node dist/index.js --no-battle-background",
     "deploy:commands": "tsx src/bot/deploy-commands.ts",
     "analyze": "tsx src/analysis/analyze-items.ts",
     "battle": "tsx src/analysis/battle-summary.ts",
