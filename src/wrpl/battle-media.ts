@@ -11,7 +11,12 @@ import {
 } from '../workers/pool.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
 import { loadBattleData, reconstructBattle, type BattleItemMeta } from './battle-data.js'
-import { ensureTacticalMap, ensureWeaponSeekers, loadMapBackground } from './battle-assets.js'
+import {
+  ensureTacticalMap,
+  ensureWeaponSeekers,
+  loadMapBackground,
+  loadMapIconFontPath,
+} from './battle-assets.js'
 import { fetchMissionInfo } from './mission-info.js'
 import { dropReplayCache } from './replay-cache.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
@@ -53,7 +58,7 @@ const cacheFile = (sessionIdHex: string, kind: BattleMediaKind): string =>
   path.join(CACHE_DIR, `${sessionIdHex}-${kind}${kind === 'chat' ? '.txt' : '.png'}`)
 
 const highResCacheFile = (sessionIdHex: string, kind: BattleHeatmapKind): string =>
-  path.join(CACHE_DIR, `${sessionIdHex}-${kind}@2x.png`)
+  path.join(CACHE_DIR, `${sessionIdHex}-${kind}@2x-v${BATTLE_MEDIA_VERSION}.png`)
 
 /** Cache hit без синхронного чтения большого PNG на Discord event loop. */
 export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaKind): Promise<Buffer | null> {
@@ -81,7 +86,7 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 20
+  version?: 35
   teamWon: number
   endTimeMs: number
   hasAir: boolean
@@ -115,7 +120,7 @@ export async function cachedBattleHeatmap2x(
   }
 }
 
-const BATTLE_MEDIA_VERSION = 20
+const BATTLE_MEDIA_VERSION = 35
 
 export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta | null> {
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
@@ -185,20 +190,26 @@ async function doBuildBattleHeatmap2x(
   const missionName = meta.missionName ?? stored.header.locName ?? ''
   const weaponIds = getBattleWeaponIds(stored.header.sessionId)
   const trackMission = workerControlTracker(state)
-  const [dict, mission, fontFiles, seekers] = await Promise.all([
+  const [dict, mission, gameFontFiles, seekers, mapIconFont] = await Promise.all([
     ensureVehicleDict(state.priority),
     stored.missionSettings
       ? fetchMissionInfo(stored.missionSettings, () => state.priority, trackMission)
       : Promise.resolve(null),
     ensureGameFonts(state.priority),
     ensureWeaponSeekers(weaponIds),
+    loadMapIconFontPath(),
   ])
+  const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
   const tacticalMap = mission?.area ? await ensureTacticalMap(missionName) : null
   const fallbackMap = tacticalMap ? null : await loadMapBackground(stored.header.level)
   const wireBlob = transferableBuffer(stored.eventsBlob)
   const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
   const wireFallbackMap = fallbackMap
-    ? { mime: fallbackMap.mime, data: transferableBuffer(fallbackMap.data) }
+    ? {
+        mime: fallbackMap.mime,
+        data: transferableBuffer(fallbackMap.data),
+        ...(fallbackMap.viewport ? { viewport: fallbackMap.viewport } : {}),
+      }
     : null
   const transferList = [wireBlob]
   if (wireTacticalMap) transferList.push(wireTacticalMap)
@@ -220,7 +231,8 @@ async function doBuildBattleHeatmap2x(
         scale: 2,
         assets: {
           fontFiles,
-          gameFont: fontFiles.length > 0,
+          gameFont: gameFontFiles.length > 0,
+          mapIconFont: mapIconFont !== null,
           tacticalMap: wireTacticalMap,
           fallbackMap: wireFallbackMap,
           seekers: [...seekers],
@@ -320,21 +332,27 @@ async function doBuildBattleMedia(
 
   const missionName = meta.missionName ?? header.locName ?? ''
   const trackMission = workerControlTracker(state)
-  const [dict, mission, fontFiles, seekers] = await Promise.all([
+  const [dict, mission, gameFontFiles, seekers, mapIconFont] = await Promise.all([
     ensureVehicleDict(state.priority),
     missionSettings
       ? fetchMissionInfo(missionSettings, () => state.priority, trackMission)
       : Promise.resolve(null),
     ensureGameFonts(state.priority),
     ensureWeaponSeekers(weaponIds),
+    loadMapIconFontPath(),
   ])
+  const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
   const tacticalMap = mission?.area ? await ensureTacticalMap(missionName) : null
   const fallbackMap = tacticalMap ? null : await loadMapBackground(header.level)
 
   const wireBlob = transferableBuffer(eventsBlob)
   const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
   const wireFallbackMap = fallbackMap
-    ? { mime: fallbackMap.mime, data: transferableBuffer(fallbackMap.data) }
+    ? {
+        mime: fallbackMap.mime,
+        data: transferableBuffer(fallbackMap.data),
+        ...(fallbackMap.viewport ? { viewport: fallbackMap.viewport } : {}),
+      }
     : null
   const transferList = [wireBlob]
   if (wireTacticalMap) transferList.push(wireTacticalMap)
@@ -352,7 +370,8 @@ async function doBuildBattleMedia(
         mission,
         assets: {
           fontFiles,
-          gameFont: fontFiles.length > 0,
+          gameFont: gameFontFiles.length > 0,
+          mapIconFont: mapIconFont !== null,
           tacticalMap: wireTacticalMap,
           fallbackMap: wireFallbackMap,
           seekers: [...seekers],

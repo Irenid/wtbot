@@ -212,9 +212,22 @@ class CpuWorkerPool {
     let worker: Worker
     try {
       const sourceRuntime = /\.[cm]?ts$/i.test(fileURLToPath(import.meta.url))
-      worker = new Worker(new URL('./entry.js', import.meta.url), {
+      const entryUrl = new URL(sourceRuntime ? './entry.ts' : './entry.js', import.meta.url)
+      // В worker_threads обычный `--import tsx` умеет открыть entry.ts, но на
+      // Node 24 не применяет TS-resolver к его ESM-импортам с расширением .js.
+      // Программная регистрация tsx внутри самого worker покрывает и entry, и
+      // весь его граф импортов. Dist по-прежнему запускает готовый entry.js.
+      const workerUrl = sourceRuntime
+        ? new URL(
+            `data:text/javascript,${encodeURIComponent(
+              `import { register } from ${JSON.stringify(import.meta.resolve('tsx/esm/api'))};` +
+              `register();await import(${JSON.stringify(entryUrl.href)})`,
+            )}`,
+          )
+        : entryUrl
+      worker = new Worker(workerUrl, {
         name: `wtbot-cpu-${this.slots.size + 1}`,
-        execArgv: sourceRuntime ? ['--import', 'tsx'] : [],
+        execArgv: [],
         resourceLimits: { maxOldGenerationSizeMb: 768 },
       })
     } catch (error) {
