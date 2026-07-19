@@ -60,6 +60,8 @@ export interface RenderedMediaResult {
   log: ArrayBuffer
   heatmapGround: ArrayBuffer
   heatmapAir: ArrayBuffer
+  heatmapTeamGround: [ArrayBuffer, ArrayBuffer]
+  heatmapTeamAir: [ArrayBuffer, ArrayBuffer]
   chat: string
   summary: BattleEventSummary
 }

@@ -36,4 +36,6 @@ export const config = {
   battleCacheMb: process.env['WT_BATTLE_CACHE_MB'] ?? '400',
   /** CPU workers для WRPL/zlib/Resvg; 1–8, по умолчанию min(2, CPU−1) */
   workerThreads: workerThreadCount(),
+  /** Фоновый ingest .wrpl и автоанонс; флаг CLI удобен для облегчённого запуска бота. */
+  battleBackgroundEnabled: !process.argv.includes('--no-battle-background'),
 }

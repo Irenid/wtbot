@@ -69,6 +69,7 @@ src/
 npm install
 npm run deploy:commands   # регистрирует /ping и /stats в Discord
 npm run dev               # запускает бота + сайт + парсеры с перезагрузкой при изменениях
+npm run dev:bot           # то же, но без фонового разбора и автоанонса боёв
 ```
 
 Дашборд: http://localhost:3000 · API: http://localhost:3000/api/stats, /api/items и /api/voice
@@ -95,6 +96,7 @@ Cloudflare-проверку браузера, поэтому его тут не�
 | Команда                   | Что делает                                        |
 |---------------------------|---------------------------------------------------|
 | `npm run dev`             | запуск в разработке (tsx watch)                   |
+| `npm run dev:bot`         | бот + сайт без фонового разбора и автоанонса боёв |
 | `npm run deploy:commands` | регистрация slash-команд (после их изменения)     |
 | `npm run analyze`         | анализ 3 новых записей нейросетью (`-- 20` — 20)  |
 | `npm run battle`          | таблица результатов боя из реплея (`-- <id>`, `--image`, `--json`) |
@@ -104,6 +106,7 @@ Cloudflare-проверку браузера, поэтому его тут не�
 | `npm run verify:workers:dist` | тот же smoke для собранного `dist/`          |
 | `npm run benchmark:workers -- data/replays/<sid> [--render]` | локальный WRPL/PNG-бенчмарк без сети и БД |
 | `npm start`               | запуск собранной версии (продакшен)               |
+| `npm run start:bot`       | собранная версия без разбора и автоанонса боёв    |
 
 ## Парсер War Thunder (wt-replays)
 

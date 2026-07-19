@@ -14,7 +14,7 @@ import { buildBattleMedia, cachedBattleMedia, cachedBattleMeta, type BattleMedia
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
 import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
-import { renderBattleImage, summarizeTeams } from '../../wrpl/render-battle.js'
+import { renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 import type { WorkerPriority } from '../../workers/pool.js'
 
@@ -142,14 +142,29 @@ export async function renderBattlePost(
       .setURL(`https://warthunder.com/en/tournament/replay/${header.sessionId}`),
     new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel('View Chat').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel('Battle Log').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`battle:heatmap-ground:${header.sessionId}`)
-      .setLabel('Heatmap (Ground)')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`battle:heatmap-air:${header.sessionId}`)
-      .setLabel('Heatmap (Air)')
-      .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`battle:heatmap-ground:${header.sessionId}`)
+        .setLabel('Heatmap (gnd)')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`battle:heatmap-air:${header.sessionId}`)
+        .setLabel('Heatmap (air)')
+        .setStyle(ButtonStyle.Secondary),
+    )
+  const clanRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    ...teams.slice(0, 2).flatMap((team, teamIndex) => {
+      const clan = stripClanDecorators(team.rawTag ?? team.clan ?? `Команда ${teamIndex + 1}`)
+      return [
+        new ButtonBuilder()
+          .setCustomId(`battle:heatmap-team-${teamIndex}:${header.sessionId}`)
+          .setLabel(`${clan} (gnd)`)
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`battle:heatmap-team-air-${teamIndex}:${header.sessionId}`)
+          .setLabel(`${clan} (air)`)
+          .setStyle(ButtonStyle.Secondary),
+      ]
+    }),
   )
 
   const makePayload = async (
@@ -160,7 +175,7 @@ export async function renderBattlePost(
     return {
       content,
       files: [new AttachmentBuilder(png, { name: `battle-${header.sessionIdHex}.png` })],
-      components: [row],
+      components: [row, clanRow],
     }
   }
 
@@ -222,8 +237,12 @@ export async function stopWinnerUpdates(): Promise<void> {
 
 const KIND_NAMES: Record<BattleMediaKind, string> = {
   log: 'battle log',
-  'heatmap-ground': 'хитмапу (наземка)',
-  'heatmap-air': 'хитмапу (авиация)',
+  'heatmap-ground': 'карту наземной техники',
+  'heatmap-air': 'карту авиации',
+  'heatmap-team-0': 'карту первого клана',
+  'heatmap-team-1': 'карту второго клана',
+  'heatmap-team-air-0': 'воздушную карту первого клана',
+  'heatmap-team-air-1': 'воздушную карту второго клана',
   chat: 'чат',
 }
 
@@ -261,6 +280,10 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
         kind === 'log' ? built.log
         : kind === 'heatmap-ground' ? built.heatmapGround
         : kind === 'heatmap-air' ? built.heatmapAir
+        : kind === 'heatmap-team-0' ? built.heatmapTeamGround[0]
+        : kind === 'heatmap-team-1' ? built.heatmapTeamGround[1]
+        : kind === 'heatmap-team-air-0' ? built.heatmapTeamAir[0]
+        : kind === 'heatmap-team-air-1' ? built.heatmapTeamAir[1]
         : Buffer.from(built.chat)
     } catch (err) {
       console.error(`[bot] сборка ${kind} для ${sessionId}:`, err)

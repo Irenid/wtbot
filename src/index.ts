@@ -37,7 +37,11 @@ startParsers()
 
 // 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
 // фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)
-startIngestWorker()
+if (config.battleBackgroundEnabled) {
+  startIngestWorker()
+} else {
+  console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
+}
 
 // Аккуратная остановка по Ctrl+C
 let shuttingDown = false
