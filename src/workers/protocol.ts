@@ -2,7 +2,7 @@ import type { BattleInput } from '../db/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
-import type { MissileSeeker } from '../wrpl/battle-assets.js'
+import type { MapImageViewport, MissileSeeker } from '../wrpl/battle-assets.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
 import type { BattleItemMeta } from '../wrpl/battle-transform.js'
 
@@ -28,6 +28,7 @@ export type WireBattleInput = Omit<BattleInput, 'eventsBlob'> & { eventsBlob: Ar
 export interface WireImage {
   mime: 'image/png' | 'image/jpeg'
   data: ArrayBuffer
+  viewport?: MapImageViewport
 }
 
 export interface ParsedBattleResult {
@@ -54,6 +55,7 @@ export interface MediaRenderInput {
   assets: {
     fontFiles: string[]
     gameFont: boolean
+    mapIconFont: boolean
     tacticalMap: ArrayBuffer | null
     fallbackMap: WireImage | null
     seekers: [string, MissileSeeker][]

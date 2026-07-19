@@ -1,8 +1,8 @@
-import type { MissileSeeker } from './battle-assets.js'
+import type { MapImageViewport, MissileSeeker } from './battle-assets.js'
 import type { MissionInfo } from './mission-info.js'
 import type { ReplayEvents, ReplayKill, ReplayUnitPath, SpaceTime } from './replay-events.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
-import { buildRosters, stripClanDecorators, tagMarkup } from './render-battle.js'
+import { buildRosters, clanDisplayName, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 
 /**
@@ -47,6 +47,9 @@ const PATH_COLORS = [
   ['#f04a50', '#f57d1f', '#ffd08a', '#19c2c9', '#a8ecff', '#a86ef5', '#ff8fd0', '#ffffff'],
   ['#f2c811', '#c9f25e', '#37c463', '#12dfae', '#c8cdd6', '#cfa4ff', '#f24ab2', '#ffb3a6'],
 ]
+const TEAM_SPAWN_COLORS = ['#17e6ec', '#fa2028'] as const
+/** Временный переключатель точного crop/grid из capture:map. */
+const CAPTURED_MAP_RENDERING_ENABLED = false
 
 const FONTS = `Segoe UI, Segoe UI Symbol, Microsoft YaHei, Malgun Gothic, Yu Gothic UI, Arial, sans-serif`
 
@@ -131,9 +134,19 @@ export function buildHeatmapSvg(
   gameFont = false,
   tacticalMap: string | null = null,
   fallbackMap: string | null = null,
+  fallbackMapViewport?: MapImageViewport,
+  mapIconFont = false,
+  capturedMapRendering = CAPTURED_MAP_RENDERING_ENABLED,
 ): string {
   const { events, results, dict, mission, mode, seekers, teamIndex } = input
   const renderScale = input.renderScale ?? 1
+  // Координатная привязка нужна и для готового игрового скриншота. Отключатель ниже
+  // убирает только повторную обрезку, сетку и значки новой прорисовки.
+  const fallbackWorldBounds = mode === 'ground' ? fallbackMapViewport?.worldBounds : undefined
+  if (!capturedMapRendering) {
+    fallbackMapViewport = undefined
+    mapIconFont = false
+  }
 
   // Игроки в порядке команд со скриншота результатов (слева — «золотая»)
   const rosters = buildRosters(results)
@@ -157,6 +170,32 @@ export function buildHeatmapSvg(
     })
   })
   const players = teamIndex === undefined ? allPlayers : allPlayers.filter((player) => player.team === teamIndex)
+  // БПЛА приходят из лётной модели без userId. На командной наземной карте
+  // связываем их с ближайшей активной машиной в момент запуска; далёкий или
+  // неоднозначный БПЛА не рисуем, чтобы не приписать разведку чужому игроку.
+  const clanUavs = mode === 'ground' && teamIndex !== undefined
+    ? events.units
+        .filter((unit) =>
+          unit.source === 'air' &&
+          unit.userId === '' &&
+          unit.path.length >= 2 &&
+          /(?:ucav|uav|drone|recon)/i.test(modelId(unit.model)),
+        )
+        .map((unit) => {
+          const start = unit.path[0]!
+          const owner = allPlayers
+            .filter((player) => player.team === teamIndex)
+            .map((player) => ({ player, point: pointAtTime(player.paths, start.t) ?? nearestPoint(player.paths, start.t) }))
+            .filter((candidate): candidate is { player: PlayerPaths; point: SpaceTime } => candidate.point !== null)
+            .map((candidate) => ({
+              ...candidate,
+              distance: Math.hypot(candidate.point.x - start.x, candidate.point.z - start.z),
+            }))
+            .sort((a, b) => a.distance - b.distance)[0]
+          return owner && owner.distance <= 180 ? { unit, owner: owner.player } : null
+        })
+        .filter((uav): uav is { unit: ReplayUnitPath; owner: PlayerPaths } => uav !== null)
+    : []
 
   // Границы мира: battleArea миссии, иначе габариты траекторий; всегда квадрат.
   // Наземная карта с известным battleArea кладётся на весь кадр (снимок
@@ -164,7 +203,7 @@ export function buildHeatmapSvg(
   // Масштаб командной карты совпадает с общей: границы считаются по обеим
   // командам, а цвета назначаются до фильтрации.
   const allPoints = allPlayers.flatMap((p) => p.paths.flatMap((q) => q.path))
-  let bounds = mission?.area ?? null
+  let bounds = fallbackWorldBounds ?? mission?.area ?? null
   const fullBleed = mode === 'ground' && bounds !== null
   if (!fullBleed) {
     bounds = fitBounds(allPoints, bounds)
@@ -208,19 +247,42 @@ export function buildHeatmapSvg(
     ? ` image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"`
     : ''
   pushMapLayer(1, 'base', [`<rect width="${MAP_W}" height="${MAP_W}" fill="#3c4034"/>`])
-  if (mapImage && mission?.area) {
-    const a = mission.area
-    const ix = px(a.x0)
-    const iy = pz(a.z1)
-    const iw = px(a.x1) - ix
-    const ih = pz(a.z0) - iy
-    pushMapLayer(2, 'map-image', [
-      `<image x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" preserveAspectRatio="none"${mapImageAttrs} href="${mapImage}"/>`,
-    ])
+  if (mapImage && (mission?.area || fallbackMapViewport)) {
+    const a = mission?.area
+    const ix = fallbackMapViewport ? 0 : px(a!.x0)
+    const iy = fallbackMapViewport ? 0 : pz(a!.z1)
+    const iw = fallbackMapViewport ? MAP_W : px(a!.x1) - ix
+    const ih = fallbackMapViewport ? MAP_W : pz(a!.z0) - iy
+    if (fallbackMapViewport) {
+      const crop = fallbackMapViewport
+      const imageX = ix - (crop.x / crop.width) * iw
+      const imageY = iy - (crop.y / crop.height) * ih
+      const imageWidth = iw / crop.width
+      const imageHeight = ih / crop.height
+      pushMapLayer(2, 'map-image', [
+        `<defs><clipPath id="fallback-map-viewport"><rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}"/></clipPath></defs>`,
+        `<image data-map-viewport="${r1(crop.x)} ${r1(crop.y)} ${r1(crop.width)} ${r1(crop.height)}" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none" clip-path="url(#fallback-map-viewport)"${mapImageAttrs} href="${mapImage}"/>`,
+      ])
+    } else {
+      pushMapLayer(2, 'map-image', [
+        `<image x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" preserveAspectRatio="none"${mapImageAttrs} href="${mapImage}"/>`,
+      ])
+    }
     // лёгкое затемнение — чтобы траектории читались поверх карты
     pushMapLayer(4, 'readability-shade', [
       `<rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" fill="#0a0e14" fill-opacity="0.18"/>`,
     ])
+    if (fallbackMapViewport?.gridStepX && fallbackMapViewport.gridStepY) {
+      pushMapLayer(5, 'coordinate-grid', coordinateGrid(
+        ix,
+        iy,
+        iw,
+        ih,
+        fallbackMapViewport.gridStepX,
+        fallbackMapViewport.gridStepY,
+        fallbackMapViewport.gridStepMeters,
+      ))
+    }
   } else if (mapImage) {
     pushMapLayer(2, 'map-image', [
       `<image x="0" y="0" width="${MAP_W}" height="${MAP_W}" preserveAspectRatio="xMidYMid slice"${mapImageAttrs} href="${mapImage}"/>`,
@@ -245,9 +307,17 @@ export function buildHeatmapSvg(
     const a = mission.area
     const fx = px(a.x0)
     const fy = pz(a.z1)
-    pushMapLayer(5, 'battle-area', [
+    pushMapLayer(6, 'battle-area', [
       `<rect x="${r1(fx)}" y="${r1(fy)}" width="${r1(px(a.x1) - fx)}" height="${r1(pz(a.z0) - fy)}" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="2.5" stroke-dasharray="14 10"/>`,
     ])
+  }
+
+  if (mode === 'ground' && !tacticalMap && capturedMapRendering) {
+    const captureZones = fallbackMapViewport?.captureZones?.length
+      ? fallbackMapViewport.captureZones.map((zone) =>
+          captureZoneMarker(zone.x * MAP_W, zone.y * MAP_W, zone.letter, mapIconFont))
+      : (mission?.zones ?? []).map((zone) => captureZoneMarker(px(zone.x), pz(zone.z), zone.letter, mapIconFont))
+    pushMapLayer(7, 'capture-zones', captureZones)
   }
 
   // По началам всех жизней находим один или два спавна команды. Подпись остаётся
@@ -262,14 +332,37 @@ export function buildHeatmapSvg(
       }))),
     ),
   )
+  const teamSpawnClustersByTeam = [0, 1].map((ti) =>
+    teamSpawnClusters(allPlayers.filter((player) => player.team === ti), half),
+  )
+  if (mode === 'ground' && capturedMapRendering) {
+    const spawnMarkers = !tacticalMap && fallbackMapViewport?.groundSpawns?.length
+      ? fallbackMapViewport.groundSpawns.map((spawn) => {
+          const x = spawn.x * MAP_W
+          const y = spawn.y * MAP_W
+          const nearestTeam = teamSpawnClustersByTeam
+            .map((clusters, ti) => ({
+              ti,
+              distance: clusters.length === 0 ? Infinity : Math.min(...clusters.map((cluster) =>
+                Math.hypot(px(cluster.x) - x, pz(cluster.z) - y),
+              )),
+            }))
+            .sort((a, b) => a.distance - b.distance)[0]?.ti ?? 0
+          return teamSpawnMarker(x, y, nearestTeam, mapIconFont)
+        })
+      : teamSpawnClustersByTeam.flatMap((spawns, ti) =>
+          spawns.map((spawn) => teamSpawnMarker(px(spawn.x), pz(spawn.z), ti, mapIconFont)),
+        )
+    pushMapLayer(8, 'team-spawns', spawnMarkers)
+  }
   const occupiedSpawnLabels: PixelBox[] = []
   const spawnLabels: string[] = []
   for (const ti of [0, 1]) {
     const roster = rosters[ti]
     if (!roster) continue
     const rawClan = mostCommonTag(roster.map((player) => player.clanTag))
-    const clan = rawClan ? stripClanDecorators(rawClan) : `Команда ${roster[0]?.team ?? ti + 1}`
-    for (const spawn of teamSpawnClusters(allPlayers.filter((player) => player.team === ti), half)) {
+    const clan = rawClan ? clanDisplayName(rawClan) : `Команда ${roster[0]?.team ?? ti + 1}`
+    for (const spawn of teamSpawnClustersByTeam[ti] ?? []) {
       const placement = placeSpawnLabel(px(spawn.x), pz(spawn.z), clan, visibleRouteSegments, occupiedSpawnLabels)
       occupiedSpawnLabels.push(placement.box)
       const attrs = `data-spawn-label="${ti}" x="${r1(placement.x)}" y="${r1(placement.y)}" text-anchor="${placement.anchor}" font-family="${FONTS}" font-size="24" font-weight="700"`
@@ -279,7 +372,7 @@ export function buildHeatmapSvg(
       )
     }
   }
-  pushMapLayer(6, 'spawn-labels', spawnLabels)
+  pushMapLayer(9, 'spawn-labels', spawnLabels)
 
   // Непрерывный маршрут и его стрелки остаются одним SVG path. Маршруты
   // сортируются по времени начала, а редкие локальные мостики в пересечениях
@@ -315,6 +408,42 @@ export function buildHeatmapSvg(
     const attrs = `data-route-player="${esc(route.playerId)}" data-route-start-time="${Math.round(route.startTime)}" data-route-end-time="${Math.round(route.endTime)}" data-route-points="${route.points.length}" data-route-source-points="${route.sourcePoints.length}"`
     return { route, d, attrs }
   })
+
+  // БПЛА — отдельный, более спокойный слой командной наземной карты: зона
+  // наблюдения, тонкий пунктир цвета владельца и отметка запуска. Обычные
+  // маршруты остаются выше, поэтому разведка не перекрывает движение техники.
+  const uavAreas: TimedSvg[] = []
+  const uavPaths: TimedSvg[] = []
+  const uavStarts: TimedSvg[] = []
+  for (const { unit, owner } of clanUavs) {
+    const points = simplifyRoutePoints(
+      unit.path.map((point) => ({ x: px(point.x), y: pz(point.z), time: point.t })),
+      1,
+    )
+    if (points.length < 2) continue
+    const start = points[0]!
+    const last = points[points.length - 1]!
+    const d = routePath(points)
+    uavAreas.push(timed(
+      last.time,
+      `<circle data-uav-observation="1" cx="${r1(last.x)}" cy="${r1(last.y)}" r="22" fill="${owner.color}" fill-opacity="0.1" stroke="${owner.color}" stroke-opacity="0.56" stroke-width="1.5" stroke-dasharray="5 4"/>`,
+    ))
+    uavPaths.push(timed(
+      start.time,
+      `<path data-uav-route="1" data-uav-owner="${esc(owner.userId)}" d="${d}" fill="none" stroke="${owner.color}" stroke-width="2" stroke-opacity="0.82" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5"/>`,
+    ))
+    uavStarts.push(timed(
+      start.time,
+      `<g data-uav-start="1" transform="translate(${r1(start.x)} ${r1(start.y)})">` +
+        `<circle r="6" fill="#10130d" fill-opacity="0.82" stroke="${owner.color}" stroke-width="2"/>` +
+        `<path d="M-3 0H3M0-3V3" stroke="${owner.color}" stroke-width="1.5" stroke-linecap="round"/>` +
+        `</g>`,
+    ))
+  }
+  pushMapLayer(10, 'uav-observation', chronological(uavAreas))
+  pushMapLayer(11, 'uav-routes', chronological(uavPaths))
+  pushMapLayer(12, 'uav-starts', chronological(uavStarts))
+
   // Все обводки лежат ниже всех цветов. Поэтому верхний маршрут не вырезает
   // чёрную щель в нижнем, но контраст линий с фоном карты сохраняется.
   const routeParts = [
@@ -336,7 +465,7 @@ export function buildHeatmapSvg(
         `</g>`,
     )
   })
-  pushMapLayer(7, 'routes', [...routeParts, ...chronological(crossingParts)])
+  pushMapLayer(13, 'routes', [...routeParts, ...chronological(crossingParts)])
 
   // Время первой смерти игрока в пределах жизни юнита: остов подбитой
   // машины шлёт статичную позицию до конца боя — без обрезки по смерти
@@ -381,8 +510,8 @@ export function buildHeatmapSvg(
       }
     }
   }
-  pushMapLayer(8, 'camp-areas', chronological(campAreas))
-  pushMapLayer(9, 'camp-labels', chronological(campLabels))
+  pushMapLayer(14, 'camp-areas', chronological(campAreas))
+  pushMapLayer(15, 'camp-labels', chronological(campLabels))
 
   // Метки времени: кружок с номером минуты раз в tickStep минут вдоль
   // каждой траектории; у стоящего юнита слипшиеся метки пропускаются —
@@ -410,7 +539,7 @@ export function buildHeatmapSvg(
       }
     }
   }
-  pushMapLayer(10, 'minute-marks', chronological(minuteMarks))
+  pushMapLayer(16, 'minute-marks', chronological(minuteMarks))
 
   // Смерти: череп на месте каждого убийства этого игрока (в рамках путей
   // данного режима, в цвете погибшего), значок и подпись причины,
@@ -598,13 +727,13 @@ export function buildHeatmapSvg(
       }
     }
   }
-  pushMapLayer(11, 'kill-lines', chronological(killLines))
-  pushMapLayer(12, 'kill-origins', chronological(killOriginDots))
-  pushMapLayer(13, 'marker-leaders', chronological(markerLeaders))
-  pushMapLayer(14, 'survivor-dots', chronological(survivorDots))
-  pushMapLayer(15, 'death-skulls', chronological(skulls))
-  pushMapLayer(16, 'death-causes', chronological(causeBadges))
-  pushMapLayer(17, 'killer-labels', chronological(causeLabels))
+  pushMapLayer(17, 'kill-lines', chronological(killLines))
+  pushMapLayer(18, 'kill-origins', chronological(killOriginDots))
+  pushMapLayer(19, 'marker-leaders', chronological(markerLeaders))
+  pushMapLayer(20, 'survivor-dots', chronological(survivorDots))
+  pushMapLayer(21, 'death-skulls', chronological(skulls))
+  pushMapLayer(22, 'death-causes', chronological(causeBadges))
+  pushMapLayer(23, 'killer-labels', chronological(causeLabels))
 
   // Фраги/смерти за весь бой для легенды (самострел фрагом не считается)
   const killsDeaths = new Map<string, [number, number]>()
@@ -637,7 +766,7 @@ export function buildHeatmapSvg(
   const mapName = title?.[2] ?? input.missionName
   const selectedRoster = teamIndex === undefined ? undefined : rosters[teamIndex]
   const selectedRawClan = selectedRoster ? mostCommonTag(selectedRoster.map((player) => player.clanTag)) : null
-  const selectedClan = selectedRawClan ? stripClanDecorators(selectedRawClan) : null
+  const selectedClan = selectedRawClan ? clanDisplayName(selectedRawClan) : null
   const selectedText = selectedClan ? ` · маршруты: ${trimTo(selectedClan, 12)}` : ''
   const modeFontSize = selectedText ? 16 : 19
   const when = new Date(input.header.startTime * 1000)
@@ -664,7 +793,7 @@ export function buildHeatmapSvg(
   })
   const resultById = new Map(rosters.flat().map((rp) => [rp.userId, rp]))
   const orderedTeams = orderTeams.filter((ti) => rosters[ti] !== undefined)
-  const legendRows = 4
+  const legendRows = clanUavs.length > 0 ? 5 : 4
   const legendHeight = 40 + legendRows * 34
   const legendY = H - 30 - legendHeight
   const teamGap = 52
@@ -748,6 +877,13 @@ export function buildHeatmapSvg(
     [causeBadge(0, 0, { icon: 'tank' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), 'чем убит'],
     [`<circle r="6.5" fill="${glyphColor}" stroke="#10130d" stroke-width="1.8"/>`, 'жив в конце боя'],
   ]
+  if (clanUavs.length > 0) {
+    symbols.push([
+      `<path d="M-11 0H11" stroke="${glyphColor}" stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round"/>` +
+        `<circle r="5" fill="#10130d" stroke="${glyphColor}" stroke-width="1.7"/>`,
+      'БПЛА и зона наблюдения',
+    ])
+  }
   parts.push(
     `<line data-panel-legend="1" x1="${PX}" y1="${legendY}" x2="${PR}" y2="${legendY}" stroke="#2a2e35" stroke-width="1.5"/>`,
     `<text x="${PX}" y="${legendY + 30}" font-family="${FONTS}" font-size="19" font-weight="600" fill="#cfd4dc">Обозначения</text>`,
@@ -772,6 +908,81 @@ const r1 = (v: number): string => (Math.round(v * 10) / 10).toString()
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+/** Координатная сетка игровой тактической карты с цифрами сверху и буквами слева. */
+function coordinateGrid(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  stepX: number,
+  stepY: number,
+  stepMeters?: number,
+): string[] {
+  const parts: string[] = []
+  const cellWidth = width * stepX
+  const cellHeight = height * stepY
+  const lineAttrs = 'stroke="#10130d" stroke-opacity="0.58" stroke-width="1.6"'
+  const labelAttrs = `font-family="${FONTS}" font-size="22" fill="#0b0d0a" stroke="#ded7aa" stroke-opacity="0.32" stroke-width="2.2" paint-order="stroke" text-anchor="middle"`
+  for (let offset = 0; offset <= width + 0.1; offset += cellWidth) {
+    const gx = Math.min(x + offset, x + width)
+    parts.push(`<line data-grid-line="vertical" x1="${r1(gx)}" y1="${r1(y)}" x2="${r1(gx)}" y2="${r1(y + height)}" ${lineAttrs}/>`)
+  }
+  for (let offset = 0; offset <= height + 0.1; offset += cellHeight) {
+    const gy = Math.min(y + offset, y + height)
+    parts.push(`<line data-grid-line="horizontal" x1="${r1(x)}" y1="${r1(gy)}" x2="${r1(x + width)}" y2="${r1(gy)}" ${lineAttrs}/>`)
+  }
+  for (let offset = 0, column = 1; offset < width; offset += cellWidth, column++) {
+    const center = x + offset + cellWidth / 2
+    if (center > x + width) break
+    parts.push(`<text data-grid-column="${column}" x="${r1(center)}" y="${r1(y + 28)}" ${labelAttrs}>${column}</text>`)
+  }
+  for (let offset = 0, row = 0; offset < height && row < 26; offset += cellHeight, row++) {
+    const center = y + offset + cellHeight / 2
+    if (center > y + height - 12) break
+    const label = String.fromCharCode(97 + row)
+    parts.push(`<text data-grid-row="${label}" x="${r1(x + 16)}" y="${r1(center + 7)}" ${labelAttrs}>${label}</text>`)
+  }
+  if (stepMeters) {
+    const barRight = x + width - 8
+    const barLeft = barRight - cellWidth
+    const barY = y + height - 7
+    parts.push(
+      `<line data-grid-scale="${r1(stepMeters)}" x1="${r1(barLeft)}" y1="${r1(barY)}" x2="${r1(barRight)}" y2="${r1(barY)}" stroke="#0b0d0a" stroke-width="4"/>`,
+      `<text x="${r1((barLeft + barRight) / 2)}" y="${r1(barY - 10)}" ${labelAttrs}>${r1(stepMeters)} m</text>`,
+    )
+  }
+  return parts
+}
+
+/** Белый ромб точки захвата, как на игровой тактической карте. */
+function captureZoneMarker(x: number, y: number, letter: string, mapIconFont: boolean): string {
+  const diamond = mapIconFont
+    ? `<text y="17" font-family="indicators" font-size="55" fill="#f4f6f8" stroke="#252b31" stroke-width="2.2" paint-order="stroke" text-anchor="middle">7</text>`
+    : `<rect x="-14" y="-14" width="28" height="28" rx="2" transform="rotate(45)" fill="#f4f6f8" stroke="#252b31" stroke-width="2.2"/>`
+  return `<g data-capture-zone="${esc(letter)}" transform="translate(${r1(x)} ${r1(y)})">` +
+    diamond +
+    `<text y="7" font-family="${FONTS}" font-size="21" font-weight="800" fill="#171b20" text-anchor="middle">${esc(letter)}</text>` +
+    `</g>`
+}
+
+/** Танковый спавн команды; первая команда получает игровые жёлтые уголки. */
+function teamSpawnMarker(x: number, y: number, teamIndex: number, mapIconFont: boolean): string {
+  const color = TEAM_SPAWN_COLORS[Math.min(teamIndex, 1)]!
+  const brackets = teamIndex === 0
+    ? `<path d="M-31-18V-29H-18M18-29H31V-18M31 18V29H18M-18 29H-31V18" fill="none" stroke="#f4ef16" stroke-width="6" stroke-linecap="square"/>`
+    : ''
+  const icon = mapIconFont
+    ? `<text y="18" font-family="indicators" font-size="88" fill="${color}" stroke="#10130d" stroke-width="5" paint-order="stroke" text-anchor="middle">0</text>` +
+      `<text y="18" font-family="indicators" font-size="88" fill="${color}" stroke="#f4f6f8" stroke-width="1.3" paint-order="stroke" text-anchor="middle">0</text>`
+    : `<path d="M-27 3L-22-9H-10L-7-15H8L12-9H23L28-2L23 10H-22Z" fill="#10130d" fill-opacity="0.72" stroke="#10130d" stroke-width="5" stroke-linejoin="round"/>` +
+      `<path d="M-27 3L-22-9H-10L-7-15H8L12-9H23L28-2L23 10H-22Z" fill="${color}" stroke="#f4f6f8" stroke-width="1.4" stroke-linejoin="round"/>` +
+      `<path d="M-11-9H12M-3-15L17-19" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`
+  return `<g data-team-spawn="${teamIndex}" transform="translate(${r1(x)} ${r1(y)})">` +
+    brackets +
+    icon +
+    `</g>`
 }
 
 function trimTo(s: string, n: number): string {

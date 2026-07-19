@@ -95,6 +95,16 @@ export function stripClanDecorators(tag: string): string {
 }
 
 /**
+ * Короткое читаемое имя клана для подписей на карте: без игровой рамки и
+ * внешних ASCII-разделителей, но с сохранением знаков внутри самого имени.
+ */
+export function clanDisplayName(tag: string): string {
+  const stripped = stripClanDecorators(tag).trim()
+  const display = stripped.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+  return display || stripped
+}
+
+/**
  * Клан-тег без украшений — только ядро из букв и цифр в нижнем регистре.
  * В реплее тег обёрнут символами рамок (╊xFUBx╋, -AURI-, ═Astrx║), поэтому
  * для сравнения (например, с настройкой WT_CLAN_TAG) берём лишь ядро.
@@ -119,7 +129,13 @@ export function tagMarkup(tag: string, gameFont: boolean): string {
   for (const ch of tag) {
     if (DECOR_RE.test(ch)) {
       flush()
-      out += `<tspan font-family="${GAME_SYMBOLS_FAMILY}">${esc(ch)}</tspan>`
+      out +=
+        `<tspan ` +
+        `font-family="${GAME_SYMBOLS_FAMILY}" ` +
+        `font-weight="400" ` +
+        `font-style="normal">` +
+        `${esc(ch)}` +
+        `</tspan>`
     } else {
       plain += ch
     }
