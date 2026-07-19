@@ -924,6 +924,11 @@ export function hasBattle(sessionId: string): boolean {
   return getDb().prepare('SELECT 1 FROM battles WHERE session_id = ?').get(sessionId) !== undefined
 }
 
+/** Есть ли в разобранном бою хотя бы одно сообщение игрового чата. */
+export function hasBattleChat(sessionId: string): boolean {
+  return getDb().prepare('SELECT 1 FROM battle_chat WHERE session_id = ? LIMIT 1').get(sessionId) !== undefined
+}
+
 /** Клан-теги (сырые, с украшениями) участников боя — для фильтра автоанонса */
 export function getBattleClanTags(sessionId: string): string[] {
   const rows = getDb()

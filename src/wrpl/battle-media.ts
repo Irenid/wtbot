@@ -81,9 +81,11 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 17
+  version?: 20
   teamWon: number
   endTimeMs: number
+  hasAir: boolean
+  hasChat: boolean
 }
 
 /** Ленивый 2×-кэш одной выбранной карты; обычный bundle при этом не пересобирается. */
@@ -113,7 +115,7 @@ export async function cachedBattleHeatmap2x(
   }
 }
 
-const BATTLE_MEDIA_VERSION = 17
+const BATTLE_MEDIA_VERSION = 20
 
 export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta | null> {
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
@@ -124,7 +126,9 @@ export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta
       typeof parsed === 'object' &&
       (parsed as BattleMeta).version === BATTLE_MEDIA_VERSION &&
       Number.isFinite((parsed as BattleMeta).teamWon) &&
-      Number.isFinite((parsed as BattleMeta).endTimeMs)
+      Number.isFinite((parsed as BattleMeta).endTimeMs) &&
+      typeof (parsed as BattleMeta).hasAir === 'boolean' &&
+      typeof (parsed as BattleMeta).hasChat === 'boolean'
     ) {
       await touchBattleBundle(sessionIdHex)
       return parsed as BattleMeta
@@ -378,6 +382,11 @@ async function doBuildBattleMedia(
     version: BATTLE_MEDIA_VERSION,
     teamWon: summary.teamWon,
     endTimeMs: summary.endTimeMs,
+    hasAir: summary.airModels.some((model) => {
+      const vehicleClass = dict[model.replace(/^.*\//, '')]?.cls
+      return vehicleClass === 'F' || vehicleClass === 'H'
+    }),
+    hasChat: summary.chat > 0,
   } satisfies BattleMeta)
 
   await mkdir(CACHE_DIR, { recursive: true })

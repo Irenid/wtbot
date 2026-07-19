@@ -15,6 +15,10 @@ export interface BattleEventSummary {
   damage: number
   chat: number
   units: number
+  /** Воздушные юниты с реальной траекторией, а не самолёты в списке слотов. */
+  airUnits: number
+  /** Модели этих юнитов: БПЛА отсекаются при сравнении со словарём техники. */
+  airModels: string[]
   zones: number
   errors: string[]
 }
