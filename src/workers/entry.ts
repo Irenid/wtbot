@@ -10,6 +10,7 @@ import { unpackVromfs } from '../wrpl/vromfs.js'
 import { buildVehicleDict } from '../wrpl/vehicles.js'
 import type {
   AnyWorkerTask,
+  HeatmapRenderInput,
   MediaRenderInput,
   RenderedMediaResult,
   SerializedWorkerError,
@@ -31,14 +32,42 @@ function dataUri(mime: string, data: ArrayBuffer): string {
   return `data:${mime};base64,${Buffer.from(data).toString('base64')}`
 }
 
-async function rasterize(svg: string, fontFiles: string[]): Promise<ArrayBuffer> {
+async function rasterize(svg: string, fontFiles: string[], scale = 1): Promise<ArrayBuffer> {
   // Native binding нужен только рендеру. Его отсутствие не должно выключать
   // WRPL parse/font/vehicle tasks во всём пуле.
   const { Resvg } = await import('@resvg/resvg-js')
   const png = new Resvg(svg, {
     font: { loadSystemFonts: true, fontFiles, defaultFontFamily: 'Segoe UI' },
+    fitTo: scale === 1 ? { mode: 'original' } : { mode: 'zoom', value: scale },
   }).render().asPng()
   return exactArrayBuffer(png)
+}
+
+async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayBuffer; transfer: ArrayBuffer[] }> {
+  const events = decodeEventsBlob(Buffer.from(input.eventsBlob))
+  const tacticalMap = input.assets.tacticalMap ? dataUri('image/png', input.assets.tacticalMap) : null
+  const fallbackMap = input.assets.fallbackMap
+    ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
+    : null
+  const svg = buildHeatmapSvg(
+    {
+      missionName: input.missionName,
+      header: input.header,
+      results: input.results,
+      events,
+      dict: input.dict,
+      mission: input.mission,
+      mode: input.mode,
+      ...(input.teamIndex === undefined ? {} : { teamIndex: input.teamIndex }),
+      seekers: new Map(input.assets.seekers),
+      renderScale: input.scale,
+    },
+    input.assets.gameFont,
+    tacticalMap,
+    fallbackMap,
+  )
+  const png = await rasterize(svg, input.assets.fontFiles, input.scale)
+  return { value: png, transfer: [png] }
 }
 
 async function parseResults(input: Extract<AnyWorkerTask, { kind: 'parse-results' }>['input']) {
@@ -198,6 +227,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return await renderScoreboard(task.input)
     case 'render-media':
       return await renderMedia(task.input)
+    case 'render-heatmap':
+      return await renderHeatmap(task.input)
     case 'extract-game-font':
       return extractGameFont(task.input)
     case 'build-vehicle-dict':

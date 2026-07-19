@@ -9,8 +9,17 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import type { Command } from '../types.js'
+import { heatmapQualityRow, type HeatmapScale } from '../battle-media-controls.js'
 import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, type StoredItem } from '../../db/index.js'
-import { buildBattleMedia, cachedBattleMedia, cachedBattleMeta, type BattleMediaKind } from '../../wrpl/battle-media.js'
+import {
+  buildBattleHeatmap2x,
+  buildBattleMedia,
+  cachedBattleHeatmap2x,
+  cachedBattleMedia,
+  cachedBattleMeta,
+  type BattleMediaKind,
+} from '../../wrpl/battle-media.js'
+import { isBattleHeatmapKind } from '../../wrpl/battle-media-kind.js'
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
 import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
@@ -246,54 +255,84 @@ const KIND_NAMES: Record<BattleMediaKind, string> = {
   chat: 'чат',
 }
 
-/** Нажатия кнопок battle:<kind>:<sessionId> (роутер — в bot/index.ts) */
+/** Нажатия battle:<kind>:<sessionId>[:<scale>]; scale есть только у ephemeral-переключателя heatmap. */
 export async function handleBattleButton(interaction: ButtonInteraction): Promise<void> {
-  const [, kind, sessionId] = interaction.customId.split(':') as [string, BattleMediaKind, string]
+  const [, rawKind, sessionId, rawScale] = interaction.customId.split(':')
+  const kind = rawKind as BattleMediaKind
   if (!KIND_NAMES[kind] || !sessionId) return
+  if (rawScale !== undefined && rawScale !== '1' && rawScale !== '2') return
+  if (rawScale !== undefined && !isBattleHeatmapKind(kind)) return
+  const scale: HeatmapScale = rawScale === '2' ? 2 : 1
+  const isQualityToggle = rawScale !== undefined
 
   // Ответы видны только нажавшему — иначе кнопки быстро замусорят канал.
   // Подтверждаем до любых cache/worker/network операций: Discord даёт 3 с.
   // Протухший токен 10062 централизованно обрабатывает bot/index.ts.
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  if (isQualityToggle) await interaction.deferUpdate()
+  else await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   const sessionIdHex = BigInt(sessionId).toString(16).padStart(16, '0')
-  let media = await cachedBattleMedia(sessionIdHex, kind)
-
-  if (!media) {
-    const item = getItemByExternalId('wt-replays', sessionId)
-    const data = item?.data as ReplayItemData | undefined
-    const parts = data ? replayPartUrls(data) : []
-    // Бой в БД собирается из неё (реплей не нужен); иначе нужны части реплея
-    if (!hasBattle(sessionId) && (!item || parts.length === 0)) {
-      await interaction.editReply('Реплей этого боя не найден в базе — собрать материалы не из чего.')
-      return
-    }
-    try {
-      const built = await buildBattleMedia(
-        sessionId,
-        parts,
-        { missionName: data?.missionName ?? item?.title ?? '', gameMode: data?.gameMode, gameVersion: data?.gameVersion },
-        realNamesFromItem(data ?? {}),
-        'interactive',
-      )
-      media =
-        kind === 'log' ? built.log
-        : kind === 'heatmap-ground' ? built.heatmapGround
-        : kind === 'heatmap-air' ? built.heatmapAir
-        : kind === 'heatmap-team-0' ? built.heatmapTeamGround[0]
-        : kind === 'heatmap-team-1' ? built.heatmapTeamGround[1]
-        : kind === 'heatmap-team-air-0' ? built.heatmapTeamAir[0]
-        : kind === 'heatmap-team-air-1' ? built.heatmapTeamAir[1]
-        : Buffer.from(built.chat)
-    } catch (err) {
-      console.error(`[bot] сборка ${kind} для ${sessionId}:`, err)
-      await interaction.editReply(
-        `Не получилось собрать ${KIND_NAMES[kind]}: ${(err as Error).message}\n` +
-          'Части реплея могли уже протухнуть на CDN (живут около двух недель).',
-      )
-      return
-    }
+  const item = getItemByExternalId('wt-replays', sessionId)
+  const data = item?.data as ReplayItemData | undefined
+  const parts = data ? replayPartUrls(data) : []
+  const meta = {
+    missionName: data?.missionName ?? item?.title ?? '',
+    gameMode: data?.gameMode,
+    gameVersion: data?.gameVersion,
   }
+  let media: Buffer | null = null
+
+  try {
+    if (scale === 2 && isBattleHeatmapKind(kind)) {
+      media = await cachedBattleHeatmap2x(sessionIdHex, kind)
+      if (!media) {
+        // Первый обычный рендер сохраняет нормализованный бой в БД. HD-задача
+        // затем получает из неё blob и строит только одну выбранную карту.
+        if (!hasBattle(sessionId)) {
+          if (!item || parts.length === 0) {
+            await interaction.editReply('Реплей этого боя не найден в базе — собрать HD-карту не из чего.')
+            return
+          }
+          await buildBattleMedia(sessionId, parts, meta, realNamesFromItem(data ?? {}), 'interactive')
+        }
+        media = await buildBattleHeatmap2x(sessionId, kind, meta, 'interactive')
+      }
+    } else {
+      media = await cachedBattleMedia(sessionIdHex, kind)
+      if (!media) {
+        // Бой в БД собирается из неё (реплей не нужен); иначе нужны части реплея.
+        if (!hasBattle(sessionId) && (!item || parts.length === 0)) {
+          await interaction.editReply('Реплей этого боя не найден в базе — собрать материалы не из чего.')
+          return
+        }
+        const built = await buildBattleMedia(
+          sessionId,
+          parts,
+          meta,
+          realNamesFromItem(data ?? {}),
+          'interactive',
+        )
+        media =
+          kind === 'log' ? built.log
+          : kind === 'heatmap-ground' ? built.heatmapGround
+          : kind === 'heatmap-air' ? built.heatmapAir
+          : kind === 'heatmap-team-0' ? built.heatmapTeamGround[0]
+          : kind === 'heatmap-team-1' ? built.heatmapTeamGround[1]
+          : kind === 'heatmap-team-air-0' ? built.heatmapTeamAir[0]
+          : kind === 'heatmap-team-air-1' ? built.heatmapTeamAir[1]
+          : Buffer.from(built.chat)
+      }
+    }
+  } catch (err) {
+    console.error(`[bot] сборка ${kind} ${scale}× для ${sessionId}:`, err)
+    await interaction.editReply(
+      `Не получилось собрать ${KIND_NAMES[kind]} в ${scale}×: ${(err as Error).message}\n` +
+        'Части реплея могли уже протухнуть на CDN (живут около двух недель).',
+    )
+    return
+  }
+
+  if (!media) return
 
   if (kind === 'chat') {
     let text = media.toString('utf8')
@@ -303,6 +342,8 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
   }
 
   await interaction.editReply({
-    files: [new AttachmentBuilder(media, { name: `battle-${sessionIdHex}-${kind}.png` })],
+    ...(isQualityToggle ? { attachments: [] } : {}),
+    files: [new AttachmentBuilder(media, { name: `battle-${sessionIdHex}-${kind}${scale === 2 ? '@2x' : ''}.png` })],
+    components: isBattleHeatmapKind(kind) ? [heatmapQualityRow(kind, sessionId, scale)] : [],
   })
 }
