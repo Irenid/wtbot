@@ -20,20 +20,30 @@ import { ensureGameFonts, promoteGameFontLoad } from './wt-fonts.js'
 
 /**
  * Дополнительные материалы боя. Диск/сеть/SQLite остаются в main thread,
- * а gunzip/JSON, SVG и три Resvg-рендера выполняются одной bundle-задачей
- * в CPU worker, без тройного клонирования больших траекторий.
+ * а gunzip/JSON, SVG и Resvg-рендеры выполняются одной bundle-задачей
+ * в CPU worker, без повторного клонирования больших траекторий.
  */
 
 const CACHE_DIR = './data/battles'
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024
 const MAX_CHAT_BYTES = 2 * 1024 * 1024
 
-export type BattleMediaKind = 'log' | 'heatmap-ground' | 'heatmap-air' | 'chat'
+export type BattleMediaKind =
+  | 'log'
+  | 'heatmap-ground'
+  | 'heatmap-air'
+  | 'heatmap-team-0'
+  | 'heatmap-team-1'
+  | 'heatmap-team-air-0'
+  | 'heatmap-team-air-1'
+  | 'chat'
 
 export interface BattleMedia {
   log: Buffer
   heatmapGround: Buffer
   heatmapAir: Buffer
+  heatmapTeamGround: [Buffer, Buffer]
+  heatmapTeamAir: [Buffer, Buffer]
   chat: string
 }
 
@@ -71,10 +81,12 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 1
+  version?: 8
   teamWon: number
   endTimeMs: number
 }
+
+const BATTLE_MEDIA_VERSION = 8
 
 export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta | null> {
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
@@ -83,6 +95,7 @@ export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta
     if (
       parsed !== null &&
       typeof parsed === 'object' &&
+      (parsed as BattleMeta).version === BATTLE_MEDIA_VERSION &&
       Number.isFinite((parsed as BattleMeta).teamWon) &&
       Number.isFinite((parsed as BattleMeta).endTimeMs)
     ) {
@@ -229,28 +242,40 @@ async function doBuildBattleMedia(
   const log = Buffer.from(rendered.log)
   const heatmapGround = Buffer.from(rendered.heatmapGround)
   const heatmapAir = Buffer.from(rendered.heatmapAir)
+  const heatmapTeamGround: [Buffer, Buffer] = [
+    Buffer.from(rendered.heatmapTeamGround[0]),
+    Buffer.from(rendered.heatmapTeamGround[1]),
+  ]
+  const heatmapTeamAir: [Buffer, Buffer] = [
+    Buffer.from(rendered.heatmapTeamAir[0]),
+    Buffer.from(rendered.heatmapTeamAir[1]),
+  ]
   const summary = { ...rendered.summary, errors: parseErrors }
   const metadata = JSON.stringify({
-    version: 1,
+    version: BATTLE_MEDIA_VERSION,
     teamWon: summary.teamWon,
     endTimeMs: summary.endTimeMs,
   } satisfies BattleMeta)
 
   await mkdir(CACHE_DIR, { recursive: true })
   const metaFile = path.join(CACHE_DIR, `${header.sessionIdHex}-meta.json`)
-  // meta.json — commit marker. Пока четыре материала не опубликованы целиком,
+  // meta.json — commit marker. Пока все материалы не опубликованы целиком,
   // cache readers видят miss и не отдают смесь старого и нового поколения.
   await rm(metaFile, { force: true })
   await Promise.all([
     writeFileAtomic(cacheFile(header.sessionIdHex, 'log'), log),
     writeFileAtomic(cacheFile(header.sessionIdHex, 'heatmap-ground'), heatmapGround),
     writeFileAtomic(cacheFile(header.sessionIdHex, 'heatmap-air'), heatmapAir),
+    writeFileAtomic(cacheFile(header.sessionIdHex, 'heatmap-team-0'), heatmapTeamGround[0]),
+    writeFileAtomic(cacheFile(header.sessionIdHex, 'heatmap-team-1'), heatmapTeamGround[1]),
+    writeFileAtomic(cacheFile(header.sessionIdHex, 'heatmap-team-air-0'), heatmapTeamAir[0]),
+    writeFileAtomic(cacheFile(header.sessionIdHex, 'heatmap-team-air-1'), heatmapTeamAir[1]),
     writeFileAtomic(cacheFile(header.sessionIdHex, 'chat'), rendered.chat),
   ])
   await writeFileAtomic(metaFile, metadata)
   await enforceCacheCap()
 
-  return { log, heatmapGround, heatmapAir, chat: rendered.chat, header, summary }
+  return { log, heatmapGround, heatmapAir, heatmapTeamGround, heatmapTeamAir, chat: rendered.chat, header, summary }
 }
 
 const CACHE_CAP_BYTES = Math.max(50, Number(config.battleCacheMb) || 400) * 1024 * 1024
@@ -353,6 +378,10 @@ async function touchBattleBundle(sessionIdHex: string): Promise<void> {
     cacheFile(sessionIdHex, 'log'),
     cacheFile(sessionIdHex, 'heatmap-ground'),
     cacheFile(sessionIdHex, 'heatmap-air'),
+    cacheFile(sessionIdHex, 'heatmap-team-0'),
+    cacheFile(sessionIdHex, 'heatmap-team-1'),
+    cacheFile(sessionIdHex, 'heatmap-team-air-0'),
+    cacheFile(sessionIdHex, 'heatmap-team-air-1'),
     cacheFile(sessionIdHex, 'chat'),
   ]
   await Promise.all(files.map((file) => utimes(file, now, now).catch(() => undefined)))

@@ -108,15 +108,57 @@ async function renderMedia(input: MediaRenderInput): Promise<{ value: RenderedMe
     ),
     input.assets.fontFiles,
   )
+  const heatmapTeamGround: [ArrayBuffer, ArrayBuffer] = [
+    await rasterize(
+      buildHeatmapSvg(
+        { ...shared, mission: input.mission, mode: 'ground', seekers, teamIndex: 0 },
+        input.assets.gameFont,
+        tacticalMap,
+        fallbackMap,
+      ),
+      input.assets.fontFiles,
+    ),
+    await rasterize(
+      buildHeatmapSvg(
+        { ...shared, mission: input.mission, mode: 'ground', seekers, teamIndex: 1 },
+        input.assets.gameFont,
+        tacticalMap,
+        fallbackMap,
+      ),
+      input.assets.fontFiles,
+    ),
+  ]
+  const heatmapTeamAir: [ArrayBuffer, ArrayBuffer] = [
+    await rasterize(
+      buildHeatmapSvg(
+        { ...shared, mission: input.mission, mode: 'air', seekers, teamIndex: 0 },
+        input.assets.gameFont,
+        tacticalMap,
+        fallbackMap,
+      ),
+      input.assets.fontFiles,
+    ),
+    await rasterize(
+      buildHeatmapSvg(
+        { ...shared, mission: input.mission, mode: 'air', seekers, teamIndex: 1 },
+        input.assets.gameFont,
+        tacticalMap,
+        fallbackMap,
+      ),
+      input.assets.fontFiles,
+    ),
+  ]
   return {
     value: {
       log,
       heatmapGround,
       heatmapAir,
+      heatmapTeamGround,
+      heatmapTeamAir,
       chat: formatBattleChat(events),
       summary: summarizeEvents(events),
     },
-    transfer: [log, heatmapGround, heatmapAir],
+    transfer: [log, heatmapGround, heatmapAir, ...heatmapTeamGround, ...heatmapTeamAir],
   }
 }
 

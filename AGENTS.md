@@ -103,7 +103,9 @@ npm run verify:workers    # безопасный source-smoke CPU pool + Resvg
 npm run verify:workers:dist # тот же smoke после build, из dist
 npm run benchmark:workers -- data/replays/<sid> [--render] # локальный WRPL/PNG без сети/БД
 npm run dev               # живой бот + web + parsers, watch-режим
+npm run dev:bot           # то же без фонового разбора и автоанонса боёв
 npm start                 # запуск dist/index.js
+npm run start:bot         # запуск dist без фонового разбора и автоанонса боёв
 npm run deploy:commands   # изменяет slash-команды в Discord
 npm run battle -- <id>    # бой; дополнительные флаги: --image --media --json
 npm run backfill -- 3     # сетевой добор боёв и запись в БД
