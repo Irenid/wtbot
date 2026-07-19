@@ -56,6 +56,12 @@ export interface MediaRenderInput {
   }
 }
 
+export interface HeatmapRenderInput extends MediaRenderInput {
+  mode: 'ground' | 'air'
+  teamIndex?: number
+  scale: 2
+}
+
 export interface RenderedMediaResult {
   log: ArrayBuffer
   heatmapGround: ArrayBuffer
@@ -82,6 +88,10 @@ export interface WorkerTaskMap {
   'render-media': {
     input: MediaRenderInput
     output: RenderedMediaResult
+  }
+  'render-heatmap': {
+    input: HeatmapRenderInput
+    output: ArrayBuffer
   }
   'extract-game-font': {
     input: { vromfs: ArrayBuffer }

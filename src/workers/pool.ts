@@ -260,7 +260,11 @@ class CpuWorkerPool {
       return
     }
     slot.job = null
-    if (job.task.kind === 'render-scoreboard' || job.task.kind === 'render-media') slot.renderJobsCompleted++
+    if (
+      job.task.kind === 'render-scoreboard' ||
+      job.task.kind === 'render-media' ||
+      job.task.kind === 'render-heatmap'
+    ) slot.renderJobsCompleted++
     if (message.response.ok) this.settle(job, null, message.response.value)
     else {
       const err = new Error(message.response.error.message)

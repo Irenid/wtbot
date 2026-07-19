@@ -17,6 +17,13 @@ import { dropReplayCache } from './replay-cache.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
 import { ensureVehicleDict, promoteVehicleDictLoad } from './vehicles.js'
 import { ensureGameFonts, promoteGameFontLoad } from './wt-fonts.js'
+import {
+  heatmapSelection,
+  type BattleHeatmapKind,
+  type BattleMediaKind,
+} from './battle-media-kind.js'
+
+export type { BattleHeatmapKind, BattleMediaKind } from './battle-media-kind.js'
 
 /**
  * Дополнительные материалы боя. Диск/сеть/SQLite остаются в main thread,
@@ -27,16 +34,6 @@ import { ensureGameFonts, promoteGameFontLoad } from './wt-fonts.js'
 const CACHE_DIR = './data/battles'
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024
 const MAX_CHAT_BYTES = 2 * 1024 * 1024
-
-export type BattleMediaKind =
-  | 'log'
-  | 'heatmap-ground'
-  | 'heatmap-air'
-  | 'heatmap-team-0'
-  | 'heatmap-team-1'
-  | 'heatmap-team-air-0'
-  | 'heatmap-team-air-1'
-  | 'chat'
 
 export interface BattleMedia {
   log: Buffer
@@ -54,6 +51,9 @@ export interface BuiltBattleMedia extends BattleMedia {
 
 const cacheFile = (sessionIdHex: string, kind: BattleMediaKind): string =>
   path.join(CACHE_DIR, `${sessionIdHex}-${kind}${kind === 'chat' ? '.txt' : '.png'}`)
+
+const highResCacheFile = (sessionIdHex: string, kind: BattleHeatmapKind): string =>
+  path.join(CACHE_DIR, `${sessionIdHex}-${kind}@2x.png`)
 
 /** Cache hit без синхронного чтения большого PNG на Discord event loop. */
 export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaKind): Promise<Buffer | null> {
@@ -81,12 +81,39 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 8
+  version?: 17
   teamWon: number
   endTimeMs: number
 }
 
-const BATTLE_MEDIA_VERSION = 8
+/** Ленивый 2×-кэш одной выбранной карты; обычный bundle при этом не пересобирается. */
+export async function cachedBattleHeatmap2x(
+  sessionIdHex: string,
+  kind: BattleHeatmapKind,
+): Promise<Buffer | null> {
+  if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
+  if (!(await cachedBattleMeta(sessionIdHex))) return null
+  const file = highResCacheFile(sessionIdHex, kind)
+  try {
+    if ((await stat(file)).size > MAX_IMAGE_BYTES) {
+      await rm(file, { force: true }).catch(() => undefined)
+      return null
+    }
+    const data = await readFile(file)
+    if (!isPng(data)) {
+      await rm(file, { force: true }).catch(() => undefined)
+      return null
+    }
+    const now = new Date()
+    await utimes(file, now, now).catch(() => undefined)
+    return data
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+const BATTLE_MEDIA_VERSION = 17
 
 export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta | null> {
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
@@ -115,7 +142,103 @@ interface MediaBuildState {
 }
 
 const inflightBuilds = new Map<string, { promise: Promise<BuiltBattleMedia>; state: MediaBuildState }>()
+const inflightHeatmapBuilds = new Map<string, { promise: Promise<Buffer>; state: MediaBuildState }>()
 const activeCacheSessions = new Set<string>()
+
+/** Рендерит только запрошенную heatmap в 2×, не создавая остальные материалы боя. */
+export function buildBattleHeatmap2x(
+  sessionId: string,
+  kind: BattleHeatmapKind,
+  meta: BattleItemMeta,
+  priority: WorkerPriority = 'interactive',
+): Promise<Buffer> {
+  const sessionHex = toSessionHex(sessionId)
+  const key = `${sessionHex}:${kind}:2`
+  const running = inflightHeatmapBuilds.get(key)
+  if (running) {
+    promoteBuild(running.state, priority)
+    return running.promise
+  }
+  const state: MediaBuildState = { priority, workerControls: new Set() }
+  activeCacheSessions.add(sessionHex)
+  const build = doBuildBattleHeatmap2x(sessionId, kind, meta, state).finally(() => {
+    inflightHeatmapBuilds.delete(key)
+    activeCacheSessions.delete(sessionHex)
+  })
+  inflightHeatmapBuilds.set(key, { promise: build, state })
+  return build
+}
+
+async function doBuildBattleHeatmap2x(
+  sessionId: string,
+  kind: BattleHeatmapKind,
+  meta: BattleItemMeta,
+  state: MediaBuildState,
+): Promise<Buffer> {
+  const stored = reconstructBattle(sessionId)
+  if (!stored?.eventsBlob) throw new Error('Бой ещё не сохранён в базе для HD-рендера')
+
+  const missionName = meta.missionName ?? stored.header.locName ?? ''
+  const weaponIds = getBattleWeaponIds(stored.header.sessionId)
+  const trackMission = workerControlTracker(state)
+  const [dict, mission, fontFiles, seekers] = await Promise.all([
+    ensureVehicleDict(state.priority),
+    stored.missionSettings
+      ? fetchMissionInfo(stored.missionSettings, () => state.priority, trackMission)
+      : Promise.resolve(null),
+    ensureGameFonts(state.priority),
+    ensureWeaponSeekers(weaponIds),
+  ])
+  const tacticalMap = mission?.area ? await ensureTacticalMap(missionName) : null
+  const fallbackMap = tacticalMap ? null : await loadMapBackground(stored.header.level)
+  const wireBlob = transferableBuffer(stored.eventsBlob)
+  const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
+  const wireFallbackMap = fallbackMap
+    ? { mime: fallbackMap.mime, data: transferableBuffer(fallbackMap.data) }
+    : null
+  const transferList = [wireBlob]
+  if (wireTacticalMap) transferList.push(wireTacticalMap)
+  if (wireFallbackMap) transferList.push(wireFallbackMap.data)
+  const selection = heatmapSelection(kind)
+  const trackRender = workerControlTracker(state)
+  const rendered = await runWorkerTask(
+    {
+      kind: 'render-heatmap',
+      input: {
+        missionName,
+        header: stored.header,
+        results: stored.results,
+        eventsBlob: wireBlob,
+        dict,
+        mission,
+        mode: selection.mode,
+        ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
+        scale: 2,
+        assets: {
+          fontFiles,
+          gameFont: fontFiles.length > 0,
+          tacticalMap: wireTacticalMap,
+          fallbackMap: wireFallbackMap,
+          seekers: [...seekers],
+        },
+      },
+    },
+    {
+      priority: state.priority,
+      transferList,
+      timeoutMs: 120_000,
+      onControl: (control) => trackRender(control),
+    },
+  ).finally(() => trackRender(null))
+  const png = Buffer.from(rendered)
+  if (png.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error(`HD-карта слишком велика: ${(png.byteLength / 1024 / 1024).toFixed(1)} МБ`)
+  }
+  await mkdir(CACHE_DIR, { recursive: true })
+  await writeFileAtomic(highResCacheFile(stored.header.sessionIdHex, kind), png)
+  await enforceCacheCap()
+  return png
+}
 
 export function buildBattleMedia(
   sessionId: string,
