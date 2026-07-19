@@ -182,6 +182,10 @@ export function decodeEventsBlob(blob: Buffer): ReplayEvents {
 }
 
 export function summarizeEvents(events: ReplayEvents): BattleEventSummary {
+  // Flight Model шлёт траектории БПЛА с пустым userId. На карте игроков
+  // они не отображаются, поэтому не должны включать кнопки авиации.
+  const airUnits = events.units.filter((unit) => unit.source === 'air' && unit.userId !== '' && unit.path.length >= 2)
+  const airModels = [...new Set(airUnits.map((unit) => unit.model))]
   return {
     teamWon: events.teamWon,
     endTimeMs: events.endTime,
@@ -190,6 +194,8 @@ export function summarizeEvents(events: ReplayEvents): BattleEventSummary {
     damage: events.damage.length,
     chat: events.chat.length,
     units: events.units.length,
+    airUnits: airUnits.length,
+    airModels,
     zones: events.zones.length,
     errors: events.errors,
   }

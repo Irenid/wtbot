@@ -10,7 +10,7 @@ import {
 } from 'discord.js'
 import type { Command } from '../types.js'
 import { heatmapQualityRow, type HeatmapScale } from '../battle-media-controls.js'
-import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, type StoredItem } from '../../db/index.js'
+import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, hasBattleChat, type StoredItem } from '../../db/index.js'
 import {
   buildBattleHeatmap2x,
   buildBattleMedia,
@@ -127,6 +127,9 @@ export async function renderBattlePost(
   const dict = await ensureVehicleDict(priority)
   const teams = summarizeTeams(results, dict)
   const missionName = data.missionName ?? item.title
+  // До первой сборки точный признак неизвестен: results-BLK перечисляет
+  // доступную технику, а не только реально появившиеся в бою юниты.
+  let hasAir = true
 
   // Личный клановый рейтинг обеих команд — с сайта; сбой сети не должен
   // ломать команду, тогда картинка выходит без колонки ПКР
@@ -144,47 +147,62 @@ export async function renderBattlePost(
       .join('\n')
   if (content.length > 1990) content = content.slice(0, 1990) + '…'
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setLabel('View Replay')
-      .setStyle(ButtonStyle.Link)
-      .setURL(`https://warthunder.com/en/tournament/replay/${header.sessionId}`),
-    new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel('View Chat').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel('Battle Log').setStyle(ButtonStyle.Secondary),
+  const buildComponents = (hasChat: boolean): ActionRowBuilder<ButtonBuilder>[] => {
+    const overviewButtons = [
+      new ButtonBuilder()
+        .setLabel('View Replay')
+        .setStyle(ButtonStyle.Link)
+        .setURL(`https://warthunder.com/en/tournament/replay/${header.sessionId}`),
+      ...(hasChat
+        ? [new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel('View Chat').setStyle(ButtonStyle.Secondary)]
+        : []),
+      new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel('Battle Log').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`battle:heatmap-ground:${header.sessionId}`)
         .setLabel('Heatmap (gnd)')
         .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`battle:heatmap-air:${header.sessionId}`)
-        .setLabel('Heatmap (air)')
-        .setStyle(ButtonStyle.Secondary),
-    )
-  const clanRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    ...teams.slice(0, 2).flatMap((team, teamIndex) => {
+      ...(hasAir
+        ? [
+            new ButtonBuilder()
+              .setCustomId(`battle:heatmap-air:${header.sessionId}`)
+              .setLabel('Heatmap (air)')
+              .setStyle(ButtonStyle.Secondary),
+          ]
+        : []),
+    ]
+    const clanButtons = teams.slice(0, 2).flatMap((team, teamIndex) => {
       const clan = stripClanDecorators(team.rawTag ?? team.clan ?? `Команда ${teamIndex + 1}`)
       return [
         new ButtonBuilder()
           .setCustomId(`battle:heatmap-team-${teamIndex}:${header.sessionId}`)
           .setLabel(`${clan} (gnd)`)
           .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(`battle:heatmap-team-air-${teamIndex}:${header.sessionId}`)
-          .setLabel(`${clan} (air)`)
-          .setStyle(ButtonStyle.Secondary),
+        ...(hasAir
+          ? [
+              new ButtonBuilder()
+                .setCustomId(`battle:heatmap-team-air-${teamIndex}:${header.sessionId}`)
+                .setLabel(`${clan} (air)`)
+                .setStyle(ButtonStyle.Secondary),
+            ]
+          : []),
       ]
-    }),
-  )
+    })
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(...overviewButtons),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(...clanButtons),
+    ]
+  }
 
   const makePayload = async (
     winnerTeam: number | null,
+    hasChat: boolean,
     renderPriority: WorkerPriority = priority,
   ): Promise<BattlePostPayload> => {
     const png = await renderBattleImage({ missionName, header, results, dict, ratings, winnerTeam }, renderPriority)
     return {
       content,
       files: [new AttachmentBuilder(png, { name: `battle-${header.sessionIdHex}.png` })],
-      components: [row, clanRow],
+      components: buildComponents(hasChat),
     }
   }
 
@@ -192,14 +210,19 @@ export async function renderBattlePost(
   // разобрать бой) или из кэша меты. Если ни там, ни там — собираем материалы
   // в фоне: это и даст победителя, и подготовит кнопки к мгновенному ответу.
   const dbWinner = getBattleWinner(sessionId) // null — бой ещё не разобран
-  const metaWinner = (await cachedBattleMeta(header.sessionIdHex))?.teamWon ?? null
+  const mediaMeta = await cachedBattleMeta(header.sessionIdHex)
+  const metaWinner = mediaMeta?.teamWon ?? null
+  hasAir = mediaMeta?.hasAir ?? true
   const known = dbWinner !== null || metaWinner !== null
   const winner = dbWinner ?? metaWinner ?? 0
-  const payload = await makePayload(winner > 0 ? winner : null)
-  const buildWinnerPayload = known
+  const payload = await makePayload(
+    winner > 0 ? winner : null,
+    hasBattle(sessionId) ? hasBattleChat(sessionId) : mediaMeta?.hasChat ?? true,
+  )
+  const buildWinnerPayload = known && mediaMeta
     ? null
     : async (): Promise<BattlePostPayload | null> => {
-        await buildBattleMedia(
+        const built = await buildBattleMedia(
           sessionId,
           parts,
           { missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
@@ -207,8 +230,8 @@ export async function renderBattlePost(
           'background',
         )
         const fresh = getBattleWinner(sessionId) ?? (await cachedBattleMeta(header.sessionIdHex))?.teamWon ?? 0
-        if (fresh <= 0) return null
-        return makePayload(fresh, 'background')
+        hasAir = built.summary.airUnits > 0
+        return makePayload(fresh > 0 ? fresh : null, built.summary.chat > 0, 'background')
       }
   return { payload, sessionIdHex: header.sessionIdHex, buildWinnerPayload }
 }
