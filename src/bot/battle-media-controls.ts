@@ -3,6 +3,15 @@ import type { BattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 
 export type HeatmapScale = 1 | 2
 
+/** Возвращает масштаб, который помещается в лимит вложения текущего Discord-взаимодействия. */
+export function heatmapScaleForUpload(
+  requestedScale: HeatmapScale,
+  byteLength: number,
+  attachmentSizeLimit: number,
+): HeatmapScale {
+  return requestedScale === 2 && byteLength > attachmentSizeLimit ? 1 : requestedScale
+}
+
 export function heatmapQualityRow(
   kind: BattleHeatmapKind,
   sessionId: string,

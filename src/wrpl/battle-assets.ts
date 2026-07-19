@@ -23,6 +23,7 @@ import { readResponseBuffer, readResponseJson, readResponseText } from '../http-
 
 const ICONS_DIR = './data/unit-icons'
 const MAPS_DIR = './data/maps'
+const MAP_ICON_FONT = './data/fonts/map-icons.ttf'
 const ICONS_BASE =
   'https://raw.githubusercontent.com/gszabi99/War-Thunder-Datamine/master/atlases.vromfs.bin_u/units'
 const WTTOOLS_MANIFEST_URL = 'https://wt-tools.app/manifest.json'
@@ -85,9 +86,92 @@ async function loadUnitIcon(id: string): Promise<Buffer | null> {
 export interface BinaryImage {
   mime: 'image/png' | 'image/jpeg'
   data: Buffer
+  viewport?: MapImageViewport
 }
 
-/** Фон карты из data/maps/<level>.(jpg|jpeg|png); base64 кодирует CPU worker. */
+/** Нормализованная игровая область внутри полного изображения уровня. */
+export interface MapImageViewport {
+  x: number
+  y: number
+  width: number
+  height: number
+  /** Мировые координаты показанного игрового квадрата. */
+  worldBounds?: { x0: number; z0: number; x1: number; z1: number }
+  /** Шаг подписанной игровой сетки как доля ширины/высоты viewport. */
+  gridStepX?: number
+  gridStepY?: number
+  gridStepMeters?: number
+  captureZones?: { letter: string; x: number; y: number }[]
+  groundSpawns?: { x: number; y: number }[]
+}
+
+function validMapViewport(value: unknown): value is MapImageViewport {
+  if (value === null || typeof value !== 'object') return false
+  const viewport = value as Partial<MapImageViewport>
+  const numbers = [viewport.x, viewport.y, viewport.width, viewport.height]
+  const gridSteps = [viewport.gridStepX, viewport.gridStepY]
+  const gridMetersValid = viewport.gridStepMeters === undefined ||
+    (typeof viewport.gridStepMeters === 'number' && Number.isFinite(viewport.gridStepMeters) &&
+      viewport.gridStepMeters > 0 && viewport.gridStepMeters <= 100_000)
+  const normalizedPoint = (point: unknown): point is { x: number; y: number } => {
+    if (point === null || typeof point !== 'object') return false
+    const candidate = point as { x?: unknown; y?: unknown }
+    return typeof candidate.x === 'number' && Number.isFinite(candidate.x) && candidate.x >= 0 && candidate.x <= 1 &&
+      typeof candidate.y === 'number' && Number.isFinite(candidate.y) && candidate.y >= 0 && candidate.y <= 1
+  }
+  const zonesValid = viewport.captureZones === undefined ||
+    (Array.isArray(viewport.captureZones) && viewport.captureZones.length <= 16 &&
+      viewport.captureZones.every((zone) => normalizedPoint(zone) && /^[A-Z0-9]$/.test(zone.letter)))
+  const spawnsValid = viewport.groundSpawns === undefined ||
+    (Array.isArray(viewport.groundSpawns) && viewport.groundSpawns.length <= 8 &&
+      viewport.groundSpawns.every(normalizedPoint))
+  const worldBounds = viewport.worldBounds
+  const worldBoundsValid = worldBounds === undefined ||
+    ([worldBounds.x0, worldBounds.z0, worldBounds.x1, worldBounds.z1]
+      .every((part) => typeof part === 'number' && Number.isFinite(part)) &&
+      worldBounds.x1 > worldBounds.x0 && worldBounds.z1 > worldBounds.z0)
+  return numbers.every((part) => typeof part === 'number' && Number.isFinite(part)) &&
+    viewport.x! >= 0 && viewport.y! >= 0 && viewport.width! > 0 && viewport.height! > 0 &&
+    viewport.x! + viewport.width! <= 1.000_001 && viewport.y! + viewport.height! <= 1.000_001 &&
+    gridSteps.every((step) => step === undefined ||
+      (typeof step === 'number' && Number.isFinite(step) && step > 0 && step <= 1)) &&
+    gridMetersValid && zonesValid && spawnsValid && worldBoundsValid
+}
+
+/** map_info: grid_zero — левый верхний угол, grid_size — размер игровой области в метрах. */
+function worldBoundsFromMapInfo(value: unknown): MapImageViewport['worldBounds'] {
+  if (value === null || typeof value !== 'object') return undefined
+  const mapInfo = value as { grid_size?: unknown; grid_zero?: unknown }
+  if (!Array.isArray(mapInfo.grid_size) || !Array.isArray(mapInfo.grid_zero)) return undefined
+  const [width, height] = mapInfo.grid_size
+  const [x0, z1] = mapInfo.grid_zero
+  if (
+    typeof width !== 'number' || !Number.isFinite(width) || width <= 0 ||
+    typeof height !== 'number' || !Number.isFinite(height) || height <= 0 ||
+    typeof x0 !== 'number' || !Number.isFinite(x0) ||
+    typeof z1 !== 'number' || !Number.isFinite(z1)
+  ) return undefined
+  return { x0, z0: z1 - height, x1: x0 + width, z1 }
+}
+
+async function loadMapViewport(id: string): Promise<MapImageViewport | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path.join(MAPS_DIR, `${id}.map.json`), 'utf8'))
+    const document = parsed as { viewport?: unknown; mapInfo?: unknown } | null
+    const viewport = document?.viewport
+    if (!validMapViewport(viewport)) return undefined
+    const worldBounds = viewport.worldBounds ?? worldBoundsFromMapInfo(document?.mapInfo)
+    return worldBounds ? { ...viewport, worldBounds } : viewport
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return undefined
+    throw error
+  }
+}
+
+/**
+ * Фон карты из data/maps/<level>.(jpg|jpeg|png). Для полного map.img рядом можно
+ * положить <level>.map.json с viewport игровой области; base64 кодирует CPU worker.
+ */
 export async function loadMapBackground(headerLevel: string): Promise<BinaryImage | null> {
   const id = levelId(headerLevel)
   for (const ext of ['jpg', 'jpeg', 'png']) {
@@ -95,12 +179,24 @@ export async function loadMapBackground(headerLevel: string): Promise<BinaryImag
     try {
       const data = await readFile(file)
       const mime = ext === 'png' ? 'image/png' : 'image/jpeg'
-      return { mime, data }
+      const viewport = await loadMapViewport(id)
+      return { mime, data, ...(viewport ? { viewport } : {}) }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
   }
   return null
+}
+
+/** Шрифт значков карты, сохранённый командой capture:map с локального сервера игры. */
+export async function loadMapIconFontPath(): Promise<string | null> {
+  try {
+    const info = await stat(MAP_ICON_FONT)
+    return info.size >= 12 && info.size <= 2 * 1024 * 1024 ? path.resolve(MAP_ICON_FONT) : null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
 }
 
 // ---------- ГСН ракет (для значков причины смерти на хитмапе) ----------

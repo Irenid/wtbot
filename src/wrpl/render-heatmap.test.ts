@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, WrplHeader } from './replay.js'
-import { stripClanDecorators } from './render-battle.js'
+import type { MapImageViewport } from './battle-assets.js'
+import { clanDisplayName, stripClanDecorators } from './render-battle.js'
 import { buildHeatmapSvg } from './render-heatmap.js'
 
 const header: WrplHeader = {
@@ -47,7 +48,18 @@ const player: ReplayPlayerResult = {
   vehicles: ['test_tank'],
 }
 
-function renderAt(x: number, z: number, renderScale: 1 | 2 = 1, tacticalMap: string | null = null): string {
+function renderAt(
+  x: number,
+  z: number,
+  renderScale: 1 | 2 = 1,
+  tacticalMap: string | null = null,
+  fallbackMap: string | null = null,
+  fallbackMapViewport?: MapImageViewport,
+  mapIconFont = false,
+  withMission = true,
+  capturedMapRendering = true,
+  pathEndTime = 180_000,
+): string {
   const events: ReplayEvents = {
     teamWon: 1,
     players: [],
@@ -72,7 +84,7 @@ function renderAt(x: number, z: number, renderScale: 1 | 2 = 1, tacticalMap: str
         source: 'ground',
         path: [
           { t: 0, x, y: 0, z },
-          { t: 180_000, x: x + 10, y: 0, z: z + 10 },
+          { t: pathEndTime, x: x + 10, y: 0, z: z + 10 },
         ],
       },
     ],
@@ -86,10 +98,12 @@ function renderAt(x: number, z: number, renderScale: 1 | 2 = 1, tacticalMap: str
     results: { status: 'ok', timePlayed: 180, players: [player] },
     events,
     dict: {},
-    mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [{ letter: 'A', x: 0, z: 0 }] },
+    mission: withMission
+      ? { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [{ letter: 'A', x: 0, z: 0 }] }
+      : null,
     mode: 'ground',
     renderScale,
-  }, false, tacticalMap)
+  }, false, tacticalMap, fallbackMap, fallbackMapViewport, mapIconFont, capturedMapRendering)
 }
 
 test('heatmap сохраняет старый макет и новые текстовые подписи', () => {
@@ -103,7 +117,8 @@ test('heatmap сохраняет старый макет и новые текс�
   assert.ok(svg.includes('погиб 2:00'))
   assert.ok(svg.includes('fill="#f2c811">AAA</text>'))
   assert.ok(svg.includes('>победа</text>'))
-  assert.ok(!svg.includes('>A</text>'))
+  assert.ok(svg.includes('data-capture-zone="A"'))
+  assert.ok(svg.includes('data-team-spawn="0"'))
 })
 
 test('режим 2× повышает резкость только растровой подложки', () => {
@@ -114,6 +129,84 @@ test('режим 2× повышает резкость только растро
   assert.ok(!standard.includes('hd-map-sharpen'))
   assert.ok(hd.includes('<filter id="hd-map-sharpen"'))
   assert.ok(hd.includes('image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"'))
+})
+
+test('полный map.img обрезается и получает игровую координатную сетку', () => {
+  const viewport = {
+    x: 0.25,
+    y: 0.2,
+    width: 0.5,
+    height: 0.4,
+    gridStepX: 0.25,
+    gridStepY: 0.25,
+    gridStepMeters: 225,
+    captureZones: [{ letter: 'Z', x: 0.75, y: 0.25 }],
+    groundSpawns: [{ x: 0.1, y: 0.9 }],
+  }
+  const svg = renderAt(-800, 0, 1, null, 'data:image/jpeg;base64,AA==', viewport)
+
+  assert.ok(svg.includes('<clipPath id="fallback-map-viewport"><rect x="0" y="0" width="1400" height="1400"/></clipPath>'))
+  assert.ok(svg.includes('data-map-viewport="0.3 0.2 0.5 0.4"'))
+  assert.ok(svg.includes('x="-700" y="-700" width="2800" height="3500"'))
+  assert.ok(svg.includes('clip-path="url(#fallback-map-viewport)"'))
+  assert.ok(svg.includes('<g data-map-layer="05-coordinate-grid">'))
+  assert.ok(svg.includes('data-grid-column="1"'))
+  assert.ok(svg.includes('data-grid-row="a"'))
+  assert.ok(svg.includes('data-grid-scale="225"'))
+  assert.ok(svg.includes('<g data-capture-zone="Z" transform="translate(1050 350)">'))
+  assert.ok(svg.includes('<g data-team-spawn="0" transform="translate(140 1260)">'))
+})
+
+test('viewport работает без mission area и использует игровой шрифт значков', () => {
+  const viewport = {
+    x: 0.25,
+    y: 0.2,
+    width: 0.5,
+    height: 0.4,
+    gridStepX: 0.25,
+    gridStepY: 0.25,
+    gridStepMeters: 225,
+    captureZones: [{ letter: 'A', x: 0.5, y: 0.5 }],
+    groundSpawns: [{ x: 0.2, y: 0.2 }],
+  }
+  const svg = renderAt(-800, 0, 1, null, 'data:image/jpeg;base64,AA==', viewport, true, false)
+
+  assert.ok(svg.includes('x="-700" y="-700" width="2800" height="3500"'))
+  assert.ok(svg.includes('<g data-map-layer="05-coordinate-grid">'))
+  assert.ok(svg.includes('font-family="indicators"'))
+  assert.ok(svg.includes('>7</text>'))
+  assert.ok(svg.includes('>0</text>'))
+})
+
+test('готовый игровой скриншот сохраняет мировую привязку при отключённой новой прорисовке', () => {
+  const viewport: MapImageViewport = {
+    x: 0.28163814544677734,
+    y: 0.2985180616378784,
+    width: 0.4150391221046448,
+    height: 0.4150390625,
+    worldBounds: {
+      x0: 1153.58984375,
+      z0: 1173.27001953125,
+      x1: 2853.590087890625,
+      z1: 2873.27001953125,
+    },
+  }
+  const svg = renderAt(
+    2400,
+    1330,
+    1,
+    null,
+    'data:image/png;base64,AA==',
+    viewport,
+    false,
+    false,
+    false,
+    60_000,
+  )
+
+  assert.ok(svg.includes('d="M1026.5 1270.9L1034.7 1262.7'))
+  assert.ok(!svg.includes('data-map-viewport='))
+  assert.ok(!svg.includes('coordinate-grid'))
 })
 
 test('heatmap определяет восемь направлений спавна', () => {
@@ -192,7 +285,7 @@ test('поздний проезд рисуется выше раннего не�
     mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [] },
     mode: 'ground',
   })
-  const routeStart = svg.indexOf('<g data-map-layer="07-routes">')
+  const routeStart = svg.indexOf('<g data-map-layer="13-routes">')
   const routeEnd = svg.indexOf('<g data-map-layer="', routeStart + 1)
   const routeLayer = routeStart >= 0 ? svg.slice(routeStart, routeEnd >= 0 ? routeEnd : undefined) : ''
 
@@ -234,7 +327,7 @@ test('длинный маршрут упрощается и остаётся о�
     mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [] },
     mode: 'ground',
   })
-  const routeStart = svg.indexOf('<g data-map-layer="07-routes">')
+  const routeStart = svg.indexOf('<g data-map-layer="13-routes">')
   const routeEnd = svg.indexOf('<g data-map-layer="', routeStart + 1)
   const routeLayer = svg.slice(routeStart, routeEnd >= 0 ? routeEnd : undefined)
 
@@ -248,6 +341,7 @@ test('длинный маршрут упрощается и остаётся о�
 })
 
 test('карта клана сохраняет цвет общей карты и скрывает чужой маршрут', () => {
+  const clanPlayer: ReplayPlayerResult = { ...player, clanTag: '=AAA=' }
   const enemy: ReplayPlayerResult = { ...player, userId: '2', name: 'Enemy', clanTag: 'BBB', team: 2, score: 400 }
   const events: ReplayEvents = {
     teamWon: 0,
@@ -290,7 +384,7 @@ test('карта клана сохраняет цвет общей карты и
   const input = {
     missionName: '[Domination] Test map',
     header,
-    results: { status: 'ok', timePlayed: 60, players: [player, enemy] },
+    results: { status: 'ok', timePlayed: 60, players: [clanPlayer, enemy] },
     events,
     dict: {},
     mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [] },
@@ -308,6 +402,8 @@ test('карта клана сохраняет цвет общей карты и
   assert.ok(clan.includes('>Player</text>'))
   assert.ok(clan.includes('>Enemy</text>'))
   assert.ok(clan.includes('маршруты: AAA'))
+  assert.ok(!clan.includes('маршруты: =AAA='))
+  assert.match(clan, /data-spawn-label="0"[^>]*>AAA<\/text>/)
   assert.ok(!clan.includes('data-selected-team='))
   assert.ok(clan.includes('1 игрок · 2 фрага · 1 выжил'))
   assert.equal(clan.match(/data-spawn-label="0"/g)?.length, 4)
@@ -379,4 +475,67 @@ test('легенда остаётся видимой при шестнадцат
 test('кнопка клана убирает игровые декораторы, но сохраняет дефисы', () => {
   assert.equal(stripClanDecorators('╔xGAFx╕'), 'xGAFx')
   assert.equal(stripClanDecorators('-UA4-'), '-UA4-')
+})
+
+test('подпись клана на карте убирает внешнюю рамку, но сохраняет внутренние знаки', () => {
+  assert.equal(clanDisplayName('╊OEF╋'), 'OEF')
+  assert.equal(clanDisplayName('=BARS='), 'BARS')
+  assert.equal(clanDisplayName('+GFR-2S+'), 'GFR-2S')
+})
+
+test('БПЛА показывается только на наземной карте своего клана и использует цвет владельца', () => {
+  const enemy: ReplayPlayerResult = { ...player, userId: '2', name: 'Enemy', clanTag: 'BBB', team: 2 }
+  const events: ReplayEvents = {
+    teamWon: 0,
+    players: [],
+    kills: [],
+    damage: [],
+    chat: [],
+    units: [
+      {
+        userId: player.userId,
+        model: 'test_tank',
+        source: 'ground',
+        path: [{ t: 0, x: -500, y: 0, z: 0 }, { t: 90_000, x: -300, y: 0, z: 0 }],
+      },
+      {
+        userId: enemy.userId,
+        model: 'test_tank',
+        source: 'ground',
+        path: [{ t: 0, x: 500, y: 0, z: 0 }, { t: 90_000, x: 300, y: 0, z: 0 }],
+      },
+      {
+        userId: '',
+        model: 'ucav_recon_micro_flir',
+        source: 'air',
+        path: [{ t: 30_000, x: -430, y: 70, z: 0 }, { t: 80_000, x: 0, y: 140, z: 300 }],
+      },
+    ],
+    zones: [],
+    endTime: 90_000,
+    errors: [],
+  }
+  const input = {
+    missionName: '[Domination] Test map',
+    header,
+    results: { status: 'ok', timePlayed: 90, players: [player, enemy] },
+    events,
+    dict: {},
+    mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [] },
+    mode: 'ground' as const,
+  }
+  const overview = buildHeatmapSvg(input)
+  const ownClan = buildHeatmapSvg({ ...input, teamIndex: 0 })
+  const enemyClan = buildHeatmapSvg({ ...input, teamIndex: 1 })
+  const airClan = buildHeatmapSvg({ ...input, mode: 'air', teamIndex: 0 })
+
+  assert.ok(!overview.includes('data-uav-route='))
+  assert.ok(ownClan.includes('<g data-map-layer="10-uav-observation">'))
+  assert.ok(ownClan.includes('<g data-map-layer="11-uav-routes">'))
+  assert.ok(ownClan.includes('<g data-map-layer="12-uav-starts">'))
+  assert.ok(ownClan.includes('data-uav-owner="1"'))
+  assert.ok(ownClan.includes('stroke="#f04a50" stroke-width="2"'))
+  assert.ok(ownClan.includes('data-uav-observation="1"'))
+  assert.ok(!enemyClan.includes('data-uav-route='))
+  assert.ok(!airClan.includes('data-uav-route='))
 })

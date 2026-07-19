@@ -1,6 +1,6 @@
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
-import { buildRosters, decorateTag } from './render-battle.js'
+import { buildRosters, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 
 /**
@@ -113,7 +113,7 @@ const VERBS = {
   severe: ['тяжело повредил', 'тяжело повреждён'],
 } as const
 
-export function buildBattleLogSvg(input: BattleLogInput): string {
+export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): string {
   const rows = collectLogRows(input)
   const shown = rows.slice(0, 70)
   const moreH = rows.length > shown.length ? 50 : 0
@@ -152,15 +152,26 @@ export function buildBattleLogSvg(input: BattleLogInput): string {
       if (p.clanTag) counts.set(p.clanTag, (counts.get(p.clanTag) ?? 0) + 1)
     }
     const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
-    return top !== undefined ? decorateTag(top) : fallback
+    return top !== undefined ? tagMarkup(top, gameFont) : esc(fallback)
   }
+  const leftTag = tagOf(rosters[0], 'Команда 1')
+  const rightTag = tagOf(rosters[1], 'Команда 2')
+
   parts.push(
-    `<text x="${CX}" y="${166}" font-family="${FONTS}" font-size="32" font-weight="600" text-anchor="middle">` +
-      `<tspan fill="${TEAM_COLOR[0]}">${esc(tagOf(rosters[0], 'Команда 1'))}</tspan>` +
-      `<tspan fill="#6d7681" font-size="26" font-weight="400" dx="14">против</tspan>` +
-      `<tspan fill="${TEAM_COLOR[1]}" dx="14">${esc(tagOf(rosters[1], 'Команда 2'))}</tspan>` +
-      `</text>`,
-    `<rect x="170" y="${190}" width="${W - 340}" height="2" fill="url(#sepH)"/>`,
+    `<text x="${CX - 95}" y="166" font-family="${FONTS}" font-size="32" ` +
+    `font-weight="600" fill="${TEAM_COLOR[0]}" text-anchor="end">` +
+    leftTag +
+    `</text>`,
+
+    `<text x="${CX}" y="166" font-family="${FONTS}" font-size="26" ` +
+    `font-weight="400" fill="#6d7681" text-anchor="middle">против</text>`,
+
+    `<text x="${CX + 95}" y="166" font-family="${FONTS}" font-size="32" ` +
+    `font-weight="600" fill="${TEAM_COLOR[1]}" text-anchor="start">` +
+    rightTag +
+    `</text>`,
+
+    `<rect x="170" y="190" width="${W - 340}" height="2" fill="url(#sepH)"/>`,
   )
 
   if (shown.length === 0) {

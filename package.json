@@ -12,6 +12,7 @@
     "deploy:commands": "tsx src/bot/deploy-commands.ts",
     "analyze": "tsx src/analysis/analyze-items.ts",
     "battle": "tsx src/analysis/battle-summary.ts",
+    "capture:map": "tsx src/analysis/capture-map.ts",
     "backfill": "tsx src/parsers/backfill.ts",
     "verify:workers": "tsx src/analysis/worker-smoke.ts",
     "verify:workers:dist": "node dist/analysis/worker-smoke.js",

@@ -9,7 +9,7 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import type { Command } from '../types.js'
-import { heatmapQualityRow, type HeatmapScale } from '../battle-media-controls.js'
+import { heatmapQualityRow, heatmapScaleForUpload, type HeatmapScale } from '../battle-media-controls.js'
 import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, hasBattleChat, type StoredItem } from '../../db/index.js'
 import {
   buildBattleHeatmap2x,
@@ -364,9 +364,34 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     return
   }
 
+  let responseScale = scale
+  let qualityNotice: string | undefined
+  if (
+    isBattleHeatmapKind(kind) &&
+    heatmapScaleForUpload(scale, media.byteLength, interaction.attachmentSizeLimit) === 1 &&
+    scale === 2
+  ) {
+    const hdByteLength = media.byteLength
+    const standard = await cachedBattleMedia(sessionIdHex, kind)
+    if (!standard) {
+      await interaction.editReply(
+        'Версия 2× превышает лимит вложения Discord, а версия 1× отсутствует в кэше. Откройте карту заново.',
+      )
+      return
+    }
+    media = standard
+    responseScale = 1
+    qualityNotice =
+      `Версия 2× весит ${(hdByteLength / 1024 / 1024).toFixed(1)} МиБ и превышает лимит Discord; показана версия 1×.`
+  }
+
   await interaction.editReply({
+    ...(qualityNotice ? { content: qualityNotice } : {}),
     ...(isQualityToggle ? { attachments: [] } : {}),
-    files: [new AttachmentBuilder(media, { name: `battle-${sessionIdHex}-${kind}${scale === 2 ? '@2x' : ''}.png` })],
-    components: isBattleHeatmapKind(kind) ? [heatmapQualityRow(kind, sessionId, scale)] : [],
+    files: [new AttachmentBuilder(media, { name: `battle-${sessionIdHex}-${kind}${responseScale === 2 ? '@2x' : ''}.png` })],
+    components:
+      isBattleHeatmapKind(kind) && !qualityNotice
+        ? [heatmapQualityRow(kind, sessionId, responseScale)]
+        : [],
   })
 }

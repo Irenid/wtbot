@@ -32,6 +32,13 @@ function dataUri(mime: string, data: ArrayBuffer): string {
   return `data:${mime};base64,${Buffer.from(data).toString('base64')}`
 }
 
+/** Только фирменный шрифт рамок клан-тегов. */
+function clanFontFiles(fontFiles: readonly string[]): string[] {
+  return fontFiles.filter((file) =>
+    file.replace(/\\/g, '/').toLowerCase().endsWith('/symbols_skyquake.ttf'),
+  )
+}
+
 async function rasterize(svg: string, fontFiles: string[], scale = 1): Promise<ArrayBuffer> {
   // Native binding нужен только рендеру. Его отсутствие не должно выключать
   // WRPL parse/font/vehicle tasks во всём пуле.
@@ -45,6 +52,8 @@ async function rasterize(svg: string, fontFiles: string[], scale = 1): Promise<A
 
 async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayBuffer; transfer: ArrayBuffer[] }> {
   const events = decodeEventsBlob(Buffer.from(input.eventsBlob))
+  const fonts = clanFontFiles(input.assets.fontFiles)
+  const gameFont = fonts.length > 0
   const tacticalMap = input.assets.tacticalMap ? dataUri('image/png', input.assets.tacticalMap) : null
   const fallbackMap = input.assets.fallbackMap
     ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
@@ -62,11 +71,13 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
       seekers: new Map(input.assets.seekers),
       renderScale: input.scale,
     },
-    input.assets.gameFont,
+    gameFont,
     tacticalMap,
     fallbackMap,
+    input.assets.fallbackMap?.viewport,
+    input.assets.mapIconFont,
   )
-  const png = await rasterize(svg, input.assets.fontFiles, input.scale)
+  const png = await rasterize(svg, fonts, input.scale)
   return { value: png, transfer: [png] }
 }
 
@@ -104,8 +115,16 @@ async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-sc
   return { value: png, transfer: [png] }
 }
 
-async function renderMedia(input: MediaRenderInput): Promise<{ value: RenderedMediaResult; transfer: ArrayBuffer[] }> {
+async function renderMedia(input: MediaRenderInput): Promise<{
+  value: RenderedMediaResult
+  transfer: ArrayBuffer[]
+}> {
   const events = decodeEventsBlob(Buffer.from(input.eventsBlob))
+
+  // Для клан-тегов передаём только symbols_skyquake.ttf.
+  // map-icons.ttf здесь не нужен и не должен участвовать в выборе глифов.
+  const fonts = clanFontFiles(input.assets.fontFiles)
+  const gameFont = fonts.length > 0
   const seekers = new Map(input.assets.seekers)
   const tacticalMap = input.assets.tacticalMap ? dataUri('image/png', input.assets.tacticalMap) : null
   const fallbackMap = input.assets.fallbackMap
@@ -118,63 +137,75 @@ async function renderMedia(input: MediaRenderInput): Promise<{ value: RenderedMe
     events,
     dict: input.dict,
   }
-  const log = await rasterize(buildBattleLogSvg(shared), input.assets.fontFiles)
+  const log = await rasterize(buildBattleLogSvg(shared, gameFont), fonts,)
   const heatmapGround = await rasterize(
     buildHeatmapSvg(
       { ...shared, mission: input.mission, mode: 'ground', seekers },
-      input.assets.gameFont,
+      gameFont,
       tacticalMap,
       fallbackMap,
+      input.assets.fallbackMap?.viewport,
+      input.assets.mapIconFont,
     ),
-    input.assets.fontFiles,
+    fonts,
   )
   const heatmapAir = await rasterize(
     buildHeatmapSvg(
       { ...shared, mission: input.mission, mode: 'air', seekers },
-      input.assets.gameFont,
+      gameFont,
       tacticalMap,
       fallbackMap,
+      input.assets.fallbackMap?.viewport,
+      input.assets.mapIconFont,
     ),
-    input.assets.fontFiles,
+    fonts,
   )
   const heatmapTeamGround: [ArrayBuffer, ArrayBuffer] = [
     await rasterize(
       buildHeatmapSvg(
         { ...shared, mission: input.mission, mode: 'ground', seekers, teamIndex: 0 },
-        input.assets.gameFont,
+        gameFont,
         tacticalMap,
         fallbackMap,
+        input.assets.fallbackMap?.viewport,
+        input.assets.mapIconFont,
       ),
-      input.assets.fontFiles,
+      fonts,
     ),
     await rasterize(
       buildHeatmapSvg(
         { ...shared, mission: input.mission, mode: 'ground', seekers, teamIndex: 1 },
-        input.assets.gameFont,
+        gameFont,
         tacticalMap,
         fallbackMap,
+        input.assets.fallbackMap?.viewport,
+        input.assets.mapIconFont,
       ),
-      input.assets.fontFiles,
+      fonts,
     ),
   ]
   const heatmapTeamAir: [ArrayBuffer, ArrayBuffer] = [
     await rasterize(
       buildHeatmapSvg(
         { ...shared, mission: input.mission, mode: 'air', seekers, teamIndex: 0 },
-        input.assets.gameFont,
+        gameFont,
         tacticalMap,
         fallbackMap,
+        input.assets.fallbackMap?.viewport,
+        input.assets.mapIconFont,
       ),
-      input.assets.fontFiles,
+      fonts,
     ),
     await rasterize(
       buildHeatmapSvg(
         { ...shared, mission: input.mission, mode: 'air', seekers, teamIndex: 1 },
-        input.assets.gameFont,
+        gameFont,
         tacticalMap,
         fallbackMap,
+        input.assets.fallbackMap?.viewport,
+        input.assets.mapIconFont,
       ),
-      input.assets.fontFiles,
+      fonts,
     ),
   ]
   return {

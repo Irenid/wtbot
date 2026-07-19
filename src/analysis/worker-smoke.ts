@@ -129,6 +129,7 @@ try {
           assets: {
             fontFiles: [],
             gameFont: false,
+            mapIconFont: false,
             tacticalMap: null,
             fallbackMap: null,
             seekers: [],
