@@ -26,11 +26,10 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0'
 /**
  * Предел страниц догона за один цикл (20 реплеев на странице). Пока
- * страницы целиком новые — бот отстал и листает дальше, но не глубже
- * этого предела: 25 стр. ≈ 500 боёв ≈ сутки простоя. Больше — это работа
- * для разового бэкфилла (npm run backfill), а не для 20-секундного цикла.
+ * страницы целиком новые — бот продолжает листать до первого уже сохранённого
+ * боя. Запросы последовательны и ограничены паузой, поэтому долгий догон не
+ * создаёт параллельную нагрузку на API.
  */
-const MAX_CATCHUP_PAGES = 25
 /** Минимальный интервал между любыми запросами replay API. */
 const REQUEST_INTERVAL_MS = 1_500
 const RATE_LIMIT_RETRIES = 2
@@ -167,8 +166,8 @@ async function fetchParts(sessionId: string): Promise<string[] | null> {
 }
 
 export interface CollectOpts {
-  /** Предел страниц за проход (защита от бесконечного обхода) */
-  maxPages: number
+  /** Предел страниц; без значения листаем до нормальной границы. */
+  maxPages?: number | undefined
   /**
    * true — оборвать обход, как только на странице встретился уже известный
    * бой (инкрементальный режим: догоняем от новых к последнему виденному).
@@ -208,7 +207,7 @@ export async function collectFreshReplays(opts: CollectOpts): Promise<CollectRes
   let totalOnSite = 0
   let pagesRead = 0
   let hitCap = true // сбросится, если выйдем по нормальной границе, а не по пределу
-  for (let page = 1; page <= opts.maxPages; page++) {
+  for (let page = 1; opts.maxPages === undefined || page <= opts.maxPages; page++) {
     const data = await fetchPage(page)
     totalOnSite = data.total_count
     pagesRead = page
@@ -258,10 +257,9 @@ export const wtReplays: ParserSource = {
   // это один запрос первой страницы списка
   intervalMs: 20_000,
   async run() {
-    // Догон: пока страницы целиком новые — листаем до первого известного
-    // боя, но не глубже MAX_CATCHUP_PAGES (большой простой — это бэкфилл)
-    const { items, totalOnSite, pagesRead, hitCap } = await collectFreshReplays({
-      maxPages: MAX_CATCHUP_PAGES,
+    // Догон: листаем до первого уже сохранённого боя. Планировщик не допускает
+    // параллельных запусков этого source, а запросы ограничены паузой 1,5 с.
+    const { items, totalOnSite, pagesRead } = await collectFreshReplays({
       stopAtKnown: true,
       // Точные URL частей восстанавливаются из url + partsCount. Отдельный
       // запрос на каждый новый бой замедляет догон и быстро приводит к 429.
@@ -269,9 +267,7 @@ export const wtReplays: ParserSource = {
     })
 
     let summary = `Новых реплеев: ${items.length} (всего на сайте: ${totalOnSite})`
-    if (hitCap) {
-      summary += ` · прочитано ${pagesRead} стр. до предела — вероятно, большой простой; запусти npm run backfill`
-    }
+    if (pagesRead > 1) summary += ` · прочитано страниц: ${pagesRead}`
     return { summary, items }
   },
 }

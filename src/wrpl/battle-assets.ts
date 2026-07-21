@@ -273,21 +273,42 @@ interface WtToolsManifest {
 }
 
 /** " [Domination #2] North Holland" → { mapKey: "north_holland", modeKey: "domination-2" } */
-export function tacticalMapKeys(missionName: string): { mapKey: string; modeKey: string } | null {
-  // в item.title перед режимом стоит сложность — "[realistic] [Conquest #3] …"
-  const cleaned = missionName.trim().replace(/^\[(arcade|realistic|simulation|hardcore)\]\s*/i, '')
-  const m = /^\s*\[([a-zа-я ]+?)(?:\s*#(\d+))?\]\s*(.+)$/i.exec(cleaned)
-  if (!m) return null
-  const mode = m[1]!.trim().toLowerCase()
-  const num = m[2] ?? '1'
-  const mapKey = m[3]!
+/** "[Air Domination #1] Fields of Poland"
+ *  → { mapKey: "fields_of_poland", modeKey: "air_domination-1" }
+ */
+export function tacticalMapKeys(
+  missionName: string,
+): { mapKey: string; modeKey: string } | null {
+  const cleaned = missionName
     .trim()
-    .toLowerCase()
-    .replace(/['’.]/g, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-  if (!mapKey || !/^[a-z]+$/.test(mode)) return null
-  return { mapKey, modeKey: `${mode}-${num}` }
+    .replace(
+      /^\[(arcade|realistic|simulation|hardcore)\]\s*/i,
+      '',
+    )
+
+  const match =
+    /^\s*\[([^#\]]+?)(?:\s*#(\d+))?\]\s*(.+)$/i.exec(cleaned)
+
+  if (!match) return null
+
+  const normalizeKey = (value: string): string =>
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/['’.]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+
+  const mode = normalizeKey(match[1]!)
+  const number = match[2] ?? '1'
+  const mapKey = normalizeKey(match[3]!)
+
+  if (!mode || !mapKey) return null
+
+  return {
+    mapKey,
+    modeKey: `${mode}-${number}`,
+  }
 }
 
 /** Манифест wt-tools: кэш с обновлением раз в неделю; сбой сети → старый кэш */
