@@ -4,7 +4,7 @@ import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, WrplHeader } from './replay.js'
 import type { MapImageViewport } from './battle-assets.js'
 import { clanDisplayName, stripClanDecorators } from './render-battle.js'
-import { buildHeatmapSvg } from './render-heatmap.js'
+import { buildHeatmapSvg, type HeatmapRenderOptions } from './render-heatmap.js'
 
 const header: WrplHeader = {
   version: 1,
@@ -59,6 +59,8 @@ function renderAt(
   withMission = true,
   capturedMapRendering = true,
   pathEndTime = 180_000,
+  mode: 'ground' | 'air' = 'ground',
+  heatmapOptions?: Partial<HeatmapRenderOptions>,
 ): string {
   const events: ReplayEvents = {
     teamWon: 1,
@@ -81,7 +83,7 @@ function renderAt(
       {
         userId: player.userId,
         model: 'test_tank',
-        source: 'ground',
+        source: mode,
         path: [
           { t: 0, x, y: 0, z },
           { t: pathEndTime, x: x + 10, y: 0, z: z + 10 },
@@ -101,10 +103,86 @@ function renderAt(
     mission: withMission
       ? { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [{ letter: 'A', x: 0, z: 0 }] }
       : null,
-    mode: 'ground',
+    mode,
     renderScale,
+    ...(heatmapOptions ? { heatmapOptions } : {}),
   }, false, tacticalMap, fallbackMap, fallbackMapViewport, mapIconFont, capturedMapRendering)
 }
+
+test('авиационная карта приближает маршруты и сохраняет наземную battleArea', () => {
+  const viewport: MapImageViewport = {
+    x: 0.4,
+    y: 0.4,
+    width: 0.2,
+    height: 0.2,
+    worldBounds: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 },
+    imageWorldBounds: { x0: -5000, z0: -5000, x1: 5000, z1: 5000 },
+    airfields: [{ sx: 0.46, sy: 0.47, ex: 0.54, ey: 0.53, color: '#17FFFF' }],
+    airSpawns: [{ x: 0.5, y: 0.5, color: '#fa0000' }],
+  }
+  const svg = renderAt(
+    -800,
+    0,
+    1,
+    'data:image/png;base64,TACTICAL',
+    'data:image/jpeg;base64,BACKGROUND',
+    viewport,
+    false,
+    true,
+    true,
+    180_000,
+    'air',
+  )
+
+  assert.ok(svg.includes('data-map-role="air-background" x="-2403.8" y="-2403.8" width="6207.5" height="6207.5"'))
+  assert.ok(svg.includes('href="data:image/jpeg;base64,BACKGROUND"'))
+  assert.ok(svg.includes('data-map-role="tactical-overlay" x="79.2" y="79.2" width="1241.5" height="1241.5"'))
+  assert.ok(svg.includes('href="data:image/png;base64,TACTICAL"'))
+  assert.ok(svg.includes('<g data-map-layer="05-air-objects">'))
+  assert.ok(svg.includes('data-airfield="0"'))
+  assert.ok(svg.includes('data-air-spawn="0" transform="translate(700 700)"'))
+  assert.ok(svg.includes('<g data-map-layer="06-battle-area">'))
+  assert.ok(!svg.includes('data-map-viewport='))
+})
+
+test('настройки авиационной карты отключают приближение и дополнительные объекты', () => {
+  const viewport: MapImageViewport = {
+    x: 0.4,
+    y: 0.4,
+    width: 0.2,
+    height: 0.2,
+    worldBounds: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 },
+    imageWorldBounds: { x0: -5000, z0: -5000, x1: 5000, z1: 5000 },
+    airfields: [{ sx: 0.46, sy: 0.47, ex: 0.54, ey: 0.53, color: '#17FFFF' }],
+    airSpawns: [{ x: 0.5, y: 0.5, color: '#fa0000' }],
+  }
+  const svg = renderAt(
+    -800,
+    0,
+    1,
+    'data:image/png;base64,TACTICAL',
+    'data:image/jpeg;base64,BACKGROUND',
+    viewport,
+    false,
+    true,
+    true,
+    180_000,
+    'air',
+    {
+      airAutoZoom: false,
+      airShowGroundMap: false,
+      airShowAirfields: false,
+      airShowSpawns: false,
+      airPaddingPercent: 20,
+    },
+  )
+
+  assert.ok(svg.includes('data-map-role="air-background" x="0" y="0" width="1400" height="1400"'))
+  assert.ok(!svg.includes('data-map-role="tactical-overlay"'))
+  assert.ok(!svg.includes('data-airfield='))
+  assert.ok(!svg.includes('data-air-spawn='))
+  assert.ok(!svg.includes('06-battle-area'))
+})
 
 test('heatmap сохраняет старый макет и новые текстовые подписи', () => {
   const svg = renderAt(-800, 0)
@@ -129,6 +207,29 @@ test('режим 2× повышает резкость только растро
   assert.ok(!standard.includes('hd-map-sharpen'))
   assert.ok(hd.includes('<filter id="hd-map-sharpen"'))
   assert.ok(hd.includes('image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"'))
+})
+
+test('наземная heatmap предпочитает тактическую карту авиационной подложке', () => {
+  const viewport: MapImageViewport = {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    worldBounds: { x0: -32768, z0: -32768, x1: 32768, z1: 32768 },
+    imageWorldBounds: { x0: -32768, z0: -32768, x1: 32768, z1: 32768 },
+  }
+  const svg = renderAt(
+    -800,
+    0,
+    1,
+    'data:image/png;base64,GROUND_TACTICAL',
+    'data:image/jpeg;base64,AIR_FULL_MAP',
+    viewport,
+  )
+
+  assert.ok(svg.includes('href="data:image/png;base64,GROUND_TACTICAL"'))
+  assert.ok(!svg.includes('href="data:image/jpeg;base64,AIR_FULL_MAP"'))
+  assert.ok(!svg.includes('data-map-viewport='))
 })
 
 test('полный map.img обрезается и получает игровую координатную сетку', () => {

@@ -7,6 +7,24 @@ function required(name: string): string {
   return value
 }
 
+function envBoolean(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase()
+  if (!value) return fallback
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true
+  if (['0', 'false', 'no', 'off'].includes(value)) return false
+  throw new Error(`Переменная ${name} должна быть true/false, 1/0, yes/no или on/off`)
+}
+
+function envNumber(name: string, fallback: number, min: number, max: number): number {
+  const value = process.env[name]
+  if (value === undefined || value.trim() === '') return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new Error(`Переменная ${name} должна быть числом от ${min} до ${max}`)
+  }
+  return parsed
+}
+
 export const config = {
   /** Токен Discord-бота (Developer Portal → Bot → Reset Token) */
   token: required('TOKEN'),
@@ -34,6 +52,16 @@ export const config = {
   clanTag: (process.env['WT_CLAN_TAG'] ?? '').trim(),
   /** Лимит кэша картинок боёв data/battles в МБ (перерисовываются из БД) */
   battleCacheMb: process.env['WT_BATTLE_CACHE_MB'] ?? '400',
+  /** Повторно использовать готовые PNG/TXT; новые результаты сохраняются всегда. */
+  battleCacheEnabled: envBoolean('WT_BATTLE_CACHE_ENABLED', true),
+  /** Настройки отображения авиационной heatmap, передаваемые в CPU worker. */
+  heatmapOptions: {
+    airAutoZoom: envBoolean('WT_HEATMAP_AIR_AUTO_ZOOM', true),
+    airShowGroundMap: envBoolean('WT_HEATMAP_AIR_SHOW_GROUND_MAP', true),
+    airShowAirfields: envBoolean('WT_HEATMAP_AIR_SHOW_AIRFIELDS', true),
+    airShowSpawns: envBoolean('WT_HEATMAP_AIR_SHOW_SPAWNS', true),
+    airPaddingPercent: envNumber('WT_HEATMAP_AIR_PADDING_PERCENT', 6, 0, 50),
+  },
   /** CPU workers для WRPL/zlib/Resvg; 1–8, по умолчанию min(2, CPU−1) */
   workerThreads: workerThreadCount(),
   /** Фоновый ingest .wrpl и автоанонс; флаг CLI удобен для облегчённого запуска бота. */
