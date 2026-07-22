@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, WrplHeader } from './replay.js'
-import { buildBattleLogSvg } from './render-battle-log.js'
+import { buildBattleLogSvg, collectLogRows } from './render-battle-log.js'
 
 const header: WrplHeader = {
   version: 1,
@@ -24,10 +24,10 @@ const header: WrplHeader = {
   battleClass: '',
 }
 
-function player(userId: string, clanTag: string, team: number): ReplayPlayerResult {
+function player(userId: string, clanTag: string, team: number, name = `Player ${userId}`): ReplayPlayerResult {
   return {
     userId,
-    name: `Player ${userId}`,
+    name,
     clanTag,
     team,
     kills: 0,
@@ -77,4 +77,31 @@ test('battle log рисует клановые рамки тем же игров
   assert.ok(svg.includes('<tspan font-family="symbols_skyquake">┾</tspan>BriSs'))
   assert.ok(!svg.includes('≋OEF≋'))
   assert.ok(!svg.includes('⚑BriSs⚑'))
+})
+
+test('журнал сохраняет Unicode-символы в именах убийцы и жертвы', () => {
+  const killer = player('1', '', 1, 'Haraldツ')
+  const victim = player('2', '', 2, '스트레이 키즈 Maniac')
+  const rows = collectLogRows({
+    missionName: '[Domination] Test',
+    header,
+    results: { status: 'ok', timePlayed: 60, players: [killer, victim] },
+    events: {
+      ...events,
+      kills: [{
+        time: 1_000,
+        killerId: killer.userId,
+        killerModel: 'test_tank',
+        killerPos: null,
+        victimId: victim.userId,
+        victimModel: 'test_tank',
+        victimPos: null,
+        weapon: '',
+      }],
+    },
+    dict: {},
+  })
+
+  assert.equal(rows[0]?.left?.name, 'Haraldツ')
+  assert.equal(rows[0]?.right?.name, '스트레이 키즈 Maniac')
 })
