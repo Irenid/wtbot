@@ -27,6 +27,8 @@ const HEADER_SIZE = 1226
 
 export interface WrplHeader {
   version: number
+  /** Версия игры из metadata сайта; в бинарном заголовке её нет. */
+  gameVersion?: string
   level: string
   battleType: string
   environment: string
@@ -98,6 +100,9 @@ export interface ReplayPlayerResult {
   teamKills: number
   squadId: number
   autoSquad: boolean
+  /** Данные ECS-слота; отсутствуют в results-BLK. */
+  slot?: number | null
+  title?: string | null
   /** Техника игрока в бою: внутренние имена, в порядке слотов */
   vehicles: string[]
 }
@@ -113,6 +118,13 @@ const asArray = (v: BlkValue | undefined): BlkValue[] => (v === undefined ? [] :
 const asMap = (v: BlkValue | undefined): BlkMap => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as BlkMap) : {})
 const num = (m: BlkMap, k: string, def = -1): number => (typeof m[k] === 'number' ? (m[k] as number) : def)
 const str = (m: BlkMap, k: string, def = ''): string => (typeof m[k] === 'string' ? (m[k] as string) : def)
+const bool = (m: BlkMap, k: string, def = false): boolean => {
+  const value = m[k]
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') return /^(?:1|true|yes)$/i.test(value.trim())
+  return def
+}
 
 /** Разбирает results-BLK последней части реплея в таблицу результатов */
 export function parseReplayResults(resultsBlk: Buffer): ReplayResults {
@@ -158,7 +170,7 @@ export function parseReplayResults(resultsBlk: Buffer): ReplayResults {
       awardDamage: num(pm, 'awardDamage'),
       teamKills: num(pm, 'teamKills'),
       squadId: num(pm, 'squadId'),
-      autoSquad: pm['autoSquad'] === true,
+      autoSquad: bool(pm, 'autoSquad'),
       vehicles: vehiclesOf(userId),
     })
   }

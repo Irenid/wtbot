@@ -78,6 +78,8 @@ export interface ReplayChat {
   message: string
   /** 0 — команда, 1 — все, 2 — отряд, 3 — личное */
   channel: number
+  /** false для нестандартного значения, которое всё равно сохраняется как есть */
+  channelValid?: boolean
 }
 
 export interface ReplayUnitPath {
@@ -535,13 +537,21 @@ function parseDamage(pk: RawPacket, variant: 'critical' | 'severe', ecs: EcsPars
   return ret
 }
 
+export function isValidReplayChatChannel(channel: number): boolean {
+  return Number.isInteger(channel) && channel >= 0 && channel <= 3
+}
+
 function parseChat(pk: RawPacket): ReplayChat {
   const r = new BitReader(pk.payload)
+  const sender = r.readLenStr()
+  const message = r.readLenStr()
+  const channel = r.readByte()
   return {
     time: pk.time,
-    sender: r.readLenStr(),
-    message: r.readLenStr(),
-    channel: r.readByte(),
+    sender,
+    message,
+    channel,
+    channelValid: isValidReplayChatChannel(channel),
   }
 }
 
@@ -575,6 +585,35 @@ function userIdOf(entity: EcsEntity | null, slots: Map<number, SlotRecord>): str
 function modelOf(entity: EcsEntity | null): string {
   const model = entity?.data.get('unit__className')
   return typeof model === 'string' ? model : ''
+}
+
+const ZONE_TEMPLATE_HINT = /(?:cap(?:ture)?[_-]?zone|base[_-]?zone|capture[_-]?point|objective[_-]?zone)/i
+const ZONE_COMPONENT_HINT = /^(?:capture_zone__|capzone__)/i
+
+function finiteNumberArray(value: unknown): number[] | null {
+  if (Array.isArray(value) && value.every((item) => typeof item === 'number' && Number.isFinite(item))) {
+    return value
+  }
+  return null
+}
+
+function zonePosition(entity: EcsEntity): { x: number; z: number } | null {
+  const transform = entity.data.get('transform')
+  if (transform === null || typeof transform !== 'object') return null
+  const value = transform as { pos?: unknown; tm?: unknown }
+  const pos = finiteNumberArray(value.pos)
+  if (pos && pos.length >= 3) return { x: pos[0]!, z: pos[2]! }
+  const matrix = Array.isArray(value.tm) ? value.tm : null
+  const translation = matrix && finiteNumberArray(matrix[3])
+  if (translation && translation.length >= 3) return { x: translation[0]!, z: translation[2]! }
+  return null
+}
+
+function zoneName(entity: EcsEntity): string {
+  const name = entity.data.get('capture_zone__name')
+  if (typeof name === 'string' && name.trim() !== '') return name.trim()
+  const id = entity.data.get('capture_zone__zoneId')
+  return typeof id === 'number' && Number.isInteger(id) ? `zone_${id}` : entity.template
 }
 
 /**
@@ -617,9 +656,14 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
           case 2:
             fm.parse(pk)
             break
-          case 3:
-            chat.push(parseChat(pk))
+          case 3: {
+            const message = parseChat(pk)
+            chat.push(message)
+            if (message.channelValid === false && errors.length < 200) {
+              errors.push(`пакет ${pk.seq}: неизвестный канал чата ${message.channel}`)
+            }
             break
+          }
           case 4:
             if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x2d], [3, 0xf0]])) slot.parse(pk.payload)
             else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x74], [3, 0xf0]])) gm.parse(pk.payload, pk.time)
@@ -719,14 +763,21 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
     })
   }
 
-  // Зоны захвата: ECS-сущности с позицией из transform
+  // Зоны захвата: ECS-сущности с transform. В разных версиях игры менялись
+  // имена template и форма transform, поэтому проверяем также имена компонентов
+  // и не отбрасываем валидную точку (0, 0).
   const zones: ReplayZone[] = []
+  const seenZones = new Set<string>()
   for (const entity of ecs.mgr.entities.values()) {
-    if (!/capzone|capture_zone/i.test(entity.template)) continue
-    const tr = entity.data.get('transform') as { pos?: number[] } | undefined
-    if (tr?.pos && (tr.pos[0] !== 0 || tr.pos[2] !== 0)) {
-      zones.push({ name: entity.template, x: tr.pos[0]!, z: tr.pos[2]! })
-    }
+    const isZone = ZONE_TEMPLATE_HINT.test(entity.template) ||
+      entity.data.components.some((component) => ZONE_COMPONENT_HINT.test(component.name))
+    if (!isZone) continue
+    const point = zonePosition(entity)
+    if (!point) continue
+    const key = `${Math.round(point.x * 10)}:${Math.round(point.z * 10)}`
+    if (seenZones.has(key)) continue
+    seenZones.add(key)
+    zones.push({ name: zoneName(entity), x: point.x, z: point.z })
   }
 
   return {
