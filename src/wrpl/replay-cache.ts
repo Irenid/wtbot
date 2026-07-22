@@ -1,5 +1,6 @@
 import { readFile, readdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { writeFileAtomic } from '../atomic-file.js'
 import { readResponseBuffer } from '../http-response.js'
 
@@ -7,86 +8,253 @@ import { readResponseBuffer } from '../http-response.js'
 
 const CACHE_DIR = './data/replays'
 const REPLAY_CACHE_DAYS = 7
-const FETCH_PAUSE_MS = 150
+export const REPLAY_FETCH_PAUSE_MS = 150
 const FETCH_TIMEOUT_MS = 30_000
-const MAX_PART_BYTES = 96 * 1024 * 1024
+export const REPLAY_PART_MAX_BYTES = 96 * 1024 * 1024
 const WRPL_HEADER_BYTES = 1234
+
+export interface ReplayFetchAttemptTiming {
+  attempt: number
+  slotWaitMs: number
+  ttfbMs: number | null
+  downloadMs: number | null
+  retryDelayMs: number
+  status: number | null
+  bytes: number
+}
+
+export interface ReplayPartTiming {
+  label: string
+  startedAtMs: number
+  completedAtMs: number
+  totalMs: number
+  lockWaitMs: number
+  cacheHit: boolean
+  cacheInvalid: boolean
+  cacheReadMs: number
+  cacheWriteMs: number
+  bytes: number
+  outcome: 'success' | 'error' | 'aborted'
+  errorName: string | null
+  attempts: ReplayFetchAttemptTiming[]
+}
+
+export interface ReplayPartFetchOptions {
+  signal?: AbortSignal
+  /** Только для изолированных benchmark/smoke; undefined использует production cache. */
+  cacheDirectory?: string | null
+  onTiming?: (timing: ReplayPartTiming) => void
+}
+
+interface PartLockWaiter {
+  resolve: (release: () => void) => void
+  reject: (error: Error) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+interface PartLockState {
+  locked: boolean
+  queue: PartLockWaiter[]
+}
+
+type SessionAccess = 'read' | 'write'
+
+interface SessionWaiter extends PartLockWaiter {
+  access: SessionAccess
+}
+
+interface SessionGate {
+  readers: number
+  writer: boolean
+  queue: SessionWaiter[]
+}
 
 let cleanupStarted = false
 let lastFetchAt = 0
 let throttleTail: Promise<void> = Promise.resolve()
-const sessionTails = new Map<string, Promise<void>>()
+const partLocks = new Map<string, PartLockState>()
+const sessionGates = new Map<string, SessionGate>()
 
-function cacheFileFor(url: string): string | null {
+function cacheFileFor(url: string, cacheDirectory: string): string | null {
   const match = /([0-9a-f]{12,20})\/(\d{4}\.wrpl)(?:\?.*)?$/i.exec(url)
-  return match ? path.join(CACHE_DIR, match[1]!.toLowerCase(), match[2]!) : null
+  return match ? path.join(cacheDirectory, match[1]!.toLowerCase(), match[2]!) : null
 }
 
-export function fetchReplayPart(url: string): Promise<Buffer> {
-  startCleanup()
-  const file = cacheFileFor(url)
+export function fetchReplayPart(url: string, options: ReplayPartFetchOptions = {}): Promise<Buffer> {
+  const started = performance.now()
+  const timing: ReplayPartTiming = {
+    label: safeUrlLabel(url),
+    startedAtMs: Date.now(),
+    completedAtMs: 0,
+    totalMs: 0,
+    lockWaitMs: 0,
+    cacheHit: false,
+    cacheInvalid: false,
+    cacheReadMs: 0,
+    cacheWriteMs: 0,
+    bytes: 0,
+    outcome: 'error',
+    errorName: null,
+    attempts: [],
+  }
+  const cacheDirectory = options.cacheDirectory === undefined ? CACHE_DIR : options.cacheDirectory
+  if (cacheDirectory === CACHE_DIR) startCleanup()
+  const file = cacheDirectory ? cacheFileFor(url, cacheDirectory) : null
   const session = file ? path.basename(path.dirname(file)) : null
-  // Buffer передаётся worker'у с detach backing ArrayBuffer, поэтому он не
-  // разделяется между callers. Session-lock заставит второй запрос прочитать
-  // уже опубликованный cache-файл и получить собственный Buffer.
-  return session
-    ? withSessionLock(session, () => doFetchReplayPart(url, file))
-    : doFetchReplayPart(url, file)
+  const lockStarted = performance.now()
+  const run = async (): Promise<Buffer> => {
+    timing.lockWaitMs = performance.now() - lockStarted
+    return doFetchReplayPart(url, file, options.signal, timing)
+  }
+  const operation = file && session && cacheDirectory
+    ? withPartLock(
+      path.resolve(file),
+      options.signal,
+      () => withSessionAccess(
+        cacheSessionKey(cacheDirectory, session),
+        'read',
+        options.signal,
+        run,
+      ),
+    )
+    : run()
+
+  return operation.then(
+    (data) => {
+      timing.bytes = data.byteLength
+      timing.outcome = 'success'
+      return data
+    },
+    (error: unknown) => {
+      timing.outcome = options.signal?.aborted || isAbortError(error) ? 'aborted' : 'error'
+      timing.errorName = error instanceof Error ? error.name : 'Error'
+      throw error
+    },
+  ).finally(() => {
+    timing.completedAtMs = Date.now()
+    timing.totalMs = performance.now() - started
+    emitPartTiming(options.onTiming, timing)
+  })
 }
 
-async function doFetchReplayPart(url: string, file: string | null): Promise<Buffer> {
+async function doFetchReplayPart(
+  url: string,
+  file: string | null,
+  signal: AbortSignal | undefined,
+  timing: ReplayPartTiming,
+): Promise<Buffer> {
+  throwIfAborted(signal)
   if (file) {
     let cached: Buffer | null = null
+    const readStarted = performance.now()
     try {
       cached = await readFile(file)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    } finally {
+      timing.cacheReadMs += performance.now() - readStarted
     }
+    throwIfAborted(signal)
     if (cached) {
       try {
         validateReplayPart(cached, `cache ${path.basename(file)}`)
+        timing.cacheHit = true
+        timing.bytes = cached.byteLength
         return cached
       } catch {
+        timing.cacheInvalid = true
         // Битый cache удаляем и один раз восстанавливаем с CDN.
         await rm(file, { force: true }).catch(() => undefined)
       }
     }
   }
 
-  for (let attempt = 0; ; attempt++) {
-    await reserveFetchSlot()
-    const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-    if (response.ok) {
-      const data = await readResponseBuffer(response, MAX_PART_BYTES, 'часть WRPL')
-      validateReplayPart(data, safeUrlLabel(url))
-      if (file) await writeFileAtomic(file, data)
-      return data
+  for (let attempt = 1; ; attempt += 1) {
+    const attemptTiming: ReplayFetchAttemptTiming = {
+      attempt,
+      slotWaitMs: 0,
+      ttfbMs: null,
+      downloadMs: null,
+      retryDelayMs: 0,
+      status: null,
+      bytes: 0,
     }
-    if (response.status === 429 && attempt < 5) {
+    try {
+      attemptTiming.slotWaitMs = await reserveFetchSlot(signal)
+      throwIfAborted(signal)
+      const fetchStarted = performance.now()
+      let response: Response
+      try {
+        const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+        response = await fetch(url, {
+          signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+        })
+      } catch (error) {
+        if (signal?.aborted) throw abortError()
+        throw error
+      }
+      attemptTiming.ttfbMs = performance.now() - fetchStarted
+      attemptTiming.status = response.status
+      if (response.ok) {
+        const downloadStarted = performance.now()
+        let data: Buffer
+        try {
+          data = await readResponseBuffer(response, REPLAY_PART_MAX_BYTES, 'часть WRPL')
+        } finally {
+          attemptTiming.downloadMs = performance.now() - downloadStarted
+        }
+        attemptTiming.bytes = data.byteLength
+        timing.bytes = data.byteLength
+        validateReplayPart(data, safeUrlLabel(url))
+        throwIfAborted(signal)
+        if (file) {
+          const writeStarted = performance.now()
+          try {
+            await writeFileAtomic(file, data)
+          } finally {
+            timing.cacheWriteMs += performance.now() - writeStarted
+          }
+        }
+        return data
+      }
       await response.body?.cancel().catch(() => undefined)
-      await sleep(retryDelay(response, attempt))
-      continue
+      if (response.status === 429 && attempt <= 5) {
+        const delay = retryDelay(response, attempt - 1)
+        const retryStarted = performance.now()
+        try {
+          await sleep(delay, signal)
+        } finally {
+          attemptTiming.retryDelayMs = performance.now() - retryStarted
+        }
+        continue
+      }
+      throw new Error(`HTTP ${response.status} при скачивании ${safeUrlLabel(url)}`)
+    } finally {
+      timing.attempts.push(attemptTiming)
     }
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(`HTTP ${response.status} при скачивании ${safeUrlLabel(url)}`)
   }
 }
 
 function validateReplayPart(data: Buffer, source: string): void {
   if (data.length < WRPL_HEADER_BYTES) throw new Error(`${source}: файл короче заголовка WRPL (${data.length} байт)`)
-  if (data.length > MAX_PART_BYTES) throw new Error(`${source}: часть WRPL больше лимита (${data.length} байт)`)
+  if (data.length > REPLAY_PART_MAX_BYTES) throw new Error(`${source}: часть WRPL больше лимита (${data.length} байт)`)
   if (!(data[0] === 0xe5 && data[1] === 0xac && data[2] === 0x00 && data[3] === 0x10)) {
     throw new Error(`${source}: ответ не является WRPL`)
   }
 }
 
-function reserveFetchSlot(): Promise<void> {
+function reserveFetchSlot(signal?: AbortSignal): Promise<number> {
+  const requestedAt = performance.now()
   const reservation = throttleTail.then(async () => {
-    const waitMs = lastFetchAt + FETCH_PAUSE_MS - Date.now()
-    if (waitMs > 0) await sleep(waitMs)
+    throwIfAborted(signal)
+    const waitMs = lastFetchAt + REPLAY_FETCH_PAUSE_MS - Date.now()
+    if (waitMs > 0) await sleep(waitMs, signal)
+    throwIfAborted(signal)
     lastFetchAt = Date.now()
+    return performance.now() - requestedAt
   })
-  throttleTail = reservation.catch(() => undefined)
+  throttleTail = reservation.then(() => undefined, () => undefined)
   return reservation
 }
 
@@ -96,14 +264,28 @@ function retryDelay(response: Response, attempt: number): number {
   return 700 * (attempt + 1)
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 export async function dropReplayCache(sessionIdHex: string): Promise<void> {
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return
-  const directory = path.resolve(CACHE_DIR, sessionIdHex.toLowerCase())
+  const session = sessionIdHex.toLowerCase()
+  const directory = path.resolve(CACHE_DIR, session)
   const root = path.resolve(CACHE_DIR) + path.sep
   if (!directory.startsWith(root)) return
-  await withSessionLock(sessionIdHex.toLowerCase(), () =>
+  await withSessionAccess(cacheSessionKey(CACHE_DIR, session), 'write', undefined, () =>
     rm(directory, { recursive: true, force: true }).catch(() => undefined),
   )
 }
@@ -128,7 +310,7 @@ async function cleanupExpired(): Promise<void> {
   for (const entry of directories) {
     if (!entry.isDirectory() || !/^[0-9a-f]{12,20}$/i.test(entry.name)) continue
     const directory = path.join(CACHE_DIR, entry.name)
-    await withSessionLock(entry.name.toLowerCase(), async () => {
+    await withSessionAccess(cacheSessionKey(CACHE_DIR, entry.name.toLowerCase()), 'write', undefined, async () => {
       try {
         if ((await stat(directory)).mtimeMs < deadline) {
           await rm(directory, { recursive: true, force: true })
@@ -141,15 +323,168 @@ async function cleanupExpired(): Promise<void> {
   }
 }
 
-/** Последовательно выполняет запись/drop/cleanup одной replay-сессии. */
-function withSessionLock<T>(session: string, task: () => Promise<T>): Promise<T> {
-  const previous = sessionTails.get(session) ?? Promise.resolve()
-  const result = previous.catch(() => undefined).then(task)
-  const tail = result.then(() => undefined, () => undefined)
-  sessionTails.set(session, tail)
-  return result.finally(() => {
-    if (sessionTails.get(session) === tail) sessionTails.delete(session)
+async function withPartLock<T>(
+  key: string,
+  signal: AbortSignal | undefined,
+  task: () => Promise<T>,
+): Promise<T> {
+  const release = await acquirePartLock(key, signal)
+  try {
+    throwIfAborted(signal)
+    return await task()
+  } finally {
+    release()
+  }
+}
+
+function acquirePartLock(key: string, signal?: AbortSignal): Promise<() => void> {
+  throwIfAborted(signal)
+  let state = partLocks.get(key)
+  if (!state) {
+    state = { locked: false, queue: [] }
+    partLocks.set(key, state)
+  }
+  if (!state.locked && state.queue.length === 0) {
+    state.locked = true
+    return Promise.resolve(partRelease(key, state))
+  }
+  return new Promise((resolve, reject) => {
+    const waiter: PartLockWaiter = { resolve, reject, ...(signal ? { signal } : {}) }
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = state!.queue.indexOf(waiter)
+        if (index >= 0) state!.queue.splice(index, 1)
+        reject(abortError())
+      }
+      signal.addEventListener('abort', waiter.onAbort, { once: true })
+    }
+    state!.queue.push(waiter)
   })
+}
+
+function partRelease(key: string, state: PartLockState): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const next = state.queue.shift()
+    if (next) {
+      if (next.signal && next.onAbort) next.signal.removeEventListener('abort', next.onAbort)
+      next.resolve(partRelease(key, state))
+      return
+    }
+    state.locked = false
+    if (partLocks.get(key) === state) partLocks.delete(key)
+  }
+}
+
+async function withSessionAccess<T>(
+  key: string,
+  access: SessionAccess,
+  signal: AbortSignal | undefined,
+  task: () => Promise<T>,
+): Promise<T> {
+  const release = await acquireSessionAccess(key, access, signal)
+  try {
+    throwIfAborted(signal)
+    return await task()
+  } finally {
+    release()
+  }
+}
+
+function acquireSessionAccess(
+  key: string,
+  access: SessionAccess,
+  signal?: AbortSignal,
+): Promise<() => void> {
+  throwIfAborted(signal)
+  let gate = sessionGates.get(key)
+  if (!gate) {
+    gate = { readers: 0, writer: false, queue: [] }
+    sessionGates.set(key, gate)
+  }
+  if (gate.queue.length === 0 && !gate.writer && (access === 'read' || gate.readers === 0)) {
+    if (access === 'read') gate.readers += 1
+    else gate.writer = true
+    return Promise.resolve(sessionRelease(key, gate, access))
+  }
+  return new Promise((resolve, reject) => {
+    const waiter: SessionWaiter = { access, resolve, reject, ...(signal ? { signal } : {}) }
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = gate!.queue.indexOf(waiter)
+        if (index >= 0) gate!.queue.splice(index, 1)
+        reject(abortError())
+        drainSessionGate(key, gate!)
+      }
+      signal.addEventListener('abort', waiter.onAbort, { once: true })
+    }
+    gate!.queue.push(waiter)
+  })
+}
+
+function sessionRelease(key: string, gate: SessionGate, access: SessionAccess): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    if (access === 'read') gate.readers -= 1
+    else gate.writer = false
+    drainSessionGate(key, gate)
+  }
+}
+
+function drainSessionGate(key: string, gate: SessionGate): void {
+  if (gate.writer) return
+  const first = gate.queue[0]
+  if (first?.access === 'write') {
+    if (gate.readers > 0) return
+    gate.queue.shift()
+    grantSessionWaiter(key, gate, first)
+    return
+  }
+  while (gate.queue[0]?.access === 'read' && !gate.writer) {
+    const reader = gate.queue.shift()!
+    grantSessionWaiter(key, gate, reader)
+  }
+  if (gate.readers === 0 && !gate.writer && gate.queue.length === 0 && sessionGates.get(key) === gate) {
+    sessionGates.delete(key)
+  }
+}
+
+function grantSessionWaiter(key: string, gate: SessionGate, waiter: SessionWaiter): void {
+  if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort)
+  if (waiter.access === 'read') gate.readers += 1
+  else gate.writer = true
+  waiter.resolve(sessionRelease(key, gate, waiter.access))
+}
+
+function cacheSessionKey(cacheDirectory: string, session: string): string {
+  return `${path.resolve(cacheDirectory)}\u0000${session}`
+}
+
+function emitPartTiming(callback: ReplayPartFetchOptions['onTiming'], timing: ReplayPartTiming): void {
+  if (!callback) return
+  try {
+    callback({ ...timing, attempts: timing.attempts.map((attempt) => ({ ...attempt })) })
+  } catch {
+    // Метрики не должны менять результат загрузки.
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError()
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function abortError(): Error {
+  const error = new Error('Загрузка replay отменена')
+  error.name = 'AbortError'
+  return error
 }
 
 function safeUrlLabel(raw: string): string {

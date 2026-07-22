@@ -569,6 +569,11 @@ export interface StoredItem {
   analysis: string | null
 }
 
+/** Ingest-item с точным временем первого обнаружения источником. */
+export interface PendingBattleItem extends StoredItem {
+  firstSeenAt: number
+}
+
 interface ItemRow {
   id: number
   source: string
@@ -1447,10 +1452,11 @@ export function getBattleIngestState(sessionId: string): { status: BattleIngestS
  * исчерпавшие лимит попыток. Новые (большой id) первыми — их части ещё
  * живы на CDN.
  */
-export function getPendingBattleItems(maxAttempts: number, limit: number): StoredItem[] {
+export function getPendingBattleItems(maxAttempts: number, limit: number): PendingBattleItem[] {
   const rows = getDb()
     .prepare(`
-      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at, NULL AS analysis
+      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at,
+             i.first_seen_at, NULL AS analysis
       FROM items i
       LEFT JOIN battle_ingest bi ON bi.session_id = i.external_id
       WHERE i.source = 'wt-replays'
@@ -1461,8 +1467,8 @@ export function getPendingBattleItems(maxAttempts: number, limit: number): Store
       ORDER BY i.id DESC
       LIMIT ?
     `)
-    .all(maxAttempts, limit) as unknown as ItemRow[]
-  return rows.map(toStoredItem)
+    .all(maxAttempts, limit) as unknown as Array<ItemRow & { first_seen_at: number }>
+  return rows.map((row) => ({ ...toStoredItem(row), firstSeenAt: row.first_seen_at }))
 }
 
 /** Сводка разбора для дашборда: сколько боёв разобрано, в очереди, провалено */
