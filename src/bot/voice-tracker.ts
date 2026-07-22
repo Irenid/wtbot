@@ -1,7 +1,6 @@
 import { Events, type Client, type GuildMember, type VoiceState } from 'discord.js'
 import {
-  getPlayerRating,
-  getVoicePresence,
+  getVoiceClanTags,
   removeVoicePresence,
   syncVoicePresence,
   upsertVoicePresence,
@@ -28,6 +27,7 @@ import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 const RATINGS_REFRESH_MS = 10 * 60_000
 /** Принудительное обновление (кнопка на дашборде) — не чаще раза в 15 секунд */
 const FORCE_THROTTLE_MS = 15_000
+const MEMBER_FETCH_CONCURRENCY = 4
 
 /** «Venukbr (ИванЧай)» → «Venukbr»; без скобок — весь ник целиком */
 export function parseWtNick(displayName: string): string {
@@ -69,17 +69,36 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
   }
 
   // Полный снимок: GUILD_CREATE приносит voice-стейты без участников,
-  // поэтому недостающих подтягиваем поштучно через REST
+  // поэтому недостающих подтягиваем ограниченно-параллельно через REST.
   const snapshot = async (): Promise<number> => {
-    const entries: VoicePresenceEntry[] = []
+    const states: VoiceState[] = []
     for (const guild of client.guilds.cache.values()) {
       for (const state of guild.voiceStates.cache.values()) {
-        if (!isTracked(state.channelId)) continue
-        const member = state.member ?? (await guild.members.fetch(state.id).catch(() => null))
-        if (!member || member.user.bot) continue
-        const entry = entryFrom(state, member)
-        if (entry) entries.push(entry)
+        if (isTracked(state.channelId)) states.push(state)
       }
+    }
+
+    const members = states.map((state) => state.member ?? null)
+    const missing = states.flatMap((state, index) => (state.member ? [] : [index]))
+    let cursor = 0
+    await Promise.all(
+      Array.from({ length: Math.min(MEMBER_FETCH_CONCURRENCY, missing.length) }, async () => {
+        while (cursor < missing.length) {
+          const missingIndex = missing[cursor]
+          cursor += 1
+          if (missingIndex === undefined) return
+          const state = states[missingIndex]
+          if (state) members[missingIndex] = await state.guild.members.fetch(state.id).catch(() => null)
+        }
+      }),
+    )
+
+    const entries: VoicePresenceEntry[] = []
+    for (const [index, state] of states.entries()) {
+      const member = members[index]
+      if (!member || member.user.bot) continue
+      const entry = entryFrom(state, member)
+      if (entry) entries.push(entry)
     }
     syncVoicePresence(entries)
     return entries.length
@@ -87,13 +106,9 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
 
   // Снимки ПКР кланов сидящих в каналах; force — мимо кулдауна clan-info
   const refreshRatings = async (force: boolean): Promise<number> => {
-    const tags = new Set<string>()
-    for (const row of getVoicePresence()) {
-      const tag = getPlayerRating(row.wtNick)?.clanTag
-      if (tag) tags.add(tag)
-    }
-    if (tags.size > 0) await fetchRatingsForTags([...tags], { force })
-    return tags.size
+    const tags = getVoiceClanTags()
+    if (tags.length > 0) await fetchRatingsForTags(tags, { force })
+    return tags.length
   }
 
   const readyHandler = (): void => {
@@ -133,19 +148,28 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
 
   // Принудительное обновление с дашборда — с троттлингом от спама кнопкой
   let lastForceAt = 0
+  let refreshInFlight: Promise<{ players: number; clans: number }> | null = null
+  const refresh = (): Promise<{ players: number; clans: number }> => {
+    if (stopping) return Promise.resolve({ players: 0, clans: 0 })
+    if (refreshInFlight) return refreshInFlight
+    const run = track((async () => {
+      const players = await snapshot()
+      let clans = 0
+      if (Date.now() - lastForceAt > FORCE_THROTTLE_MS) {
+        lastForceAt = Date.now()
+        clans = await refreshRatings(true)
+      }
+      return { players, clans }
+    })())
+    refreshInFlight = run
+    const clear = (): void => {
+      if (refreshInFlight === run) refreshInFlight = null
+    }
+    run.then(clear, clear)
+    return run
+  }
   return {
-    refresh() {
-      return track((async () => {
-        if (stopping) return { players: 0, clans: 0 }
-        const players = await snapshot()
-        let clans = 0
-        if (Date.now() - lastForceAt > FORCE_THROTTLE_MS) {
-          lastForceAt = Date.now()
-          clans = await refreshRatings(true)
-        }
-        return { players, clans }
-      })())
-    },
+    refresh,
     async stop() {
       stopping = true
       clearInterval(timer)

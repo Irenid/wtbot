@@ -177,8 +177,35 @@ export function encodeEventsBlob(events: ReplayEvents): Buffer {
 
 /** gzip(JSON) из БД → события. Вызывать только внутри worker thread. */
 export function decodeEventsBlob(blob: Buffer): ReplayEvents {
-  const parsed = JSON.parse(gunzipSync(blob).toString('utf8')) as Omit<ReplayEvents, 'errors'>
-  return { ...parsed, errors: [] }
+  return decodeEventsBlobProfiled(blob).events
+}
+
+export interface EventsBlobDecodeProfile {
+  gunzipMs: number
+  utf8Ms: number
+  jsonParseMs: number
+}
+
+/** Вариант для benchmark/профиля без повторной распаковки blob. */
+export function decodeEventsBlobProfiled(blob: Buffer): {
+  events: ReplayEvents
+  profile: EventsBlobDecodeProfile
+} {
+  let started = performance.now()
+  const json = gunzipSync(blob)
+  const gunzipMs = performance.now() - started
+
+  started = performance.now()
+  const text = json.toString('utf8')
+  const utf8Ms = performance.now() - started
+
+  started = performance.now()
+  const parsed = JSON.parse(text) as Omit<ReplayEvents, 'errors'>
+  const jsonParseMs = performance.now() - started
+  return {
+    events: { ...parsed, errors: [] },
+    profile: { gunzipMs, utf8Ms, jsonParseMs },
+  }
 }
 
 export function summarizeEvents(events: ReplayEvents): BattleEventSummary {

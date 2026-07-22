@@ -13,7 +13,14 @@ import { closeWorkerPool } from './workers/pool.js'
 // 1. База данных
 initDb(config.dbPath)
 console.log(`[db] SQLite: ${config.dbPath}`)
-console.log(`[workers] CPU pool: ${config.workerThreads} поток(а)`)
+console.log(
+  `[workers] CPU pool (${config.workerResources.explicitWorkerThreads ? 'ручной' : 'авто'}): ` +
+    `${config.workerThreads}/${config.workerResources.availableCpus} потоков` +
+    ` · резерв CPU ${config.workerResources.reservedCpus}` +
+    ` · резерв интерактива ${config.workerResources.backgroundReserveSlots}` +
+    ` · резерв RAM ${config.workerResources.reservedMemoryMb} МБ` +
+    ` · ingest ×${config.workerResources.ingestConcurrency}`,
+)
 
 // 2. Discord-бот (+трекер голосовых каналов — пишет присутствие в БД)
 const client = await startBot()
@@ -38,7 +45,7 @@ startParsers()
 // 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
 // фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)
 if (config.battleBackgroundEnabled) {
-  startIngestWorker()
+  startIngestWorker(config.workerResources.ingestConcurrency)
 } else {
   console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
 }

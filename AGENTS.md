@@ -27,6 +27,10 @@ zlib/zstd/gzip и SVG -> PNG выполняет ограниченный пул 
 Общая точка входа — `src/index.ts`, хранилище — синхронная SQLite из
 `src/db/index.ts`.
 
+Проект собирает клановые реплеи War Thunder, публикует результаты боёв в
+Discord и web-интерфейсе, а также сохраняет нормализованный датасет боёв.
+Ручной AI-анализ этого датасета — отдельная необязательная и платная операция.
+
 Основной поток данных:
 
 ```text
@@ -34,11 +38,13 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
   -> battles / players / kills / chat -> Discord + web API + PNG/heatmaps
 ```
 
-## Источники истины и расхождения документации
+## Источники истины
 
 Перед изменением поведения сверяйся в таком порядке: текущий код и схема БД,
-затем `AGENTS.md`, затем `CLAUDE.md` и `README.md`. Последние два файла хорошо
-описывают предметную область, но частично отстали от рабочей копии.
+затем `AGENTS.md`. Это единственное основное руководство по репозиторию;
+не создавай параллельные файлы с дублирующими инструкциями. Пользовательские
+настройки документируются в `.env.example`, план производительности — в
+`PERFORMANCE_PLAN.md`.
 
 Актуальные факты, которые важнее устаревших фрагментов документации:
 
@@ -53,19 +59,20 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 - `data/battles/` — ограниченный LRU-кэш, а не вечное хранилище. Источник
   правды — нормализованные таблицы и `events_blob` в SQLite; материалы старых
   боёв восстанавливаются без реплея, а `/battle` читает summary без blob.
-- CPU-пул находится в `src/workers/`: очередь ограничена количеством задач и
+- CPU-пул находится в `src/workers/`: auto-размер учитывает доступные CPU,
+  свободную RAM и заданные резервы. Очередь ограничена количеством задач и
   суммой transferable bytes, интерактивный потребитель повышает приоритет уже
-  общей фоновой сборки, а ingest не занимает все готовые слоты. Timeout
+  общей фоновой сборки, а параллельный ingest не занимает все готовые слоты. Timeout
   выполнения завершает и заменяет worker; timeout/переполнение очереди не
   расходуют попытки ingest и автоанонса.
 - Модули связаны не только через БД: bot/web/WRPL напрямую импортируют DB API и
   друг друга. Замена синхронной SQLite на async Postgres затронет вызывающий
   код, а не только `src/db/`.
-- Команда `/battle`, ingest, автоанонс и `wt-clans` уже являются частью
-  текущего продукта, даже если старые разделы README их не перечисляют.
-- Утверждение README, что кнопку обновления voice невозможно использовать для
-  спама, неполно: cooldown покрывает запрос рейтингов, но полный snapshot
-  Discord/SQLite выполняется при каждом POST.
+- Команда `/battle`, ingest, автоанонс и `wt-clans` являются частью текущего
+  продукта.
+- Cooldown кнопки обновления voice покрывает запрос рейтингов, но полный
+  snapshot Discord/SQLite выполняется при каждом POST; это нужно учитывать при
+  rate limiting и защите web-интерфейса.
 
 ## Среда и установка
 
@@ -93,11 +100,28 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 - `WT_HEATMAP_AIR_AUTO_ZOOM`, `WT_HEATMAP_AIR_SHOW_GROUND_MAP`,
   `WT_HEATMAP_AIR_SHOW_AIRFIELDS`, `WT_HEATMAP_AIR_SHOW_SPAWNS`,
   `WT_HEATMAP_AIR_PADDING_PERCENT` — отображение авиационной карты.
-- `WT_WORKER_THREADS` — число CPU workers (1–8; по умолчанию до двух).
+- `WT_WORKER_THREADS` — `auto` (по умолчанию) либо явное число CPU workers;
+  `WT_WORKER_RESERVE_CPUS`, `WT_WORKER_MEMORY_RESERVE_MB` и
+  `WT_WORKER_ESTIMATED_MB` управляют автоматическим CPU/RAM-бюджетом.
+- `WT_WORKER_BACKGROUND_RESERVE`, `WT_INGEST_CONCURRENCY` и
+  `WT_WORKER_MAX_OLD_SPACE_MB` — резерв интерактивных slots, параллельность
+  backlog ingest и V8 old-space одного worker.
 - `ANTHROPIC_API_KEY` — только для `npm run analyze`; вызовы платные.
 
 При добавлении новой переменной одновременно обновляй `src/config.ts`,
-`.env.example`, README и этот файл. Реальные значения из `.env` не переноси.
+`.env.example` и этот файл. Реальные значения из `.env` не переноси.
+
+### Первичная настройка
+
+1. Установить Node.js **>= 22.15.0** и зависимости через `npm ci`.
+2. Скопировать `.env.example` в локальный `.env`, заполнить как минимум
+   `TOKEN` и `CLIENT_ID`; `GUILD_ID` нужен для guild-scoped slash-команд.
+3. Регистрировать команды через `npm run deploy:commands` только после
+   изменения их схемы и с явного разрешения пользователя: команда изменяет
+   состояние Discord.
+4. При стандартном `PORT=3000` локальный dashboard доступен на
+   `http://localhost:3000`; основные проверки — `/health`, `/api/stats`,
+   `/api/items` и `/api/voice`.
 
 ## Команды
 
@@ -105,7 +129,7 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 npm run build             # обязательная статическая проверка TypeScript
 npm run verify:workers    # безопасный source-smoke CPU pool + Resvg
 npm run verify:workers:dist # тот же smoke после build, из dist
-npm run benchmark:workers -- data/replays/<sid> [--render] # локальный WRPL/PNG без сети/БД
+npm run benchmark:workers -- data/replays/<sid> [--render] [--kind=heatmap-air] [--json=data/benchmarks/result.json] # локальный WRPL/PNG без сети/БД
 npm run dev               # живой бот + web + parsers, watch-режим
 npm run dev:bot           # то же без фонового разбора и автоанонса боёв
 npm start                 # запуск dist/index.js
@@ -159,6 +183,9 @@ npm run analyze -- 3      # платные запросы к Anthropic и зап
 Модули взаимодействуют через DB-функции, но границы пока не строгие: bot,
 web и WRPL-код напрямую импортируют `src/db/index.ts`. SQLite API синхронный;
 переход на Postgres потребует также распространить `async` по вызывающему коду.
+В worker передавай только structured-clone-совместимые данные и точные
+transferable `ArrayBuffer`; Discord/Fastify/SQLite handles туда передавать
+нельзя.
 
 Порядок старта в `src/index.ts`: инициализация SQLite -> Discord client ->
 voice tracker -> Fastify -> parser scheduler -> ingest worker. Автоанонсер
@@ -186,9 +213,10 @@ Discord client, закрывается CPU pool и последней — БД. 
 - Части реплея доступны на CDN примерно две недели. Новые items обрабатываются
   первыми; большой пропуск закрывай `npm run backfill -- <days>`, пока части
   ещё существуют.
-- Ingest раз в 20 секунд берёт небольшую пачку, вызывает
-  `loadBattleData()` (скачивание main + `parse-battle` в CPU worker), затем
-  `saveBattle()` и заполняет
+- Ingest раз в 20 секунд берёт до двух волн рассчитанной параллельности,
+  разносит старты CDN-загрузок на 500 мс и вызывает `loadBattleData()`
+  (`parse-battle` выполняется в CPU worker). Независимые бои идут параллельно,
+  но синхронные `saveBattle()` выполняются main thread последовательно и заполняют
   `battles`, `battle_players`, `battle_kills`, `battle_chat`. Состояние живёт
   в `battle_ingest`: `ok`, `error`, `expired`, `no_parts`. Переполнение,
   startup-сбой и queue timeout CPU scheduler откладывают бой без увеличения
@@ -217,14 +245,20 @@ Discord client, закрывается CPU pool и последней — БД. 
   `ArrayBuffer` в `parse-battle`, а worker разбирает WRPL, округляет
   координаты, готовит DB-строки и gzip blob. `reconstructBattleSummary()`
   не читает `events_blob`; media передаёт сжатый blob прямо worker-у.
-- `buildBattleMedia()` сначала пытается восстановить бой из БД и только затем
-  обращается к CDN. Параллельные сборки одной session дедуплицируются через
-  `inflightBuilds`; интерактивный join повышает все активные worker-зависимости.
+- Источник для media сначала восстанавливается из БД и только затем, если это
+  невозможно, загружается с CDN. Параллельные сборки одной session
+  дедуплицируются; интерактивный join повышает приоритет активных
+  worker-зависимостей.
+- Интерактивный запрос вызывает `buildBattleMediaKind()` и worker-задачу
+  `render-media-kind`, поэтому строится только выбранный log/chat/heatmap.
+  `buildBattleMedia()` и `render-media` остаются полным bundle для фонового
+  прогрева и CLI: log, chat и шесть обычных heatmap. Вариант 2x строится
+  отдельно задачей `render-heatmap`, не пересобирая обычный bundle.
 - `render-battle.ts` строит основную SVG-таблицу; `render-battle-log.ts` —
   хронологию; `render-heatmap.ts` — ground/air trajectories, смерти, зоны и
-  стоянки. SVG builders чистые; `@resvg/resvg-js` создаётся только в worker.
-  Log + две heatmap рендерятся одной bundle-задачей, чтобы не клонировать и
-  не распаковывать траектории трижды.
+  стоянки. Общая и две командные карты режима используют одну
+  `PreparedHeatmapScene`; SVG builders чистые, а `@resvg/resvg-js` создаётся
+  только в worker.
 - Победитель отсутствует в results-BLK и берётся из разобранных событий/БД.
   Реальные имена анонимизированных игроков восстанавливаются по `userId` из
   metadata сайта; не сопоставляй их только по display name.
@@ -234,8 +268,12 @@ Discord client, закрывается CPU pool и последней — БД. 
 - `data/wtbot.db` — источник правды и датасет.
 - `data/replays/<sid>/` — временные части `.wrpl`, ленивый TTL-кэш.
 - `data/battles/` — ограниченный `WT_BATTLE_CACHE_MB` LRU готовых PNG/TXT и
-  meta; файлы восстановимы из БД. Meta публикуется последней как commit marker,
-  а eviction удаляет весь session-bundle, начиная с meta.
+  meta; файлы восстановимы из БД. Каждый атомарно записанный артефакт
+  перечисляется в `meta.artifacts`, а meta публикуется последней как commit
+  marker. Eviction удаляет весь session-bundle, начиная с meta.
+- `WT_BATTLE_CACHE_ENABLED=true` разрешает повторную выдачу сохранённых
+  артефактов и обновляет их LRU-время. При `false` каждый запрос рендерится
+  заново, но новый результат всё равно сохраняется в `data/battles/`.
 - `data/missions/` — JSON миссий и импортов для battleArea/зон; имя включает
   хэш полного относительного пути, а parse/deep scan выполняет worker.
 - `data/maps/` — tactical maps нужного режима из wt-tools; чужой режим нельзя
@@ -265,6 +303,17 @@ Discord client, закрывается CPU pool и последней — БД. 
   дельта появляется со второго снимка конкретного игрока.
 - Dashboard — одна HTML-строка в `pages.ts`; пользовательские данные вставляй
   через DOM `textContent`, не через `innerHTML`.
+
+## Ручной AI-анализ
+
+- `npm run analyze -- <limit>` запускается только вручную и только с явного
+  запроса: он использует платный `ANTHROPIC_API_KEY` и записывает результаты в
+  БД.
+- `getUnanalyzedItems()` выбирает записи без анализа, а `saveAnalysis()`
+  сохраняет результат. `analyses.item_id` имеет ограничение `UNIQUE`, поэтому
+  для одного item должна существовать не более чем одна запись анализа.
+- Результаты анализа доступны через item-запросы; автоматический вызов модели
+  в parser/ingest не добавляй.
 
 ## Как расширять проект
 
@@ -316,6 +365,8 @@ runtime-зависимости, через явный `WebDeps`, а не скр�
 AGPL-3.0 из `wrpl-inspector`; корневого `LICENSE` пока нет. Не публикуй релиз и
 не меняй лицензию механически, пока происхождение кода, атрибуция и требования
 AGPL не будут согласованы владельцем проекта.
+Часть GMSync-декодера основана на `WrplReplayParser` под BSD-3-Clause; при
+переносе или переписывании этого кода сохраняй происхождение и атрибуцию.
 
 ## Работа с Git и готовность изменения
 

@@ -185,88 +185,156 @@ interface RouteCrossing {
   time: number
 }
 
+interface PreparedRoutePart {
+  points: PixelRoutePoint[]
+  sourcePoints: PixelRoutePoint[]
+  distances: number[]
+  totalLength: number
+  startTime: number
+  endTime: number
+  arrows: DirectionArrow[]
+}
+
+interface PlayerPathRange {
+  from: number
+  to: number
+  last: SpaceTime
+}
+
+interface PreparedCamp {
+  x: number
+  y: number
+  durMs: number
+  time: number
+}
+
+interface PreparedMinuteMark {
+  x: number
+  y: number
+  minute: number
+  time: number
+}
+
+interface ClanUav {
+  unit: ReplayUnitPath
+  owner: PlayerPaths
+}
+
+/**
+ * Неизменяемая тяжёлая часть heatmap. Живёт только внутри одной worker-задачи
+ * и повторно используется общей и двумя командными картами одного режима.
+ */
+export interface PreparedHeatmapScene {
+  mode: 'ground' | 'air'
+  heatmapOptions: HeatmapRenderOptions
+  rosters: ReturnType<typeof buildRosters>
+  allPlayers: PlayerPaths[]
+  playersByTeam: [PlayerPaths[], PlayerPaths[]]
+  playerById: Map<string, PlayerPaths>
+  resultById: Map<string, ReturnType<typeof buildRosters>[number][number]>
+  killsByVictim: Map<string, ReplayKill[]>
+  killsByKiller: Map<string, ReplayKill[]>
+  killsDeaths: Map<string, [number, number]>
+  pathRangesByPlayer: Map<PlayerPaths, PlayerPathRange[]>
+  preparedRoutesByPlayer: Map<PlayerPaths, PreparedRoutePart[]>
+  visibleSegmentsByPlayer: Map<PlayerPaths, PixelSegment[]>
+  campsByPlayer: Map<PlayerPaths, PreparedCamp[]>
+  minuteMarksByPlayer: Map<PlayerPaths, PreparedMinuteMark[]>
+  clanUavsByTeam: [ClanUav[], ClanUav[]]
+  teamSpawnClustersByTeam: ReturnType<typeof teamSpawnClusters>[]
+  teamSpawns: ReturnType<typeof teamSpawn>[]
+  fallbackImageWorldBounds: MapImageViewport['imageWorldBounds']
+  fullBleed: boolean
+  px: (x: number) => number
+  pz: (z: number) => number
+  endTime: number
+}
+
 /** "tankModels/ussr_2s38" → "ussr_2s38" (ключ словаря техники) */
 const modelId = (model: string): string => model.replace(/^.*\//, '')
 
-export function buildHeatmapSvg(
+export function prepareHeatmapScene(
   input: HeatmapInput,
-  gameFont = false,
   tacticalMap: string | null = null,
-  fallbackMap: string | null = null,
   fallbackMapViewport?: MapImageViewport,
-  mapIconFont = false,
-  capturedMapRendering = CAPTURED_MAP_RENDERING_ENABLED,
-): string {
-  const { events, results, dict, mission, mode, seekers, teamIndex } = input
+): PreparedHeatmapScene {
+  const { events, results, mission, mode } = input
   const heatmapOptions = { ...DEFAULT_HEATMAP_OPTIONS, ...input.heatmapOptions }
   const airPaddingPercent = Number.isFinite(heatmapOptions.airPaddingPercent)
     ? Math.max(0, Math.min(50, heatmapOptions.airPaddingPercent))
     : DEFAULT_HEATMAP_OPTIONS.airPaddingPercent
-  const renderScale = input.renderScale ?? 1
-  // Координатная привязка нужна и для готового игрового скриншота. Отключатель ниже
-  // убирает только повторную обрезку, сетку и значки новой прорисовки.
-  const fallbackWorldBounds = fallbackMapViewport?.worldBounds
-  const fallbackImageWorldBounds = fallbackMapViewport?.imageWorldBounds
-  if (!capturedMapRendering) {
-    fallbackMapViewport = undefined
-    mapIconFont = false
+
+  const killsByVictim = new Map<string, ReplayKill[]>()
+  const killsByKiller = new Map<string, ReplayKill[]>()
+  const killsDeaths = new Map<string, [number, number]>()
+  for (const kill of events.kills) {
+    if (kill.victimId) {
+      const victims = killsByVictim.get(kill.victimId)
+      if (victims) victims.push(kill)
+      else killsByVictim.set(kill.victimId, [kill])
+      const stats = killsDeaths.get(kill.victimId) ?? [0, 0]
+      stats[1]++
+      killsDeaths.set(kill.victimId, stats)
+    }
+    if (kill.killerId) {
+      const killers = killsByKiller.get(kill.killerId)
+      if (killers) killers.push(kill)
+      else killsByKiller.set(kill.killerId, [kill])
+      if (kill.killerId !== kill.victimId) {
+        const stats = killsDeaths.get(kill.killerId) ?? [0, 0]
+        stats[0]++
+        killsDeaths.set(kill.killerId, stats)
+      }
+    }
+  }
+  for (const kills of killsByVictim.values()) kills.sort((a, b) => a.time - b.time)
+  for (const kills of killsByKiller.values()) kills.sort((a, b) => a.time - b.time)
+
+  const unitsByPlayer = new Map<string, ReplayUnitPath[]>()
+  for (const unit of events.units) {
+    if (unit.path.length < 2) continue
+    const key = `${unit.source}\u0000${unit.userId}`
+    const units = unitsByPlayer.get(key)
+    if (units) units.push(unit)
+    else unitsByPlayer.set(key, [unit])
   }
 
-  // Игроки в порядке команд со скриншота результатов (слева — «золотая»)
   const rosters = buildRosters(results)
   const allPlayers: PlayerPaths[] = []
+  const playersByTeam: [PlayerPaths[], PlayerPaths[]] = [[], []]
+  const allPoints: SpaceTime[] = []
+  let latestPointTime = 1
   rosters.forEach((roster, ti) => {
-    roster.forEach((p, pi) => {
-      const paths = events.units
-        .filter((u) => u.userId === p.userId && u.source === mode && u.path.length >= 2)
-        .map((u) => (mode === 'air' ? truncateAtDeath(u, events, p.userId) : u))
-        .filter((u) => u.path.length >= 2)
+    roster.forEach((player, pi) => {
+      const candidates = unitsByPlayer.get(`${mode}\u0000${player.userId}`) ?? []
+      const paths = (mode === 'air'
+        ? candidates.map((unit) => truncateAtDeath(unit, killsByVictim.get(player.userId) ?? []))
+        : candidates
+      ).filter((unit) => unit.path.length >= 2)
       if (paths.length === 0) return
-      allPlayers.push({
-        userId: p.userId,
-        name: p.name.replace(/@(psn|live|epic)$/i, ''),
-        clanTag: p.clanTag,
+      const preparedPlayer: PlayerPaths = {
+        userId: player.userId,
+        name: player.name.replace(/@(psn|live|epic)$/i, ''),
+        clanTag: player.clanTag,
         color: PATH_COLORS[Math.min(ti, 1)]![pi % 8]!,
-        models: [...new Set(paths.map((q) => modelId(q.model)))],
+        models: [...new Set(paths.map((unit) => modelId(unit.model)))],
         paths,
         team: ti,
-      })
+      }
+      allPlayers.push(preparedPlayer)
+      if (ti === 0 || ti === 1) playersByTeam[ti].push(preparedPlayer)
+      for (const unit of paths) {
+        for (const point of unit.path) {
+          allPoints.push(point)
+          if (point.t > latestPointTime) latestPointTime = point.t
+        }
+      }
     })
   })
-  const players = teamIndex === undefined ? allPlayers : allPlayers.filter((player) => player.team === teamIndex)
-  // БПЛА приходят из лётной модели без userId. На командной наземной карте
-  // связываем их с ближайшей активной машиной в момент запуска; далёкий или
-  // неоднозначный БПЛА не рисуем, чтобы не приписать разведку чужому игроку.
-  const clanUavs = mode === 'ground' && teamIndex !== undefined
-    ? events.units
-        .filter((unit) =>
-          unit.source === 'air' &&
-          unit.userId === '' &&
-          unit.path.length >= 2 &&
-          /(?:ucav|uav|drone|recon)/i.test(modelId(unit.model)),
-        )
-        .map((unit) => {
-          const start = unit.path[0]!
-          const owner = allPlayers
-            .filter((player) => player.team === teamIndex)
-            .map((player) => ({ player, point: pointAtTime(player.paths, start.t) ?? nearestPoint(player.paths, start.t) }))
-            .filter((candidate): candidate is { player: PlayerPaths; point: SpaceTime } => candidate.point !== null)
-            .map((candidate) => ({
-              ...candidate,
-              distance: Math.hypot(candidate.point.x - start.x, candidate.point.z - start.z),
-            }))
-            .sort((a, b) => a.distance - b.distance)[0]
-          return owner && owner.distance <= 180 ? { unit, owner: owner.player } : null
-        })
-        .filter((uav): uav is { unit: ReplayUnitPath; owner: PlayerPaths } => uav !== null)
-    : []
+  const endTime = Math.max(events.endTime, latestPointTime, 1)
 
-  // Границы мира: battleArea миссии, иначе габариты траекторий; всегда квадрат.
-  // Наземная карта с известным battleArea кладётся на весь кадр (снимок
-  // покрывает ровно его), остальные режимы — с небольшим полем.
-  // Масштаб командной карты совпадает с общей: границы считаются по обеим
-  // командам, а цвета назначаются до фильтрации.
-  const allPoints = allPlayers.flatMap((p) => p.paths.flatMap((q) => q.path))
+  const fallbackWorldBounds = fallbackMapViewport?.worldBounds
+  const fallbackImageWorldBounds = fallbackMapViewport?.imageWorldBounds
   const visibleGroundArea = mode === 'air' && !heatmapOptions.airShowGroundMap
     ? null
     : (mission?.area ?? null)
@@ -284,9 +352,185 @@ export function buildHeatmapSvg(
   const cz = (bounds!.z0 + bounds!.z1) / 2
   const half = Math.max(bounds!.x1 - bounds!.x0, bounds!.z1 - bounds!.z0) / 2 || 1000
   const view = fullBleed ? 1 : 0.94
-  // мир → пиксели; Z растёт на север, на картинке — вверх
   const px = (x: number): number => ((x - cx) / half) * (MAP_W / 2) * view + MAP_W / 2
   const pz = (z: number): number => MAP_W / 2 - ((z - cz) / half) * (MAP_W / 2) * view
+
+  const preparedRoutesByPlayer = new Map<PlayerPaths, PreparedRoutePart[]>()
+  const visibleSegmentsByPlayer = new Map<PlayerPaths, PixelSegment[]>()
+  const pathRangesByPlayer = new Map<PlayerPaths, PlayerPathRange[]>()
+  const campsByPlayer = new Map<PlayerPaths, PreparedCamp[]>()
+  const minuteMarksByPlayer = new Map<PlayerPaths, PreparedMinuteMark[]>()
+  const minuteStepMs = tickStepMinutes(endTime) * 60000
+  for (const player of allPlayers) {
+    const routeParts: PreparedRoutePart[] = []
+    const visibleSegments: PixelSegment[] = []
+    const ranges: PlayerPathRange[] = []
+    const camps: PreparedCamp[] = []
+    const minuteMarks: PreparedMinuteMark[] = []
+    const playerDeaths = killsByVictim.get(player.userId) ?? []
+    for (const unit of player.paths) {
+      ranges.push({
+        from: unit.path[0]!.t - 5000,
+        to: unit.path[unit.path.length - 1]!.t + 45000,
+        last: unit.path[unit.path.length - 1]!,
+      })
+      for (const segment of splitSegments(unit.path)) {
+        const sourcePoints = segment.map((point) => ({ x: px(point.x), y: pz(point.z), time: point.t }))
+        for (let i = 1; i < sourcePoints.length; i++) {
+          const from = sourcePoints[i - 1]!
+          const to = sourcePoints[i]!
+          visibleSegments.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y })
+        }
+        const points = simplifyRoutePoints(sourcePoints, 1)
+        const distances = routeDistances(points)
+        routeParts.push({
+          points,
+          sourcePoints,
+          distances,
+          totalLength: distances[distances.length - 1] ?? 0,
+          startTime: segment[0]!.t,
+          endTime: segment[segment.length - 1]!.t,
+          arrows: directionArrows(points),
+        })
+      }
+
+      if (mode === 'ground') {
+        const start = unit.path[0]!.t
+        const end = unit.path[unit.path.length - 1]!.t
+        const death = firstKillInRange(playerDeaths, start - 5000, end + 45000)
+        const alive = death === null ? unit.path : unit.path.filter((point) => point.t <= death.time)
+        if (alive.length >= 2) {
+          for (const camp of findCamps(alive)) {
+            camps.push({
+              x: px(camp.x),
+              y: pz(camp.z),
+              durMs: camp.durMs,
+              time: camp.time,
+            })
+          }
+        }
+      }
+
+      let lastX = -1e9
+      let lastY = -1e9
+      for (const tick of timeTicks(unit.path, minuteStepMs)) {
+        const x = px(tick.x)
+        const y = pz(tick.z)
+        if (Math.hypot(x - lastX, y - lastY) < 27) continue
+        lastX = x
+        lastY = y
+        minuteMarks.push({ x, y, minute: tick.minute, time: tick.time })
+      }
+    }
+    preparedRoutesByPlayer.set(player, routeParts)
+    visibleSegmentsByPlayer.set(player, visibleSegments)
+    pathRangesByPlayer.set(player, ranges)
+    campsByPlayer.set(player, camps)
+    minuteMarksByPlayer.set(player, minuteMarks)
+  }
+
+  const playerById = new Map(allPlayers.map((player) => [player.userId, player]))
+  const resultById = new Map(rosters.flat().map((player) => [player.userId, player]))
+  const teamSpawnClustersByTeam = playersByTeam.map((players) => teamSpawnClusters(players, half))
+  const teamSpawns = playersByTeam.map((players) => teamSpawn(players, cx, cz, half))
+  const clanUavsByTeam: [ClanUav[], ClanUav[]] = [[], []]
+  if (mode === 'ground') {
+    const anonymousUavs = events.units.filter((unit) =>
+      unit.source === 'air' &&
+      unit.userId === '' &&
+      unit.path.length >= 2 &&
+      /(?:ucav|uav|drone|recon)/i.test(modelId(unit.model)),
+    )
+    for (const team of [0, 1] as const) {
+      for (const unit of anonymousUavs) {
+        const start = unit.path[0]!
+        let owner: { player: PlayerPaths; distance: number } | null = null
+        for (const player of playersByTeam[team]) {
+          const point = pointAtTime(player.paths, start.t) ?? nearestPoint(player.paths, start.t)
+          if (!point) continue
+          const distance = Math.hypot(point.x - start.x, point.z - start.z)
+          if (!owner || distance < owner.distance) owner = { player, distance }
+        }
+        if (owner && owner.distance <= 180) clanUavsByTeam[team].push({ unit, owner: owner.player })
+      }
+    }
+  }
+
+  return {
+    mode,
+    heatmapOptions,
+    rosters,
+    allPlayers,
+    playersByTeam,
+    playerById,
+    resultById,
+    killsByVictim,
+    killsByKiller,
+    killsDeaths,
+    pathRangesByPlayer,
+    preparedRoutesByPlayer,
+    visibleSegmentsByPlayer,
+    campsByPlayer,
+    minuteMarksByPlayer,
+    clanUavsByTeam,
+    teamSpawnClustersByTeam,
+    teamSpawns,
+    fallbackImageWorldBounds,
+    fullBleed,
+    px,
+    pz,
+    endTime,
+  }
+}
+
+export function buildHeatmapSvg(
+  input: HeatmapInput,
+  gameFont = false,
+  tacticalMap: string | null = null,
+  fallbackMap: string | null = null,
+  fallbackMapViewport?: MapImageViewport,
+  mapIconFont = false,
+  capturedMapRendering = CAPTURED_MAP_RENDERING_ENABLED,
+  preparedScene?: PreparedHeatmapScene,
+): string {
+  const { events, dict, mission, mode, seekers, teamIndex } = input
+  const scene = preparedScene ?? prepareHeatmapScene(input, tacticalMap, fallbackMapViewport)
+  if (scene.mode !== mode) throw new Error(`PreparedHeatmapScene ${scene.mode} нельзя использовать для ${mode}`)
+  const {
+    heatmapOptions,
+    rosters,
+    allPlayers,
+    playersByTeam,
+    playerById,
+    resultById,
+    killsByVictim,
+    killsByKiller,
+    killsDeaths,
+    pathRangesByPlayer,
+    preparedRoutesByPlayer,
+    visibleSegmentsByPlayer,
+    campsByPlayer,
+    minuteMarksByPlayer,
+    clanUavsByTeam,
+    teamSpawnClustersByTeam,
+    teamSpawns,
+    fallbackImageWorldBounds,
+    fullBleed,
+    px,
+    pz,
+    endTime,
+  } = scene
+  const players = teamIndex === undefined ? allPlayers : (playersByTeam[teamIndex] ?? [])
+  const clanUavs = mode === 'ground' && teamIndex !== undefined
+    ? (clanUavsByTeam[teamIndex] ?? [])
+    : []
+  const renderScale = input.renderScale ?? 1
+  // Координатная привязка нужна и для готового игрового скриншота. Отключатель ниже
+  // убирает только повторную обрезку, сетку и значки новой прорисовки.
+  if (!capturedMapRendering) {
+    fallbackMapViewport = undefined
+    mapIconFont = false
+  }
 
   const W = MAP_W + PANEL_W
   const H = MAP_W
@@ -450,18 +694,8 @@ export function buildHeatmapSvg(
 
   // По началам всех жизней находим один или два спавна команды. Подпись остаётся
   // нижним слоем, но выбирает свободную сторону спавна без видимых маршрутов.
-  const visibleRouteSegments: PixelSegment[] = players.flatMap((player) =>
-    player.paths.flatMap((unit) =>
-      splitSegments(unit.path).flatMap((segment) => segment.slice(1).map((point, i) => ({
-        x1: px(segment[i]!.x),
-        y1: pz(segment[i]!.z),
-        x2: px(point.x),
-        y2: pz(point.z),
-      }))),
-    ),
-  )
-  const teamSpawnClustersByTeam = [0, 1].map((ti) =>
-    teamSpawnClusters(allPlayers.filter((player) => player.team === ti), half),
+  const visibleRouteSegments: PixelSegment[] = players.flatMap(
+    (player) => visibleSegmentsByPlayer.get(player) ?? [],
   )
   if (mode === 'ground' && capturedMapRendering) {
     const spawnMarkers = !tacticalMap && fallbackMapViewport?.groundSpawns?.length
@@ -508,25 +742,14 @@ export function buildHeatmapSvg(
   const routes: RouteGeometry[] = []
   let routeIndex = 0
   for (const p of players) {
-    for (const unit of p.paths) {
-      for (const seg of splitSegments(unit.path)) {
-        const sourcePoints = seg.map((point) => ({ x: px(point.x), y: pz(point.z), time: point.t }))
-        const points = simplifyRoutePoints(sourcePoints, 1)
-        const distances = routeDistances(points)
-        routes.push({
-          index: routeIndex++,
-          baseOrder: 0,
-          playerId: p.userId,
-          color: p.color,
-          points,
-          sourcePoints,
-          distances,
-          totalLength: distances[distances.length - 1] ?? 0,
-          startTime: seg[0]!.t,
-          endTime: seg[seg.length - 1]!.t,
-          arrows: directionArrows(points),
-        })
-      }
+    for (const route of preparedRoutesByPlayer.get(p) ?? []) {
+      routes.push({
+        index: routeIndex++,
+        baseOrder: 0,
+        playerId: p.userId,
+        color: p.color,
+        ...route,
+      })
     }
   }
   routes.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime || a.index - b.index)
@@ -595,46 +818,28 @@ export function buildHeatmapSvg(
   })
   pushMapLayer(13, 'routes', [...routeParts, ...chronological(crossingParts)])
 
-  // Время первой смерти игрока в пределах жизни юнита: остов подбитой
-  // машины шлёт статичную позицию до конца боя — без обрезки по смерти
-  // он превратился бы в ложную «стоянку»
-  const deathTimeOf = (p: PlayerPaths, unit: ReplayUnitPath): number | null => {
-    const start = unit.path[0]!.t
-    const end = unit.path[unit.path.length - 1]!.t
-    const kill = events.kills.find(
-      (k) => k.victimId === p.userId && k.time >= start - 5000 && k.time <= end + 45000,
-    )
-    return kill ? kill.time : null
-  }
-
   // Стоянки (только наземка): где юнит простоял дольше минуты — пятно
   // в цвете игрока (размер растёт с длительностью) с подписью «м:сс»
   const campAreas: TimedSvg[] = []
   const campLabels: TimedSvg[] = []
   if (mode === 'ground') {
     for (const p of players) {
-      for (const unit of p.paths) {
-        const death = deathTimeOf(p, unit)
-        const alive = death === null ? unit.path : unit.path.filter((q) => q.t <= death)
-        if (alive.length < 2) continue
-        for (const camp of findCamps(alive)) {
-          const r = Math.min(30, 13 + (camp.durMs / 60000) * 5)
-          const mm = Math.floor(camp.durMs / 60000)
-          const ss = String(Math.floor((camp.durMs % 60000) / 1000)).padStart(2, '0')
-          const x = r1(px(camp.x))
-          const y = pz(camp.z)
-          campAreas.push(timed(
-            camp.time,
-            `<circle data-camp-time="${Math.round(camp.time)}" cx="${x}" cy="${r1(y)}" r="${r1(r)}" fill="${p.color}" fill-opacity="0.26" stroke="${p.color}" stroke-opacity="0.85" stroke-width="1.8"/>`,
-          ))
-          campLabels.push(timed(
-            camp.time,
-            `<g data-camp-label-time="${Math.round(camp.time)}">` +
-              `<text x="${x}" y="${r1(y + r + 17)}" font-family="${FONTS}" font-size="14.5" font-weight="700" text-anchor="middle" fill="none" stroke="#10130d" stroke-width="3.4">${mm}:${ss}</text>` +
-              `<text x="${x}" y="${r1(y + r + 17)}" font-family="${FONTS}" font-size="14.5" font-weight="700" text-anchor="middle" fill="#f2f4f7">${mm}:${ss}</text>` +
-              `</g>`,
-          ))
-        }
+      for (const camp of campsByPlayer.get(p) ?? []) {
+        const r = Math.min(30, 13 + (camp.durMs / 60000) * 5)
+        const mm = Math.floor(camp.durMs / 60000)
+        const ss = String(Math.floor((camp.durMs % 60000) / 1000)).padStart(2, '0')
+        const x = r1(camp.x)
+        campAreas.push(timed(
+          camp.time,
+          `<circle data-camp-time="${Math.round(camp.time)}" cx="${x}" cy="${r1(camp.y)}" r="${r1(r)}" fill="${p.color}" fill-opacity="0.26" stroke="${p.color}" stroke-opacity="0.85" stroke-width="1.8"/>`,
+        ))
+        campLabels.push(timed(
+          camp.time,
+          `<g data-camp-label-time="${Math.round(camp.time)}">` +
+            `<text x="${x}" y="${r1(camp.y + r + 17)}" font-family="${FONTS}" font-size="14.5" font-weight="700" text-anchor="middle" fill="none" stroke="#10130d" stroke-width="3.4">${mm}:${ss}</text>` +
+            `<text x="${x}" y="${r1(camp.y + r + 17)}" font-family="${FONTS}" font-size="14.5" font-weight="700" text-anchor="middle" fill="#f2f4f7">${mm}:${ss}</text>` +
+            `</g>`,
+        ))
       }
     }
   }
@@ -644,27 +849,16 @@ export function buildHeatmapSvg(
   // Метки времени: кружок с номером минуты раз в tickStep минут вдоль
   // каждой траектории; у стоящего юнита слипшиеся метки пропускаются —
   // остаётся время прибытия в точку
-  const endTime = Math.max(events.endTime, ...allPoints.map((q) => q.t), 1)
-  const stepMs = tickStepMinutes(endTime) * 60000
   const minuteMarks: TimedSvg[] = []
   for (const p of players) {
-    for (const unit of p.paths) {
-      let lastX = -1e9
-      let lastY = -1e9
-      for (const tick of timeTicks(unit.path, stepMs)) {
-        const x = px(tick.x)
-        const y = pz(tick.z)
-        if (Math.hypot(x - lastX, y - lastY) < 27) continue
-        lastX = x
-        lastY = y
-        minuteMarks.push(timed(
-          tick.time,
-          `<g data-minute-time="${Math.round(tick.time)}" transform="translate(${r1(x)} ${r1(y)})">` +
-            `<circle r="11" fill="#10130d" fill-opacity="0.74" stroke="${p.color}" stroke-width="2.4"/>` +
-            `<text y="4.6" font-family="${FONTS}" font-size="13" font-weight="700" fill="#f2f4f7" text-anchor="middle">${tick.minute}</text>` +
-            `</g>`,
-        ))
-      }
+    for (const tick of minuteMarksByPlayer.get(p) ?? []) {
+      minuteMarks.push(timed(
+        tick.time,
+        `<g data-minute-time="${Math.round(tick.time)}" transform="translate(${r1(tick.x)} ${r1(tick.y)})">` +
+          `<circle r="11" fill="#10130d" fill-opacity="0.74" stroke="${p.color}" stroke-width="2.4"/>` +
+          `<text y="4.6" font-family="${FONTS}" font-size="13" font-weight="700" fill="#f2f4f7" text-anchor="middle">${tick.minute}</text>` +
+          `</g>`,
+      ))
     }
   }
   pushMapLayer(16, 'minute-marks', chronological(minuteMarks))
@@ -682,7 +876,6 @@ export function buildHeatmapSvg(
   const skulls: TimedSvg[] = []
   const causeBadges: TimedSvg[] = []
   const causeLabels: TimedSvg[] = []
-  const playerById = new Map(allPlayers.map((p) => [p.userId, p]))
   const occupiedDeathMarkers: { x: number; y: number }[] = []
   const placeDeathMarker = (trueX: number, trueY: number, time: number): { x: number; y: number } => {
     const offsets: [number, number][] = [
@@ -710,13 +903,9 @@ export function buildHeatmapSvg(
     return placed
   }
   for (const p of players) {
-    const ranges = p.paths.map((u) => ({
-      from: u.path[0]!.t - 5000,
-      to: u.path[u.path.length - 1]!.t + 45000,
-      last: u.path[u.path.length - 1]!,
-    }))
-    for (const k of events.kills) {
-      if (k.victimId !== p.userId) continue
+    const ranges = pathRangesByPlayer.get(p) ?? []
+    const playerDeaths = killsByVictim.get(p.userId) ?? []
+    for (const k of playerDeaths) {
       const range = ranges.find((rg) => k.time >= rg.from && k.time <= rg.to)
       if (!range) continue
       const pos = k.victimPos && isNear(k.victimPos, range.last) ? k.victimPos : nearestPoint(p.paths, k.time)
@@ -777,9 +966,8 @@ export function buildHeatmapSvg(
       const last = unit.path[unit.path.length - 1]!
       // подбитая машина остаётся в мире и шлёт статичную позицию —
       // конец пути возле места гибели точкой выжившего не считается
-      const diedHere = events.kills.some(
+      const diedHere = playerDeaths.some(
         (k) =>
-          k.victimId === p.userId &&
           (Math.abs(k.time - last.t) < 45000 || (k.victimPos !== null && isNear(k.victimPos, last, 60))),
       )
       if (!diedHere && events.endTime - last.t < 90000) {
@@ -795,21 +983,16 @@ export function buildHeatmapSvg(
   // точкой гибели, без чужого маршрута; в панели остаются оба состава.
   if (teamIndex !== undefined) {
     for (const killer of players) {
-      for (const k of events.kills) {
-        if (k.killerId !== killer.userId || k.victimId === killer.userId) continue
+      for (const k of killsByKiller.get(killer.userId) ?? []) {
+        if (k.victimId === killer.userId) continue
         const victim = playerById.get(k.victimId)
         if (!victim || victim.team === teamIndex) continue
         if (!killer.models.includes(modelId(k.killerModel)) || !victim.models.includes(modelId(k.victimModel))) continue
 
-        const killerActive = killer.paths.some(
-          (unit) => k.time >= unit.path[0]!.t - 5000 && k.time <= unit.path[unit.path.length - 1]!.t + 45000,
+        const killerActive = (pathRangesByPlayer.get(killer) ?? []).some(
+          (range) => k.time >= range.from && k.time <= range.to,
         )
-        const victimRange = victim.paths
-          .map((unit) => ({
-            from: unit.path[0]!.t - 5000,
-            to: unit.path[unit.path.length - 1]!.t + 45000,
-            last: unit.path[unit.path.length - 1]!,
-          }))
+        const victimRange = (pathRangesByPlayer.get(victim) ?? [])
           .find((range) => k.time >= range.from && k.time <= range.to)
         if (!killerActive || !victimRange) continue
 
@@ -863,21 +1046,6 @@ export function buildHeatmapSvg(
   pushMapLayer(22, 'death-causes', chronological(causeBadges))
   pushMapLayer(23, 'killer-labels', chronological(causeLabels))
 
-  // Фраги/смерти за весь бой для легенды (самострел фрагом не считается)
-  const killsDeaths = new Map<string, [number, number]>()
-  for (const k of events.kills) {
-    if (k.killerId && k.killerId !== k.victimId) {
-      const e = killsDeaths.get(k.killerId) ?? [0, 0]
-      e[0]++
-      killsDeaths.set(k.killerId, e)
-    }
-    if (k.victimId) {
-      const e = killsDeaths.get(k.victimId) ?? [0, 0]
-      e[1]++
-      killsDeaths.set(k.victimId, e)
-    }
-  }
-
   // ---------- панель справа: заголовок, команды, обозначения ----------
   parts.push(
     `<rect x="${MAP_W}" width="${PANEL_W}" height="${H}" fill="#0c0d0f"/>`,
@@ -911,7 +1079,6 @@ export function buildHeatmapSvg(
 
   // Медиана первых позиций игроков даёт устойчивую точку спавна команды.
   // Порядок в панели повторяет чтение карты: сверху вниз, затем слева направо.
-  const teamSpawns = [0, 1].map((ti) => teamSpawn(allPlayers.filter((p) => p.team === ti), cx, cz, half))
   const orderTeams = [0, 1].sort((a, b) => {
     const sa = teamSpawns[a]
     const sb = teamSpawns[b]
@@ -919,7 +1086,6 @@ export function buildHeatmapSvg(
     const dy = pz(sa.z) - pz(sb.z)
     return Math.abs(dy) > MAP_W * 0.15 ? dy : px(sa.x) - px(sb.x)
   })
-  const resultById = new Map(rosters.flat().map((rp) => [rp.userId, rp]))
   const orderedTeams = orderTeams.filter((ti) => rosters[ti] !== undefined)
   const legendRows = clanUavs.length > 0 ? 5 : 4
   const legendHeight = 40 + legendRows * 34
@@ -937,7 +1103,7 @@ export function buildHeatmapSvg(
     const roster = rosters[ti]
     if (!roster) return
     // Панель всегда повторяет общую heatmap; teamIndex фильтрует только поле карты.
-    const teamPlayers = allPlayers.filter((p) => p.team === ti)
+    const teamPlayers = playersByTeam[ti] ?? []
     const clan = mostCommonTag(roster.map((rp) => rp.clanTag))
     const label = clan ? tagMarkup(clan, gameFont) : `Команда ${roster[0]?.team ?? ti + 1}`
     const won = events.teamWon > 0 && roster[0]?.team === events.teamWon
@@ -962,7 +1128,7 @@ export function buildHeatmapSvg(
       const rp = resultById.get(p.userId)
       const [kills, deaths] = killsDeaths.get(p.userId) ?? [0, 0]
       const vehicles = p.models.map((m) => vehicleInfo(dict, m).name).join(', ')
-      const deathsAt = events.kills.filter((k) => k.victimId === p.userId).map((k) => k.time)
+      const deathsAt = (killsByVictim.get(p.userId) ?? []).map((kill) => kill.time)
       const fate = deathsAt.length > 0 ? `погиб ${fmtTime(Math.max(...deathsAt))}` : 'жив'
       const fateColor = deathsAt.length > 0 ? '#d98c8c' : '#9fd6a4'
       parts.push(
@@ -1629,8 +1795,7 @@ function pointAtTime(paths: ReplayUnitPath[], t: number): SpaceTime | null {
   for (const u of paths) {
     const path = u.path
     if (t < path[0]!.t || t > path[path.length - 1]!.t) continue
-    let i = 0
-    while (i + 1 < path.length && path[i + 1]!.t < t) i++
+    const i = Math.max(0, lowerBoundPathTime(path, t) - 1)
     const a = path[i]!
     const b = path[i + 1] ?? a
     if (Math.hypot(b.x - a.x, b.z - a.z) > 400) return null
@@ -1645,7 +1810,17 @@ function nearestPoint(paths: ReplayUnitPath[], t: number): SpaceTime | null {
   let best: SpaceTime | null = null
   let bestDt = Infinity
   for (const u of paths) {
-    for (const p of u.path) {
+    const index = lowerBoundPathTime(u.path, t)
+    if (index > 0) {
+      const p = u.path[index - 1]!
+      const dt = Math.abs(p.t - t)
+      if (dt < bestDt) {
+        bestDt = dt
+        best = p
+      }
+    }
+    if (index < u.path.length) {
+      const p = u.path[index]!
       const dt = Math.abs(p.t - t)
       if (dt < bestDt) {
         bestDt = dt
@@ -1657,12 +1832,43 @@ function nearestPoint(paths: ReplayUnitPath[], t: number): SpaceTime | null {
 }
 
 /** Авиация: путь после гибели — падающий остов, обрезаем по событию */
-function truncateAtDeath(unit: ReplayUnitPath, events: ReplayEvents, userId: string): ReplayUnitPath {
+function truncateAtDeath(unit: ReplayUnitPath, deaths: readonly ReplayKill[]): ReplayUnitPath {
   const start = unit.path[0]!.t
   const end = unit.path[unit.path.length - 1]!.t
-  const death = events.kills.find((k) => k.victimId === userId && k.time >= start && k.time <= end)
+  const death = firstKillInRange(deaths, start, end)
   if (!death) return unit
   return { ...unit, path: unit.path.filter((p) => p.t <= death.time + 4000) }
+}
+
+function lowerBoundPathTime(path: readonly SpaceTime[], time: number): number {
+  let low = 0
+  let high = path.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (path[middle]!.t < time) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function lowerBoundKillTime(kills: readonly ReplayKill[], time: number): number {
+  let low = 0
+  let high = kills.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (kills[middle]!.time < time) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function firstKillInRange(
+  kills: readonly ReplayKill[],
+  from: number,
+  to: number,
+): ReplayKill | null {
+  const kill = kills[lowerBoundKillTime(kills, from)]
+  return kill && kill.time <= to ? kill : null
 }
 
 /** Квадратные границы по точкам (+ опциональная стартовая область) */

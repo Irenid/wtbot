@@ -14,6 +14,7 @@ import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, hasBat
 import {
   buildBattleHeatmap2x,
   buildBattleMedia,
+  buildBattleMediaKind,
   cachedBattleHeatmap2x,
   cachedBattleMedia,
   cachedBattleMeta,
@@ -316,7 +317,14 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
             await interaction.editReply('Реплей этого боя не найден в базе — собрать HD-карту не из чего.')
             return
           }
-          await buildBattleMedia(sessionId, parts, meta, realNamesFromItem(data ?? {}), 'interactive')
+          await buildBattleMediaKind(
+            sessionId,
+            parts,
+            meta,
+            kind,
+            realNamesFromItem(data ?? {}),
+            'interactive',
+          )
         }
         media = await buildBattleHeatmap2x(sessionId, kind, meta, 'interactive')
       }
@@ -328,22 +336,14 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
           await interaction.editReply('Реплей этого боя не найден в базе — собрать материалы не из чего.')
           return
         }
-        const built = await buildBattleMedia(
+        media = await buildBattleMediaKind(
           sessionId,
           parts,
           meta,
+          kind,
           realNamesFromItem(data ?? {}),
           'interactive',
         )
-        media =
-          kind === 'log' ? built.log
-          : kind === 'heatmap-ground' ? built.heatmapGround
-          : kind === 'heatmap-air' ? built.heatmapAir
-          : kind === 'heatmap-team-0' ? built.heatmapTeamGround[0]
-          : kind === 'heatmap-team-1' ? built.heatmapTeamGround[1]
-          : kind === 'heatmap-team-air-0' ? built.heatmapTeamAir[0]
-          : kind === 'heatmap-team-air-1' ? built.heatmapTeamAir[1]
-          : Buffer.from(built.chat)
       }
     }
   } catch (err) {
