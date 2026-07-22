@@ -7,15 +7,17 @@ import {
   getLatestItems,
   getLatestParsePerSource,
   getParseHistory,
-  getPlayerBattleStats,
-  getPlayerRating,
-  getVoicePresence,
+  getVoiceDashboardRows,
 } from '../../db/index.js'
 import { decorateTag } from '../../wrpl/render-battle.js'
 
 // JSON API — его же можно дергать из будущего фронтенда (React/Vue),
 // когда простой встроенной страницы станет мало.
 export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { deps }) => {
+  const voiceRefreshRateLimitMs = 5_000
+  let voiceRefreshNotBefore = 0
+  let voiceRefreshInFlight: ReturnType<WebDeps['refreshVoice']> | null = null
+
   app.get('/health', async () => ({ ok: true }))
 
   app.get('/api/stats', async () => ({
@@ -42,7 +44,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
   // ПКР с дельтой и клан — из снимков clan_rating_snapshots,
   // количество клановых боёв — по собранным реплеям в items.
   app.get('/api/voice', async () => {
-    const rows = getVoicePresence()
+    const rows = getVoiceDashboardRows()
     const channels = new Map<
       string,
       {
@@ -67,17 +69,15 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
         channel = { guildName: row.guildName, channelName: row.channelName, players: [] }
         channels.set(key, channel)
       }
-      const rating = getPlayerRating(row.wtNick)
-      const battleStats = getPlayerBattleStats(row.wtNick)
       channel.players.push({
         displayName: row.displayName,
         wtNick: row.wtNick,
         joinedAt: row.joinedAt,
-        clanTag: rating ? decorateTag(rating.clanTag) : null,
-        rating: rating?.rating ?? null,
-        delta: rating?.delta ?? null,
-        battles: battleStats.battles,
-        lastBattleAt: battleStats.lastBattleAt,
+        clanTag: row.clanTag ? decorateTag(row.clanTag) : null,
+        rating: row.rating,
+        delta: row.delta,
+        battles: row.battles,
+        lastBattleAt: row.lastBattleAt,
       })
     }
     return { channels: [...channels.values()] }
@@ -85,8 +85,24 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
 
   // Кнопка «Обновить» на дашборде: пересканировать каналы и освежить ПКР
   // (сам поход на сайт WT троттлится в voice-tracker, спам кнопкой безопасен)
-  app.post('/api/voice/refresh', async () => {
-    const result = await deps.refreshVoice()
-    return { ok: true, ...result }
+  app.post('/api/voice/refresh', async (_request, reply) => {
+    if (voiceRefreshInFlight) return { ok: true, ...(await voiceRefreshInFlight) }
+    const now = Date.now()
+    if (now < voiceRefreshNotBefore) {
+      const retryAfterSec = Math.max(1, Math.ceil((voiceRefreshNotBefore - now) / 1_000))
+      return reply
+        .header('Retry-After', String(retryAfterSec))
+        .code(429)
+        .send({ ok: false, error: 'Обновление уже выполнялось недавно', retryAfterSec })
+    }
+
+    voiceRefreshNotBefore = now + voiceRefreshRateLimitMs
+    const refresh = deps.refreshVoice()
+    voiceRefreshInFlight = refresh
+    try {
+      return { ok: true, ...(await refresh) }
+    } finally {
+      if (voiceRefreshInFlight === refresh) voiceRefreshInFlight = null
+    }
   })
 }

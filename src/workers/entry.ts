@@ -1,26 +1,42 @@
 import { parentPort } from 'node:worker_threads'
 import { formatBattleChat } from '../wrpl/battle-chat.js'
-import { decodeEventsBlob, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
+import { decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
+import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 import { applyRealNames, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
 import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
 import { buildBattleSvg } from '../wrpl/render-battle.js'
-import { buildHeatmapSvg } from '../wrpl/render-heatmap.js'
+import {
+  buildHeatmapSvg,
+  prepareHeatmapScene,
+  type HeatmapInput,
+  type PreparedHeatmapScene,
+} from '../wrpl/render-heatmap.js'
 import { summarizeMissionDocument } from '../wrpl/mission-info.js'
 import { unpackVromfs } from '../wrpl/vromfs.js'
 import { buildVehicleDict } from '../wrpl/vehicles.js'
 import type {
   AnyWorkerTask,
   HeatmapRenderInput,
+  MediaKindRenderInput,
   MediaRenderInput,
+  RenderedMediaKindResult,
   RenderedMediaResult,
   SerializedWorkerError,
+  WorkerMemorySnapshot,
   WorkerMessage,
+  WorkerRenderFontProfile,
+  WorkerRenderProfile,
   WorkerRequest,
   WorkerResponse,
 } from './protocol.js'
+import { resolveRenderFonts } from './render-fonts.js'
 
 if (!parentPort) throw new Error('CPU worker запущен без parentPort')
 const port = parentPort
+
+function epochNow(): number {
+  return performance.timeOrigin + performance.now()
+}
 
 function exactArrayBuffer(data: Uint8Array): ArrayBuffer {
   const owned = new Uint8Array(data.byteLength)
@@ -39,15 +55,113 @@ function clanFontFiles(fontFiles: readonly string[]): string[] {
   )
 }
 
-async function rasterize(svg: string, fontFiles: string[], scale = 1): Promise<ArrayBuffer> {
+interface MutableRenderProfile {
+  startedAt: number
+  phasesMs: Record<string, number>
+  font?: WorkerRenderFontProfile
+  memoryStart: WorkerMemorySnapshot
+  memoryPeak: WorkerMemorySnapshot
+}
+
+function memorySnapshot(): WorkerMemorySnapshot {
+  const usage = process.memoryUsage()
+  return {
+    rssBytes: usage.rss,
+    heapUsedBytes: usage.heapUsed,
+    externalBytes: usage.external,
+    arrayBuffersBytes: usage.arrayBuffers,
+  }
+}
+
+function startRenderProfile(): MutableRenderProfile {
+  const memory = memorySnapshot()
+  return {
+    startedAt: performance.now(),
+    phasesMs: {},
+    memoryStart: memory,
+    memoryPeak: { ...memory },
+  }
+}
+
+function observeMemory(profile: MutableRenderProfile): WorkerMemorySnapshot {
+  const memory = memorySnapshot()
+  profile.memoryPeak.rssBytes = Math.max(profile.memoryPeak.rssBytes, memory.rssBytes)
+  profile.memoryPeak.heapUsedBytes = Math.max(profile.memoryPeak.heapUsedBytes, memory.heapUsedBytes)
+  profile.memoryPeak.externalBytes = Math.max(profile.memoryPeak.externalBytes, memory.externalBytes)
+  profile.memoryPeak.arrayBuffersBytes = Math.max(profile.memoryPeak.arrayBuffersBytes, memory.arrayBuffersBytes)
+  return memory
+}
+
+function addPhase(profile: MutableRenderProfile, name: string, elapsedMs: number): void {
+  profile.phasesMs[name] = (profile.phasesMs[name] ?? 0) + elapsedMs
+  observeMemory(profile)
+}
+
+function finishRenderProfile(profile: MutableRenderProfile): WorkerRenderProfile {
+  const end = observeMemory(profile)
+  return {
+    totalMs: performance.now() - profile.startedAt,
+    phasesMs: profile.phasesMs,
+    ...(profile.font ? { font: profile.font } : {}),
+    memory: {
+      start: profile.memoryStart,
+      peakObserved: profile.memoryPeak,
+      end,
+    },
+  }
+}
+
+async function rasterize(
+  svg: string,
+  fontFiles: string[],
+  scale = 1,
+  profile?: MutableRenderProfile,
+  phasePrefix = 'raster',
+): Promise<ArrayBuffer> {
   // Native binding нужен только рендеру. Его отсутствие не должно выключать
   // WRPL parse/font/vehicle tasks во всём пуле.
+  let started = performance.now()
   const { Resvg } = await import('@resvg/resvg-js')
-  const png = new Resvg(svg, {
-    font: { loadSystemFonts: true, fontFiles, defaultFontFamily: 'Segoe UI' },
+  if (profile) addPhase(profile, `${phasePrefix}.module`, performance.now() - started)
+
+  started = performance.now()
+  const fonts = resolveRenderFonts(fontFiles, svg)
+  if (profile) {
+    profile.font = {
+      loadSystemFonts: fonts.loadSystemFonts,
+      defaultFamily: fonts.defaultFamily,
+      source: fonts.source,
+      uiFileCount: fonts.uiFileCount,
+      scriptFileCount: fonts.scriptFileCount,
+      customFileCount: fonts.customFileCount,
+      missingScriptFallback: fonts.missingScriptFallback,
+    }
+    addPhase(profile, `${phasePrefix}.fonts`, performance.now() - started)
+  }
+
+  started = performance.now()
+  const renderer = new Resvg(svg, {
+    font: {
+      loadSystemFonts: fonts.loadSystemFonts,
+      fontFiles: fonts.fontFiles,
+      defaultFontFamily: fonts.defaultFamily,
+    },
     fitTo: scale === 1 ? { mode: 'original' } : { mode: 'zoom', value: scale },
-  }).render().asPng()
-  return exactArrayBuffer(png)
+  })
+  if (profile) addPhase(profile, `${phasePrefix}.init`, performance.now() - started)
+
+  started = performance.now()
+  const rendered = renderer.render()
+  if (profile) addPhase(profile, `${phasePrefix}.render`, performance.now() - started)
+
+  started = performance.now()
+  const png = rendered.asPng()
+  if (profile) addPhase(profile, `${phasePrefix}.png`, performance.now() - started)
+
+  started = performance.now()
+  const output = exactArrayBuffer(png)
+  if (profile) addPhase(profile, `${phasePrefix}.copy`, performance.now() - started)
+  return output
 }
 
 async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayBuffer; transfer: ArrayBuffer[] }> {
@@ -58,25 +172,29 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
   const fallbackMap = input.assets.fallbackMap
     ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
     : null
+  const heatmapInput: HeatmapInput = {
+    missionName: input.missionName,
+    header: input.header,
+    results: input.results,
+    events,
+    dict: input.dict,
+    mission: input.mission,
+    mode: input.mode,
+    ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
+    ...(input.teamIndex === undefined ? {} : { teamIndex: input.teamIndex }),
+    seekers: new Map(input.assets.seekers),
+    renderScale: input.scale,
+  }
+  const scene = prepareHeatmapScene(heatmapInput, tacticalMap, input.assets.fallbackMap?.viewport)
   const svg = buildHeatmapSvg(
-    {
-      missionName: input.missionName,
-      header: input.header,
-      results: input.results,
-      events,
-      dict: input.dict,
-      mission: input.mission,
-      mode: input.mode,
-      ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
-      ...(input.teamIndex === undefined ? {} : { teamIndex: input.teamIndex }),
-      seekers: new Map(input.assets.seekers),
-      renderScale: input.scale,
-    },
+    heatmapInput,
     gameFont,
     tacticalMap,
     fallbackMap,
     input.assets.fallbackMap?.viewport,
     input.assets.mapIconFont,
+    undefined,
+    scene,
   )
   const png = await rasterize(svg, fonts, input.scale)
   return { value: png, transfer: [png] }
@@ -116,14 +234,24 @@ async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-sc
   return { value: png, transfer: [png] }
 }
 
+function decodeProfiledEvents(input: MediaRenderInput, profile: MutableRenderProfile) {
+  const decoded = decodeEventsBlobProfiled(Buffer.from(input.eventsBlob))
+  addPhase(profile, 'events.gunzip', decoded.profile.gunzipMs)
+  addPhase(profile, 'events.utf8', decoded.profile.utf8Ms)
+  addPhase(profile, 'events.json', decoded.profile.jsonParseMs)
+  return decoded.events
+}
+
 async function renderMedia(input: MediaRenderInput): Promise<{
   value: RenderedMediaResult
   transfer: ArrayBuffer[]
 }> {
-  const events = decodeEventsBlob(Buffer.from(input.eventsBlob))
+  const profile = startRenderProfile()
+  const events = decodeProfiledEvents(input, profile)
 
   // Для клан-тегов передаём только symbols_skyquake.ttf.
   // map-icons.ttf здесь не нужен и не должен участвовать в выборе глифов.
+  let started = performance.now()
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
   const seekers = new Map(input.assets.seekers)
@@ -131,6 +259,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const fallbackMap = input.assets.fallbackMap
     ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
     : null
+  addPhase(profile, 'assets.prepare', performance.now() - started)
   const shared = {
     missionName: input.missionName,
     header: input.header,
@@ -139,77 +268,72 @@ async function renderMedia(input: MediaRenderInput): Promise<{
     dict: input.dict,
     ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
   }
-  const log = await rasterize(buildBattleLogSvg(shared, gameFont), fonts,)
-  const heatmapGround = await rasterize(
-    buildHeatmapSvg(
-      { ...shared, mission: input.mission, mode: 'ground', seekers },
+
+  started = performance.now()
+  const logSvg = buildBattleLogSvg(shared, gameFont)
+  addPhase(profile, 'log.svg', performance.now() - started)
+  const log = await rasterize(logSvg, fonts, 1, profile, 'log.resvg')
+
+  const renderHeatmapVariant = async (
+    heatmapInput: HeatmapInput,
+    scene: PreparedHeatmapScene,
+    phase: string,
+    teamIndex?: number,
+  ): Promise<ArrayBuffer> => {
+    const svgStarted = performance.now()
+    const svg = buildHeatmapSvg(
+      {
+        ...heatmapInput,
+        ...(teamIndex === undefined ? {} : { teamIndex }),
+      },
       gameFont,
       tacticalMap,
       fallbackMap,
       input.assets.fallbackMap?.viewport,
       input.assets.mapIconFont,
-    ),
-    fonts,
-  )
-  const heatmapAir = await rasterize(
-    buildHeatmapSvg(
-      { ...shared, mission: input.mission, mode: 'air', seekers },
-      gameFont,
-      tacticalMap,
-      fallbackMap,
-      input.assets.fallbackMap?.viewport,
-      input.assets.mapIconFont,
-    ),
-    fonts,
-  )
-  const heatmapTeamGround: [ArrayBuffer, ArrayBuffer] = [
-    await rasterize(
-      buildHeatmapSvg(
-        { ...shared, mission: input.mission, mode: 'ground', seekers, teamIndex: 0 },
-        gameFont,
-        tacticalMap,
-        fallbackMap,
-        input.assets.fallbackMap?.viewport,
-        input.assets.mapIconFont,
-      ),
-      fonts,
-    ),
-    await rasterize(
-      buildHeatmapSvg(
-        { ...shared, mission: input.mission, mode: 'ground', seekers, teamIndex: 1 },
-        gameFont,
-        tacticalMap,
-        fallbackMap,
-        input.assets.fallbackMap?.viewport,
-        input.assets.mapIconFont,
-      ),
-      fonts,
-    ),
-  ]
-  const heatmapTeamAir: [ArrayBuffer, ArrayBuffer] = [
-    await rasterize(
-      buildHeatmapSvg(
-        { ...shared, mission: input.mission, mode: 'air', seekers, teamIndex: 0 },
-        gameFont,
-        tacticalMap,
-        fallbackMap,
-        input.assets.fallbackMap?.viewport,
-        input.assets.mapIconFont,
-      ),
-      fonts,
-    ),
-    await rasterize(
-      buildHeatmapSvg(
-        { ...shared, mission: input.mission, mode: 'air', seekers, teamIndex: 1 },
-        gameFont,
-        tacticalMap,
-        fallbackMap,
-        input.assets.fallbackMap?.viewport,
-        input.assets.mapIconFont,
-      ),
-      fonts,
-    ),
-  ]
+      undefined,
+      scene,
+    )
+    addPhase(profile, `${phase}.svg`, performance.now() - svgStarted)
+    return rasterize(svg, fonts, 1, profile, `${phase}.resvg`)
+  }
+
+  const renderHeatmapMode = async (mode: 'ground' | 'air'): Promise<{
+    general: ArrayBuffer
+    teams: [ArrayBuffer, ArrayBuffer]
+  }> => {
+    const heatmapInput: HeatmapInput = {
+      ...shared,
+      mission: input.mission,
+      mode,
+      seekers,
+    }
+    started = performance.now()
+    const scene = prepareHeatmapScene(heatmapInput, tacticalMap, input.assets.fallbackMap?.viewport)
+    addPhase(profile, `heatmap-${mode}.prepare`, performance.now() - started)
+    const teamPhase = mode === 'ground' ? 'heatmap-team' : 'heatmap-team-air'
+    return {
+      general: await renderHeatmapVariant(heatmapInput, scene, `heatmap-${mode}`),
+      teams: [
+        await renderHeatmapVariant(heatmapInput, scene, `${teamPhase}-0`, 0),
+        await renderHeatmapVariant(heatmapInput, scene, `${teamPhase}-1`, 1),
+      ],
+    }
+  }
+
+  const ground = await renderHeatmapMode('ground')
+  const heatmapGround = ground.general
+  const heatmapTeamGround = ground.teams
+  const air = await renderHeatmapMode('air')
+  const heatmapAir = air.general
+  const heatmapTeamAir = air.teams
+
+  started = performance.now()
+  const chat = formatBattleChat(events)
+  addPhase(profile, 'chat.format', performance.now() - started)
+  started = performance.now()
+  const summary = summarizeEvents(events)
+  addPhase(profile, 'summary', performance.now() - started)
   return {
     value: {
       log,
@@ -217,10 +341,87 @@ async function renderMedia(input: MediaRenderInput): Promise<{
       heatmapAir,
       heatmapTeamGround,
       heatmapTeamAir,
-      chat: formatBattleChat(events),
-      summary: summarizeEvents(events),
+      chat,
+      summary,
+      profile: finishRenderProfile(profile),
     },
     transfer: [log, heatmapGround, heatmapAir, ...heatmapTeamGround, ...heatmapTeamAir],
+  }
+}
+
+async function renderMediaKind(input: MediaKindRenderInput): Promise<{
+  value: RenderedMediaKindResult
+  transfer: ArrayBuffer[]
+}> {
+  const profile = startRenderProfile()
+  const events = decodeProfiledEvents(input, profile)
+  const heatmap = isBattleHeatmapKind(input.kind)
+
+  let started = performance.now()
+  const fonts = input.kind === 'chat' ? [] : clanFontFiles(input.assets.fontFiles)
+  const gameFont = fonts.length > 0
+  const seekers = heatmap ? new Map(input.assets.seekers) : new Map()
+  const tacticalMap = heatmap && input.assets.tacticalMap
+    ? dataUri('image/png', input.assets.tacticalMap)
+    : null
+  const fallbackMap = heatmap && input.assets.fallbackMap
+    ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
+    : null
+  addPhase(profile, 'assets.prepare', performance.now() - started)
+
+  const shared = {
+    missionName: input.missionName,
+    header: input.header,
+    results: input.results,
+    events,
+    dict: input.dict,
+    ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
+  }
+
+  started = performance.now()
+  const summary = summarizeEvents(events)
+  addPhase(profile, 'summary', performance.now() - started)
+
+  let media: ArrayBuffer | string
+  if (input.kind === 'chat') {
+    started = performance.now()
+    media = formatBattleChat(events)
+    addPhase(profile, 'media.chat', performance.now() - started)
+  } else if (input.kind === 'log') {
+    started = performance.now()
+    const svg = buildBattleLogSvg(shared, gameFont)
+    addPhase(profile, 'media.svg', performance.now() - started)
+    media = await rasterize(svg, fonts, 1, profile, 'media.resvg')
+  } else {
+    const selection = heatmapSelection(input.kind)
+    started = performance.now()
+    const heatmapInput: HeatmapInput = {
+      ...shared,
+      mission: input.mission,
+      mode: selection.mode,
+      seekers,
+      ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
+    }
+    const scene = prepareHeatmapScene(heatmapInput, tacticalMap, input.assets.fallbackMap?.viewport)
+    addPhase(profile, 'media.prepare', performance.now() - started)
+    started = performance.now()
+    const svg = buildHeatmapSvg(
+      heatmapInput,
+      gameFont,
+      tacticalMap,
+      fallbackMap,
+      input.assets.fallbackMap?.viewport,
+      input.assets.mapIconFont,
+      undefined,
+      scene,
+    )
+    addPhase(profile, 'media.svg', performance.now() - started)
+    media = await rasterize(svg, fonts, 1, profile, 'media.resvg')
+  }
+
+  return {
+    value: { media, summary, profile: finishRenderProfile(profile) },
+    transfer: typeof media === 'string' ? [] : [media],
   }
 }
 
@@ -260,6 +461,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return await renderScoreboard(task.input)
     case 'render-media':
       return await renderMedia(task.input)
+    case 'render-media-kind':
+      return await renderMediaKind(task.input)
     case 'render-heatmap':
       return await renderHeatmap(task.input)
     case 'extract-game-font':
@@ -277,14 +480,26 @@ function serializeError(error: unknown): SerializedWorkerError {
 }
 
 port.on('message', (request: WorkerRequest) => {
+  const receivedAtMs = epochNow()
   void execute(request.task).then(
     ({ value, transfer }) => {
-      const response: WorkerResponse = { id: request.id, ok: true, value }
+      const response: WorkerResponse = {
+        id: request.id,
+        ok: true,
+        value,
+        timing: { receivedAtMs, completedAtMs: epochNow() },
+      }
       const message: WorkerMessage = { type: 'result', response }
       port.postMessage(message, transfer)
     },
     (error: unknown) => {
-      const response: WorkerResponse = { id: request.id, ok: false, error: serializeError(error) }
+      const serialized = serializeError(error)
+      const response: WorkerResponse = {
+        id: request.id,
+        ok: false,
+        error: serialized,
+        timing: { receivedAtMs, completedAtMs: epochNow() },
+      }
       port.postMessage({ type: 'result', response } satisfies WorkerMessage)
     },
   )

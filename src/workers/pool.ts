@@ -1,7 +1,14 @@
 import { Worker, type Transferable } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
-import { workerThreadCount } from '../runtime-options.js'
-import type { AnyWorkerTask, WorkerMessage, WorkerRequest, WorkerTaskKind, WorkerTaskResult } from './protocol.js'
+import { workerResourcePlan } from '../runtime-options.js'
+import type {
+  AnyWorkerTask,
+  WorkerMessage,
+  WorkerRequest,
+  WorkerTaskKind,
+  WorkerTaskResult,
+  WorkerTransportTiming,
+} from './protocol.js'
 
 export type WorkerPriority = 'interactive' | 'normal' | 'background'
 
@@ -11,6 +18,27 @@ export interface WorkerRunOptions {
   signal?: AbortSignal | undefined
   transferList?: readonly Transferable[] | undefined
   onControl?: ((control: WorkerTaskControl) => void) | undefined
+  onTiming?: ((timing: WorkerTaskTiming) => void) | undefined
+}
+
+export interface WorkerTaskTiming {
+  kind: WorkerTaskKind
+  priority: WorkerPriority
+  outcome: 'success' | 'error'
+  stage: 'queue' | 'execution'
+  coldWorker: boolean
+  queueMs: number
+  schedulerWaitMs: number
+  workerStartupMs: number
+  inputTransferMs: number | null
+  executionMs: number | null
+  resultTransferMs: number | null
+  totalMs: number
+}
+
+export interface CpuWorkerPoolOptions {
+  size?: number | undefined
+  backgroundReserveSlots?: number | undefined
 }
 
 export interface WorkerTaskControl {
@@ -24,10 +52,16 @@ interface Job {
   priority: WorkerPriority
   timeoutMs: number
   queuedAt: number
+  dispatchedAt: number | null
+  workerStartupMs: number
+  coldWorker: boolean
+  workerTiming: WorkerTransportTiming | null
+  resultReceivedAt: number | null
   transferList: readonly Transferable[]
   signal: AbortSignal | undefined
   abortHandler: (() => void) | null
   timer: NodeJS.Timeout | null
+  onTiming: ((timing: WorkerTaskTiming) => void) | undefined
   resolve: (value: unknown) => void
   reject: (reason: Error) => void
   finished: Promise<void>
@@ -42,6 +76,9 @@ interface WorkerSlot {
   job: Job | null
   startupTimer: NodeJS.Timeout
   renderJobsCompleted: number
+  tasksCompleted: number
+  spawnedAt: number
+  readyAt: number | null
 }
 
 const PRIORITIES: WorkerPriority[] = ['interactive', 'normal', 'background']
@@ -57,6 +94,8 @@ const MAX_STARTUP_FAILURES = 3
 const MAX_STARTUP_BACKOFF_MS = 5_000
 const MAX_RENDER_JOBS_PER_WORKER = 12
 const BACKGROUND_MAX_WAIT_MS = 10_000
+const WORKER_RESOURCES = workerResourcePlan()
+const MAX_CONFIGURABLE_WORKERS = 8
 
 export type WorkerPoolErrorCode =
   | 'POOL_CLOSED'
@@ -82,14 +121,32 @@ function abortError(message = 'Задача worker отменена'): Error {
   return err
 }
 
-class CpuWorkerPool {
-  private readonly size = workerThreadCount()
+function epochNow(): number {
+  return performance.timeOrigin + performance.now()
+}
+
+export class CpuWorkerPool {
+  private readonly size: number
+  private readonly backgroundReserveSlots: number
   private readonly queues = new Map<WorkerPriority, Job[]>(PRIORITIES.map((p) => [p, []]))
   private readonly slots = new Set<WorkerSlot>()
   private nextId = 1
   private closing = false
   private startupFailures = 0
   private respawnTimer: NodeJS.Timeout | null = null
+
+  constructor(options: CpuWorkerPoolOptions = {}) {
+    const size = options.size ?? WORKER_RESOURCES.workerThreads
+    const backgroundReserveSlots = options.backgroundReserveSlots ?? WORKER_RESOURCES.backgroundReserveSlots
+    if (!Number.isInteger(size) || size < 1 || size > MAX_CONFIGURABLE_WORKERS) {
+      throw new Error(`Число CPU workers должно быть целым от 1 до ${MAX_CONFIGURABLE_WORKERS}`)
+    }
+    if (!Number.isInteger(backgroundReserveSlots) || backgroundReserveSlots < 0) {
+      throw new Error('Резерв CPU workers должен быть неотрицательным целым числом')
+    }
+    this.size = size
+    this.backgroundReserveSlots = backgroundReserveSlots
+  }
 
   run<K extends WorkerTaskKind>(
     task: Extract<AnyWorkerTask, { kind: K }>,
@@ -135,11 +192,17 @@ class CpuWorkerPool {
         task,
         priority,
         timeoutMs,
-        queuedAt: Date.now(),
+        queuedAt: epochNow(),
+        dispatchedAt: null,
+        workerStartupMs: 0,
+        coldWorker: false,
+        workerTiming: null,
+        resultReceivedAt: null,
         transferList,
         signal: options.signal,
         abortHandler: null,
         timer: null,
+        onTiming: options.onTiming,
         resolve: (value) => resolve(value as WorkerTaskResult<K>),
         reject,
         finished,
@@ -209,6 +272,7 @@ class CpuWorkerPool {
   }
 
   private spawnWorker(): boolean {
+    const spawnedAt = epochNow()
     let worker: Worker
     try {
       const sourceRuntime = /\.[cm]?ts$/i.test(fileURLToPath(import.meta.url))
@@ -228,7 +292,7 @@ class CpuWorkerPool {
       worker = new Worker(workerUrl, {
         name: `wtbot-cpu-${this.slots.size + 1}`,
         execArgv: [],
-        resourceLimits: { maxOldGenerationSizeMb: 768 },
+        resourceLimits: { maxOldGenerationSizeMb: WORKER_RESOURCES.maxOldGenerationSizeMb },
       })
     } catch (error) {
       this.onStartupFailure(error instanceof Error ? error : new Error(String(error)))
@@ -241,6 +305,9 @@ class CpuWorkerPool {
       job: null,
       startupTimer: setTimeout(() => this.retire(slot, new Error('CPU worker не запустился за 30 секунд')), STARTUP_TIMEOUT_MS),
       renderJobsCompleted: 0,
+      tasksCompleted: 0,
+      spawnedAt,
+      readyAt: null,
     }
     slot.startupTimer.unref()
     this.slots.add(slot)
@@ -261,6 +328,7 @@ class CpuWorkerPool {
     if (message.type === 'ready') {
       clearTimeout(slot.startupTimer)
       slot.ready = true
+      slot.readyAt = epochNow()
       this.startupFailures = 0
       this.dispatch()
       if (!slot.job) slot.worker.unref()
@@ -273,9 +341,13 @@ class CpuWorkerPool {
       return
     }
     slot.job = null
+    job.workerTiming = message.response.timing
+    job.resultReceivedAt = epochNow()
+    slot.tasksCompleted++
     if (
       job.task.kind === 'render-scoreboard' ||
       job.task.kind === 'render-media' ||
+      job.task.kind === 'render-media-kind' ||
       job.task.kind === 'render-heatmap'
     ) slot.renderJobsCompleted++
     if (message.response.ok) this.settle(job, null, message.response.value)
@@ -306,7 +378,11 @@ class CpuWorkerPool {
       }
       slot.job = job
       slot.worker.ref()
-      const request: WorkerRequest = { id: job.id, task: job.task }
+      const sentAt = epochNow()
+      job.dispatchedAt = sentAt
+      job.coldWorker = slot.tasksCompleted === 0
+      job.workerStartupMs = job.coldWorker ? Math.max(0, (slot.readyAt ?? sentAt) - slot.spawnedAt) : 0
+      const request: WorkerRequest = { id: job.id, task: job.task, sentAtMs: sentAt }
       try {
         slot.worker.postMessage(request, job.transferList)
       } catch (err) {
@@ -335,9 +411,9 @@ class CpuWorkerPool {
           : undefined
       job ??= this.queues.get('interactive')!.shift() ?? this.queues.get('normal')!.shift()
       if (!job) {
-        // При двух и более потоках один слот не занимаем фоновыми разборами:
-        // Discord interaction сможет начать CPU-задачу, не дожидаясь ingest.
-        const backgroundLimit = readyCapacity > 1 ? readyCapacity - 1 : 1
+        // Часть готовых slots не занимаем фоновыми разборами: Discord
+        // interaction сможет начать CPU-задачу, не дожидаясь ingest.
+        const backgroundLimit = Math.max(1, readyCapacity - this.backgroundReserveSlots)
         if (activeBackground < backgroundLimit) job = this.queues.get('background')!.shift()
       }
       if (!job) return null
@@ -459,6 +535,39 @@ class CpuWorkerPool {
     job.settled = true
     if (job.timer) clearTimeout(job.timer)
     if (job.abortHandler && job.signal) job.signal.removeEventListener('abort', job.abortHandler)
+    const completedAt = job.resultReceivedAt ?? epochNow()
+    const queueEndedAt = job.dispatchedAt ?? completedAt
+    const queueMs = Math.max(0, queueEndedAt - job.queuedAt)
+    const workerStartupMs = Math.min(queueMs, job.workerStartupMs)
+    const inputTransferMs = job.workerTiming && job.dispatchedAt !== null
+      ? Math.max(0, job.workerTiming.receivedAtMs - job.dispatchedAt)
+      : null
+    const executionMs = job.workerTiming
+      ? Math.max(0, job.workerTiming.completedAtMs - job.workerTiming.receivedAtMs)
+      : null
+    const resultTransferMs = job.workerTiming
+      ? Math.max(0, completedAt - job.workerTiming.completedAtMs)
+      : null
+    if (job.onTiming) {
+      try {
+        job.onTiming({
+          kind: job.task.kind,
+          priority: job.priority,
+          outcome: error ? 'error' : 'success',
+          stage: job.dispatchedAt === null ? 'queue' : 'execution',
+          coldWorker: job.coldWorker,
+          queueMs,
+          schedulerWaitMs: Math.max(0, queueMs - workerStartupMs),
+          workerStartupMs,
+          inputTransferMs,
+          executionMs,
+          resultTransferMs,
+          totalMs: Math.max(0, completedAt - job.queuedAt),
+        })
+      } catch (timingError) {
+        console.error(`[workers] ошибка обработчика timing: ${String(timingError)}`)
+      }
+    }
     if (error) job.reject(error)
     else job.resolve(value)
     job.finish()
