@@ -9,7 +9,11 @@ import {
   SKIP_FIELD,
   type RawPacket,
 } from './packet-stream.js'
-import { fetchReplayPart } from './replay-cache.js'
+import {
+  fetchReplayPart,
+  REPLAY_PART_MAX_BYTES,
+  type ReplayPartTiming,
+} from './replay-cache.js'
 import { parseWrplHeader } from './replay.js'
 
 /**
@@ -755,36 +759,245 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
   }
 }
 
-/**
- * Все части реплея (для событий нужен весь поток пакетов) — через
- * дисковый кэш data/replays/; паузы и ретраи к CDN внутри fetchReplayPart.
- */
-export async function fetchReplayParts(partUrls: string[], signal?: AbortSignal): Promise<Buffer[]> {
-  const parts: Buffer[] = []
-  for (const url of partUrls) {
-    if (signal?.aborted) throw abortError()
-    parts.push(await waitWithSignal(fetchReplayPart(url), signal))
+export const DEFAULT_REPLAY_FETCH_CONCURRENCY = 2
+export const REPLAY_TOTAL_MAX_BYTES = 512 * 1024 * 1024
+
+export interface IndexedReplayPartTiming extends ReplayPartTiming {
+  index: number
+}
+
+export interface ReplayPartsTiming {
+  startedAtMs: number
+  completedAtMs: number
+  totalMs: number
+  outcome: 'success' | 'error' | 'aborted'
+  requestedParts: number
+  completedParts: number
+  concurrency: number
+  peakActive: number
+  maxTotalBytes: number
+  peakBudgetBytes: number
+  bytes: number
+  cacheHits: number
+  networkParts: number
+  networkAttempts: number
+  retries: number
+  httpErrors: number
+  slotWaitMs: number
+  ttfbMs: number
+  downloadMs: number
+  retryDelayMs: number
+  parts: IndexedReplayPartTiming[]
+}
+
+export interface ReplayPartsFetchOptions {
+  concurrency?: number
+  maxTotalBytes?: number
+  /** Только для изолированных benchmark/smoke; undefined использует production cache. */
+  cacheDirectory?: string | null
+  onTiming?: (timing: ReplayPartsTiming) => void
+}
+
+export class ReplayPartsFetchError extends Error {
+  readonly timing: ReplayPartsTiming
+  readonly originalError: unknown
+
+  constructor(error: unknown, timing: ReplayPartsTiming) {
+    super(error instanceof Error ? error.message : String(error))
+    this.name = error instanceof Error ? error.name : 'ReplayPartsFetchError'
+    this.timing = timing
+    this.originalError = error
   }
+}
+
+/**
+ * Все части реплея (для событий нужен весь поток пакетов) — через дисковый
+ * cache. Pipeline ограничен числом ответов и worst-case суммой уже загруженных
+ * плюс in-flight частей; паузы и ретраи к CDN остаются в fetchReplayPart.
+ */
+export async function fetchReplayParts(
+  partUrls: string[],
+  signal?: AbortSignal,
+  options: ReplayPartsFetchOptions = {},
+): Promise<Buffer[]> {
+  const started = performance.now()
+  const startedAtMs = Date.now()
+  const requestedConcurrency = options.concurrency ?? DEFAULT_REPLAY_FETCH_CONCURRENCY
+  const concurrency = Number.isFinite(requestedConcurrency)
+    ? Math.max(1, Math.min(3, Math.floor(requestedConcurrency)))
+    : DEFAULT_REPLAY_FETCH_CONCURRENCY
+  const requestedMaxTotalBytes = options.maxTotalBytes ?? REPLAY_TOTAL_MAX_BYTES
+  const maxTotalBytes = Number.isFinite(requestedMaxTotalBytes) && requestedMaxTotalBytes > 0
+    ? Math.floor(requestedMaxTotalBytes)
+    : REPLAY_TOTAL_MAX_BYTES
+  const parts = new Array<Buffer>(partUrls.length)
+  const partTimings = new Array<IndexedReplayPartTiming | undefined>(partUrls.length)
+  const controller = new AbortController()
+  const combinedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+  let nextIndex = 0
+  let active = 0
+  let peakActive = 0
+  let loadedBytes = 0
+  let reservedBytes = 0
+  let peakBudgetBytes = 0
+  let failed = false
+  let firstError: unknown = null
+
+  const reservePartBytes = (index: number): void => {
+    const nextBudget = loadedBytes + reservedBytes + REPLAY_PART_MAX_BYTES
+    if (nextBudget > maxTotalBytes) {
+      throw new Error(
+        `replay ${index + 1}/${partUrls.length}: loaded/in-flight budget ` +
+        `${Math.ceil(nextBudget / 1024 / 1024)} МиБ больше лимита ` +
+        `${Math.ceil(maxTotalBytes / 1024 / 1024)} МиБ`,
+      )
+    }
+    reservedBytes += REPLAY_PART_MAX_BYTES
+    peakBudgetBytes = Math.max(peakBudgetBytes, loadedBytes + reservedBytes)
+  }
+  const releaseReservation = (): void => {
+    reservedBytes -= REPLAY_PART_MAX_BYTES
+  }
+  const commitReservation = (bytes: number): void => {
+    releaseReservation()
+    loadedBytes += bytes
+    peakBudgetBytes = Math.max(peakBudgetBytes, loadedBytes + reservedBytes)
+  }
+  const fail = (error: unknown): void => {
+    if (failed) return
+    failed = true
+    firstError = error
+    controller.abort(error)
+  }
+
+  const runner = async (): Promise<void> => {
+    for (;;) {
+      if (combinedSignal.aborted) {
+        if (failed) return
+        const error = abortError()
+        fail(error)
+        throw error
+      }
+      const index = nextIndex
+      nextIndex += 1
+      if (index >= partUrls.length) return
+
+      let reserved = false
+      try {
+        reservePartBytes(index)
+        reserved = true
+      } catch (error) {
+        fail(error)
+        throw error
+      }
+
+      active += 1
+      peakActive = Math.max(peakActive, active)
+      try {
+        const part = await fetchReplayPart(partUrls[index]!, {
+          signal: combinedSignal,
+          ...(options.cacheDirectory === undefined
+            ? {}
+            : { cacheDirectory: options.cacheDirectory }),
+          onTiming: (timing) => {
+            partTimings[index] = { ...timing, index }
+          },
+        })
+        parts[index] = part
+        commitReservation(part.byteLength)
+        reserved = false
+      } catch (error) {
+        fail(error)
+        throw error
+      } finally {
+        if (reserved) releaseReservation()
+        active -= 1
+      }
+    }
+  }
+
+  const runners = Array.from(
+    { length: Math.min(concurrency, Math.max(1, partUrls.length)) },
+    () => runner(),
+  )
+  await Promise.allSettled(runners)
+
+  const timing = summarizeReplayPartsTiming({
+    startedAtMs,
+    totalMs: performance.now() - started,
+    outcome: !failed
+      ? 'success'
+      : signal?.aborted || (firstError instanceof Error && firstError.name === 'AbortError')
+        ? 'aborted'
+        : 'error',
+    requestedParts: partUrls.length,
+    concurrency,
+    peakActive,
+    maxTotalBytes,
+    peakBudgetBytes,
+    bytes: loadedBytes,
+    parts: partTimings.filter((value): value is IndexedReplayPartTiming => value !== undefined),
+  })
+  emitReplayPartsTiming(options.onTiming, timing)
+  if (failed) throw new ReplayPartsFetchError(firstError, timing)
   return parts
 }
 
-function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise
-  if (signal.aborted) return Promise.reject(abortError())
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(abortError())
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort)
-        resolve(value)
-      },
-      (error: unknown) => {
-        signal.removeEventListener('abort', onAbort)
-        reject(error)
-      },
-    )
-  })
+function summarizeReplayPartsTiming(input: {
+  startedAtMs: number
+  totalMs: number
+  outcome: ReplayPartsTiming['outcome']
+  requestedParts: number
+  concurrency: number
+  peakActive: number
+  maxTotalBytes: number
+  peakBudgetBytes: number
+  bytes: number
+  parts: IndexedReplayPartTiming[]
+}): ReplayPartsTiming {
+  const attempts = input.parts.flatMap((part) => part.attempts)
+  const networkParts = input.parts.filter((part) => part.attempts.length > 0).length
+  return {
+    startedAtMs: input.startedAtMs,
+    completedAtMs: Date.now(),
+    totalMs: input.totalMs,
+    outcome: input.outcome,
+    requestedParts: input.requestedParts,
+    completedParts: input.parts.filter((part) => part.outcome === 'success').length,
+    concurrency: input.concurrency,
+    peakActive: input.peakActive,
+    maxTotalBytes: input.maxTotalBytes,
+    peakBudgetBytes: input.peakBudgetBytes,
+    bytes: input.bytes,
+    cacheHits: input.parts.filter((part) => part.cacheHit).length,
+    networkParts,
+    networkAttempts: attempts.length,
+    retries: attempts.filter((attempt) => attempt.retryDelayMs > 0).length,
+    httpErrors: attempts.filter((attempt) => (attempt.status ?? 0) >= 400).length,
+    slotWaitMs: attempts.reduce((sum, attempt) => sum + attempt.slotWaitMs, 0),
+    ttfbMs: attempts.reduce((sum, attempt) => sum + (attempt.ttfbMs ?? 0), 0),
+    downloadMs: attempts.reduce((sum, attempt) => sum + (attempt.downloadMs ?? 0), 0),
+    retryDelayMs: attempts.reduce((sum, attempt) => sum + attempt.retryDelayMs, 0),
+    parts: input.parts.sort((a, b) => a.index - b.index),
+  }
+}
+
+function emitReplayPartsTiming(
+  callback: ReplayPartsFetchOptions['onTiming'],
+  timing: ReplayPartsTiming,
+): void {
+  if (!callback) return
+  try {
+    callback({
+      ...timing,
+      parts: timing.parts.map((part) => ({
+        ...part,
+        attempts: part.attempts.map((attempt) => ({ ...attempt })),
+      })),
+    })
+  } catch {
+    // Метрики не должны менять результат загрузки.
+  }
 }
 
 function abortError(): Error {

@@ -20,8 +20,9 @@
 ранее зафиксированного `after-temporal-scene.json` bundle уменьшился с 4,18 до
 2,12 с. Результат закреплён corpus-серией из трёх боёв: для каждого выполнен
 отдельный cold start и 10 warm-прогонов на одном worker. P1.1 файлового кэша,
-P1.2 `/api/voice` и P1.3 stats/refresh выполнены; следующий этап — P1.4 replay
-download/ingest I/O. Оставшийся `Resvg.init` отслеживается отдельно.
+P1.2 `/api/voice`, P1.3 stats/refresh и P1.4 replay download/ingest I/O
+выполнены; следующий этап — P2 worker scheduling, память и throughput.
+Оставшийся `Resvg.init` отслеживается отдельно.
 
 Следствия для порядка работ:
 
@@ -85,8 +86,8 @@ Process RSS в последовательной серии дошёл до 461 �
 
 Corpus подтверждает текущий warm профиль, но сопоставимого legacy-font corpus
 до изменения нет, поэтому точный before/after p95 не заявляется. Отдельно пока
-не измерены чтение `events_blob` из SQLite, cache hit и запись/вытеснение
-файлового кэша.
+не измерены чтение `events_blob` из SQLite, media cache hit и
+запись/вытеснение файлового кэша.
 
 Команда воспроизведения:
 
@@ -99,6 +100,9 @@ npm run benchmark:workers -- data/replays/06f197b0001e41dc \
 # Для visual/golden проверки:
 npm run benchmark:workers -- data/replays/06efea670015c595 --render \
   --artifacts=data/benchmarks/render-artifacts
+# Replay I/O: controlled loopback, реальные WRPL payload, c1/c2/c3 + safety checks:
+npm run benchmark:replay -- data/replays/06efea670015c595 --runs=5 \
+  --json=data/benchmarks/replay-download-pipeline.json
 ```
 
 ## Что уже сделано
@@ -325,25 +329,55 @@ Discord REST smoke сознательно не запускался.
 
 ### P1.4. Replay download и ingest I/O
 
-`fetchReplayParts()` сейчас ожидает каждую часть по очереди. Это ограничивает
-память и нагрузку на CDN, но на cold ingest складывает latency всех частей.
-В `replay-cache.ts` уже есть timeout, лимит размера, retry и глобальная пауза
-150 мс между стартами запросов — эти ограничения необходимо сохранить.
+`fetchReplayParts()` теперь использует bounded pipeline c production concurrency
+2. Исходный порядок частей, timeout, retry, лимит 96 МиБ на часть и глобальная
+пауза 150 мс между стартами CDN-запросов сохранены.
 
-- [ ] Измерять local cache hit, ожидание fetch slot, TTFB, download time и bytes
+- [x] Измерять local cache hit, ожидание fetch slot, TTFB, download time и bytes
       отдельно для каждой части и всего боя.
-- [ ] Проверить bounded pipeline на 2–3 одновременных ответа с сохранением
+- [x] Проверить bounded pipeline на 2–3 одновременных ответа с сохранением
       исходного порядка частей и существующего интервала между стартами.
-- [ ] Ограничить не только число запросов, но и суммарные in-flight/loaded bytes;
+- [x] Ограничить не только число запросов, но и суммарные in-flight/loaded bytes;
       корректно отменять оставшиеся запросы при abort или фатальной ошибке.
-- [ ] Сравнить cold ingest latency, CDN error/retry rate и peak RSS; не повышать
+- [x] Сравнить cold ingest latency, CDN error/retry rate и peak RSS; не повышать
       concurrency, если выигрыш мал или сервер отвечает хуже.
-- [ ] Отдельно измерять путь `item discovered → replay cached → worker parsed →
+- [x] Отдельно измерять путь `item discovered → replay cached → worker parsed →
       SQLite committed`, чтобы сеть не смешивалась с CPU parse.
+
+Pipeline резервирует worst-case 96 МиБ на каждый активный ответ и не допускает
+сумму loaded + in-flight выше 512 МиБ. Первая фатальная ошибка или внешний abort
+отменяет соседние fetch, ожидание глобального slot и retry delay. Одинаковый part
+дедуплицируется отдельным file-lock; разные parts одной сессии читаются
+параллельно, а `dropReplayCache()`/TTL cleanup получают эксклюзивный session-lock.
+
+`benchmark:replay` раздаёт реальные corpus-файлы через управляемый loopback HTTP,
+для каждого cold-run использует новый временный cache, затем проверяет warm hit.
+Это воспроизводимое сравнение pipeline и памяти, а не заявление о скорости
+конкретного CDN:
+
+| Replay | Parts / bytes | c1 cold p50/p95 | c2 cold p50/p95 | c3 cold p50/p95 | c2 RSS Δ p95 | c3 RSS Δ p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `06f197b0001e41dc` | 3 / 2,9 МиБ | 1068/1078 мс | 952/956 мс | 1116/1121 мс | 9,0 МиБ | 8,6 МиБ |
+| `06f1a10e001e66d2` | 4 / 4,8 МиБ | 1695/1699 мс | 1113/1115 мс | 1109/1112 мс | 9,3 МиБ | 11,1 МиБ |
+| `06efea670015c595` | 11 / 15,1 МиБ | 5102/5130 мс | 2839/2885 мс | 2358/2368 мс | 19,4 МиБ | 24,7 МиБ |
+
+На среднем replay c3 улучшил p95 относительно c2 лишь на 0,3%, на малом стал
+медленнее. На большом выигрыш c3 составил 17,9%, но peak RSS вырос на 27%, а
+worst-case in-flight reservation — на 50%. Поэтому production остаётся на c2:
+он снимает 11–44% cold p95 относительно последовательной загрузки без лишнего
+третьего ответа к CDN.
+
+Safety-сценарии подтвердили исходный порядок, отдельные buffers для двух callers,
+ровно один HTTP request при duplicate, один успешный retry после 429, остановку
+после byte budget и отмену активных ответов за 224–456 мс при abort/HTTP 500.
+Короткий разрешённый live-run дал Discord ready, web startup и два реальных
+успешных ingest timing без ingest/network/fatal errors. Каждый успешный ingest
+теперь логирует backlog/discovered→cache, replay, worker queue/execution,
+SQLite commit и discovered→commit раздельно.
 
 Затрагиваемые функции: `fetchReplayParts()` в `src/wrpl/replay-events.ts`,
 `fetchReplayPart()`/`reserveFetchSlot()` в `src/wrpl/replay-cache.ts` и
-`loadBattleData()`.
+`loadBattleData()`, `ingestOne()` и `getPendingBattleItems()`.
 
 ## P2. Worker scheduling, память и throughput
 
@@ -500,9 +534,10 @@ WRPL, ECS, SQLite, JSON и небольшие геометрические вы�
 
 ```text
 явные шрифты и устранение повторного Resvg font scan ✓
-  → benchmark corpus, p50/p95 и недостающие фазы
-  → cache hit / LRU bookkeeping
-  → batch SQLite для voice и TTL dashboard aggregates
+  → benchmark corpus, p50/p95 и недостающие фазы ✓
+  → cache write amplification / LRU hot path ✓
+  → batch SQLite для voice и TTL dashboard aggregates ✓
+  → bounded replay pipeline и ingest phase timing ✓
   → task weights, memory-aware admission и подбор worker count
   → spatial/SVG оптимизации по новому профилю
   → WRPL CPU profile и точечные TypeScript-оптимизации

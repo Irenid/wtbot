@@ -3,11 +3,12 @@ import {
   getPendingBattleItems,
   markBattleIngest,
   saveBattle,
-  type StoredItem,
+  type PendingBattleItem,
 } from '../db/index.js'
 import { loadBattleData } from './battle-data.js'
 import { isWorkerPoolSchedulingError } from '../workers/pool.js'
 import { dropReplayCache } from './replay-cache.js'
+import { ReplayPartsFetchError } from './replay-events.js'
 import { realNamesFromItem, replayPartUrls } from './replay.js'
 
 /**
@@ -65,7 +66,7 @@ function isExpired(err: unknown): boolean {
 }
 
 async function ingestOne(
-  item: StoredItem,
+  item: PendingBattleItem,
   signal: AbortSignal,
 ): Promise<'ok' | 'no_parts' | 'expired' | 'error' | 'cancelled' | 'deferred'> {
   const data = item.data as {
@@ -92,8 +93,11 @@ async function ingestOne(
       signal,
     )
     if (signal.aborted) return 'cancelled'
+    const sqliteStarted = performance.now()
     saveBattle(loaded.battle)
     markBattleIngest(item.externalId, 'ok')
+    const committedAtMs = Date.now()
+    const sqliteMs = performance.now() - sqliteStarted
     await dropReplayCache(loaded.header.sessionIdHex)
     const events = loaded.summary
     console.log(
@@ -101,9 +105,11 @@ async function ingestOne(
         `игроков ${loaded.results.players.length}, убийств ${events.kills}, ` +
         `победитель ${events.teamWon > 0 ? `команда ${events.teamWon}` : '?'}`,
     )
+    logIngestTiming(item, loaded.timing, committedAtMs, sqliteMs)
     return 'ok'
   } catch (err) {
     if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) return 'cancelled'
+    if (err instanceof ReplayPartsFetchError) logReplayFailureTiming(item, err)
     const message = err instanceof Error ? err.message : String(err)
     if (isWorkerPoolSchedulingError(err)) {
       console.warn(`[ingest] бой ${item.externalId}: CPU scheduler занят (${message}); попытка не расходуется`)
@@ -125,7 +131,7 @@ async function ingestOne(
  * SQLite commit остаётся последовательным в main thread, а тяжёлый WRPL-
  * разбор ограничивает общий CPU pool.
  */
-async function ingestBatch(items: StoredItem[], concurrency: number, signal: AbortSignal): Promise<void> {
+async function ingestBatch(items: PendingBattleItem[], concurrency: number, signal: AbortSignal): Promise<void> {
   let nextIndex = 0
   let nextStartAt = Date.now()
   const waitForStartSlot = async (): Promise<void> => {
@@ -147,6 +153,49 @@ async function ingestBatch(items: StoredItem[], concurrency: number, signal: Abo
   await Promise.all(
     Array.from({ length: Math.min(concurrency, items.length) }, () => runner()),
   )
+}
+
+function logIngestTiming(
+  item: PendingBattleItem,
+  timing: Awaited<ReturnType<typeof loadBattleData>>['timing'],
+  committedAtMs: number,
+  sqliteMs: number,
+): void {
+  const discoveredAtMs = item.firstSeenAt * 1000
+  const replay = timing.replay
+  const worker = timing.worker
+  console.log(
+    `[ingest:timing] бой ${item.externalId}: ` +
+      `discovered→cache ${formatMs(timing.replayReadyAtMs - discoveredAtMs)}, ` +
+      `replay ${formatMs(replay.totalMs)} ` +
+      `(${replay.cacheHits}/${replay.requestedParts} cache, ${formatMiB(replay.bytes)}, ` +
+      `${replay.retries} retry), ` +
+      `cache→parsed ${formatMs(timing.workerFinishedAtMs - timing.replayReadyAtMs)} ` +
+      `(input ${formatMs(timing.inputPrepareMs)}, queue ${formatMs(worker?.queueMs ?? 0)}, ` +
+      `exec ${formatMs(worker?.executionMs ?? timing.workerWallMs)}), ` +
+      `SQLite ${formatMs(sqliteMs)}, ` +
+      `discovered→commit ${formatMs(committedAtMs - discoveredAtMs)}`,
+  )
+}
+
+function logReplayFailureTiming(item: PendingBattleItem, error: ReplayPartsFetchError): void {
+  const timing = error.timing
+  console.warn(
+    `[ingest:timing] бой ${item.externalId}: replay ${timing.outcome} за ${formatMs(timing.totalMs)}, ` +
+      `${timing.completedParts}/${timing.requestedParts} частей, ` +
+      `${timing.retries} retry, ${timing.httpErrors} HTTP errors, ${formatMiB(timing.bytes)}`,
+  )
+}
+
+function formatMs(value: number): string {
+  if (!Number.isFinite(value)) return '?'
+  const duration = Math.max(0, value)
+  if (duration >= 10_000) return `${(duration / 1000).toFixed(1)} с`
+  return `${duration.toFixed(1)} мс`
+}
+
+function formatMiB(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} МиБ`
 }
 
 async function tick(): Promise<void> {

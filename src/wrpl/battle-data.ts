@@ -10,11 +10,12 @@ import {
   transferableBuffer,
   type WorkerPriority,
   type WorkerTaskControl,
+  type WorkerTaskTiming,
 } from '../workers/pool.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
 import type { BattleItemMeta } from './battle-transform.js'
 import { ensureEcsHashesJson } from './ecs.js'
-import { fetchReplayParts } from './replay-events.js'
+import { fetchReplayParts, type ReplayPartsTiming } from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 
 export type { BattleItemMeta } from './battle-transform.js'
@@ -25,6 +26,20 @@ export interface LoadedBattle {
   results: ReplayResults
   battle: BattleInput
   summary: BattleEventSummary
+  timing: BattleLoadTiming
+}
+
+export interface BattleLoadTiming {
+  startedAtMs: number
+  replayReadyAtMs: number
+  workerSubmittedAtMs: number
+  workerFinishedAtMs: number
+  completedAtMs: number
+  totalMs: number
+  inputPrepareMs: number
+  workerWallMs: number
+  replay: ReplayPartsTiming
+  worker: WorkerTaskTiming | null
 }
 
 /**
@@ -40,24 +55,58 @@ export async function loadBattleData(
   onWorkerControl?: (control: WorkerTaskControl) => void,
 ): Promise<LoadedBattle> {
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
+  const startedAtMs = Date.now()
+  const started = performance.now()
+  const replayTimingBox: { value: ReplayPartsTiming | null } = { value: null }
   const [parts, ecsHashesJson] = await Promise.all([
-    fetchReplayParts(partUrls, signal),
+    fetchReplayParts(partUrls, signal, {
+      onTiming: (timing) => { replayTimingBox.value = timing },
+    }),
     ensureEcsHashesJson(),
   ])
+  const replayTiming = replayTimingBox.value
+  if (!replayTiming) throw new Error('не получены метрики загрузки replay')
+  const inputStarted = performance.now()
   const wireParts = parts.map(transferableBuffer)
   const taskPriority = typeof priority === 'function' ? priority() : priority
+  const workerInput = { parts: wireParts, realNames: [...realNames], meta, ecsHashesJson }
+  const inputPrepareMs = performance.now() - inputStarted
+  const workerSubmittedAtMs = Date.now()
+  const workerStarted = performance.now()
+  let workerTiming: WorkerTaskTiming | null = null
   const parsed = await runWorkerTask(
     {
       kind: 'parse-battle',
-      input: { parts: wireParts, realNames: [...realNames], meta, ecsHashesJson },
+      input: workerInput,
     },
-    { priority: taskPriority, transferList: wireParts, signal, onControl: onWorkerControl },
+    {
+      priority: taskPriority,
+      transferList: wireParts,
+      signal,
+      onControl: onWorkerControl,
+      onTiming: (timing) => { workerTiming = timing },
+    },
   )
+  const workerWallMs = performance.now() - workerStarted
+  const workerFinishedAtMs = Date.now()
+  const completedAtMs = Date.now()
   return {
     header: parsed.header,
     results: parsed.results,
     battle: { ...parsed.battle, eventsBlob: Buffer.from(parsed.battle.eventsBlob) },
     summary: parsed.summary,
+    timing: {
+      startedAtMs,
+      replayReadyAtMs: replayTiming.completedAtMs,
+      workerSubmittedAtMs,
+      workerFinishedAtMs,
+      completedAtMs,
+      totalMs: performance.now() - started,
+      inputPrepareMs,
+      workerWallMs,
+      replay: replayTiming,
+      worker: workerTiming,
+    },
   }
 }
 
