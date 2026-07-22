@@ -1525,9 +1525,61 @@ function routeDistanceAtPoint(route: RouteGeometry, x: number, y: number): numbe
   return bestRouteDistance
 }
 
-function routePath(points: PixelRoutePoint[]): string {
-  const first = points[0]!
-  return `M${r1(first.x)} ${r1(first.y)}` + points.slice(1).map((point) => `L${r1(point.x)} ${r1(point.y)}`).join('')
+const ROUTE_CORNER_RADIUS = 8
+const ROUTE_CORNER_FRACTION = 0.35
+
+/**
+ * Скругляет только локальные углы маршрута. Прямые и развороты остаются
+ * полилиниями, а радиус ограничен долей соседних отрезков, поэтому кривая не
+ * срезает заметную часть реального пути.
+ */
+export function routePath(points: PixelRoutePoint[]): string {
+  const first = points[0]
+  if (!first) return ''
+
+  const parts = [`M${r1(first.x)} ${r1(first.y)}`]
+  for (let i = 1; i + 1 < points.length; i++) {
+    const previous = points[i - 1]!
+    const corner = points[i]!
+    const next = points[i + 1]!
+    const incomingX = corner.x - previous.x
+    const incomingY = corner.y - previous.y
+    const outgoingX = next.x - corner.x
+    const outgoingY = next.y - corner.y
+    const incomingLength = Math.hypot(incomingX, incomingY)
+    const outgoingLength = Math.hypot(outgoingX, outgoingY)
+
+    if (incomingLength < 0.01 || outgoingLength < 0.01) {
+      parts.push(`L${r1(corner.x)} ${r1(corner.y)}`)
+      continue
+    }
+
+    const cosine = (incomingX * outgoingX + incomingY * outgoingY) /
+      (incomingLength * outgoingLength)
+    // Почти прямой участок не раздуваем, а резкий разворот не маскируем дугой.
+    if (cosine > 0.999 || cosine < -0.85) {
+      parts.push(`L${r1(corner.x)} ${r1(corner.y)}`)
+      continue
+    }
+
+    const radius = Math.min(
+      ROUTE_CORNER_RADIUS,
+      incomingLength * ROUTE_CORNER_FRACTION,
+      outgoingLength * ROUTE_CORNER_FRACTION,
+    )
+    const entryX = corner.x - (incomingX / incomingLength) * radius
+    const entryY = corner.y - (incomingY / incomingLength) * radius
+    const exitX = corner.x + (outgoingX / outgoingLength) * radius
+    const exitY = corner.y + (outgoingY / outgoingLength) * radius
+    parts.push(
+      `L${r1(entryX)} ${r1(entryY)}`,
+      `Q${r1(corner.x)} ${r1(corner.y)} ${r1(exitX)} ${r1(exitY)}`,
+    )
+  }
+
+  const last = points[points.length - 1]
+  if (points.length > 1) parts.push(`L${r1(last!.x)} ${r1(last!.y)}`)
+  return parts.join('')
 }
 
 function routeEdges(routes: RouteGeometry[]): RouteEdge[] {
