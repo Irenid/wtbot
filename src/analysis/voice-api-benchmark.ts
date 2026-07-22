@@ -93,6 +93,9 @@ function player(index: number) {
     vehicle: null,
     vehicles: [],
     disconnected: false,
+    slot: null,
+    title: null,
+    autoSquad: null,
   }
 }
 

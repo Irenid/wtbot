@@ -695,11 +695,17 @@ export function buildHeatmapSvg(
     ])
   }
 
-  if (mode === 'ground' && !tacticalMap && capturedMapRendering) {
+  const hasReplayZoneFallback =
+    events.zones.length > 0 && !fallbackMapViewport?.captureZones?.length && !mission?.zones?.length
+  if (mode === 'ground' && capturedMapRendering && (!tacticalMap || hasReplayZoneFallback)) {
     const captureZones = fallbackMapViewport?.captureZones?.length
       ? fallbackMapViewport.captureZones.map((zone) =>
           captureZoneMarker(zone.x * MAP_W, zone.y * MAP_W, zone.letter, mapIconFont))
-      : (mission?.zones ?? []).map((zone) => captureZoneMarker(px(zone.x), pz(zone.z), zone.letter, mapIconFont))
+      : mission?.zones?.length
+        ? mission.zones.map((zone) => captureZoneMarker(px(zone.x), pz(zone.z), zone.letter, mapIconFont))
+        : events.zones.map((zone, index) =>
+            captureZoneMarker(px(zone.x), pz(zone.z), String.fromCharCode(65 + index), mapIconFont),
+          )
     pushMapLayer(7, 'capture-zones', captureZones)
   }
 

@@ -12,7 +12,8 @@ export function formatBattleChat(events: ReplayEvents): string {
       const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
       const clan = clanOf.get(message.sender)
       const sender = clan ? `[${decorateTag(clan)}] ${message.sender}` : message.sender
-      return `[${time}] [${CHANNEL_LABEL[message.channel] ?? '?'}] ${sender}: ${message.message}`
+      const channel = CHANNEL_LABEL[message.channel] ?? `UNKNOWN(${message.channel})`
+      return `[${time}] [${channel}] ${sender}: ${message.message}`
     })
     .join('\n')
 }

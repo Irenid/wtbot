@@ -113,6 +113,7 @@ export async function loadBattleData(
 export interface ReconstructedBattleSummary {
   header: WrplHeader
   results: ReplayResults
+  gameVersion: string | null
   missionSettings: string | null
 }
 
@@ -137,8 +138,10 @@ function reconstructRows(
   battle: BattleRow,
   rows: BattlePlayerRow[],
 ): ReconstructedBattleSummary {
+  const gameVersion = battle.game_version ?? null
   const header: WrplHeader = {
     version: 0,
+    ...(gameVersion ? { gameVersion } : {}),
     level: battle.level,
     battleType: battle.battle_type ?? '',
     environment: battle.environment ?? '',
@@ -175,7 +178,9 @@ function reconstructRows(
     awardDamage: player.award_damage,
     teamKills: player.team_kills,
     squadId: player.squad_id,
-    autoSquad: false,
+    autoSquad: player.auto_squad === 1,
+    slot: player.slot,
+    title: player.title,
     vehicles: safeParseVehicles(player.vehicles),
   }))
   const results: ReplayResults = {
@@ -183,7 +188,12 @@ function reconstructRows(
     timePlayed: battle.duration_sec,
     players,
   }
-  return { header, results, missionSettings: battle.mission_settings }
+  return {
+    header,
+    results,
+    gameVersion,
+    missionSettings: battle.mission_settings ?? null,
+  }
 }
 
 function safeParseVehicles(json: string): string[] {
