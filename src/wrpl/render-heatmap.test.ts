@@ -4,7 +4,7 @@ import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, WrplHeader } from './replay.js'
 import type { MapImageViewport } from './battle-assets.js'
 import { clanDisplayName, stripClanDecorators } from './render-battle.js'
-import { buildHeatmapSvg, type HeatmapRenderOptions } from './render-heatmap.js'
+import { buildHeatmapSvg, prepareHeatmapScene, type HeatmapRenderOptions } from './render-heatmap.js'
 
 const header: WrplHeader = {
   version: 1,
@@ -108,6 +108,45 @@ function renderAt(
     ...(heatmapOptions ? { heatmapOptions } : {}),
   }, false, tacticalMap, fallbackMap, fallbackMapViewport, mapIconFont, capturedMapRendering)
 }
+
+test('подготовка heatmap сохраняет оригинальные Unicode-символы в никах', () => {
+  const harald = { ...player, userId: 'harald', name: 'Haraldツ', team: 1 }
+  const maniac = { ...player, userId: 'maniac', name: '스트레이 키즈 Maniac', team: 2 }
+  const scene = prepareHeatmapScene({
+    missionName: '[Domination] Test map',
+    header,
+    results: { status: 'ok', timePlayed: 60, players: [harald, maniac] },
+    events: {
+      teamWon: 1,
+      players: [],
+      kills: [],
+      damage: [],
+      chat: [],
+      units: [
+        {
+          userId: harald.userId,
+          model: 'test_tank',
+          source: 'ground',
+          path: [{ t: 0, x: -100, y: 0, z: 0 }, { t: 60_000, x: -90, y: 0, z: 10 }],
+        },
+        {
+          userId: maniac.userId,
+          model: 'test_tank',
+          source: 'ground',
+          path: [{ t: 0, x: 100, y: 0, z: 0 }, { t: 60_000, x: 90, y: 0, z: 10 }],
+        },
+      ],
+      zones: [],
+      endTime: 60_000,
+      errors: [],
+    },
+    dict: {},
+    mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [] },
+    mode: 'ground',
+  })
+
+  assert.deepEqual(scene.allPlayers.map((entry) => entry.name), ['Haraldツ', '스트레이 키즈 Maniac'])
+})
 
 test('авиационная карта приближает маршруты и сохраняет наземную battleArea', () => {
   const viewport: MapImageViewport = {

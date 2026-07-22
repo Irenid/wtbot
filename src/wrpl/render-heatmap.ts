@@ -171,12 +171,23 @@ interface RouteGeometry {
   arrows: DirectionArrow[]
 }
 
-interface RouteEdge {
-  index: number
-  route: RouteGeometry
+export interface RouteStrokeDrawing {
+  baseOrder: number
+  color: string
+  d: string
+  attrs: string
+  directionArrows: number
+}
+
+export interface RouteSegment {
   from: PixelRoutePoint
   to: PixelRoutePoint
   length: number
+}
+
+interface RouteEdge extends RouteSegment {
+  index: number
+  route: RouteGeometry
 }
 
 interface RouteCrossing {
@@ -201,7 +212,7 @@ interface PlayerPathRange {
   last: SpaceTime
 }
 
-interface PreparedCamp {
+export interface PreparedCamp {
   x: number
   y: number
   durMs: number
@@ -425,7 +436,7 @@ export function prepareHeatmapScene(
     preparedRoutesByPlayer.set(player, routeParts)
     visibleSegmentsByPlayer.set(player, visibleSegments)
     pathRangesByPlayer.set(player, ranges)
-    campsByPlayer.set(player, camps)
+    campsByPlayer.set(player, mergeNearbyCamps(camps))
     minuteMarksByPlayer.set(player, minuteMarks)
   }
 
@@ -795,18 +806,13 @@ export function buildHeatmapSvg(
   pushMapLayer(11, 'uav-routes', chronological(uavPaths))
   pushMapLayer(12, 'uav-starts', chronological(uavStarts))
 
-  // Все обводки лежат ниже всех цветов. Поэтому верхний маршрут не вырезает
-  // чёрную щель в нижнем, но контраст линий с фоном карты сохраняется.
-  const routeParts = [
-    ...routeDrawings.map(({ route, d, attrs }) =>
-      `<g data-route-stroke-pass="outline" ${attrs}>` +
-        `<path data-route-layer="outline" data-direction-arrows="${route.arrows.length}" d="${d}" fill="none" stroke="#10130d" stroke-opacity="0.55" stroke-width="5.4" stroke-linejoin="round" stroke-linecap="round"/>` +
-        `</g>`),
-    ...routeDrawings.map(({ route, d, attrs }) =>
-      `<g data-route-stroke-pass="color" ${attrs}>` +
-        `<path data-route-layer="color" data-direction-arrows="${route.arrows.length}" d="${d}" fill="none" stroke="${route.color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>` +
-        `</g>`),
-  ]
+  const routeParts = routeStrokeParts(routeDrawings.map(({ route, d, attrs }) => ({
+    baseOrder: route.baseOrder,
+    color: route.color,
+    d,
+    attrs,
+    directionArrows: route.arrows.length,
+  })))
   const crossingParts = routeCrossings(routes).map((crossing) => {
     const d = routeSlicePath(crossing.route, crossing.distance, 10)
     return timed(
@@ -825,7 +831,7 @@ export function buildHeatmapSvg(
   if (mode === 'ground') {
     for (const p of players) {
       for (const camp of campsByPlayer.get(p) ?? []) {
-        const r = Math.min(30, 13 + (camp.durMs / 60000) * 5)
+        const r = campMarkerRadius(camp.durMs)
         const mm = Math.floor(camp.durMs / 60000)
         const ss = String(Math.floor((camp.durMs % 60000) / 1000)).padStart(2, '0')
         const x = r1(camp.x)
@@ -1582,6 +1588,32 @@ export function routePath(points: PixelRoutePoint[]): string {
   return parts.join('')
 }
 
+export function routeStrokeParts(drawings: readonly RouteStrokeDrawing[]): string[] {
+  const chronological = [...drawings].sort((a, b) => a.baseOrder - b.baseOrder)
+
+  // Все обводки лежат ниже всех цветов. Поэтому верхний маршрут не вырезает
+  // чёрную щель в нижнем, но контраст линий с фоном карты сохраняется.
+  const outlines = chronological.map(({ d, attrs, directionArrows }) =>
+    `<g data-route-stroke-pass="outline" ${attrs}>` +
+      `<path data-route-layer="outline" data-direction-arrows="${directionArrows}" d="${d}" fill="none" stroke="#10130d" stroke-opacity="0.55" stroke-width="5.4" stroke-linejoin="round" stroke-linecap="round"/>` +
+      `</g>`)
+  const colors = chronological.map(({ color, d, attrs, directionArrows }) =>
+    `<g data-route-stroke-pass="color" ${attrs}>` +
+      `<path data-route-layer="color" data-direction-arrows="${directionArrows}" d="${d}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>` +
+      `</g>`)
+
+  // Совпадающие пути рисуются в хронологическом порядке: более поздний
+  // маршрут всегда остаётся сверху. Тонкий проход сохраняет его непрерывный
+  // центр на общем участке, а основной слой оставляет видимыми края второго
+  // маршрута. На одиночном пути проход совпадает с основным цветом.
+  const sharedRouteReveal = chronological.map(({ color, d, attrs, directionArrows }) =>
+    `<g data-route-stroke-pass="shared-reveal" ${attrs}>` +
+      `<path data-route-layer="shared-reveal" data-direction-arrows="${directionArrows}" d="${d}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>` +
+      `</g>`)
+
+  return [...outlines, ...colors, ...sharedRouteReveal]
+}
+
 function routeEdges(routes: RouteGeometry[]): RouteEdge[] {
   const edges: RouteEdge[] = []
   for (const route of routes) {
@@ -1603,8 +1635,9 @@ function routeEdges(routes: RouteGeometry[]): RouteEdge[] {
 }
 
 /**
- * Находит только видимые пересечения маршрутов через пространственную сетку.
- * Это заменяет квадратичное сравнение всех рёбер и не нарезает основной path.
+ * Находит видимые пересечения и близкие общие участки маршрутов через
+ * пространственную сетку. Это заменяет квадратичное сравнение всех рёбер и
+ * не нарезает основной path: поверх него добавляются только короткие мостики.
  */
 function routeCrossings(routes: RouteGeometry[]): RouteCrossing[] {
   const cellSize = 48
@@ -1667,17 +1700,45 @@ function routeCrossings(routes: RouteGeometry[]): RouteCrossing[] {
   return [...crossings.values()].sort((a, b) => a.time - b.time || a.route.index - b.route.index)
 }
 
-function segmentIntersection(
-  first: RouteEdge,
-  second: RouteEdge,
+export function segmentIntersection(
+  first: RouteSegment,
+  second: RouteSegment,
 ): { x: number; y: number; first: number; second: number } | null {
   const rx = first.to.x - first.from.x
   const ry = first.to.y - first.from.y
   const sx = second.to.x - second.from.x
   const sy = second.to.y - second.from.y
   const denominator = rx * sy - ry * sx
-  // Почти параллельные пути не получают мостики: на общей дороге они создавали бы новую «лесенку».
-  if (Math.abs(denominator) / (first.length * second.length) < 0.2) return null
+  const parallelness = Math.abs(denominator) / (first.length * second.length)
+  if (parallelness < 0.2) {
+    // На общей дороге отрезки почти параллельны и не пересекаются
+    // математически. Всё же находим середину их продольного перекрытия,
+    // чтобы routeCrossings мог положить сверху маршрут, приехавший позже.
+    const firstLengthSquared = first.length * first.length
+    const secondLengthSquared = second.length * second.length
+    const projectOnFirst = (x: number, y: number): number =>
+      ((x - first.from.x) * rx + (y - first.from.y) * ry) / firstLengthSquared
+    const secondStart = projectOnFirst(second.from.x, second.from.y)
+    const secondEnd = projectOnFirst(second.to.x, second.to.y)
+    const overlapStart = Math.max(0, Math.min(secondStart, secondEnd))
+    const overlapEnd = Math.min(1, Math.max(secondStart, secondEnd))
+    if (overlapEnd - overlapStart < 0.02) return null
+
+    const firstFraction = (overlapStart + overlapEnd) / 2
+    const pointX = first.from.x + rx * firstFraction
+    const pointY = first.from.y + ry * firstFraction
+    const secondFraction = Math.max(
+      0,
+      Math.min(
+        1,
+        ((pointX - second.from.x) * sx + (pointY - second.from.y) * sy) / secondLengthSquared,
+      ),
+    )
+    const secondPointX = second.from.x + sx * secondFraction
+    const secondPointY = second.from.y + sy * secondFraction
+    if (Math.hypot(pointX - secondPointX, pointY - secondPointY) > 6) return null
+    return { x: pointX, y: pointY, first: firstFraction, second: secondFraction }
+  }
   const qx = second.from.x - first.from.x
   const qy = second.from.y - first.from.y
   const firstFraction = (qx * sy - qy * sx) / denominator
@@ -2012,6 +2073,45 @@ function findCamps(
     }
   }
   return out
+}
+
+function campMarkerRadius(durMs: number): number {
+  return Math.min(30, 13 + (durMs / 60000) * 5)
+}
+
+/**
+ * Объединяет пересекающиеся маркеры стоянок одного игрока уже после проекции
+ * на изображение. Поэтому одинаковое расстояние в мире объединяется на карте
+ * большого охвата и остаётся раздельным на более крупном масштабе.
+ */
+export function mergeNearbyCamps(camps: readonly PreparedCamp[]): PreparedCamp[] {
+  const merged: PreparedCamp[] = []
+  const chronological = camps
+    .map((camp) => ({ ...camp }))
+    .sort((a, b) => a.time - b.time)
+
+  for (const camp of chronological) {
+    let cluster = camp
+    while (true) {
+      const overlapIndex = merged.findIndex((candidate) =>
+        Math.hypot(cluster.x - candidate.x, cluster.y - candidate.y) <=
+          campMarkerRadius(cluster.durMs) + campMarkerRadius(candidate.durMs),
+      )
+      if (overlapIndex < 0) break
+
+      const candidate = merged.splice(overlapIndex, 1)[0]!
+      const durMs = candidate.durMs + cluster.durMs
+      cluster = {
+        x: (candidate.x * candidate.durMs + cluster.x * cluster.durMs) / durMs,
+        y: (candidate.y * candidate.durMs + cluster.y * cluster.durMs) / durMs,
+        durMs,
+        time: Math.max(candidate.time, cluster.time),
+      }
+    }
+    merged.push(cluster)
+  }
+
+  return merged.sort((a, b) => a.time - b.time)
 }
 
 /** Череп в цвете погибшего */
