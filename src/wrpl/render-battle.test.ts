@@ -55,3 +55,21 @@ test('метка победы не изменяет SVG-узел кланово�
   assert.ok(svg.includes('>»xGAFx«</text>'))
   assert.ok(svg.includes('>Победа</text>'))
 })
+
+test('SVG сохраняет оригинальные Unicode-символы в никах игроков', () => {
+  const results: ReplayResults = {
+    status: 'success',
+    timePlayed: 60,
+    players: [
+      { ...player, userId: 'harald', name: 'Haraldツ', team: 1 },
+      { ...player, userId: 'maniac', name: '스트레이 키즈 Maniac', team: 2 },
+    ],
+  }
+  const svg = buildBattleSvg(
+    { missionName: '[Domination] Test', header, results, dict: {}, winnerTeam: 1 },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+
+  assert.ok(svg.includes('>Haraldツ</text>'))
+  assert.ok(svg.includes('>스트레이 키즈 Maniac</text>'))
+})
