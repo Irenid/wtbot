@@ -97,12 +97,18 @@ export interface MapImageViewport {
   height: number
   /** Мировые координаты показанного игрового квадрата. */
   worldBounds?: { x0: number; z0: number; x1: number; z1: number }
+  /** Мировые координаты всего map.img, включая пространство для авиации. */
+  imageWorldBounds?: { x0: number; z0: number; x1: number; z1: number }
   /** Шаг подписанной игровой сетки как доля ширины/высоты viewport. */
   gridStepX?: number
   gridStepY?: number
   gridStepMeters?: number
   captureZones?: { letter: string; x: number; y: number }[]
   groundSpawns?: { x: number; y: number }[]
+  /** Статические полосы аэродромов в нормализованных координатах полного map.img. */
+  airfields?: { sx: number; sy: number; ex: number; ey: number; color: string }[]
+  /** Точки появления авиации в нормализованных координатах полного map.img. */
+  airSpawns?: { x: number; y: number; color: string }[]
 }
 
 function validMapViewport(value: unknown): value is MapImageViewport {
@@ -119,23 +125,35 @@ function validMapViewport(value: unknown): value is MapImageViewport {
     return typeof candidate.x === 'number' && Number.isFinite(candidate.x) && candidate.x >= 0 && candidate.x <= 1 &&
       typeof candidate.y === 'number' && Number.isFinite(candidate.y) && candidate.y >= 0 && candidate.y <= 1
   }
+  const fullMapCoordinate = (part: unknown): part is number =>
+    typeof part === 'number' && Number.isFinite(part) && part >= 0 && part <= 1
   const zonesValid = viewport.captureZones === undefined ||
     (Array.isArray(viewport.captureZones) && viewport.captureZones.length <= 16 &&
       viewport.captureZones.every((zone) => normalizedPoint(zone) && /^[A-Z0-9]$/.test(zone.letter)))
   const spawnsValid = viewport.groundSpawns === undefined ||
     (Array.isArray(viewport.groundSpawns) && viewport.groundSpawns.length <= 8 &&
       viewport.groundSpawns.every(normalizedPoint))
-  const worldBounds = viewport.worldBounds
-  const worldBoundsValid = worldBounds === undefined ||
-    ([worldBounds.x0, worldBounds.z0, worldBounds.x1, worldBounds.z1]
+  const colorValid = (color: unknown): color is string =>
+    typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)
+  const airfieldsValid = viewport.airfields === undefined ||
+    (Array.isArray(viewport.airfields) && viewport.airfields.length <= 32 &&
+      viewport.airfields.every((airfield) =>
+        fullMapCoordinate(airfield.sx) && fullMapCoordinate(airfield.sy) &&
+        fullMapCoordinate(airfield.ex) && fullMapCoordinate(airfield.ey) && colorValid(airfield.color)))
+  const airSpawnsValid = viewport.airSpawns === undefined ||
+    (Array.isArray(viewport.airSpawns) && viewport.airSpawns.length <= 16 &&
+      viewport.airSpawns.every((spawn) => normalizedPoint(spawn) && colorValid(spawn.color)))
+  const validWorldBounds = (bounds: MapImageViewport['worldBounds']): boolean => bounds === undefined ||
+    ([bounds.x0, bounds.z0, bounds.x1, bounds.z1]
       .every((part) => typeof part === 'number' && Number.isFinite(part)) &&
-      worldBounds.x1 > worldBounds.x0 && worldBounds.z1 > worldBounds.z0)
+      bounds.x1 > bounds.x0 && bounds.z1 > bounds.z0)
   return numbers.every((part) => typeof part === 'number' && Number.isFinite(part)) &&
     viewport.x! >= 0 && viewport.y! >= 0 && viewport.width! > 0 && viewport.height! > 0 &&
     viewport.x! + viewport.width! <= 1.000_001 && viewport.y! + viewport.height! <= 1.000_001 &&
     gridSteps.every((step) => step === undefined ||
       (typeof step === 'number' && Number.isFinite(step) && step > 0 && step <= 1)) &&
-    gridMetersValid && zonesValid && spawnsValid && worldBoundsValid
+    gridMetersValid && zonesValid && spawnsValid && airfieldsValid && airSpawnsValid &&
+    validWorldBounds(viewport.worldBounds) && validWorldBounds(viewport.imageWorldBounds)
 }
 
 /** map_info: grid_zero — левый верхний угол, grid_size — размер игровой области в метрах. */
@@ -154,6 +172,22 @@ function worldBoundsFromMapInfo(value: unknown): MapImageViewport['worldBounds']
   return { x0, z0: z1 - height, x1: x0 + width, z1 }
 }
 
+/** map_info: map_min/map_max задают мировые границы полного изображения уровня. */
+function imageWorldBoundsFromMapInfo(value: unknown): MapImageViewport['imageWorldBounds'] {
+  if (value === null || typeof value !== 'object') return undefined
+  const mapInfo = value as { map_min?: unknown; map_max?: unknown }
+  if (!Array.isArray(mapInfo.map_min) || !Array.isArray(mapInfo.map_max)) return undefined
+  const [x0, z0] = mapInfo.map_min
+  const [x1, z1] = mapInfo.map_max
+  if (
+    typeof x0 !== 'number' || !Number.isFinite(x0) ||
+    typeof z0 !== 'number' || !Number.isFinite(z0) ||
+    typeof x1 !== 'number' || !Number.isFinite(x1) || x1 <= x0 ||
+    typeof z1 !== 'number' || !Number.isFinite(z1) || z1 <= z0
+  ) return undefined
+  return { x0, z0, x1, z1 }
+}
+
 async function loadMapViewport(id: string): Promise<MapImageViewport | undefined> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path.join(MAPS_DIR, `${id}.map.json`), 'utf8'))
@@ -161,7 +195,12 @@ async function loadMapViewport(id: string): Promise<MapImageViewport | undefined
     const viewport = document?.viewport
     if (!validMapViewport(viewport)) return undefined
     const worldBounds = viewport.worldBounds ?? worldBoundsFromMapInfo(document?.mapInfo)
-    return worldBounds ? { ...viewport, worldBounds } : viewport
+    const imageWorldBounds = viewport.imageWorldBounds ?? imageWorldBoundsFromMapInfo(document?.mapInfo)
+    return {
+      ...viewport,
+      ...(worldBounds ? { worldBounds } : {}),
+      ...(imageWorldBounds ? { imageWorldBounds } : {}),
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return undefined
     throw error
@@ -186,6 +225,21 @@ export async function loadMapBackground(headerLevel: string): Promise<BinaryImag
     }
   }
   return null
+}
+
+/**
+ * Старая локальная тактическая карта data/maps/<level>.png. Она используется
+ * как запасной вариант для ground heatmap, когда в wt-tools нет нужного режима;
+ * полный авиационный map.img при этом продолжает загружаться отдельно.
+ */
+export async function loadLocalTacticalMap(headerLevel: string): Promise<Buffer | null> {
+  try {
+    const data = await readFile(path.join(MAPS_DIR, `${levelId(headerLevel)}.png`))
+    return isPng(data) && data.length <= 32 * 1024 * 1024 ? data : null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
 }
 
 /** Шрифт значков карты, сохранённый командой capture:map с локального сервера игры. */

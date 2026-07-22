@@ -109,6 +109,24 @@ export interface HeatmapInput {
   seekers?: Map<string, MissileSeeker>
   /** Масштаб итогового PNG; влияет только на подготовку изображения для HD. */
   renderScale?: 1 | 2
+  /** Настройки авиационной подложки; отсутствие сохраняет стандартное поведение. */
+  heatmapOptions?: Partial<HeatmapRenderOptions>
+}
+
+export interface HeatmapRenderOptions {
+  airAutoZoom: boolean
+  airShowGroundMap: boolean
+  airShowAirfields: boolean
+  airShowSpawns: boolean
+  airPaddingPercent: number
+}
+
+const DEFAULT_HEATMAP_OPTIONS: HeatmapRenderOptions = {
+  airAutoZoom: true,
+  airShowGroundMap: true,
+  airShowAirfields: true,
+  airShowSpawns: true,
+  airPaddingPercent: 6,
 }
 
 interface PlayerPaths {
@@ -180,10 +198,15 @@ export function buildHeatmapSvg(
   capturedMapRendering = CAPTURED_MAP_RENDERING_ENABLED,
 ): string {
   const { events, results, dict, mission, mode, seekers, teamIndex } = input
+  const heatmapOptions = { ...DEFAULT_HEATMAP_OPTIONS, ...input.heatmapOptions }
+  const airPaddingPercent = Number.isFinite(heatmapOptions.airPaddingPercent)
+    ? Math.max(0, Math.min(50, heatmapOptions.airPaddingPercent))
+    : DEFAULT_HEATMAP_OPTIONS.airPaddingPercent
   const renderScale = input.renderScale ?? 1
   // Координатная привязка нужна и для готового игрового скриншота. Отключатель ниже
   // убирает только повторную обрезку, сетку и значки новой прорисовки.
-  const fallbackWorldBounds = mode === 'ground' ? fallbackMapViewport?.worldBounds : undefined
+  const fallbackWorldBounds = fallbackMapViewport?.worldBounds
+  const fallbackImageWorldBounds = fallbackMapViewport?.imageWorldBounds
   if (!capturedMapRendering) {
     fallbackMapViewport = undefined
     mapIconFont = false
@@ -244,10 +267,18 @@ export function buildHeatmapSvg(
   // Масштаб командной карты совпадает с общей: границы считаются по обеим
   // командам, а цвета назначаются до фильтрации.
   const allPoints = allPlayers.flatMap((p) => p.paths.flatMap((q) => q.path))
-  let bounds = fallbackWorldBounds ?? mission?.area ?? null
-  const fullBleed = mode === 'ground' && bounds !== null
+  const visibleGroundArea = mode === 'air' && !heatmapOptions.airShowGroundMap
+    ? null
+    : (mission?.area ?? null)
+  let bounds = mode === 'ground'
+    ? ((tacticalMap ? mission?.area : fallbackWorldBounds) ?? mission?.area ?? null)
+    : (heatmapOptions.airAutoZoom
+        ? visibleGroundArea
+        : (fallbackImageWorldBounds ?? visibleGroundArea))
+  const fullBleed = (mode === 'ground' && bounds !== null) ||
+    (mode === 'air' && !heatmapOptions.airAutoZoom && bounds !== null)
   if (!fullBleed) {
-    bounds = fitBounds(allPoints, bounds)
+    bounds = fitBounds(allPoints, bounds, mode === 'air' ? 1 + airPaddingPercent / 100 : 1.06)
   }
   const cx = (bounds!.x0 + bounds!.x1) / 2
   const cz = (bounds!.z0 + bounds!.z1) / 2
@@ -280,55 +311,111 @@ export function buildHeatmapSvg(
     parts.push(`<g data-map-layer="${String(level).padStart(2, '0')}-${name}">`, ...items, `</g>`)
   }
 
-  // Фон карты: снимок игровой карты режима → ручной скриншот → сетка.
-  // Оба изображения покрывают ровно battleArea, поэтому кладутся на его
-  // прямоугольник в мировых координатах (на воздушной карте он меньше кадра).
-  const mapImage = tacticalMap ?? fallbackMap
+  // На земле режимный снимок покрывает battleArea. Для авиации полный map.img
+  // служит общей подложкой, а режимный снимок остаётся отдельной вставкой battleArea.
   const mapImageAttrs = renderScale === 2
     ? ` image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"`
     : ''
   pushMapLayer(1, 'base', [`<rect width="${MAP_W}" height="${MAP_W}" fill="#3c4034"/>`])
-  if (mapImage && (mission?.area || fallbackMapViewport)) {
-    const a = mission?.area
-    const ix = fallbackMapViewport ? 0 : px(a!.x0)
-    const iy = fallbackMapViewport ? 0 : pz(a!.z1)
-    const iw = fallbackMapViewport ? MAP_W : px(a!.x1) - ix
-    const ih = fallbackMapViewport ? MAP_W : pz(a!.z0) - iy
-    if (fallbackMapViewport) {
-      const crop = fallbackMapViewport
-      const imageX = ix - (crop.x / crop.width) * iw
-      const imageY = iy - (crop.y / crop.height) * ih
-      const imageWidth = iw / crop.width
-      const imageHeight = ih / crop.height
-      pushMapLayer(2, 'map-image', [
-        `<defs><clipPath id="fallback-map-viewport"><rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}"/></clipPath></defs>`,
-        `<image data-map-viewport="${r1(crop.x)} ${r1(crop.y)} ${r1(crop.width)} ${r1(crop.height)}" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none" clip-path="url(#fallback-map-viewport)"${mapImageAttrs} href="${mapImage}"/>`,
-      ])
-    } else {
-      pushMapLayer(2, 'map-image', [
-        `<image x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" preserveAspectRatio="none"${mapImageAttrs} href="${mapImage}"/>`,
-      ])
+  const mapImages: string[] = []
+  const shades: string[] = []
+  const airMapObjects: string[] = []
+  const airBackground = mode === 'air' && fallbackMap && fallbackImageWorldBounds
+  if (airBackground) {
+    const imageX = px(fallbackImageWorldBounds.x0)
+    const imageY = pz(fallbackImageWorldBounds.z1)
+    const imageWidth = px(fallbackImageWorldBounds.x1) - imageX
+    const imageHeight = pz(fallbackImageWorldBounds.z0) - imageY
+    mapImages.push(
+      `<image data-map-role="air-background" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none"${mapImageAttrs} href="${fallbackMap}"/>`,
+    )
+    shades.push(
+      `<rect x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" fill="#0a0e14" fill-opacity="0.18"/>`,
+    )
+    if (heatmapOptions.airShowGroundMap && tacticalMap && mission?.area) {
+      const a = mission.area
+      const tacticalX = px(a.x0)
+      const tacticalY = pz(a.z1)
+      mapImages.push(
+        `<image data-map-role="tactical-overlay" x="${r1(tacticalX)}" y="${r1(tacticalY)}" width="${r1(px(a.x1) - tacticalX)}" height="${r1(pz(a.z0) - tacticalY)}" preserveAspectRatio="none"${mapImageAttrs} href="${tacticalMap}"/>`,
+      )
     }
-    // лёгкое затемнение — чтобы траектории читались поверх карты
-    pushMapLayer(4, 'readability-shade', [
-      `<rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" fill="#0a0e14" fill-opacity="0.18"/>`,
-    ])
-    if (fallbackMapViewport?.gridStepX && fallbackMapViewport.gridStepY) {
-      pushMapLayer(5, 'coordinate-grid', coordinateGrid(
-        ix,
-        iy,
-        iw,
-        ih,
-        fallbackMapViewport.gridStepX,
-        fallbackMapViewport.gridStepY,
-        fallbackMapViewport.gridStepMeters,
-      ))
+    if (capturedMapRendering) {
+      for (const [index, airfield] of (
+        heatmapOptions.airShowAirfields ? (fallbackMapViewport?.airfields ?? []) : []
+      ).entries()) {
+        const x1 = imageX + airfield.sx * imageWidth
+        const y1 = imageY + airfield.sy * imageHeight
+        const x2 = imageX + airfield.ex * imageWidth
+        const y2 = imageY + airfield.ey * imageHeight
+        airMapObjects.push(
+          `<g data-airfield="${index}">` +
+            `<line x1="${r1(x1)}" y1="${r1(y1)}" x2="${r1(x2)}" y2="${r1(y2)}" stroke="#10130d" stroke-opacity="0.8" stroke-width="8" stroke-linecap="round"/>` +
+            `<line x1="${r1(x1)}" y1="${r1(y1)}" x2="${r1(x2)}" y2="${r1(y2)}" stroke="${airfield.color}" stroke-opacity="0.82" stroke-width="4" stroke-linecap="round"/>` +
+          `</g>`,
+        )
+      }
+      for (const [index, spawn] of (
+        heatmapOptions.airShowSpawns ? (fallbackMapViewport?.airSpawns ?? []) : []
+      ).entries()) {
+        const x = imageX + spawn.x * imageWidth
+        const y = imageY + spawn.y * imageHeight
+        airMapObjects.push(
+          `<g data-air-spawn="${index}" transform="translate(${r1(x)} ${r1(y)})">` +
+            `<circle r="11" fill="#10130d" fill-opacity="0.84" stroke="${spawn.color}" stroke-width="2"/>` +
+            `<path d="M0 -7L2 -2L8 1L2 2L1 7L-1 7L-2 2L-8 1L-2 -2Z" fill="${spawn.color}"/>` +
+          `</g>`,
+        )
+      }
     }
-  } else if (mapImage) {
-    pushMapLayer(2, 'map-image', [
-      `<image x="0" y="0" width="${MAP_W}" height="${MAP_W}" preserveAspectRatio="xMidYMid slice"${mapImageAttrs} href="${mapImage}"/>`,
-    ])
   } else {
+    const mapImage = tacticalMap ?? fallbackMap
+    const mapViewport = tacticalMap ? undefined : fallbackMapViewport
+    if (mapImage && (mission?.area || mapViewport)) {
+      const a = mission?.area
+      const ix = mapViewport ? 0 : px(a!.x0)
+      const iy = mapViewport ? 0 : pz(a!.z1)
+      const iw = mapViewport ? MAP_W : px(a!.x1) - ix
+      const ih = mapViewport ? MAP_W : pz(a!.z0) - iy
+      if (mapViewport) {
+        const crop = mapViewport
+        const imageX = ix - (crop.x / crop.width) * iw
+        const imageY = iy - (crop.y / crop.height) * ih
+        const imageWidth = iw / crop.width
+        const imageHeight = ih / crop.height
+        mapImages.push(
+          `<defs><clipPath id="fallback-map-viewport"><rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}"/></clipPath></defs>`,
+          `<image data-map-viewport="${r1(crop.x)} ${r1(crop.y)} ${r1(crop.width)} ${r1(crop.height)}" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none" clip-path="url(#fallback-map-viewport)"${mapImageAttrs} href="${mapImage}"/>`,
+        )
+      } else {
+        mapImages.push(
+          `<image x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" preserveAspectRatio="none"${mapImageAttrs} href="${mapImage}"/>`,
+        )
+      }
+      shades.push(
+        `<rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" fill="#0a0e14" fill-opacity="0.18"/>`,
+      )
+      if (mapViewport?.gridStepX && mapViewport.gridStepY) {
+        pushMapLayer(5, 'coordinate-grid', coordinateGrid(
+          ix,
+          iy,
+          iw,
+          ih,
+          mapViewport.gridStepX,
+          mapViewport.gridStepY,
+          mapViewport.gridStepMeters,
+        ))
+      }
+    } else if (mapImage) {
+      mapImages.push(
+        `<image x="0" y="0" width="${MAP_W}" height="${MAP_W}" preserveAspectRatio="xMidYMid slice"${mapImageAttrs} href="${mapImage}"/>`,
+      )
+    }
+  }
+  pushMapLayer(2, 'map-image', mapImages)
+  pushMapLayer(4, 'readability-shade', shades)
+  pushMapLayer(5, 'air-objects', airMapObjects)
+  if (mapImages.length === 0) {
     // подложка с сеткой
     const fallbackGrid = [`<rect width="${MAP_W}" height="${MAP_W}" fill="#41453a"/>`]
     const cells = 10
@@ -344,7 +431,7 @@ export function buildHeatmapSvg(
 
   // Рамка battleArea (важно на воздушной карте, где мир шире зоны боя;
   // при карте на весь кадр совпадает с границей и не рисуется)
-  if (mission?.area && !fullBleed) {
+  if (mission?.area && !fullBleed && (mode === 'ground' || heatmapOptions.airShowGroundMap)) {
     const a = mission.area
     const fx = px(a.x0)
     const fy = pz(a.z1)
@@ -1582,6 +1669,7 @@ function truncateAtDeath(unit: ReplayUnitPath, events: ReplayEvents, userId: str
 function fitBounds(
   points: SpaceTime[],
   seed: { x0: number; z0: number; x1: number; z1: number } | null,
+  paddingFactor = 1.06,
 ): { x0: number; z0: number; x1: number; z1: number } {
   let x0 = seed?.x0 ?? Infinity
   let z0 = seed?.z0 ?? Infinity
@@ -1601,7 +1689,7 @@ function fitBounds(
   }
   const cx = (x0 + x1) / 2
   const cz = (z0 + z1) / 2
-  const half = (Math.max(x1 - x0, z1 - z0) / 2 || 1000) * 1.06
+  const half = (Math.max(x1 - x0, z1 - z0) / 2 || 1000) * paddingFactor
   return { x0: cx - half, z0: cz - half, x1: cx + half, z1: cz + half }
 }
 

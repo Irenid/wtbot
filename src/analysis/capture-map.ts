@@ -24,6 +24,11 @@ interface MapObjectResponse {
   type?: unknown
   x?: unknown
   y?: unknown
+  sx?: unknown
+  sy?: unknown
+  ex?: unknown
+  ey?: unknown
+  color?: unknown
   zone_label?: unknown
 }
 
@@ -42,6 +47,8 @@ interface CapturedViewport {
   gridStepMeters: number
   captureZones: { letter: string; x: number; y: number }[]
   groundSpawns: NormalizedPoint[]
+  airfields: { sx: number; sy: number; ex: number; ey: number; color: string }[]
+  airSpawns: { x: number; y: number; color: string }[]
 }
 
 function finitePair(value: unknown): value is [number, number] {
@@ -67,6 +74,16 @@ function normalizedPoint(value: MapObjectResponse, viewport: CapturedViewport): 
   const y = (value.y - viewport.y) / viewport.height
   if (x < -0.02 || x > 1.02 || y < -0.02 || y > 1.02) return null
   return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) }
+}
+
+function fullMapPoint(x: unknown, y: unknown): NormalizedPoint | null {
+  if (typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x > 1 ||
+      typeof y !== 'number' || !Number.isFinite(y) || y < 0 || y > 1) return null
+  return { x, y }
+}
+
+function mapColor(value: unknown): string {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : '#f2f4f7'
 }
 
 /** Объединяет десятки разрешённых позиций появления в один значок базы. */
@@ -110,6 +127,8 @@ function buildViewport(info: MapInfoResponse, objects: MapObjectResponse[]): Cap
     gridStepMeters: info.grid_steps[0],
     captureZones: [],
     groundSpawns: [],
+    airfields: [],
+    airSpawns: [],
   }
   if (viewport.x < 0 || viewport.y < 0 || viewport.width <= 0 || viewport.height <= 0 ||
       viewport.x + viewport.width > 1.000_001 || viewport.y + viewport.height > 1.000_001) {
@@ -133,6 +152,27 @@ function buildViewport(info: MapInfoResponse, objects: MapObjectResponse[]): Cap
     .map((object) => normalizedPoint(object, viewport))
     .filter((point): point is NormalizedPoint => point !== null)
   viewport.groundSpawns = clusterSpawnPoints(spawnPoints)
+
+  viewport.airfields = objects
+    .filter((object) => object.type === 'airfield')
+    .map((object) => {
+      const start = fullMapPoint(object.sx, object.sy)
+      const end = fullMapPoint(object.ex, object.ey)
+      return start && end
+        ? { sx: start.x, sy: start.y, ex: end.x, ey: end.y, color: mapColor(object.color) }
+        : null
+    })
+    .filter((airfield): airfield is { sx: number; sy: number; ex: number; ey: number; color: string } => airfield !== null)
+    .slice(0, 32)
+
+  viewport.airSpawns = objects
+    .filter((object) => object.type === 'respawn_base_fighter')
+    .map((object) => {
+      const point = fullMapPoint(object.x, object.y)
+      return point ? { ...point, color: mapColor(object.color) } : null
+    })
+    .filter((spawn): spawn is { x: number; y: number; color: string } => spawn !== null)
+    .slice(0, 16)
   return viewport
 }
 
@@ -190,7 +230,8 @@ async function captureMap(rawLevel: string, baseUrl = DEFAULT_BASE_URL): Promise
   ])
   console.log(
     `[maps] ${id}: сохранены ${imageFile}, ${metadataFile}; ` +
-    `зоны: ${viewport.captureZones.length}, наземные спавны: ${viewport.groundSpawns.length}`,
+    `зоны: ${viewport.captureZones.length}, наземные спавны: ${viewport.groundSpawns.length}, ` +
+    `аэродромы: ${viewport.airfields.length}, воздушные спавны: ${viewport.airSpawns.length}`,
   )
 }
 

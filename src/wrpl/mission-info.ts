@@ -264,10 +264,15 @@ function findAreas(
         const rows = tm as number[][]
         const pos = rows[3]
         if (!Array.isArray(pos) || pos.length !== 3) continue
+        // Строки tm — масштабированные базисные векторы Box. У повёрнутой
+        // области размер лежит вне диагонали (например, X в rows[0][2]),
+        // поэтому берём длину каждого вектора, а не отдельный компонент.
+        const basisLength = (row: number[] | undefined): number =>
+          Math.hypot(row?.[0] ?? 0, row?.[1] ?? 0, row?.[2] ?? 0)
         const size: [number, number, number] = [
-          Math.abs(rows[0]?.[0] ?? 0),
-          Math.abs(rows[1]?.[1] ?? 0),
-          Math.abs(rows[2]?.[2] ?? 0),
+          basisLength(rows[0]),
+          basisLength(rows[1]),
+          basisLength(rows[2]),
         ]
         out.set(name.toLowerCase(), {
           pos: [pos[0]!, pos[1]!, pos[2]!],

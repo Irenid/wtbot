@@ -14,6 +14,7 @@ import { loadBattleData, reconstructBattle, type BattleItemMeta } from './battle
 import {
   ensureTacticalMap,
   ensureWeaponSeekers,
+  loadLocalTacticalMap,
   loadMapBackground,
   loadMapIconFontPath,
 } from './battle-assets.js'
@@ -62,6 +63,7 @@ const highResCacheFile = (sessionIdHex: string, kind: BattleHeatmapKind): string
 
 /** Cache hit без синхронного чтения большого PNG на Discord event loop. */
 export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaKind): Promise<Buffer | null> {
+  if (!config.battleCacheEnabled) return null
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
   if (!(await cachedBattleMeta(sessionIdHex))) return null
   const file = cacheFile(sessionIdHex, kind)
@@ -86,7 +88,8 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 35
+  version?: 40
+  renderOptions?: string
   teamWon: number
   endTimeMs: number
   hasAir: boolean
@@ -98,6 +101,7 @@ export async function cachedBattleHeatmap2x(
   sessionIdHex: string,
   kind: BattleHeatmapKind,
 ): Promise<Buffer | null> {
+  if (!config.battleCacheEnabled) return null
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
   if (!(await cachedBattleMeta(sessionIdHex))) return null
   const file = highResCacheFile(sessionIdHex, kind)
@@ -120,9 +124,11 @@ export async function cachedBattleHeatmap2x(
   }
 }
 
-const BATTLE_MEDIA_VERSION = 35
+const BATTLE_MEDIA_VERSION = 40
+const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 
 export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta | null> {
+  if (!config.battleCacheEnabled) return null
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
   try {
     const parsed: unknown = JSON.parse(await readFile(path.join(CACHE_DIR, `${sessionIdHex}-meta.json`), 'utf8'))
@@ -130,6 +136,7 @@ export async function cachedBattleMeta(sessionIdHex: string): Promise<BattleMeta
       parsed !== null &&
       typeof parsed === 'object' &&
       (parsed as BattleMeta).version === BATTLE_MEDIA_VERSION &&
+      (parsed as BattleMeta).renderOptions === BATTLE_MEDIA_RENDER_OPTIONS &&
       Number.isFinite((parsed as BattleMeta).teamWon) &&
       Number.isFinite((parsed as BattleMeta).endTimeMs) &&
       typeof (parsed as BattleMeta).hasAir === 'boolean' &&
@@ -200,8 +207,10 @@ async function doBuildBattleHeatmap2x(
     loadMapIconFontPath(),
   ])
   const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
-  const tacticalMap = mission?.area ? await ensureTacticalMap(missionName) : null
-  const fallbackMap = tacticalMap ? null : await loadMapBackground(stored.header.level)
+  const tacticalMap = mission?.area
+    ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(stored.header.level))
+    : null
+  const fallbackMap = await loadMapBackground(stored.header.level)
   const wireBlob = transferableBuffer(stored.eventsBlob)
   const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
   const wireFallbackMap = fallbackMap
@@ -226,6 +235,7 @@ async function doBuildBattleHeatmap2x(
         eventsBlob: wireBlob,
         dict,
         mission,
+        heatmapOptions: config.heatmapOptions,
         mode: selection.mode,
         ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
         scale: 2,
@@ -250,6 +260,8 @@ async function doBuildBattleHeatmap2x(
   if (png.byteLength > MAX_IMAGE_BYTES) {
     throw new Error(`HD-карта слишком велика: ${(png.byteLength / 1024 / 1024).toFixed(1)} МБ`)
   }
+  // Флаг управляет повторным использованием, но результат каждого рендера
+  // сохраняется на диск независимо от него.
   await mkdir(CACHE_DIR, { recursive: true })
   await writeFileAtomic(highResCacheFile(stored.header.sessionIdHex, kind), png)
   await enforceCacheCap()
@@ -342,8 +354,10 @@ async function doBuildBattleMedia(
     loadMapIconFontPath(),
   ])
   const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
-  const tacticalMap = mission?.area ? await ensureTacticalMap(missionName) : null
-  const fallbackMap = tacticalMap ? null : await loadMapBackground(header.level)
+  const tacticalMap = mission?.area
+    ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(header.level))
+    : null
+  const fallbackMap = await loadMapBackground(header.level)
 
   const wireBlob = transferableBuffer(eventsBlob)
   const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
@@ -368,6 +382,7 @@ async function doBuildBattleMedia(
         eventsBlob: wireBlob,
         dict,
         mission,
+        heatmapOptions: config.heatmapOptions,
         assets: {
           fontFiles,
           gameFont: gameFontFiles.length > 0,
@@ -399,6 +414,7 @@ async function doBuildBattleMedia(
   const summary = { ...rendered.summary, errors: parseErrors }
   const metadata = JSON.stringify({
     version: BATTLE_MEDIA_VERSION,
+    renderOptions: BATTLE_MEDIA_RENDER_OPTIONS,
     teamWon: summary.teamWon,
     endTimeMs: summary.endTimeMs,
     hasAir: summary.airModels.some((model) => {
@@ -408,6 +424,7 @@ async function doBuildBattleMedia(
     hasChat: summary.chat > 0,
   } satisfies BattleMeta)
 
+  // Даже при отключённом reuse сохраняем последнее поколение материалов.
   await mkdir(CACHE_DIR, { recursive: true })
   const metaFile = path.join(CACHE_DIR, `${header.sessionIdHex}-meta.json`)
   // meta.json — commit marker. Пока все материалы не опубликованы целиком,
