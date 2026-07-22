@@ -45,6 +45,14 @@ export interface ScoreboardAssets {
   fontFiles: string[]
 }
 
+export interface HeatmapRenderOptions {
+  airAutoZoom: boolean
+  airShowGroundMap: boolean
+  airShowAirfields: boolean
+  airShowSpawns: boolean
+  airPaddingPercent: number
+}
+
 export interface MediaRenderInput {
   missionName: string
   header: WrplHeader
@@ -52,6 +60,7 @@ export interface MediaRenderInput {
   eventsBlob: ArrayBuffer
   dict: VehicleDict
   mission: MissionInfo | null
+  heatmapOptions?: HeatmapRenderOptions
   assets: {
     fontFiles: string[]
     gameFont: boolean

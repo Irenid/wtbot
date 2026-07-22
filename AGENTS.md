@@ -88,7 +88,11 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 - `WT_COOKIE` — чувствительная сессия warthunder.com.
 - `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` — фильтры Discord
   и автоанонса.
-- `WT_BATTLE_CACHE_MB`, `WT_GAME_DIR` — кэш изображений и путь к игре.
+- `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_GAME_DIR` — лимит,
+  повторное использование кэша изображений и путь к игре.
+- `WT_HEATMAP_AIR_AUTO_ZOOM`, `WT_HEATMAP_AIR_SHOW_GROUND_MAP`,
+  `WT_HEATMAP_AIR_SHOW_AIRFIELDS`, `WT_HEATMAP_AIR_SHOW_SPAWNS`,
+  `WT_HEATMAP_AIR_PADDING_PERCENT` — отображение авиационной карты.
 - `WT_WORKER_THREADS` — число CPU workers (1–8; по умолчанию до двух).
 - `ANTHROPIC_API_KEY` — только для `npm run analyze`; вызовы платные.
 

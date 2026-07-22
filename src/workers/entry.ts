@@ -67,6 +67,7 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
       dict: input.dict,
       mission: input.mission,
       mode: input.mode,
+      ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
       ...(input.teamIndex === undefined ? {} : { teamIndex: input.teamIndex }),
       seekers: new Map(input.assets.seekers),
       renderScale: input.scale,
@@ -136,6 +137,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
     results: input.results,
     events,
     dict: input.dict,
+    ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
   }
   const log = await rasterize(buildBattleLogSvg(shared, gameFont), fonts,)
   const heatmapGround = await rasterize(
