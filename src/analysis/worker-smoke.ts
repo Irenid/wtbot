@@ -10,6 +10,7 @@ import {
 import { workerResourcePlan } from '../runtime-options.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
+import { routePath } from '../wrpl/render-heatmap.js'
 
 const header: WrplHeader = {
   version: 1,
@@ -94,6 +95,34 @@ try {
 
   assert.equal(isWorkerPoolSchedulingError(new WorkerPoolError('queue', 'QUEUE_MEMORY')), true)
   assert.equal(isWorkerPoolSchedulingError(new WorkerPoolError('oversized', 'TASK_TOO_LARGE')), false)
+
+  assert.equal(
+    routePath([
+      { x: 0, y: 0, time: 0 },
+      { x: 20, y: 0, time: 1 },
+      { x: 20, y: 20, time: 2 },
+    ]),
+    'M0 0L13 0Q20 0 20 7L20 20',
+    'поворот маршрута не получил ограниченное скругление',
+  )
+  assert.equal(
+    routePath([
+      { x: 0, y: 0, time: 0 },
+      { x: 20, y: 0, time: 1 },
+      { x: 40, y: 0, time: 2 },
+    ]),
+    'M0 0L20 0L40 0',
+    'прямой маршрут не должен изгибаться',
+  )
+  assert.equal(
+    routePath([
+      { x: 0, y: 0, time: 0 },
+      { x: 20, y: 0, time: 1 },
+      { x: 0, y: 0, time: 2 },
+    ]),
+    'M0 0L20 0L0 0',
+    'резкий разворот маршрута должен оставаться явным',
+  )
 
   const malformed = transferableBuffer(Uint8Array.from([1, 2, 3, 4]))
   await assert.rejects(
