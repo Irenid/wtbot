@@ -7,7 +7,7 @@ import type {
 } from '../db/index.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
 import { parseComponentHashMaps } from './ecs.js'
-import { extractReplayEvents, type ReplayEvents } from './replay-events.js'
+import { extractReplayEvents, isValidReplayChatChannel, type ReplayEvents } from './replay-events.js'
 import {
   applyRealNames,
   parseReplayResults,
@@ -39,6 +39,7 @@ export async function parseBattleParts(
 ): Promise<ParsedBattle> {
   if (parts.length === 0) throw new Error('пустой список частей реплея')
   const header = parseWrplHeader(parts[0]!)
+  if (meta.gameVersion) header.gameVersion = meta.gameVersion
   let results: ReplayResults | null = null
   for (let i = parts.length - 1; i >= 0; i--) {
     const part = parts[i]!
@@ -53,6 +54,13 @@ export async function parseBattleParts(
 
   const events = extractReplayEvents(parts, parseComponentHashMaps(ecsHashesJson))
   roundEventsInPlace(events)
+  const slotByUserId = new Map(events.players.map((slot) => [slot.userId, slot]))
+  for (const player of results.players) {
+    const slot = slotByUserId.get(player.userId)
+    if (!slot) continue
+    player.slot = slot.slot
+    player.title = slot.title
+  }
   const battle = buildBattleInput(meta, header, results, events, levelSettingsOf(parts[0]!))
   return { header, results, battle, summary: summarizeEvents(events) }
 }
@@ -94,7 +102,9 @@ function buildBattleInput(
   events: ReplayEvents,
   missionSettings: string | null,
 ): BattleInput {
+  const slotByUserId = new Map(events.players.map((slot) => [slot.userId, slot]))
   const players: BattlePlayerInput[] = results.players.map((player) => {
+    const slot = slotByUserId.get(player.userId)
     const disconnected = player.name === '' || player.vehicles.length === 0
     const normalized = (value: number): number => (disconnected ? Math.max(value, 0) : value)
     return {
@@ -118,6 +128,9 @@ function buildBattleInput(
       vehicle: player.vehicles[0] ?? null,
       vehicles: player.vehicles,
       disconnected,
+      slot: slot?.slot ?? player.slot ?? null,
+      title: slot?.title || player.title || null,
+      autoSquad: disconnected ? null : player.autoSquad,
     }
   })
 
@@ -135,6 +148,7 @@ function buildBattleInput(
     timeMs: message.time,
     sender: message.sender,
     channel: message.channel,
+    channelValid: message.channelValid ?? isValidReplayChatChannel(message.channel),
     message: message.message,
   }))
 

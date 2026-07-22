@@ -236,6 +236,11 @@ export function initDb(dbPath: string): void {
       vehicle         TEXT,
       vehicles        TEXT    NOT NULL DEFAULT '[]',
       disconnected    INTEGER NOT NULL DEFAULT 0,
+      -- Метаданные слота из ECS. NULL означает, что старый реплей их не дал.
+      slot            INTEGER,
+      title           TEXT,
+      -- NULL для старых строк: false и «неизвестно» нельзя смешивать.
+      auto_squad      INTEGER,
       PRIMARY KEY (session_id, user_id)
     );
 
@@ -265,6 +270,7 @@ export function initDb(dbPath: string): void {
       time_ms    INTEGER NOT NULL,
       sender     TEXT    NOT NULL,
       channel    INTEGER NOT NULL,
+      channel_valid INTEGER NOT NULL DEFAULT 1,
       message    TEXT    NOT NULL
     );
 
@@ -298,9 +304,16 @@ export function initDb(dbPath: string): void {
   // существующей таблице бросает ошибку «duplicate column» — глушим её.
   for (const sql of [
     'ALTER TABLE battles ADD COLUMN mission_settings TEXT',
+    'ALTER TABLE battles ADD COLUMN game_version TEXT',
+    'ALTER TABLE battles ADD COLUMN player_count INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE battles ADD COLUMN kill_count INTEGER NOT NULL DEFAULT 0',
     "ALTER TABLE clan_rating_snapshots ADD COLUMN nick_base TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE voice_presence ADD COLUMN wt_nick_base TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE battle_players ADD COLUMN nick_base TEXT NOT NULL DEFAULT ''",
+    'ALTER TABLE battle_players ADD COLUMN slot INTEGER',
+    'ALTER TABLE battle_players ADD COLUMN title TEXT',
+    'ALTER TABLE battle_players ADD COLUMN auto_squad INTEGER',
+    'ALTER TABLE battle_chat ADD COLUMN channel_valid INTEGER NOT NULL DEFAULT 1',
   ]) {
     try {
       db.exec(sql)
@@ -338,6 +351,10 @@ export function initDb(dbPath: string): void {
       ELSE nick
     END
     WHERE nick_base = '';
+
+    UPDATE battle_chat
+    SET channel_valid = CASE WHEN channel BETWEEN 0 AND 3 THEN 1 ELSE 0 END
+    WHERE channel_valid <> CASE WHEN channel BETWEEN 0 AND 3 THEN 1 ELSE 0 END;
 
     CREATE INDEX IF NOT EXISTS idx_snapshots_nick_base
       ON clan_rating_snapshots (nick_base, id DESC);
@@ -1141,6 +1158,9 @@ export interface BattlePlayerInput {
   /** Все машины игрока */
   vehicles: string[]
   disconnected: boolean
+  slot: number | null
+  title: string | null
+  autoSquad: boolean | null
 }
 
 /** Убийство с координатами для записи в battle_kills */
@@ -1160,6 +1180,7 @@ export interface BattleChatInput {
   timeMs: number
   sender: string
   channel: number
+  channelValid?: boolean
   message: string
 }
 
@@ -1254,8 +1275,8 @@ export function saveBattle(b: BattleInput): void {
       INSERT INTO battle_players (
         session_id, user_id, nick, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
         ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
-        award_damage, team_kills, squad_id, vehicle, vehicles, disconnected
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        award_damage, team_kills, squad_id, vehicle, vehicles, disconnected, slot, title, auto_squad
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const p of b.players) {
       pStmt.run(
@@ -1263,6 +1284,7 @@ export function saveBattle(b: BattleInput): void {
         p.groundKills, p.navalKills,
         p.aiKills, p.aiGroundKills, p.assists, p.deaths, p.captureZone, p.damageZone, p.score,
         p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
+        p.slot, p.title, p.autoSquad === null ? null : (p.autoSquad ? 1 : 0),
       )
     }
 
@@ -1281,9 +1303,12 @@ export function saveBattle(b: BattleInput): void {
     }
 
     const cStmt = database.prepare(
-      'INSERT INTO battle_chat (session_id, time_ms, sender, channel, message) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO battle_chat (session_id, time_ms, sender, channel, channel_valid, message) VALUES (?, ?, ?, ?, ?, ?)',
     )
-    for (const m of b.chat) cStmt.run(b.sessionId, m.timeMs, m.sender, m.channel, m.message)
+    for (const m of b.chat) {
+      const valid = m.channelValid ?? isValidBattleChatChannel(m.channel)
+      cStmt.run(b.sessionId, m.timeMs, m.sender, m.channel, valid ? 1 : 0, m.message)
+    }
 
     database.exec('COMMIT')
   } catch (err) {
@@ -1295,10 +1320,20 @@ export function saveBattle(b: BattleInput): void {
 
 /** Номер победившей команды из разобранного боя (null — бой не разобран) */
 export function getBattleWinner(sessionId: string): number | null {
-  const row = getDb().prepare('SELECT team_won FROM battles WHERE session_id = ?').get(sessionId) as
-    | { team_won: number }
+  const row = getDb().prepare('SELECT NULLIF(team_won, 0) AS team_won FROM battles WHERE session_id = ?').get(sessionId) as
+    | { team_won: number | null }
     | undefined
-  return row ? row.team_won : null
+  return row?.team_won ?? null
+}
+
+/** Ноль в team_won означает, что победитель неизвестен. */
+export function isKnownBattleWinner(teamWon: number): boolean {
+  return Number.isFinite(teamWon) && teamWon !== 0
+}
+
+/** Допустимые значения канала чата: 0..3. */
+export function isValidBattleChatChannel(channel: number): boolean {
+  return Number.isInteger(channel) && channel >= 0 && channel <= 3
 }
 
 /** Сжатый blob событий боя (по десятичному id или hex) — null, если боя нет */
@@ -1322,7 +1357,12 @@ export interface BattleRow {
   start_time: number
   duration_sec: number
   end_time_ms: number
+  /** 0 означает «победитель неизвестен»; это не номер проигравшей команды. */
   team_won: number
+  winner_known: number
+  game_version: string | null
+  player_count: number
+  kill_count: number
   mission_settings: string | null
 }
 
@@ -1345,7 +1385,12 @@ export interface BattlePlayerRow {
   award_damage: number
   team_kills: number
   squad_id: number
+  vehicle: string | null
   vehicles: string
+  disconnected: number
+  slot: number | null
+  title: string | null
+  auto_squad: number | null
 }
 
 export interface BattleForRender {
@@ -1365,7 +1410,8 @@ export function getBattleSummaryForRender(sessionId: string): BattleSummaryForRe
     .prepare(`
       SELECT session_id, session_hex, mission_name, level, game_mode, battle_type,
              environment, status, start_time, duration_sec, end_time_ms, team_won,
-             mission_settings
+             CASE WHEN team_won <> 0 THEN 1 ELSE 0 END AS winner_known,
+             game_version, player_count, kill_count, mission_settings
       FROM battles WHERE session_id = ? OR session_hex = ?
     `)
     .get(sessionId, sessionId.toLowerCase()) as BattleRow | undefined
@@ -1375,7 +1421,8 @@ export function getBattleSummaryForRender(sessionId: string): BattleSummaryForRe
     .prepare(`
       SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
              ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
-             award_damage, team_kills, squad_id, vehicles
+             award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
+             slot, title, auto_squad
       FROM battle_players WHERE session_id = ?
     `)
     .all(battle.session_id) as unknown as BattlePlayerRow[]
@@ -1399,7 +1446,8 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
     .prepare(`
       SELECT session_id, session_hex, mission_name, level, game_mode, battle_type,
              environment, status, start_time, duration_sec, end_time_ms, team_won,
-             mission_settings, events_blob
+             CASE WHEN team_won <> 0 THEN 1 ELSE 0 END AS winner_known,
+             game_version, player_count, kill_count, mission_settings, events_blob
       FROM battles WHERE session_id = ? OR session_hex = ?
     `)
     .get(sessionId, sessionId.toLowerCase()) as (BattleRow & { events_blob: Uint8Array | null }) | undefined
@@ -1409,7 +1457,8 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
     .prepare(`
       SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
              ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
-             award_damage, team_kills, squad_id, vehicles
+             award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
+             slot, title, auto_squad
       FROM battle_players WHERE session_id = ?
     `)
     .all(battle.session_id) as unknown as BattlePlayerRow[]
