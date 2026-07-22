@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
@@ -9,13 +9,71 @@ import path from 'node:path'
 // не трогая остальной код.
 
 let db: DatabaseSync | null = null
+let insertVoicePresenceStatement: StatementSync | null = null
+let deleteVoicePresenceStatement: StatementSync | null = null
+let selectVoicePresenceStatement: StatementSync | null = null
+let selectPlayerRatingStatement: StatementSync | null = null
+let selectPlayerBattleStatsStatement: StatementSync | null = null
+let selectVoiceDashboardStatement: StatementSync | null = null
+let selectVoiceClanTagsStatement: StatementSync | null = null
+let selectCommandTotalStatement: StatementSync | null = null
+let selectCommandBreakdownStatement: StatementSync | null = null
+let selectItemTotalStatement: StatementSync | null = null
+let selectItemBreakdownStatement: StatementSync | null = null
+let selectIngestStatsStatement: StatementSync | null = null
+let selectDataVersionStatement: StatementSync | null = null
+let commandStatsCache: VersionedCache<CommandStats> | null = null
+let itemStatsCache: VersionedCache<ItemStats> | null = null
+let ingestStatsCache: VersionedCache<IngestStats> | null = null
+let lastDataVersion = 0
+let lastDataVersionAt = 0
+
+interface VersionedCache<T> {
+  dataVersion: number
+  value: T
+}
+
+function resetPreparedStatements(): void {
+  insertVoicePresenceStatement = null
+  deleteVoicePresenceStatement = null
+  selectVoicePresenceStatement = null
+  selectPlayerRatingStatement = null
+  selectPlayerBattleStatsStatement = null
+  selectVoiceDashboardStatement = null
+  selectVoiceClanTagsStatement = null
+  selectCommandTotalStatement = null
+  selectCommandBreakdownStatement = null
+  selectItemTotalStatement = null
+  selectItemBreakdownStatement = null
+  selectIngestStatsStatement = null
+  selectDataVersionStatement = null
+  commandStatsCache = null
+  itemStatsCache = null
+  ingestStatsCache = null
+  lastDataVersion = 0
+  lastDataVersionAt = 0
+}
 
 function getDb(): DatabaseSync {
   if (!db) throw new Error('БД не инициализирована — сначала вызови initDb()')
   return db
 }
 
+const DATA_VERSION_CACHE_MS = 1_000
+
+/** Версия меняется при commit из другого SQLite connection/process. */
+function getDataVersion(): number {
+  const now = Date.now()
+  if (lastDataVersionAt > 0 && now - lastDataVersionAt < DATA_VERSION_CACHE_MS) return lastDataVersion
+  selectDataVersionStatement ??= getDb().prepare('PRAGMA data_version')
+  const row = selectDataVersionStatement.get() as { data_version: number } | undefined
+  lastDataVersion = row?.data_version ?? lastDataVersion
+  lastDataVersionAt = now
+  return lastDataVersion
+}
+
 export function initDb(dbPath: string): void {
+  resetPreparedStatements()
   mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true })
   db = new DatabaseSync(dbPath)
   // WAL: запись не блокирует чтение — сайт отвечает, пока парсеры пишут
@@ -84,6 +142,7 @@ export function initDb(dbPath: string): void {
       id       INTEGER PRIMARY KEY AUTOINCREMENT,
       clan_tag TEXT    NOT NULL,
       nick     TEXT    NOT NULL,
+      nick_base TEXT   NOT NULL,
       rating   INTEGER NOT NULL,
       seen_at  INTEGER NOT NULL DEFAULT (unixepoch())
     );
@@ -104,6 +163,7 @@ export function initDb(dbPath: string): void {
       user_id      TEXT NOT NULL,
       display_name TEXT NOT NULL,
       wt_nick      TEXT NOT NULL,
+      wt_nick_base TEXT NOT NULL,
       joined_at    INTEGER NOT NULL DEFAULT (unixepoch()),
       PRIMARY KEY (guild_id, user_id)
     );
@@ -157,6 +217,7 @@ export function initDb(dbPath: string): void {
       session_id      TEXT    NOT NULL,
       user_id         TEXT    NOT NULL,
       nick            TEXT    NOT NULL,
+      nick_base       TEXT    NOT NULL,
       clan_tag        TEXT    NOT NULL DEFAULT '',
       team            INTEGER NOT NULL,
       kills           INTEGER NOT NULL DEFAULT 0,
@@ -235,16 +296,60 @@ export function initDb(dbPath: string): void {
 
   // Миграции для баз, созданных прошлой версией схемы: ADD COLUMN на уже
   // существующей таблице бросает ошибку «duplicate column» — глушим её.
-  for (const sql of ['ALTER TABLE battles ADD COLUMN mission_settings TEXT']) {
+  for (const sql of [
+    'ALTER TABLE battles ADD COLUMN mission_settings TEXT',
+    "ALTER TABLE clan_rating_snapshots ADD COLUMN nick_base TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE voice_presence ADD COLUMN wt_nick_base TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE battle_players ADD COLUMN nick_base TEXT NOT NULL DEFAULT ''",
+  ]) {
     try {
       db.exec(sql)
     } catch {
       // колонка уже есть — так и надо
     }
   }
+
+  // Старые строки нормализуются один раз. Исходный ник остаётся в прежней
+  // колонке, а индексированный base используется только для сопоставления.
+  db.exec(`
+    UPDATE clan_rating_snapshots
+    SET nick_base = CASE
+      WHEN lower(nick) LIKE '%@psn' AND length(nick) > 4 THEN substr(nick, 1, length(nick) - 4)
+      WHEN (lower(nick) LIKE '%@live' OR lower(nick) LIKE '%@epic') AND length(nick) > 5
+        THEN substr(nick, 1, length(nick) - 5)
+      ELSE nick
+    END
+    WHERE nick_base = '';
+
+    UPDATE voice_presence
+    SET wt_nick_base = CASE
+      WHEN lower(wt_nick) LIKE '%@psn' AND length(wt_nick) > 4 THEN substr(wt_nick, 1, length(wt_nick) - 4)
+      WHEN (lower(wt_nick) LIKE '%@live' OR lower(wt_nick) LIKE '%@epic') AND length(wt_nick) > 5
+        THEN substr(wt_nick, 1, length(wt_nick) - 5)
+      ELSE wt_nick
+    END
+    WHERE wt_nick_base = '';
+
+    UPDATE battle_players
+    SET nick_base = CASE
+      WHEN lower(nick) LIKE '%@psn' AND length(nick) > 4 THEN substr(nick, 1, length(nick) - 4)
+      WHEN (lower(nick) LIKE '%@live' OR lower(nick) LIKE '%@epic') AND length(nick) > 5
+        THEN substr(nick, 1, length(nick) - 5)
+      ELSE nick
+    END
+    WHERE nick_base = '';
+
+    CREATE INDEX IF NOT EXISTS idx_snapshots_nick_base
+      ON clan_rating_snapshots (nick_base, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_voice_nick_base
+      ON voice_presence (wt_nick_base);
+    CREATE INDEX IF NOT EXISTS idx_bp_nick_base
+      ON battle_players (nick_base);
+  `)
 }
 
 export function closeDb(): void {
+  resetPreparedStatements()
   db?.close()
   db = null
 }
@@ -260,16 +365,21 @@ export function recordCommandUse(command: string, guildId: string | null, userId
   getDb()
     .prepare('INSERT INTO command_usage (command, guild_id, user_id) VALUES (?, ?, ?)')
     .run(command, guildId, userId)
+  commandStatsCache = null
 }
 
 export function getCommandStats(): CommandStats {
-  const total = getDb()
-    .prepare('SELECT COUNT(*) AS count FROM command_usage')
-    .get() as { count: number } | undefined
-  const byCommand = getDb()
-    .prepare('SELECT command, COUNT(*) AS count FROM command_usage GROUP BY command ORDER BY count DESC')
-    .all() as unknown as { command: string; count: number }[]
-  return { total: total?.count ?? 0, byCommand }
+  const dataVersion = getDataVersion()
+  if (commandStatsCache?.dataVersion === dataVersion) return commandStatsCache.value
+  selectCommandTotalStatement ??= getDb().prepare('SELECT COUNT(*) AS count FROM command_usage')
+  selectCommandBreakdownStatement ??= getDb().prepare(
+    'SELECT command, COUNT(*) AS count FROM command_usage GROUP BY command ORDER BY count DESC',
+  )
+  const total = selectCommandTotalStatement.get() as { count: number } | undefined
+  const byCommand = selectCommandBreakdownStatement.all() as unknown as { command: string; count: number }[]
+  const value = { total: total?.count ?? 0, byCommand }
+  commandStatsCache = { dataVersion, value }
+  return value
 }
 
 // ---------- Результаты запусков парсеров ----------
@@ -414,6 +524,10 @@ export function saveItems(source: string, items: ParsedItem[]): SaveItemsResult 
     database.exec('ROLLBACK')
     throw err
   }
+  if (changed > 0) {
+    itemStatsCache = null
+    ingestStatsCache = null
+  }
   return { changed, unchanged: items.length - changed }
 }
 
@@ -431,13 +545,17 @@ export interface ItemStats {
 }
 
 export function getItemStats(): ItemStats {
-  const total = getDb()
-    .prepare('SELECT COUNT(*) AS count FROM items')
-    .get() as { count: number } | undefined
-  const bySource = getDb()
-    .prepare('SELECT source, COUNT(*) AS count FROM items GROUP BY source ORDER BY count DESC')
-    .all() as unknown as { source: string; count: number }[]
-  return { total: total?.count ?? 0, bySource }
+  const dataVersion = getDataVersion()
+  if (itemStatsCache?.dataVersion === dataVersion) return itemStatsCache.value
+  selectItemTotalStatement ??= getDb().prepare('SELECT COUNT(*) AS count FROM items')
+  selectItemBreakdownStatement ??= getDb().prepare(
+    'SELECT source, COUNT(*) AS count FROM items GROUP BY source ORDER BY count DESC',
+  )
+  const total = selectItemTotalStatement.get() as { count: number } | undefined
+  const bySource = selectItemBreakdownStatement.all() as unknown as { source: string; count: number }[]
+  const value = { total: total?.count ?? 0, bySource }
+  itemStatsCache = { dataVersion, value }
+  return value
 }
 
 /** Сохранённая запись вместе с результатом анализа (если он есть) */
@@ -663,13 +781,15 @@ export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string
     ORDER BY id DESC LIMIT 1
   `)
   const insertStmt = database.prepare(
-    'INSERT INTO clan_rating_snapshots (clan_tag, nick, rating) VALUES (?, ?, ?)',
+    'INSERT INTO clan_rating_snapshots (clan_tag, nick, nick_base, rating) VALUES (?, ?, ?, ?)',
   )
   database.exec('BEGIN IMMEDIATE')
   try {
     for (const r of ratings) {
       const last = lastStmt.get(clanTag, r.nick) as { rating: number } | undefined
-      if (last === undefined || last.rating !== r.rating) insertStmt.run(clanTag, r.nick, r.rating)
+      if (last === undefined || last.rating !== r.rating) {
+        insertStmt.run(clanTag, r.nick, normalizeWtNick(r.nick), r.rating)
+      }
     }
     database.exec('COMMIT')
   } catch (err) {
@@ -682,6 +802,11 @@ export interface ClanRating {
   rating: number
   /** Изменение с прошлого снимка; null — истории ещё нет */
   delta: number | null
+}
+
+/** Убирает известный платформенный суффикс, не меняя отображаемый ник. */
+function normalizeWtNick(nick: string): string {
+  return nick.replace(/@(psn|live|epic)$/i, '')
 }
 
 // ---------- Голосовые каналы Discord ----------
@@ -697,18 +822,48 @@ export interface VoicePresenceEntry {
   wtNick: string
 }
 
-/** Полный снимок голосовых каналов при старте бота — заменяет всё содержимое */
-export function syncVoicePresence(entries: VoicePresenceEntry[]): void {
+export interface VoicePresenceSyncResult {
+  updated: number
+  removed: number
+  unchanged: number
+}
+
+const voicePresenceKey = (entry: Pick<VoicePresenceEntry, 'guildId' | 'userId'>): string =>
+  `${entry.guildId}\0${entry.userId}`
+
+function sameVoicePresence(a: VoicePresenceRow, b: VoicePresenceEntry): boolean {
+  return (
+    a.guildName === b.guildName &&
+    a.channelId === b.channelId &&
+    a.channelName === b.channelName &&
+    a.displayName === b.displayName &&
+    a.wtNick === b.wtNick
+  )
+}
+
+/** Полный снимок голосовых каналов: записываются только отличия. */
+export function syncVoicePresence(entries: VoicePresenceEntry[]): VoicePresenceSyncResult {
+  const next = new Map(entries.map((entry) => [voicePresenceKey(entry), entry]))
+  const current = new Map(getVoicePresence().map((entry) => [voicePresenceKey(entry), entry]))
+  const changed = [...next].filter(([key, entry]) => {
+    const previous = current.get(key)
+    return previous === undefined || !sameVoicePresence(previous, entry)
+  })
+  const removed = [...current].filter(([key]) => !next.has(key))
+  const unchanged = next.size - changed.length
+  if (changed.length === 0 && removed.length === 0) return { updated: 0, removed: 0, unchanged }
+
   const database = getDb()
   database.exec('BEGIN IMMEDIATE')
   try {
-    database.exec('DELETE FROM voice_presence')
-    for (const e of entries) insertVoiceStmt(e)
+    for (const [, entry] of changed) insertVoiceStmt(entry)
+    for (const [, entry] of removed) removeVoicePresence(entry.guildId, entry.userId)
     database.exec('COMMIT')
   } catch (err) {
     database.exec('ROLLBACK')
     throw err
   }
+  return { updated: changed.length, removed: removed.length, unchanged }
 }
 
 /** Игрок зашёл в канал или перешёл между каналами */
@@ -717,15 +872,17 @@ export function upsertVoicePresence(e: VoicePresenceEntry): void {
 }
 
 function insertVoiceStmt(e: VoicePresenceEntry): void {
-  getDb()
-    .prepare(`
-      INSERT INTO voice_presence (guild_id, guild_name, channel_id, channel_name, user_id, display_name, wt_nick)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+  insertVoicePresenceStatement ??= getDb().prepare(`
+      INSERT INTO voice_presence (
+        guild_id, guild_name, channel_id, channel_name, user_id, display_name, wt_nick, wt_nick_base
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (guild_id, user_id) DO UPDATE SET
         guild_name = excluded.guild_name,
         channel_name = excluded.channel_name,
         display_name = excluded.display_name,
         wt_nick = excluded.wt_nick,
+        wt_nick_base = excluded.wt_nick_base,
         -- время захода сохраняется, если человек остался в том же канале
         joined_at = CASE
           WHEN voice_presence.channel_id <> excluded.channel_id THEN unixepoch()
@@ -733,26 +890,40 @@ function insertVoiceStmt(e: VoicePresenceEntry): void {
         END,
         channel_id = excluded.channel_id
     `)
-    .run(e.guildId, e.guildName, e.channelId, e.channelName, e.userId, e.displayName, e.wtNick)
+  insertVoicePresenceStatement.run(
+    e.guildId,
+    e.guildName,
+    e.channelId,
+    e.channelName,
+    e.userId,
+    e.displayName,
+    e.wtNick,
+    normalizeWtNick(e.wtNick),
+  )
 }
 
 export function removeVoicePresence(guildId: string, userId: string): void {
-  getDb().prepare('DELETE FROM voice_presence WHERE guild_id = ? AND user_id = ?').run(guildId, userId)
+  deleteVoicePresenceStatement ??= getDb().prepare(
+    'DELETE FROM voice_presence WHERE guild_id = ? AND user_id = ?',
+  )
+  deleteVoicePresenceStatement.run(guildId, userId)
 }
 
 export interface VoicePresenceRow extends VoicePresenceEntry {
+  wtNickBase: string
   joinedAt: number
 }
 
 /** Кто сейчас в голосовых каналах — для /api/voice */
 export function getVoicePresence(): VoicePresenceRow[] {
-  const rows = getDb()
-    .prepare(`
-      SELECT guild_id, guild_name, channel_id, channel_name, user_id, display_name, wt_nick, joined_at
+  selectVoicePresenceStatement ??= getDb().prepare(`
+      SELECT
+        guild_id, guild_name, channel_id, channel_name, user_id, display_name,
+        wt_nick, wt_nick_base, joined_at
       FROM voice_presence
       ORDER BY guild_id, channel_id, joined_at
     `)
-    .all() as unknown as {
+  const rows = selectVoicePresenceStatement.all() as unknown as {
     guild_id: string
     guild_name: string
     channel_id: string
@@ -760,6 +931,7 @@ export function getVoicePresence(): VoicePresenceRow[] {
     user_id: string
     display_name: string
     wt_nick: string
+    wt_nick_base: string
     joined_at: number
   }[]
   return rows.map((r) => ({
@@ -770,28 +942,125 @@ export function getVoicePresence(): VoicePresenceRow[] {
     userId: r.user_id,
     displayName: r.display_name,
     wtNick: r.wt_nick,
+    wtNickBase: r.wt_nick_base,
     joinedAt: r.joined_at,
   }))
 }
 
+export interface VoiceDashboardRow extends VoicePresenceRow {
+  clanTag: string | null
+  rating: number | null
+  delta: number | null
+  battles: number
+  lastBattleAt: number | null
+}
+
+/** Полный snapshot для /api/voice одним подготовленным SQLite-запросом. */
+export function getVoiceDashboardRows(): VoiceDashboardRow[] {
+  selectVoiceDashboardStatement ??= getDb().prepare(`
+    WITH battle_stats AS (
+      SELECT bp.nick_base, COUNT(*) AS battles, MAX(b.start_time) AS last_battle_at
+      FROM battle_players bp
+      JOIN battles b ON b.session_id = bp.session_id
+      WHERE bp.nick_base IN (SELECT wt_nick_base FROM voice_presence)
+      GROUP BY bp.nick_base
+    )
+    SELECT
+      v.guild_id,
+      v.guild_name,
+      v.channel_id,
+      v.channel_name,
+      v.user_id,
+      v.display_name,
+      v.wt_nick,
+      v.wt_nick_base,
+      v.joined_at,
+      latest.clan_tag,
+      latest.rating,
+      previous.clan_tag AS previous_clan_tag,
+      previous.rating AS previous_rating,
+      COALESCE(bs.battles, 0) AS battles,
+      bs.last_battle_at
+    FROM voice_presence v
+    LEFT JOIN clan_rating_snapshots latest ON latest.id = (
+      SELECT s.id FROM clan_rating_snapshots s
+      WHERE s.nick_base = v.wt_nick_base
+      ORDER BY s.id DESC LIMIT 1
+    )
+    LEFT JOIN clan_rating_snapshots previous ON previous.id = (
+      SELECT s.id FROM clan_rating_snapshots s
+      WHERE s.nick_base = v.wt_nick_base
+      ORDER BY s.id DESC LIMIT 1 OFFSET 1
+    )
+    LEFT JOIN battle_stats bs ON bs.nick_base = v.wt_nick_base
+    ORDER BY v.guild_id, v.channel_id, v.joined_at
+  `)
+  const rows = selectVoiceDashboardStatement.all() as unknown as {
+    guild_id: string
+    guild_name: string
+    channel_id: string
+    channel_name: string
+    user_id: string
+    display_name: string
+    wt_nick: string
+    wt_nick_base: string
+    joined_at: number
+    clan_tag: string | null
+    rating: number | null
+    previous_clan_tag: string | null
+    previous_rating: number | null
+    battles: number
+    last_battle_at: number | null
+  }[]
+  return rows.map((row) => ({
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    userId: row.user_id,
+    displayName: row.display_name,
+    wtNick: row.wt_nick,
+    wtNickBase: row.wt_nick_base,
+    joinedAt: row.joined_at,
+    clanTag: row.clan_tag,
+    rating: row.rating,
+    delta:
+      row.rating !== null && row.previous_rating !== null && row.previous_clan_tag === row.clan_tag
+        ? row.rating - row.previous_rating
+        : null,
+    battles: row.battles,
+    lastBattleAt: row.last_battle_at,
+  }))
+}
+
+/** Кланы активных voice-игроков одним индексированным запросом. */
+export function getVoiceClanTags(): string[] {
+  selectVoiceClanTagsStatement ??= getDb().prepare(`
+    SELECT DISTINCT latest.clan_tag AS clan_tag
+    FROM (SELECT DISTINCT wt_nick_base FROM voice_presence) active
+    JOIN clan_rating_snapshots latest ON latest.id = (
+      SELECT s.id FROM clan_rating_snapshots s
+      WHERE s.nick_base = active.wt_nick_base
+      ORDER BY s.id DESC LIMIT 1
+    )
+    WHERE latest.clan_tag <> ''
+    ORDER BY latest.clan_tag
+  `)
+  const rows = selectVoiceClanTagsStatement.all() as unknown as { clan_tag: string }[]
+  return rows.map((row) => row.clan_tag)
+}
+
 /** ПКР игрока по нику: последний снимок любого его клана (+дельта в рамках клана) */
 export function getPlayerRating(nick: string): (ClanRating & { clanTag: string }) | null {
-  const stmt = getDb().prepare(`
+  selectPlayerRatingStatement ??= getDb().prepare(`
     SELECT clan_tag, rating FROM clan_rating_snapshots
-    WHERE nick = ?
+    WHERE nick_base = ?
     ORDER BY id DESC LIMIT 2
   `)
-  let rows = stmt.all(nick) as unknown as { clan_tag: string; rating: number }[]
-  if (rows.length === 0) {
-    // консольные игроки на странице клана могут быть с суффиксом ника (@psn/@live)
-    rows = getDb()
-      .prepare(`
-        SELECT clan_tag, rating FROM clan_rating_snapshots
-        WHERE nick LIKE ? ESCAPE '\\'
-        ORDER BY id DESC LIMIT 2
-      `)
-      .all(escapeLike(nick) + '@%') as unknown as { clan_tag: string; rating: number }[]
-  }
+  const rows = selectPlayerRatingStatement.all(normalizeWtNick(nick)) as unknown as {
+    clan_tag: string
+    rating: number
+  }[]
   const last = rows[0]
   if (!last) return null
   const prev = rows[1]
@@ -804,25 +1073,19 @@ export function getPlayerRating(nick: string): (ClanRating & { clanTag: string }
 
 /**
  * Сколько клановых боёв игрока разобрано и когда был последний.
- * Читает из battle_players по индексу idx_bp_nick — мгновенно и не зависит
- * от размера базы (раньше был LIKE-скан всех JSON-блобов в items).
- * Консольный ник на клановой странице бывает с суффиксом (@psn/@live),
- * поэтому ловим и «ник», и «ник@…».
+ * Читает индексированный base nick: платформенный суффикс не вызывает LIKE-скан.
  */
 export function getPlayerBattleStats(nick: string): { battles: number; lastBattleAt: number | null } {
-  const row = getDb()
-    .prepare(`
+  selectPlayerBattleStatsStatement ??= getDb().prepare(`
       SELECT COUNT(*) AS battles, MAX(b.start_time) AS last
       FROM battle_players bp
       JOIN battles b ON b.session_id = bp.session_id
-      WHERE bp.nick = ? OR bp.nick LIKE ? ESCAPE '\\'
+      WHERE bp.nick_base = ?
     `)
-    .get(nick, escapeLike(nick) + '@%') as { battles: number; last: number | null } | undefined
+  const row = selectPlayerBattleStatsStatement.get(normalizeWtNick(nick)) as
+    | { battles: number; last: number | null }
+    | undefined
   return { battles: row?.battles ?? 0, lastBattleAt: row?.last ?? null }
-}
-
-function escapeLike(s: string): string {
-  return s.replace(/[\\%_]/g, (ch) => '\\' + ch)
 }
 
 /** Текущий ПКР и дельта по каждому нику клана (по двум последним снимкам) */
@@ -984,14 +1247,15 @@ export function saveBattle(b: BattleInput): void {
 
     const pStmt = database.prepare(`
       INSERT INTO battle_players (
-        session_id, user_id, nick, clan_tag, team, kills, ground_kills, naval_kills,
+        session_id, user_id, nick, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
         ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
         award_damage, team_kills, squad_id, vehicle, vehicles, disconnected
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const p of b.players) {
       pStmt.run(
-        b.sessionId, p.userId, p.nick, p.clanTag, p.team, p.kills, p.groundKills, p.navalKills,
+        b.sessionId, p.userId, p.nick, normalizeWtNick(p.nick), p.clanTag, p.team, p.kills,
+        p.groundKills, p.navalKills,
         p.aiKills, p.aiGroundKills, p.assists, p.deaths, p.captureZone, p.damageZone, p.score,
         p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
       )
@@ -1021,6 +1285,7 @@ export function saveBattle(b: BattleInput): void {
     database.exec('ROLLBACK')
     throw err
   }
+  ingestStatsCache = null
 }
 
 /** Номер победившей команды из разобранного боя (null — бой не разобран) */
@@ -1165,6 +1430,7 @@ export function markBattleIngest(sessionId: string, status: BattleIngestStatus, 
         updated_at = unixepoch()
     `)
     .run(sessionId, status, error)
+  ingestStatsCache = null
 }
 
 /** Статус разбора боя (null — ещё не брались) — для решения автоанонса «ждать или пропустить» */
@@ -1209,22 +1475,41 @@ export interface IngestStats {
 }
 
 export function getIngestStats(): IngestStats {
-  const db2 = getDb()
-  const ingested = (db2.prepare('SELECT COUNT(*) AS c FROM battles').get() as { c: number }).c
-  const total = (db2.prepare("SELECT COUNT(*) AS c FROM items WHERE source = 'wt-replays'").get() as { c: number }).c
-  const failed = (
-    db2
-      .prepare("SELECT COUNT(*) AS c FROM battle_ingest WHERE status IN ('error', 'expired', 'no_parts')")
-      .get() as { c: number }
-  ).c
-  const skipped = (
-    db2.prepare("SELECT COUNT(*) AS c FROM battle_ingest WHERE status IN ('expired', 'no_parts')").get() as {
-      c: number
-    }
-  ).c
-  const players = (db2.prepare('SELECT COUNT(*) AS c FROM battle_players').get() as { c: number }).c
-  const kills = (db2.prepare('SELECT COUNT(*) AS c FROM battle_kills').get() as { c: number }).c
-  return { ingested, pending: Math.max(0, total - ingested - skipped), failed, players, kills }
+  const dataVersion = getDataVersion()
+  if (ingestStatsCache?.dataVersion === dataVersion) return ingestStatsCache.value
+  selectIngestStatsStatement ??= getDb().prepare(`
+    WITH ingest_state AS (
+      SELECT
+        COALESCE(SUM(CASE WHEN status IN ('error', 'expired', 'no_parts') THEN 1 ELSE 0 END), 0) AS failed,
+        COALESCE(SUM(CASE WHEN status IN ('expired', 'no_parts') THEN 1 ELSE 0 END), 0) AS skipped
+      FROM battle_ingest
+    )
+    SELECT
+      (SELECT COUNT(*) FROM battles) AS ingested,
+      (SELECT COUNT(*) FROM items WHERE source = 'wt-replays') AS total,
+      ingest_state.failed,
+      ingest_state.skipped,
+      (SELECT COUNT(*) FROM battle_players) AS players,
+      (SELECT COUNT(*) FROM battle_kills) AS kills
+    FROM ingest_state
+  `)
+  const row = selectIngestStatsStatement.get() as {
+    ingested: number
+    total: number
+    failed: number
+    skipped: number
+    players: number
+    kills: number
+  }
+  const value = {
+    ingested: row.ingested,
+    pending: Math.max(0, row.total - row.ingested - row.skipped),
+    failed: row.failed,
+    players: row.players,
+    kills: row.kills,
+  }
+  ingestStatsCache = { dataVersion, value }
+  return value
 }
 
 

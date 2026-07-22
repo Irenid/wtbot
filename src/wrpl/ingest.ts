@@ -26,22 +26,35 @@ import { realNamesFromItem, replayPartUrls } from './replay.js'
  * первыми: их части точно ещё живы на CDN.
  */
 
-/** Сколько боёв разбирать за один тик */
-const BATCH = 2
+/** Две волны поддерживают рассчитанную загрузку CPU без вечного захвата backlog. */
+const BATCH_MULTIPLIER = 2
 /** Как часто просыпаться */
 const TICK_MS = 20_000
 /** Сколько раз повторять разбор боя при временных ошибках, прежде чем сдаться */
 export const INGEST_MAX_ATTEMPTS = 3
-/** Пауза между боями внутри тика — вежливость к CDN */
+/** Минимальный интервал между стартами загрузки разных боёв — вежливость к CDN. */
 const PAUSE_MS = 500
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const sleep = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
+  if (signal.aborted) {
+    resolve()
+    return
+  }
+  const done = (): void => {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', done)
+    resolve()
+  }
+  const timer = setTimeout(done, ms)
+  signal.addEventListener('abort', done, { once: true })
+})
 
 let timer: NodeJS.Timeout | null = null
 let busy = false
 let stopping = false
 let activeTick: Promise<void> | null = null
 let currentAbort: AbortController | null = null
+let ingestConcurrency = 1
 /** Логируем размер бэклога один раз, чтобы не спамить в консоль каждый тик */
 let backlogLogged = false
 
@@ -107,13 +120,43 @@ async function ingestOne(
   }
 }
 
+/**
+ * Загружает независимые бои параллельно, но разносит старты CDN-запросов.
+ * SQLite commit остаётся последовательным в main thread, а тяжёлый WRPL-
+ * разбор ограничивает общий CPU pool.
+ */
+async function ingestBatch(items: StoredItem[], concurrency: number, signal: AbortSignal): Promise<void> {
+  let nextIndex = 0
+  let nextStartAt = Date.now()
+  const waitForStartSlot = async (): Promise<void> => {
+    const now = Date.now()
+    const startAt = Math.max(now, nextStartAt)
+    nextStartAt = startAt + PAUSE_MS
+    const delay = startAt - now
+    if (delay > 0) await sleep(delay, signal)
+  }
+  const runner = async (): Promise<void> => {
+    while (!signal.aborted && !stopping) {
+      const item = items[nextIndex++]
+      if (!item) return
+      await waitForStartSlot()
+      if (signal.aborted || stopping) return
+      await ingestOne(item, signal)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => runner()),
+  )
+}
+
 async function tick(): Promise<void> {
   if (busy || stopping) return
   busy = true
   const controller = new AbortController()
   currentAbort = controller
   try {
-    const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, BATCH)
+    const concurrency = ingestConcurrency
+    const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, concurrency * BATCH_MULTIPLIER)
     if (pending.length === 0) return
 
     if (!backlogLogged) {
@@ -122,12 +165,7 @@ async function tick(): Promise<void> {
       if (s.pending > 0) console.log(`[ingest] в очереди на разбор: ${s.pending} боёв (уже разобрано ${s.ingested})`)
     }
 
-    for (let i = 0; i < pending.length; i++) {
-      if (controller.signal.aborted || stopping) break
-      if (i > 0) await sleep(PAUSE_MS)
-      if (controller.signal.aborted || stopping) break
-      await ingestOne(pending[i]!, controller.signal)
-    }
+    await ingestBatch(pending, concurrency, controller.signal)
   } catch (err) {
     console.error(`[ingest] сбой тика: ${(err as Error).message}`)
   } finally {
@@ -136,10 +174,14 @@ async function tick(): Promise<void> {
   }
 }
 
-export function startIngestWorker(): void {
+export function startIngestWorker(concurrency = 1): void {
   stopping = false
+  ingestConcurrency = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1
   const s = getIngestStats()
-  console.log(`[ingest] воркер запущен · разобрано боёв: ${s.ingested}, в очереди: ${s.pending}`)
+  console.log(
+    `[ingest] воркер запущен · разобрано боёв: ${s.ingested}, в очереди: ${s.pending}` +
+      ` · параллельность ${ingestConcurrency}`,
+  )
   scheduleTick()
   timer = setInterval(scheduleTick, TICK_MS)
   timer.unref()

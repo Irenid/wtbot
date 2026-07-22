@@ -5,6 +5,7 @@ import type { BattleImageInput } from '../wrpl/render-battle.js'
 import type { MapImageViewport, MissileSeeker } from '../wrpl/battle-assets.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
 import type { BattleItemMeta } from '../wrpl/battle-transform.js'
+import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -71,6 +72,46 @@ export interface MediaRenderInput {
   }
 }
 
+export interface MediaKindRenderInput extends MediaRenderInput {
+  kind: BattleMediaKind
+}
+
+export interface WorkerMemorySnapshot {
+  rssBytes: number
+  heapUsedBytes: number
+  externalBytes: number
+  arrayBuffersBytes: number
+}
+
+export interface WorkerRenderFontProfile {
+  loadSystemFonts: boolean
+  defaultFamily: string
+  source:
+    | 'win32-segoe-ui'
+    | 'win32-arial'
+    | 'linux-dejavu-sans'
+    | 'linux-liberation-sans'
+    | 'linux-noto-sans'
+    | 'darwin-arial'
+    | 'system-fallback'
+  uiFileCount: number
+  scriptFileCount: number
+  customFileCount: number
+  missingScriptFallback: boolean
+}
+
+/** Профиль формируется внутри worker, поэтому не включает ожидание в очереди. */
+export interface WorkerRenderProfile {
+  totalMs: number
+  phasesMs: Record<string, number>
+  font?: WorkerRenderFontProfile
+  memory: {
+    start: WorkerMemorySnapshot
+    peakObserved: WorkerMemorySnapshot
+    end: WorkerMemorySnapshot
+  }
+}
+
 export interface HeatmapRenderInput extends MediaRenderInput {
   mode: 'ground' | 'air'
   teamIndex?: number
@@ -85,6 +126,13 @@ export interface RenderedMediaResult {
   heatmapTeamAir: [ArrayBuffer, ArrayBuffer]
   chat: string
   summary: BattleEventSummary
+  profile: WorkerRenderProfile
+}
+
+export interface RenderedMediaKindResult {
+  media: ArrayBuffer | string
+  summary: BattleEventSummary
+  profile: WorkerRenderProfile
 }
 
 export interface WorkerTaskMap {
@@ -103,6 +151,10 @@ export interface WorkerTaskMap {
   'render-media': {
     input: MediaRenderInput
     output: RenderedMediaResult
+  }
+  'render-media-kind': {
+    input: MediaKindRenderInput
+    output: RenderedMediaKindResult
   }
   'render-heatmap': {
     input: HeatmapRenderInput
@@ -134,6 +186,7 @@ export type WorkerTaskResult<K extends WorkerTaskKind> = WorkerTaskMap[K]['outpu
 export interface WorkerRequest {
   id: number
   task: AnyWorkerTask
+  sentAtMs: number
 }
 
 export interface SerializedWorkerError {
@@ -142,8 +195,13 @@ export interface SerializedWorkerError {
   stack?: string | undefined
 }
 
+export interface WorkerTransportTiming {
+  receivedAtMs: number
+  completedAtMs: number
+}
+
 export type WorkerResponse =
-  | { id: number; ok: true; value: unknown; transfer?: ArrayBuffer[] | undefined }
-  | { id: number; ok: false; error: SerializedWorkerError }
+  | { id: number; ok: true; value: unknown; timing: WorkerTransportTiming; transfer?: ArrayBuffer[] | undefined }
+  | { id: number; ok: false; error: SerializedWorkerError; timing: WorkerTransportTiming }
 
 export type WorkerMessage = { type: 'ready' } | { type: 'result'; response: WorkerResponse }

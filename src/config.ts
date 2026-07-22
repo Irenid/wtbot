@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { workerThreadCount } from './runtime-options.js'
+import { workerResourcePlan } from './runtime-options.js'
 
 function required(name: string): string {
   const value = process.env[name]
@@ -24,6 +24,8 @@ function envNumber(name: string, fallback: number, min: number, max: number): nu
   }
   return parsed
 }
+
+const workers = workerResourcePlan()
 
 export const config = {
   /** Токен Discord-бота (Developer Portal → Bot → Reset Token) */
@@ -62,8 +64,10 @@ export const config = {
     airShowSpawns: envBoolean('WT_HEATMAP_AIR_SHOW_SPAWNS', true),
     airPaddingPercent: envNumber('WT_HEATMAP_AIR_PADDING_PERCENT', 6, 0, 50),
   },
-  /** CPU workers для WRPL/zlib/Resvg; 1–8, по умолчанию min(2, CPU−1) */
-  workerThreads: workerThreadCount(),
+  /** Автоматический CPU/RAM-бюджет для тяжёлых worker_threads. */
+  workerResources: workers,
+  /** Фактическая верхняя граница CPU workers. */
+  workerThreads: workers.workerThreads,
   /** Фоновый ingest .wrpl и автоанонс; флаг CLI удобен для облегчённого запуска бота. */
   battleBackgroundEnabled: !process.argv.includes('--no-battle-background'),
 }
