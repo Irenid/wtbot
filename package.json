@@ -16,6 +16,9 @@
     "backfill": "tsx src/parsers/backfill.ts",
     "verify:workers": "tsx src/analysis/worker-smoke.ts",
     "verify:workers:dist": "node dist/analysis/worker-smoke.js",
+    "verify:player-stats": "tsx src/analysis/player-stats-smoke.ts",
+    "verify:player-stats-provider": "tsx src/analysis/player-stats-provider-smoke.ts",
+    "verify:player-stats-api": "tsx src/analysis/player-stats-api-smoke.ts",
     "benchmark:workers": "tsx src/analysis/worker-replay-check.ts",
     "benchmark:replay": "node --expose-gc --import tsx src/analysis/replay-download-benchmark.ts",
     "benchmark:voice": "tsx src/analysis/voice-api-benchmark.ts"

@@ -24,6 +24,7 @@ import {
 } from '../db/index.js'
 import { buildServer } from '../web/index.js'
 import { decorateTag } from '../wrpl/render-battle.js'
+import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
 
 const DEFAULT_RUNS = 100
 const WARMUP_RUNS = 10
@@ -301,6 +302,7 @@ const app = buildServer({
     await new Promise<void>((resolve) => setTimeout(resolve, 10))
     return { players: 0, clans: 0 }
   },
+  playerStats: new PlayerStatsCoordinator({ externalService: null }),
 })
 app.get('/benchmark/voice-n-plus-one', async () => legacyVoicePayload())
 

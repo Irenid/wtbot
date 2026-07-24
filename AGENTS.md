@@ -95,6 +95,9 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 - `WT_COOKIE` — чувствительная сессия warthunder.com.
 - `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` — фильтры Discord
   и автоанонса.
+- `WT_PLAYER_STATS_ENABLED` — включает ленивое получение account-статистики
+  локально известных игроков через публичный ThunderInsights API; replay-
+  статистика из SQLite доступна и при `false`.
 - `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_GAME_DIR` — лимит,
   повторное использование кэша изображений и путь к игре.
 - `WT_HEATMAP_AIR_AUTO_ZOOM`, `WT_HEATMAP_AIR_SHOW_GROUND_MAP`,
@@ -127,6 +130,9 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 
 ```bash
 npm run build             # обязательная статическая проверка TypeScript
+npm run verify:player-stats # SQLite smoke replay/identity/snapshots
+npm run verify:player-stats-provider # fixture-smoke provider, TTL и stale fallback
+npm run verify:player-stats-api # Fastify inject smoke API/dashboard/rate limit
 npm run verify:workers    # безопасный source-smoke CPU pool + Resvg
 npm run verify:workers:dist # тот же smoke после build, из dist
 npm run benchmark:workers -- data/replays/<sid> [--render] [--kind=heatmap-air] [--json=data/benchmarks/result.json] # локальный WRPL/PNG без сети/БД
@@ -303,6 +309,11 @@ Discord client, закрывается CPU pool и последней — БД. 
   дельта появляется со второго снимка конкретного игрока.
 - Dashboard — одна HTML-строка в `pages.ts`; пользовательские данные вставляй
   через DOM `textContent`, не через `innerHTML`.
+- `/api/player-stats` принимает только точный полный ник или стабильный WT user
+  id уже известного локальным replay/voice/rating данным игрока. Внешний запрос
+  выполняется однослотовой lazy-очередью, кэшируется на 24 часа и защищён
+  schema validation и локальным rate limit; account и replay coverage не
+  суммируются в одну выборку.
 
 ## Ручной AI-анализ
 

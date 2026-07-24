@@ -34,6 +34,16 @@ const dashboardHtml = `<!doctype html>
          padding: 4px 14px; font-size: 12px; cursor: pointer; text-transform: none; letter-spacing: 0; }
   .btn:hover { background: #414868; }
   .btn:disabled { opacity: 0.5; cursor: default; }
+  .player-form { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 8px; margin-bottom: 12px; }
+  .input, .select { width: 100%; background: #1a1b26; border: 1px solid #414868; color: #c0caf5;
+                    border-radius: 8px; padding: 8px 10px; font: inherit; }
+  .player-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 12px; }
+  .player-section { min-width: 0; }
+  .player-section h3 { color: #7aa2f7; font-size: 14px; margin-bottom: 6px; }
+  .player-link { color: #7aa2f7; cursor: pointer; }
+  .player-link:hover { text-decoration: underline; }
+  .notice { padding: 10px 12px; border-radius: 8px; background: #1f2335; margin-top: 10px; }
+  @media (max-width: 620px) { .player-form { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -41,6 +51,22 @@ const dashboardHtml = `<!doctype html>
   <h1>wtbot</h1>
   <div class="sub">Панель управления — обновляется каждые 10 секунд</div>
   <div class="grid">
+    <div class="card full" id="player-stats-card">
+      <h2>Статистика игрока War Thunder</h2>
+      <form id="player-stats-form" class="player-form">
+        <input id="player-stats-query" class="input" name="player" maxlength="64"
+               autocomplete="off" placeholder="Точный ник или WT user id" required>
+        <select id="player-stats-period" class="select" aria-label="Период локальных реплеев">
+          <option value="0">Все реплеи</option>
+          <option value="7">7 дней</option>
+          <option value="30">30 дней</option>
+          <option value="90">90 дней</option>
+        </select>
+        <button id="player-stats-submit" class="btn" type="submit">Получить</button>
+      </form>
+      <div id="player-stats-status" class="muted small">Игрок должен уже встречаться в реплеях, voice-снимке или рейтингах.</div>
+      <div id="player-stats-result"></div>
+    </div>
     <div class="card">
       <h2>Бот</h2>
       <div class="big"><span id="bot-dot" class="dot off"></span><span id="bot-tag">загрузка…</span></div>
@@ -95,6 +121,9 @@ function voicePlayerRow(p) {
   div.className = 'row';
   const left = document.createElement('span');
   left.textContent = p.displayName.includes('(') ? p.displayName : p.wtNick;
+  left.className = 'player-link';
+  left.title = 'Открыть статистику ' + p.wtNick;
+  left.addEventListener('click', function () { beginPlayerLookup(p.wtNick); });
   const right = document.createElement('span');
   right.className = 'muted';
   if (p.rating !== null) {
@@ -138,6 +167,211 @@ function itemRow(it) {
   div.append(left, right);
   return div;
 }
+function fmtTimestamp(value) {
+  return value === null ? '—' : new Date(value * 1000).toLocaleString('ru');
+}
+function fmtPercent(value) {
+  return value === null ? '—' : (value * 100).toFixed(1) + '%';
+}
+function fmtMetric(value) {
+  return value === null || value === undefined ? '—' : Number(value).toLocaleString('ru');
+}
+function fmtDelta(value) {
+  if (value === null || value === undefined) return '';
+  return ' (Δ ' + (value > 0 ? '+' : '') + value.toLocaleString('ru') + ')';
+}
+function playerSection(title, rows) {
+  const section = document.createElement('section');
+  section.className = 'player-section';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  section.appendChild(heading);
+  rows.forEach(function (entry) { section.appendChild(entry); });
+  return section;
+}
+function accountStateLabel(state) {
+  const labels = {
+    fresh: 'свежий кэш', stale: 'устаревший кэш', pending: 'загрузка', empty: 'нет снимка',
+    disabled: 'отключено', disabled_cached: 'отключено, показан кэш', private: 'профиль закрыт',
+    not_found: 'не найден', rate_limited: 'лимит provider-а', schema_error: 'изменилась схема', error: 'ошибка'
+  };
+  return labels[state] || state;
+}
+function accountVehicleText(vehicle, delta) {
+  const dimensions = [vehicle.gameType, vehicle.mode].filter(Boolean).join(' / ');
+  const kills = [vehicle.airKills, vehicle.groundKills, vehicle.navalKills]
+    .filter(function (value) { return value !== null; })
+    .reduce(function (sum, value) { return sum + value; }, 0);
+  const hasKills = vehicle.airKills !== null || vehicle.groundKills !== null || vehicle.navalKills !== null;
+  return (dimensions ? dimensions + ' · ' : '')
+    + 'вылеты ' + fmtMetric(vehicle.flyouts) + fmtDelta(delta && delta.flyouts)
+    + ' · победы ' + fmtMetric(vehicle.victories) + fmtDelta(delta && delta.victories)
+    + ' · уничтожено ' + (hasKills ? fmtMetric(kills) : '—');
+}
+function renderPlayerStats(stats) {
+  const root = document.getElementById('player-stats-result');
+  const title = document.createElement('div');
+  title.className = 'big';
+  title.textContent = stats.player.nick + (stats.player.wtUserId ? ' · ID ' + stats.player.wtUserId : '');
+
+  const columns = document.createElement('div');
+  columns.className = 'player-columns';
+
+  const accountRows = [
+    row('состояние', accountStateLabel(stats.account.state), stats.account.state === 'fresh' ? 'ok' : 'muted'),
+    row('источник', stats.account.source),
+    row('проверено', fmtTimestamp(stats.account.checkedAt)),
+    row('обновлено источником', fmtTimestamp(stats.account.sourceUpdatedAt)),
+    row('строк итогов', String(stats.account.totalCount)),
+    row('строк техники', String(stats.account.vehicleCount))
+  ];
+  const deltaByVehicle = new Map();
+  const deltaByTotal = new Map();
+  if (stats.account.delta) {
+    stats.account.delta.totals.forEach(function (total) {
+      deltaByTotal.set(JSON.stringify([total.gameType, total.mode, total.category]), total);
+    });
+    stats.account.delta.vehicles.forEach(function (vehicle) {
+      deltaByVehicle.set(JSON.stringify([vehicle.gameType, vehicle.mode, vehicle.vehicleId]), vehicle);
+    });
+    accountRows.push(row('дельта с', fmtTimestamp(stats.account.delta.fromCheckedAt)));
+  }
+  stats.account.totals.slice(0, 10).forEach(function (total) {
+    const key = JSON.stringify([total.gameType, total.mode, total.category]);
+    const delta = deltaByTotal.get(key);
+    const label = [total.gameType, total.mode, total.category].filter(Boolean).join(' / ') || 'аккаунт';
+    accountRows.push(row(
+      label,
+      'бои ' + fmtMetric(total.battles) + fmtDelta(delta && delta.battles)
+        + ' · победы ' + fmtMetric(total.victories) + fmtDelta(delta && delta.victories)
+        + ' · поражения ' + fmtMetric(total.defeats) + fmtDelta(delta && delta.defeats)
+    ));
+  });
+  if (stats.account.totalsTruncated) accountRows.push(row('итоги', 'показаны первые 100 строк'));
+  stats.account.vehicles.slice(0, 15).forEach(function (vehicle) {
+    const key = JSON.stringify([vehicle.gameType, vehicle.mode, vehicle.vehicleId]);
+    accountRows.push(row(vehicle.vehicleId, accountVehicleText(vehicle, deltaByVehicle.get(key))));
+  });
+  if (stats.account.vehiclesTruncated) accountRows.push(row('техника', 'показаны первые 100 строк'));
+
+  const replayRows = [];
+  if (stats.replay.stats) {
+    const replay = stats.replay.stats;
+    replayRows.push(
+      row('бои', fmtMetric(replay.battles)),
+      row('победы / поражения', fmtMetric(replay.wins) + ' / ' + fmtMetric(replay.losses)),
+      row('без результата', fmtMetric(replay.unknownResults)),
+      row('винрейт известных исходов', fmtPercent(replay.winRate)),
+      row('фраги воздух / земля / флот', fmtMetric(replay.airKills) + ' / ' + fmtMetric(replay.groundKills) + ' / ' + fmtMetric(replay.navalKills)),
+      row('ассисты / смерти', fmtMetric(replay.assists) + ' / ' + fmtMetric(replay.deaths)),
+      row('ИИ воздух / земля', fmtMetric(replay.aiAirKills) + ' / ' + fmtMetric(replay.aiGroundKills)),
+      row('очки / тимкиллы', fmtMetric(replay.score) + ' / ' + fmtMetric(replay.teamKills)),
+      row('наблюдаемое время', fmtUptime(replay.observedBattleTimeSec)),
+      row('покрытие', fmtMetric(replay.coverageBattles) + ' локальных реплеев'),
+      row('первый / последний', fmtTimestamp(replay.firstBattleAt) + ' / ' + fmtTimestamp(replay.lastBattleAt))
+    );
+    replay.vehicles.slice(0, 15).forEach(function (vehicle) {
+      replayRows.push(row(vehicle.vehicleId, fmtMetric(vehicle.battles) + ' боёв'));
+    });
+    if (stats.replay.vehiclesTruncated) replayRows.push(row('техника', 'показаны первые 100 строк'));
+  } else {
+    replayRows.push(row('состояние', 'WT user id ещё не определён'));
+  }
+
+  const compareRows = [
+    row('account winrate', fmtPercent(stats.comparison.accountWinRate)),
+    row('WRPL winrate', fmtPercent(stats.comparison.replayWinRate)),
+    row('ориентировочная разница', stats.comparison.indicativeWinRateDifference === null
+      ? '—'
+      : (stats.comparison.indicativeWinRateDifference * 100).toFixed(1) + ' п.п.'),
+    row('совпавшая техника', fmtMetric(stats.comparison.vehicleOverlapCount))
+  ];
+
+  columns.append(
+    playerSection('Account snapshot', accountRows),
+    playerSection('Локальные WRPL', replayRows),
+    playerSection('Сопоставление', compareRows)
+  );
+  const note = document.createElement('div');
+  note.className = 'notice muted small';
+  note.textContent = stats.comparison.note;
+  root.replaceChildren(title, columns, note);
+  if (stats.account.error) {
+    const error = document.createElement('div');
+    error.className = 'notice fail small';
+    error.textContent = stats.account.error;
+    root.appendChild(error);
+  }
+}
+
+let playerLookupToken = 0;
+async function loadPlayerStats(input, token, attempt) {
+  if (token !== playerLookupToken) return;
+  const status = document.getElementById('player-stats-status');
+  const result = document.getElementById('player-stats-result');
+  try {
+    const response = await fetch('/api/player-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input)
+    });
+    const payload = await response.json();
+    if (token !== playerLookupToken) return;
+    if (!response.ok) {
+      status.className = 'fail small';
+      status.textContent = payload.error || 'Не удалось получить статистику';
+      result.replaceChildren();
+      if (Array.isArray(payload.candidates)) {
+        payload.candidates.forEach(function (candidate) {
+          result.appendChild(row(candidate.nick, candidate.wtUserId || 'без WT user id'));
+        });
+      }
+      return;
+    }
+    renderPlayerStats(payload.stats);
+    if (payload.stats.account.refreshQueued && attempt < 9) {
+      status.className = 'muted small';
+      status.textContent = 'Локальные WRPL готовы; внешний snapshot обновляется…';
+      window.setTimeout(function () { loadPlayerStats(input, token, attempt + 1); }, 2500);
+    } else if (payload.stats.account.refreshQueued) {
+      status.className = 'muted small';
+      status.textContent = 'Внешнее обновление ещё выполняется; повторите поиск через несколько секунд.';
+    } else if (['private', 'not_found', 'rate_limited', 'schema_error', 'error'].includes(payload.stats.account.state)) {
+      status.className = 'fail small';
+      status.textContent = 'Локальные WRPL получены, внешний snapshot недоступен: '
+        + accountStateLabel(payload.stats.account.state) + '.';
+    } else {
+      status.className = 'ok small';
+      status.textContent = 'Статистика получена. Account и replay coverage показаны раздельно.';
+    }
+  } catch (error) {
+    if (token !== playerLookupToken) return;
+    status.className = 'fail small';
+    status.textContent = 'Ошибка запроса статистики: ' + String(error);
+  }
+}
+async function beginPlayerLookup(player) {
+  const query = document.getElementById('player-stats-query');
+  const period = document.getElementById('player-stats-period');
+  const button = document.getElementById('player-stats-submit');
+  const status = document.getElementById('player-stats-status');
+  if (player !== undefined) query.value = player;
+  const normalized = query.value.trim();
+  if (!normalized) return;
+  const input = { player: normalized };
+  const days = Number(period.value);
+  if (days > 0) {
+    input.to = Math.floor(Date.now() / 1000);
+    input.from = input.to - days * 86400;
+  }
+  const token = ++playerLookupToken;
+  status.className = 'muted small';
+  status.textContent = 'Читаю локальную статистику…';
+  button.disabled = true;
+  await loadPlayerStats(input, token, 0);
+  if (token === playerLookupToken) button.disabled = false;
+}
+
 async function refresh() {
   try {
     const responses = await Promise.all([fetch('/api/stats'), fetch('/api/items?limit=8'), fetch('/api/voice')]);
@@ -204,6 +438,11 @@ async function refresh() {
 }
 refresh();
 setInterval(refresh, 10000);
+
+document.getElementById('player-stats-form').addEventListener('submit', function (event) {
+  event.preventDefault();
+  beginPlayerLookup();
+});
 
 // Принудительное обновление: сервер пересканирует каналы и заново
 // запрашивает клановые рейтинги, затем страница перечитывает данные

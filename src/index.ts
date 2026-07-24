@@ -6,6 +6,10 @@ import { buildServer } from './web/index.js'
 import { startParsers, stopParsers } from './parsers/index.js'
 import { startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
 import { closeWorkerPool } from './workers/pool.js'
+import { THUNDERINSIGHTS_PARSER_VERSION } from './player-stats/normalizer.js'
+import { ThunderInsightsProvider } from './player-stats/providers/thunderinsights.js'
+import { PlayerStatsService } from './player-stats/service.js'
+import { PlayerStatsCoordinator } from './player-stats/comparison.js'
 
 // Точка входа: main thread владеет Discord, Fastify и SQLite; тяжёлые
 // WRPL/zlib/Resvg-задачи уходят в ограниченный пул worker_threads.
@@ -13,6 +17,14 @@ import { closeWorkerPool } from './workers/pool.js'
 // 1. База данных
 initDb(config.dbPath)
 console.log(`[db] SQLite: ${config.dbPath}`)
+const playerStatsService = config.playerStatsEnabled
+  ? new PlayerStatsService({
+      provider: new ThunderInsightsProvider(),
+      parserVersion: THUNDERINSIGHTS_PARSER_VERSION,
+    })
+  : null
+const playerStats = new PlayerStatsCoordinator({ externalService: playerStatsService })
+console.log(`[player-stats] ThunderInsights: ${playerStatsService === null ? 'выключен' : 'включён (lazy)'}`)
 console.log(
   `[workers] CPU pool (${config.workerResources.explicitWorkerThreads ? 'ручной' : 'авто'}): ` +
     `${config.workerThreads}/${config.workerResources.availableCpus} потоков` +
@@ -35,6 +47,7 @@ const app = buildServer({
     uptimeSec: Math.floor(process.uptime()),
   }),
   refreshVoice: () => voiceTracker.refresh(),
+  playerStats,
 })
 await app.listen({ port: config.port, host: '0.0.0.0' })
 console.log(`[web] Дашборд: http://localhost:${config.port}`)
@@ -67,6 +80,7 @@ async function shutdown(signal: string): Promise<void> {
     app.close(),
     stopBotWork(PRODUCER_DRAIN_MS),
     voiceTracker.stop(),
+    playerStatsService?.stop() ?? Promise.resolve(),
     ingestStopped,
   ])
   let drainTimer: NodeJS.Timeout | undefined

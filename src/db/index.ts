@@ -2,6 +2,27 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
+import {
+  PLAYER_EXTERNAL_SNAPSHOT_STATUSES,
+  PLAYER_IDENTITY_MATCH_CONFIDENCES,
+  PLAYER_IDENTITY_MATCH_METHODS,
+  type NormalizedPlayerExternalTotal,
+  type NormalizedPlayerExternalVehicle,
+  type NormalizedPlayerStats,
+  type PlayerExternalStats,
+  type PlayerExternalSnapshot,
+  type PlayerExternalSnapshotInput,
+  type PlayerExternalSnapshotMeta,
+  type PlayerExternalSnapshotStatus,
+  type PlayerExternalTotal,
+  type PlayerExternalVehicle,
+  type PlayerIdentity,
+  type PlayerIdentityAlias,
+  type PlayerIdentityMatchConfidence,
+  type PlayerIdentityMatchMethod,
+  type SavePlayerExternalSnapshotResult,
+  type SavePlayerIdentityInput,
+} from '../player-stats/types.js'
 
 // Общий слой хранения: им пользуются и бот, и сайт, и парсеры.
 // SQLite встроен в Node 22.5+ — отдельный сервер БД не нужен.
@@ -14,6 +35,8 @@ let deleteVoicePresenceStatement: StatementSync | null = null
 let selectVoicePresenceStatement: StatementSync | null = null
 let selectPlayerRatingStatement: StatementSync | null = null
 let selectPlayerBattleStatsStatement: StatementSync | null = null
+let selectPlayerReplayStatsStatement: StatementSync | null = null
+let selectPlayerReplayVehiclesStatement: StatementSync | null = null
 let selectVoiceDashboardStatement: StatementSync | null = null
 let selectVoiceClanTagsStatement: StatementSync | null = null
 let selectCommandTotalStatement: StatementSync | null = null
@@ -39,6 +62,8 @@ function resetPreparedStatements(): void {
   selectVoicePresenceStatement = null
   selectPlayerRatingStatement = null
   selectPlayerBattleStatsStatement = null
+  selectPlayerReplayStatsStatement = null
+  selectPlayerReplayVehiclesStatement = null
   selectVoiceDashboardStatement = null
   selectVoiceClanTagsStatement = null
   selectCommandTotalStatement = null
@@ -152,6 +177,160 @@ export function initDb(dbPath: string): void {
 
     CREATE INDEX IF NOT EXISTS idx_snapshots_nick
       ON clan_rating_snapshots (nick, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_nick_nocase
+      ON clan_rating_snapshots (nick COLLATE NOCASE, seen_at DESC);
+
+    -- Стабильная identity игрока отделена от отображаемых ников и provider-ов.
+    -- Автоматическое объединение выполняется только по непустому WT user id.
+    CREATE TABLE IF NOT EXISTS player_identities (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      wt_user_id     TEXT,
+      canonical_nick TEXT    NOT NULL,
+      platform       TEXT,
+      created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+      CHECK (canonical_nick <> ''),
+      CHECK (
+        wt_user_id IS NULL OR
+        (wt_user_id <> '' AND wt_user_id NOT GLOB '*[^0-9]*')
+      )
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_player_identities_wt_user
+      ON player_identities (wt_user_id)
+      WHERE wt_user_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_player_identities_nick
+      ON player_identities (canonical_nick);
+    CREATE INDEX IF NOT EXISTS idx_player_identities_nick_nocase
+      ON player_identities (canonical_nick COLLATE NOCASE);
+
+    -- Ники и внешние идентификаторы сохраняются как наблюдавшиеся алиасы.
+    -- expression-index закрывает особенность SQLite, где NULL в составном
+    -- PRIMARY KEY иначе позволил бы несколько одинаковых алиасов.
+    CREATE TABLE IF NOT EXISTS player_identity_aliases (
+      identity_id     INTEGER NOT NULL REFERENCES player_identities(id) ON DELETE CASCADE,
+      source          TEXT    NOT NULL,
+      external_id     TEXT,
+      nick            TEXT    NOT NULL,
+      nick_base       TEXT    NOT NULL,
+      first_seen_at   INTEGER NOT NULL,
+      last_seen_at    INTEGER NOT NULL,
+      match_method    TEXT    NOT NULL,
+      match_confidence TEXT   NOT NULL,
+      PRIMARY KEY (identity_id, source, external_id, nick),
+      CHECK (source <> '' AND nick <> '' AND nick_base <> ''),
+      CHECK (match_method IN ('user_id', 'exact_nick', 'manual')),
+      CHECK (match_confidence IN ('high', 'medium', 'low'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_player_aliases_identity_source_key
+      ON player_identity_aliases (identity_id, source, ifnull(external_id, ''), nick);
+    CREATE INDEX IF NOT EXISTS idx_player_aliases_source_external
+      ON player_identity_aliases (source, external_id);
+    CREATE INDEX IF NOT EXISTS idx_player_aliases_nick_base
+      ON player_identity_aliases (nick_base, source, last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_aliases_nick_nocase
+      ON player_identity_aliases (nick COLLATE NOCASE, last_seen_at DESC);
+
+    -- Raw snapshot хранится независимо от replay-статистики. Неизменившийся
+    -- ответ переиспользует строку и двигает только last_checked_at.
+    CREATE TABLE IF NOT EXISTS player_external_snapshots (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      identity_id       INTEGER NOT NULL REFERENCES player_identities(id) ON DELETE CASCADE,
+      source            TEXT    NOT NULL,
+      source_player_id  TEXT,
+      nick              TEXT,
+      fetched_at        INTEGER NOT NULL,
+      last_checked_at   INTEGER NOT NULL,
+      source_updated_at INTEGER,
+      status            TEXT    NOT NULL,
+      raw_json          TEXT,
+      content_hash      TEXT,
+      parser_version    TEXT    NOT NULL,
+      error             TEXT,
+      CHECK (source <> '' AND parser_version <> ''),
+      CHECK (status IN ('ok', 'private', 'not_found', 'rate_limited', 'schema_error', 'error')),
+      CHECK (content_hash IS NULL OR length(content_hash) = 64)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_player_snapshots_identity_source_fetched
+      ON player_external_snapshots (identity_id, source, fetched_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_snapshots_identity_source_checked
+      ON player_external_snapshots (identity_id, source, last_checked_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_snapshots_source_player
+      ON player_external_snapshots (source, source_player_id, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_snapshots_content_hash
+      ON player_external_snapshots (content_hash)
+      WHERE content_hash IS NOT NULL;
+
+    -- Нормализованные account totals не смешиваются со строками техники:
+    -- upstream может считать режимы, победы и категории по-разному.
+    CREATE TABLE IF NOT EXISTS player_external_totals (
+      snapshot_id     INTEGER NOT NULL REFERENCES player_external_snapshots(id) ON DELETE CASCADE,
+      game_type       TEXT,
+      mode            TEXT,
+      category        TEXT,
+      battles         INTEGER,
+      victories       INTEGER,
+      defeats         INTEGER,
+      time_played_sec INTEGER,
+      respawns        INTEGER,
+      air_kills       INTEGER,
+      ground_kills    INTEGER,
+      naval_kills     INTEGER,
+      CHECK (battles IS NULL OR battles >= 0),
+      CHECK (victories IS NULL OR victories >= 0),
+      CHECK (defeats IS NULL OR defeats >= 0),
+      CHECK (time_played_sec IS NULL OR time_played_sec >= 0),
+      CHECK (respawns IS NULL OR respawns >= 0),
+      CHECK (air_kills IS NULL OR air_kills >= 0),
+      CHECK (ground_kills IS NULL OR ground_kills >= 0),
+      CHECK (naval_kills IS NULL OR naval_kills >= 0)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_player_external_totals_key
+      ON player_external_totals (
+        snapshot_id,
+        ifnull(game_type, ''),
+        ifnull(mode, ''),
+        ifnull(category, '')
+      );
+    CREATE INDEX IF NOT EXISTS idx_player_external_totals_snapshot
+      ON player_external_totals (snapshot_id);
+
+    CREATE TABLE IF NOT EXISTS player_external_vehicles (
+      snapshot_id     INTEGER NOT NULL REFERENCES player_external_snapshots(id) ON DELETE CASCADE,
+      game_type       TEXT,
+      mode            TEXT,
+      vehicle_id      TEXT    NOT NULL,
+      flyouts         INTEGER,
+      victories       INTEGER,
+      defeats         INTEGER,
+      deaths          INTEGER,
+      air_kills       INTEGER,
+      ground_kills    INTEGER,
+      naval_kills     INTEGER,
+      time_played_sec INTEGER,
+      CHECK (vehicle_id <> ''),
+      CHECK (flyouts IS NULL OR flyouts >= 0),
+      CHECK (victories IS NULL OR victories >= 0),
+      CHECK (defeats IS NULL OR defeats >= 0),
+      CHECK (deaths IS NULL OR deaths >= 0),
+      CHECK (air_kills IS NULL OR air_kills >= 0),
+      CHECK (ground_kills IS NULL OR ground_kills >= 0),
+      CHECK (naval_kills IS NULL OR naval_kills >= 0),
+      CHECK (time_played_sec IS NULL OR time_played_sec >= 0)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_player_external_vehicles_key
+      ON player_external_vehicles (
+        snapshot_id,
+        ifnull(game_type, ''),
+        ifnull(mode, ''),
+        vehicle_id
+      );
+    CREATE INDEX IF NOT EXISTS idx_player_external_vehicles_snapshot
+      ON player_external_vehicles (snapshot_id);
 
     -- Кто сейчас сидит в голосовых каналах Discord: пишет бот
     -- (voice-tracker), читает дашборд. Строка удаляется при выходе.
@@ -167,6 +346,9 @@ export function initDb(dbPath: string): void {
       joined_at    INTEGER NOT NULL DEFAULT (unixepoch()),
       PRIMARY KEY (guild_id, user_id)
     );
+
+    CREATE INDEX IF NOT EXISTS idx_voice_wt_nick_nocase
+      ON voice_presence (wt_nick COLLATE NOCASE, joined_at DESC);
 
     -- Служебное состояние бота (например, id последнего
     -- проанонсированного боя) — переживает перезапуски.
@@ -245,7 +427,9 @@ export function initDb(dbPath: string): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_bp_nick ON battle_players (nick);
+    CREATE INDEX IF NOT EXISTS idx_bp_nick_nocase ON battle_players (nick COLLATE NOCASE, user_id);
     CREATE INDEX IF NOT EXISTS idx_bp_clan ON battle_players (clan_tag);
+    CREATE INDEX IF NOT EXISTS idx_bp_user_id ON battle_players (user_id, session_id);
 
     -- Убийства с координатами: датасет + перерисовка battle log/хитмапа.
     CREATE TABLE IF NOT EXISTS battle_kills (
@@ -831,6 +1015,961 @@ function normalizeWtNick(nick: string): string {
   return nick.replace(/@(psn|live|epic)$/i, '')
 }
 
+// ---------- Идентичности игроков и внешние снимки ----------
+
+interface PlayerIdentityRow {
+  id: number
+  wt_user_id: string | null
+  canonical_nick: string
+  platform: string | null
+  created_at: number
+  updated_at: number
+}
+
+interface PlayerIdentityAliasRow {
+  identity_id: number
+  source: string
+  external_id: string | null
+  nick: string
+  nick_base: string
+  first_seen_at: number
+  last_seen_at: number
+  match_method: PlayerIdentityMatchMethod
+  match_confidence: PlayerIdentityMatchConfidence
+}
+
+export type KnownPlayerMatchOrigin = 'identity' | 'alias' | 'replay' | 'voice' | 'clan'
+
+/** Точное локальное свидетельство, по которому можно безопасно открыть статистику игрока. */
+export interface KnownPlayerMatch {
+  origin: KnownPlayerMatchOrigin
+  source: string
+  identityId: number | null
+  wtUserId: string | null
+  nick: string
+  platform: string | null
+  seenAt: number
+}
+
+interface PlayerExternalSnapshotRow {
+  id: number
+  identity_id: number
+  source: string
+  source_player_id: string | null
+  nick: string | null
+  fetched_at: number
+  last_checked_at: number
+  source_updated_at: number | null
+  status: PlayerExternalSnapshotStatus
+  raw_json: string | null
+  content_hash: string | null
+  parser_version: string
+  error: string | null
+}
+
+type PlayerExternalSnapshotMetaRow = Omit<PlayerExternalSnapshotRow, 'raw_json'>
+
+interface PlayerExternalTotalRow {
+  snapshot_id: number
+  game_type: string | null
+  mode: string | null
+  category: string | null
+  battles: number | null
+  victories: number | null
+  defeats: number | null
+  time_played_sec: number | null
+  respawns: number | null
+  air_kills: number | null
+  ground_kills: number | null
+  naval_kills: number | null
+}
+
+interface PlayerExternalVehicleRow {
+  snapshot_id: number
+  game_type: string | null
+  mode: string | null
+  vehicle_id: string
+  flyouts: number | null
+  victories: number | null
+  defeats: number | null
+  deaths: number | null
+  air_kills: number | null
+  ground_kills: number | null
+  naval_kills: number | null
+  time_played_sec: number | null
+}
+
+const playerIdentityMatchMethods = new Set<string>(PLAYER_IDENTITY_MATCH_METHODS)
+const playerIdentityMatchConfidences = new Set<string>(PLAYER_IDENTITY_MATCH_CONFIDENCES)
+const playerExternalSnapshotStatuses = new Set<string>(PLAYER_EXTERNAL_SNAPSHOT_STATUSES)
+
+function requiredPlayerStatsText(value: string, field: string): string {
+  const normalized = value.trim()
+  if (!normalized) throw new Error(`Поле ${field} не может быть пустым`)
+  return normalized
+}
+
+function optionalPlayerStatsText(value: string | null, field: string): string | null {
+  if (value === null) return null
+  const normalized = value.trim()
+  if (!normalized) throw new Error(`Поле ${field} не может быть пустой строкой`)
+  return normalized
+}
+
+function playerStatsTimestamp(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`Поле ${field} должно быть неотрицательным целым Unix-временем`)
+  }
+  return value
+}
+
+function playerStatsMetric(value: number | null, field: string): number | null {
+  if (value === null) return null
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`Поле ${field} должно быть неотрицательным целым числом или null`)
+  }
+  return value
+}
+
+function playerStatsDimension(value: string | null, field: string): string | null {
+  return optionalPlayerStatsText(value, field)
+}
+
+function playerStatsIdentityId(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError('identityId должен быть положительным целым числом')
+  }
+  return value
+}
+
+function normalizedWtUserId(value: string | null): string | null {
+  if (value === null) return null
+  const normalized = requiredPlayerStatsText(value, 'wtUserId')
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error('wtUserId должен содержать только цифры')
+  }
+  return normalized
+}
+
+function toPlayerIdentity(row: PlayerIdentityRow): PlayerIdentity {
+  return {
+    id: row.id,
+    wtUserId: row.wt_user_id,
+    canonicalNick: row.canonical_nick,
+    platform: row.platform,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function toPlayerIdentityAlias(row: PlayerIdentityAliasRow): PlayerIdentityAlias {
+  return {
+    identityId: row.identity_id,
+    source: row.source,
+    externalId: row.external_id,
+    nick: row.nick,
+    nickBase: row.nick_base,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    matchMethod: row.match_method,
+    matchConfidence: row.match_confidence,
+  }
+}
+
+function toPlayerExternalSnapshot(row: PlayerExternalSnapshotRow): PlayerExternalSnapshot {
+  return {
+    id: row.id,
+    identityId: row.identity_id,
+    source: row.source,
+    sourcePlayerId: row.source_player_id,
+    nick: row.nick,
+    fetchedAt: row.fetched_at,
+    lastCheckedAt: row.last_checked_at,
+    sourceUpdatedAt: row.source_updated_at,
+    status: row.status,
+    rawJson: row.raw_json,
+    contentHash: row.content_hash,
+    parserVersion: row.parser_version,
+    error: row.error,
+  }
+}
+
+function toPlayerExternalSnapshotMeta(row: PlayerExternalSnapshotMetaRow): PlayerExternalSnapshotMeta {
+  return {
+    id: row.id,
+    identityId: row.identity_id,
+    source: row.source,
+    sourcePlayerId: row.source_player_id,
+    nick: row.nick,
+    fetchedAt: row.fetched_at,
+    lastCheckedAt: row.last_checked_at,
+    sourceUpdatedAt: row.source_updated_at,
+    status: row.status,
+    contentHash: row.content_hash,
+    parserVersion: row.parser_version,
+    error: row.error,
+  }
+}
+
+function toPlayerExternalTotal(row: PlayerExternalTotalRow): PlayerExternalTotal {
+  return {
+    snapshotId: row.snapshot_id,
+    gameType: row.game_type,
+    mode: row.mode,
+    category: row.category,
+    battles: row.battles,
+    victories: row.victories,
+    defeats: row.defeats,
+    timePlayedSec: row.time_played_sec,
+    respawns: row.respawns,
+    airKills: row.air_kills,
+    groundKills: row.ground_kills,
+    navalKills: row.naval_kills,
+  }
+}
+
+function toPlayerExternalVehicle(row: PlayerExternalVehicleRow): PlayerExternalVehicle {
+  return {
+    snapshotId: row.snapshot_id,
+    gameType: row.game_type,
+    mode: row.mode,
+    vehicleId: row.vehicle_id,
+    flyouts: row.flyouts,
+    victories: row.victories,
+    defeats: row.defeats,
+    deaths: row.deaths,
+    airKills: row.air_kills,
+    groundKills: row.ground_kills,
+    navalKills: row.naval_kills,
+    timePlayedSec: row.time_played_sec,
+  }
+}
+
+function selectPlayerIdentityById(database: DatabaseSync, identityId: number): PlayerIdentityRow | undefined {
+  return database
+    .prepare(`
+      SELECT id, wt_user_id, canonical_nick, platform, created_at, updated_at
+      FROM player_identities
+      WHERE id = ?
+    `)
+    .get(identityId) as PlayerIdentityRow | undefined
+}
+
+function selectPlayerIdentityByWtUserId(database: DatabaseSync, wtUserId: string): PlayerIdentityRow | undefined {
+  return database
+    .prepare(`
+      SELECT id, wt_user_id, canonical_nick, platform, created_at, updated_at
+      FROM player_identities
+      WHERE wt_user_id = ?
+    `)
+    .get(wtUserId) as PlayerIdentityRow | undefined
+}
+
+export function getPlayerIdentityById(identityId: number): PlayerIdentity | null {
+  const row = selectPlayerIdentityById(getDb(), playerStatsIdentityId(identityId))
+  return row ? toPlayerIdentity(row) : null
+}
+
+export function getPlayerIdentityByWtUserId(wtUserId: string): PlayerIdentity | null {
+  const normalized = normalizedWtUserId(wtUserId)
+  if (normalized === null) return null
+  const row = selectPlayerIdentityByWtUserId(getDb(), normalized)
+  return row ? toPlayerIdentity(row) : null
+}
+
+/**
+ * Создаёт или обновляет identity. Без identityId автоматическое совпадение
+ * разрешено только по стабильному wtUserId, но не по нику или nick_base.
+ */
+export function savePlayerIdentity(input: SavePlayerIdentityInput): PlayerIdentity {
+  const requestedIdentityId = input.identityId === undefined ? null : playerStatsIdentityId(input.identityId)
+  const wtUserId = normalizedWtUserId(input.wtUserId)
+  const canonicalNick = requiredPlayerStatsText(input.canonicalNick, 'canonicalNick')
+  const requestedPlatform = input.platform === undefined
+    ? undefined
+    : optionalPlayerStatsText(input.platform, 'platform')
+  const aliases = (input.aliases ?? []).map((alias) => {
+    const source = requiredPlayerStatsText(alias.source, 'alias.source')
+    const externalId = optionalPlayerStatsText(alias.externalId, 'alias.externalId')
+    const nick = requiredPlayerStatsText(alias.nick, 'alias.nick')
+    const nickBase = normalizeWtNick(nick).trim()
+    if (!nickBase) throw new Error('Базовый ник alias.nick не может быть пустым')
+    if (!playerIdentityMatchMethods.has(alias.matchMethod)) {
+      throw new Error(`Неизвестный matchMethod: ${alias.matchMethod}`)
+    }
+    if (!playerIdentityMatchConfidences.has(alias.matchConfidence)) {
+      throw new Error(`Неизвестный matchConfidence: ${alias.matchConfidence}`)
+    }
+    return {
+      source,
+      externalId,
+      nick,
+      nickBase,
+      seenAt: playerStatsTimestamp(alias.seenAt, 'alias.seenAt'),
+      matchMethod: alias.matchMethod,
+      matchConfidence: alias.matchConfidence,
+    }
+  })
+
+  const database = getDb()
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    let existing = requestedIdentityId === null
+      ? undefined
+      : selectPlayerIdentityById(database, requestedIdentityId)
+    if (requestedIdentityId !== null && existing === undefined) {
+      throw new Error(`Identity ${requestedIdentityId} не найдена`)
+    }
+    if (existing === undefined && wtUserId !== null) {
+      existing = selectPlayerIdentityByWtUserId(database, wtUserId)
+    }
+    if (
+      existing !== undefined &&
+      existing.wt_user_id !== null &&
+      wtUserId !== null &&
+      existing.wt_user_id !== wtUserId
+    ) {
+      throw new Error(`Identity ${existing.id} уже связана с другим wtUserId`)
+    }
+    if (existing !== undefined && wtUserId !== null) {
+      const conflicting = selectPlayerIdentityByWtUserId(database, wtUserId)
+      if (conflicting !== undefined && conflicting.id !== existing.id) {
+        throw new Error(`wtUserId ${wtUserId} уже связан с identity ${conflicting.id}`)
+      }
+    }
+
+    let identityId: number
+    if (existing === undefined) {
+      const result = database
+        .prepare(`
+          INSERT INTO player_identities (wt_user_id, canonical_nick, platform)
+          VALUES (?, ?, ?)
+        `)
+        .run(wtUserId, canonicalNick, requestedPlatform ?? null)
+      identityId = Number(result.lastInsertRowid)
+    } else {
+      identityId = existing.id
+      database
+        .prepare(`
+          UPDATE player_identities
+          SET wt_user_id = ?, canonical_nick = ?, platform = ?, updated_at = unixepoch()
+          WHERE id = ?
+        `)
+        .run(
+          existing.wt_user_id ?? wtUserId,
+          canonicalNick,
+          requestedPlatform === undefined ? existing.platform : requestedPlatform,
+          identityId,
+        )
+    }
+
+    const aliasStatement = database.prepare(`
+      INSERT INTO player_identity_aliases (
+        identity_id, source, external_id, nick, nick_base,
+        first_seen_at, last_seen_at, match_method, match_confidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT DO UPDATE SET
+        nick_base = excluded.nick_base,
+        first_seen_at = MIN(player_identity_aliases.first_seen_at, excluded.first_seen_at),
+        last_seen_at = MAX(player_identity_aliases.last_seen_at, excluded.last_seen_at),
+        match_method = excluded.match_method,
+        match_confidence = excluded.match_confidence
+    `)
+    for (const alias of aliases) {
+      aliasStatement.run(
+        identityId,
+        alias.source,
+        alias.externalId,
+        alias.nick,
+        alias.nickBase,
+        alias.seenAt,
+        alias.seenAt,
+        alias.matchMethod,
+        alias.matchConfidence,
+      )
+    }
+
+    const saved = selectPlayerIdentityById(database, identityId)
+    if (saved === undefined) throw new Error(`Не удалось прочитать сохранённую identity ${identityId}`)
+    database.exec('COMMIT')
+    return toPlayerIdentity(saved)
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+export function getPlayerIdentityAliases(identityId: number): PlayerIdentityAlias[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT
+        identity_id, source, external_id, nick, nick_base,
+        first_seen_at, last_seen_at, match_method, match_confidence
+      FROM player_identity_aliases
+      WHERE identity_id = ?
+      ORDER BY first_seen_at, source, nick
+    `)
+    .all(playerStatsIdentityId(identityId)) as unknown as PlayerIdentityAliasRow[]
+  return rows.map(toPlayerIdentityAlias)
+}
+
+export function findKnownPlayerMatches(player: string): KnownPlayerMatch[] {
+  const query = requiredPlayerStatsText(player, 'player')
+  if (query.length > 64) throw new RangeError('Ник или WT user id не может быть длиннее 64 символов')
+  const numericQuery = /^\d+$/.test(query) ? query : null
+  const database = getDb()
+  type MatchRow = {
+    origin: KnownPlayerMatchOrigin
+    source: string
+    identity_id: number | null
+    wt_user_id: string | null
+    nick: string
+    platform: string | null
+    seen_at: number
+  }
+  const rows: MatchRow[] = []
+
+  rows.push(...database.prepare(`
+    SELECT
+      'identity' AS origin,
+      'identity' AS source,
+      id AS identity_id,
+      wt_user_id,
+      canonical_nick AS nick,
+      platform,
+      updated_at AS seen_at
+    FROM player_identities
+    WHERE (? IS NOT NULL AND wt_user_id = ?)
+       OR canonical_nick = ? COLLATE NOCASE
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 50
+  `).all(numericQuery, numericQuery, query) as unknown as MatchRow[])
+
+  rows.push(...database.prepare(`
+    SELECT
+      'alias' AS origin,
+      pia.source AS source,
+      pi.id AS identity_id,
+      pi.wt_user_id,
+      pia.nick,
+      pi.platform,
+      pia.last_seen_at AS seen_at
+    FROM player_identity_aliases pia
+    JOIN player_identities pi ON pi.id = pia.identity_id
+    WHERE pia.nick = ? COLLATE NOCASE
+    ORDER BY pia.last_seen_at DESC, pi.id DESC
+    LIMIT 50
+  `).all(query) as unknown as MatchRow[])
+
+  rows.push(...database.prepare(`
+    WITH ranked AS (
+      SELECT
+        bp.user_id,
+        bp.nick,
+        b.start_time,
+        ROW_NUMBER() OVER (
+          PARTITION BY bp.user_id
+          ORDER BY b.start_time DESC, b.session_id DESC
+        ) AS row_number
+      FROM battle_players bp
+      JOIN battles b ON b.session_id = bp.session_id
+      WHERE bp.user_id <> ''
+        AND ((? IS NOT NULL AND bp.user_id = ?) OR bp.nick = ? COLLATE NOCASE)
+    )
+    SELECT
+      'replay' AS origin,
+      'wrpl' AS source,
+      NULL AS identity_id,
+      CASE
+        WHEN user_id NOT GLOB '*[^0-9]*' THEN user_id
+        ELSE NULL
+      END AS wt_user_id,
+      nick,
+      NULL AS platform,
+      start_time AS seen_at
+    FROM ranked
+    WHERE row_number = 1
+    ORDER BY start_time DESC, user_id
+    LIMIT 50
+  `).all(numericQuery, numericQuery, query) as unknown as MatchRow[])
+
+  rows.push(...database.prepare(`
+    SELECT
+      'voice' AS origin,
+      'voice' AS source,
+      NULL AS identity_id,
+      NULL AS wt_user_id,
+      wt_nick AS nick,
+      NULL AS platform,
+      MAX(joined_at) AS seen_at
+    FROM voice_presence
+    WHERE wt_nick = ? COLLATE NOCASE
+    GROUP BY wt_nick COLLATE NOCASE
+    ORDER BY seen_at DESC
+    LIMIT 10
+  `).all(query) as unknown as MatchRow[])
+
+  rows.push(...database.prepare(`
+    WITH ranked AS (
+      SELECT
+        nick,
+        seen_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY nick COLLATE NOCASE
+          ORDER BY seen_at DESC, id DESC
+        ) AS row_number
+      FROM clan_rating_snapshots
+      WHERE nick = ? COLLATE NOCASE
+    )
+    SELECT
+      'clan' AS origin,
+      'wt-clans' AS source,
+      NULL AS identity_id,
+      NULL AS wt_user_id,
+      nick,
+      NULL AS platform,
+      seen_at
+    FROM ranked
+    WHERE row_number = 1
+    ORDER BY seen_at DESC
+    LIMIT 10
+  `).all(query) as unknown as MatchRow[])
+
+  return rows
+    .sort((left, right) => right.seen_at - left.seen_at)
+    .slice(0, 100)
+    .map((row) => ({
+      origin: row.origin,
+      source: row.source,
+      identityId: row.identity_id,
+      wtUserId: row.wt_user_id,
+      nick: row.nick,
+      platform: row.platform,
+      seenAt: row.seen_at,
+    }))
+}
+
+function selectPlayerExternalSnapshotById(
+  database: DatabaseSync,
+  snapshotId: number,
+): PlayerExternalSnapshotRow | undefined {
+  return database
+    .prepare(`
+      SELECT
+        id, identity_id, source, source_player_id, nick, fetched_at,
+        last_checked_at, source_updated_at, status, raw_json, content_hash,
+        parser_version, error
+      FROM player_external_snapshots
+      WHERE id = ?
+    `)
+    .get(snapshotId) as PlayerExternalSnapshotRow | undefined
+}
+
+function validateNormalizedPlayerStats(
+  input: NormalizedPlayerStats | null | undefined,
+): { totals: NormalizedPlayerExternalTotal[]; vehicles: NormalizedPlayerExternalVehicle[] } | undefined {
+  if (input === null || input === undefined) return undefined
+  if (!Array.isArray(input.totals) || !Array.isArray(input.vehicles)) {
+    throw new Error('Нормализованный snapshot должен содержать массивы totals и vehicles')
+  }
+
+  const totalKeys = new Set<string>()
+  const totals = input.totals.map((row, index) => {
+    const normalized: NormalizedPlayerExternalTotal = {
+      gameType: playerStatsDimension(row.gameType, `totals[${index}].gameType`),
+      mode: playerStatsDimension(row.mode, `totals[${index}].mode`),
+      category: playerStatsDimension(row.category, `totals[${index}].category`),
+      battles: playerStatsMetric(row.battles, `totals[${index}].battles`),
+      victories: playerStatsMetric(row.victories, `totals[${index}].victories`),
+      defeats: playerStatsMetric(row.defeats, `totals[${index}].defeats`),
+      timePlayedSec: playerStatsMetric(row.timePlayedSec, `totals[${index}].timePlayedSec`),
+      respawns: playerStatsMetric(row.respawns, `totals[${index}].respawns`),
+      airKills: playerStatsMetric(row.airKills, `totals[${index}].airKills`),
+      groundKills: playerStatsMetric(row.groundKills, `totals[${index}].groundKills`),
+      navalKills: playerStatsMetric(row.navalKills, `totals[${index}].navalKills`),
+    }
+    const key = JSON.stringify([normalized.gameType, normalized.mode, normalized.category])
+    if (totalKeys.has(key)) throw new Error(`Дублирующийся ключ totals[${index}]`)
+    totalKeys.add(key)
+    return normalized
+  })
+
+  const vehicleKeys = new Set<string>()
+  const vehicles = input.vehicles.map((row, index) => {
+    const normalized: NormalizedPlayerExternalVehicle = {
+      gameType: playerStatsDimension(row.gameType, `vehicles[${index}].gameType`),
+      mode: playerStatsDimension(row.mode, `vehicles[${index}].mode`),
+      vehicleId: requiredPlayerStatsText(row.vehicleId, `vehicles[${index}].vehicleId`),
+      flyouts: playerStatsMetric(row.flyouts, `vehicles[${index}].flyouts`),
+      victories: playerStatsMetric(row.victories, `vehicles[${index}].victories`),
+      defeats: playerStatsMetric(row.defeats, `vehicles[${index}].defeats`),
+      deaths: playerStatsMetric(row.deaths, `vehicles[${index}].deaths`),
+      airKills: playerStatsMetric(row.airKills, `vehicles[${index}].airKills`),
+      groundKills: playerStatsMetric(row.groundKills, `vehicles[${index}].groundKills`),
+      navalKills: playerStatsMetric(row.navalKills, `vehicles[${index}].navalKills`),
+      timePlayedSec: playerStatsMetric(row.timePlayedSec, `vehicles[${index}].timePlayedSec`),
+    }
+    const key = JSON.stringify([normalized.gameType, normalized.mode, normalized.vehicleId])
+    if (vehicleKeys.has(key)) throw new Error(`Дублирующийся ключ vehicles[${index}]`)
+    vehicleKeys.add(key)
+    return normalized
+  })
+  return { totals, vehicles }
+}
+
+function replacePlayerExternalMetrics(
+  database: DatabaseSync,
+  snapshotId: number,
+  normalized: { totals: NormalizedPlayerExternalTotal[]; vehicles: NormalizedPlayerExternalVehicle[] },
+): void {
+  database.prepare('DELETE FROM player_external_totals WHERE snapshot_id = ?').run(snapshotId)
+  database.prepare('DELETE FROM player_external_vehicles WHERE snapshot_id = ?').run(snapshotId)
+
+  const insertTotal = database.prepare(`
+    INSERT INTO player_external_totals (
+      snapshot_id, game_type, mode, category, battles, victories, defeats,
+      time_played_sec, respawns, air_kills, ground_kills, naval_kills
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const row of normalized.totals) {
+    insertTotal.run(
+      snapshotId,
+      row.gameType,
+      row.mode,
+      row.category,
+      row.battles,
+      row.victories,
+      row.defeats,
+      row.timePlayedSec,
+      row.respawns,
+      row.airKills,
+      row.groundKills,
+      row.navalKills,
+    )
+  }
+
+  const insertVehicle = database.prepare(`
+    INSERT INTO player_external_vehicles (
+      snapshot_id, game_type, mode, vehicle_id, flyouts, victories, defeats,
+      deaths, air_kills, ground_kills, naval_kills, time_played_sec
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const row of normalized.vehicles) {
+    insertVehicle.run(
+      snapshotId,
+      row.gameType,
+      row.mode,
+      row.vehicleId,
+      row.flyouts,
+      row.victories,
+      row.defeats,
+      row.deaths,
+      row.airKills,
+      row.groundKills,
+      row.navalKills,
+      row.timePlayedSec,
+    )
+  }
+}
+
+/** Сохраняет raw snapshot или обновляет время проверки идентичного ответа. */
+export function savePlayerExternalSnapshot(
+  input: PlayerExternalSnapshotInput,
+): SavePlayerExternalSnapshotResult {
+  const identityId = playerStatsIdentityId(input.identityId)
+  const source = requiredPlayerStatsText(input.source, 'source')
+  const sourcePlayerId = optionalPlayerStatsText(input.sourcePlayerId, 'sourcePlayerId')
+  const nick = optionalPlayerStatsText(input.nick, 'nick')
+  const fetchedAt = playerStatsTimestamp(input.fetchedAt, 'fetchedAt')
+  const sourceUpdatedAt = input.sourceUpdatedAt === null
+    ? null
+    : playerStatsTimestamp(input.sourceUpdatedAt, 'sourceUpdatedAt')
+  if (!playerExternalSnapshotStatuses.has(input.status)) {
+    throw new Error(`Неизвестный status внешнего snapshot: ${input.status}`)
+  }
+  const parserVersion = requiredPlayerStatsText(input.parserVersion, 'parserVersion')
+  const error = optionalPlayerStatsText(input.error, 'error')
+  const normalized = validateNormalizedPlayerStats(input.normalized)
+  if (input.status === 'ok' && input.rawJson === null) {
+    throw new Error('Успешный внешний snapshot должен содержать rawJson')
+  }
+  if (input.status !== 'ok' && normalized !== undefined) {
+    throw new Error('Нормализованные метрики допустимы только для успешного snapshot')
+  }
+  if (input.rawJson !== null) {
+    try {
+      JSON.parse(input.rawJson)
+    } catch (err) {
+      throw new Error('rawJson внешнего snapshot должен быть валидным JSON', { cause: err })
+    }
+  }
+  const contentHash = input.rawJson === null
+    ? null
+    : createHash('sha256').update(input.rawJson).digest('hex')
+
+  const database = getDb()
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    if (selectPlayerIdentityById(database, identityId) === undefined) {
+      throw new Error(`Identity ${identityId} не найдена`)
+    }
+    const matching = database
+      .prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, raw_json, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ?
+          AND source = ?
+          AND source_player_id IS ?
+          AND nick IS ?
+          AND source_updated_at IS ?
+          AND status = ?
+          AND raw_json IS ?
+          AND content_hash IS ?
+          AND parser_version = ?
+          AND error IS ?
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+      .get(
+        identityId,
+        source,
+        sourcePlayerId,
+        nick,
+        sourceUpdatedAt,
+        input.status,
+        input.rawJson,
+        contentHash,
+        parserVersion,
+        error,
+      ) as PlayerExternalSnapshotRow | undefined
+
+    let snapshotId: number
+    let created: boolean
+    if (matching !== undefined) {
+      snapshotId = matching.id
+      created = false
+      database
+        .prepare(`
+          UPDATE player_external_snapshots
+          SET last_checked_at = MAX(last_checked_at, ?)
+          WHERE id = ?
+        `)
+        .run(fetchedAt, snapshotId)
+    } else {
+      const result = database
+        .prepare(`
+          INSERT INTO player_external_snapshots (
+            identity_id, source, source_player_id, nick, fetched_at,
+            last_checked_at, source_updated_at, status, raw_json,
+            content_hash, parser_version, error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          identityId,
+          source,
+          sourcePlayerId,
+          nick,
+          fetchedAt,
+          fetchedAt,
+          sourceUpdatedAt,
+          input.status,
+          input.rawJson,
+          contentHash,
+          parserVersion,
+          error,
+        )
+      snapshotId = Number(result.lastInsertRowid)
+      created = true
+    }
+
+    if (normalized !== undefined) {
+      replacePlayerExternalMetrics(database, snapshotId, normalized)
+    }
+
+    const saved = selectPlayerExternalSnapshotById(database, snapshotId)
+    if (saved === undefined) throw new Error(`Не удалось прочитать внешний snapshot ${snapshotId}`)
+    database.exec('COMMIT')
+    return { snapshot: toPlayerExternalSnapshot(saved), created }
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+export function getLatestPlayerExternalSnapshot(
+  identityId: number,
+  source?: string,
+): PlayerExternalSnapshot | null {
+  const normalizedIdentityId = playerStatsIdentityId(identityId)
+  const normalizedSource = source === undefined ? undefined : requiredPlayerStatsText(source, 'source')
+  const statement = normalizedSource === undefined
+    ? getDb().prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, raw_json, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ?
+        ORDER BY last_checked_at DESC, id DESC
+        LIMIT 1
+      `)
+    : getDb().prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, raw_json, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ? AND source = ?
+        ORDER BY last_checked_at DESC, id DESC
+        LIMIT 1
+      `)
+  const row = (normalizedSource === undefined
+    ? statement.get(normalizedIdentityId)
+    : statement.get(normalizedIdentityId, normalizedSource)) as PlayerExternalSnapshotRow | undefined
+  return row ? toPlayerExternalSnapshot(row) : null
+}
+
+/** Последняя проверка provider-а без чтения потенциально большого raw_json. */
+export function getLatestPlayerExternalCheck(
+  identityId: number,
+  source?: string,
+): PlayerExternalSnapshotMeta | null {
+  const normalizedIdentityId = playerStatsIdentityId(identityId)
+  const normalizedSource = source === undefined ? undefined : requiredPlayerStatsText(source, 'source')
+  const statement = normalizedSource === undefined
+    ? getDb().prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ?
+        ORDER BY last_checked_at DESC, id DESC
+        LIMIT 1
+      `)
+    : getDb().prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ? AND source = ?
+        ORDER BY last_checked_at DESC, id DESC
+        LIMIT 1
+      `)
+  const row = (normalizedSource === undefined
+    ? statement.get(normalizedIdentityId)
+    : statement.get(normalizedIdentityId, normalizedSource)) as PlayerExternalSnapshotMetaRow | undefined
+  return row ? toPlayerExternalSnapshotMeta(row) : null
+}
+
+/** Последний успешный snapshot и его нормализованные строки; ошибки его не затирают. */
+function loadPlayerExternalStats(row: PlayerExternalSnapshotMetaRow): PlayerExternalStats {
+  const totals = getDb()
+    .prepare(`
+      SELECT
+        snapshot_id, game_type, mode, category, battles, victories, defeats,
+        time_played_sec, respawns, air_kills, ground_kills, naval_kills
+      FROM player_external_totals
+      WHERE snapshot_id = ?
+      ORDER BY ifnull(game_type, ''), ifnull(mode, ''), ifnull(category, '')
+    `)
+    .all(row.id) as unknown as PlayerExternalTotalRow[]
+  const vehicles = getDb()
+    .prepare(`
+      SELECT
+        snapshot_id, game_type, mode, vehicle_id, flyouts, victories, defeats,
+        deaths, air_kills, ground_kills, naval_kills, time_played_sec
+      FROM player_external_vehicles
+      WHERE snapshot_id = ?
+      ORDER BY ifnull(game_type, ''), ifnull(mode, ''), vehicle_id
+    `)
+    .all(row.id) as unknown as PlayerExternalVehicleRow[]
+  return {
+    snapshot: toPlayerExternalSnapshotMeta(row),
+    totals: totals.map(toPlayerExternalTotal),
+    vehicles: vehicles.map(toPlayerExternalVehicle),
+  }
+}
+
+export function getLatestPlayerExternalStats(
+  identityId: number,
+  source?: string,
+): PlayerExternalStats | null {
+  const normalizedIdentityId = playerStatsIdentityId(identityId)
+  const normalizedSource = source === undefined ? undefined : requiredPlayerStatsText(source, 'source')
+  const statement = normalizedSource === undefined
+    ? getDb().prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ? AND status = 'ok'
+        ORDER BY last_checked_at DESC, id DESC
+        LIMIT 1
+      `)
+    : getDb().prepare(`
+        SELECT
+          id, identity_id, source, source_player_id, nick, fetched_at,
+          last_checked_at, source_updated_at, status, content_hash,
+          parser_version, error
+        FROM player_external_snapshots
+        WHERE identity_id = ? AND source = ? AND status = 'ok'
+        ORDER BY last_checked_at DESC, id DESC
+        LIMIT 1
+      `)
+  const row = (normalizedSource === undefined
+    ? statement.get(normalizedIdentityId)
+    : statement.get(normalizedIdentityId, normalizedSource)) as PlayerExternalSnapshotMetaRow | undefined
+  if (row === undefined) return null
+  return loadPlayerExternalStats(row)
+}
+
+/** Успешные версии без raw JSON, от новой к старой; используются для дельт. */
+export function getPlayerExternalStatsHistory(
+  identityId: number,
+  source: string,
+  limit = 2,
+  excludeSnapshotId?: number,
+): PlayerExternalStats[] {
+  const normalizedIdentityId = playerStatsIdentityId(identityId)
+  const normalizedSource = requiredPlayerStatsText(source, 'source')
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {
+    throw new RangeError('Лимит истории внешней статистики должен быть от 1 до 10')
+  }
+  if (
+    excludeSnapshotId !== undefined
+    && (!Number.isSafeInteger(excludeSnapshotId) || excludeSnapshotId <= 0)
+  ) {
+    throw new RangeError('excludeSnapshotId должен быть положительным целым числом')
+  }
+  const excluded = excludeSnapshotId ?? null
+  const rows = getDb()
+    .prepare(`
+      SELECT
+        id, identity_id, source, source_player_id, nick, fetched_at,
+        last_checked_at, source_updated_at, status, content_hash,
+        parser_version, error
+      FROM player_external_snapshots
+      WHERE identity_id = ? AND source = ? AND status = 'ok'
+        AND (? IS NULL OR id <> ?)
+      ORDER BY last_checked_at DESC, id DESC
+      LIMIT ?
+    `)
+    .all(
+      normalizedIdentityId,
+      normalizedSource,
+      excluded,
+      excluded,
+      limit,
+    ) as unknown as PlayerExternalSnapshotMetaRow[]
+  return rows.map(loadPlayerExternalStats)
+}
+
 // ---------- Голосовые каналы Discord ----------
 
 export interface VoicePresenceEntry {
@@ -1108,6 +2247,189 @@ export function getPlayerBattleStats(nick: string): { battles: number; lastBattl
     | { battles: number; last: number | null }
     | undefined
   return { battles: row?.battles ?? 0, lastBattleAt: row?.last ?? null }
+}
+
+/** Полуоткрытый период [from, to) в Unix-секундах. */
+export interface PlayerReplayStatsPeriod {
+  from?: number
+  to?: number
+}
+
+export interface PlayerReplayVehicleStats {
+  vehicleId: string
+  battles: number
+}
+
+export interface PlayerReplayStats {
+  battles: number
+  wins: number
+  losses: number
+  unknownResults: number
+  winRate: number | null
+  airKills: number
+  groundKills: number
+  navalKills: number
+  aiAirKills: number
+  aiGroundKills: number
+  assists: number
+  deaths: number
+  score: number
+  teamKills: number
+  observedBattleTimeSec: number
+  firstBattleAt: number | null
+  lastBattleAt: number | null
+  vehicles: PlayerReplayVehicleStats[]
+  /** Число локальных реплеев, на которых основан результат. */
+  coverageBattles: number
+}
+
+function replayPeriodBoundary(value: number | undefined, name: 'from' | 'to'): number | null {
+  if (value === undefined) return null
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`Граница периода ${name} должна быть неотрицательным целым Unix-временем`)
+  }
+  return value
+}
+
+/**
+ * Статистика только по локально разобранным реплеям для стабильного WT user id.
+ * Ники намеренно не участвуют в сопоставлении: они могут меняться или совпадать.
+ */
+export function getPlayerReplayStats(
+  playerRef: { userId: string },
+  period: PlayerReplayStatsPeriod = {},
+): PlayerReplayStats {
+  const userId = playerRef.userId.trim()
+  if (!userId) throw new Error('Для replay-статистики нужен непустой WT user id')
+
+  const from = replayPeriodBoundary(period.from, 'from')
+  const to = replayPeriodBoundary(period.to, 'to')
+  if (from !== null && to !== null && from > to) {
+    throw new RangeError('Начало периода replay-статистики не может быть позже конца')
+  }
+
+  selectPlayerReplayStatsStatement ??= getDb().prepare(`
+    WITH observed AS (
+      SELECT DISTINCT
+        b.session_id,
+        b.start_time,
+        b.duration_sec,
+        b.team_won,
+        bp.team,
+        bp.kills,
+        bp.ground_kills,
+        bp.naval_kills,
+        bp.ai_kills,
+        bp.ai_ground_kills,
+        bp.assists,
+        bp.deaths,
+        bp.score,
+        bp.team_kills
+      FROM battle_players bp
+      JOIN battles b ON b.session_id = bp.session_id
+      WHERE bp.user_id = ?
+        AND bp.user_id <> ''
+        AND (? IS NULL OR b.start_time >= ?)
+        AND (? IS NULL OR b.start_time < ?)
+    )
+    SELECT
+      COUNT(*) AS battles,
+      COALESCE(SUM(CASE WHEN team_won <> 0 AND team = team_won THEN 1 ELSE 0 END), 0) AS wins,
+      COALESCE(SUM(CASE WHEN team_won <> 0 AND team <> team_won THEN 1 ELSE 0 END), 0) AS losses,
+      COALESCE(SUM(CASE WHEN team_won = 0 THEN 1 ELSE 0 END), 0) AS unknown_results,
+      CASE
+        WHEN COALESCE(SUM(CASE WHEN team_won <> 0 THEN 1 ELSE 0 END), 0) > 0
+        THEN CAST(SUM(CASE WHEN team_won <> 0 AND team = team_won THEN 1 ELSE 0 END) AS REAL)
+          / SUM(CASE WHEN team_won <> 0 THEN 1 ELSE 0 END)
+        ELSE NULL
+      END AS win_rate,
+      COALESCE(SUM(kills), 0) AS air_kills,
+      COALESCE(SUM(ground_kills), 0) AS ground_kills,
+      COALESCE(SUM(naval_kills), 0) AS naval_kills,
+      COALESCE(SUM(ai_kills), 0) AS ai_air_kills,
+      COALESCE(SUM(ai_ground_kills), 0) AS ai_ground_kills,
+      COALESCE(SUM(assists), 0) AS assists,
+      COALESCE(SUM(deaths), 0) AS deaths,
+      COALESCE(SUM(score), 0) AS score,
+      COALESCE(SUM(team_kills), 0) AS team_kills,
+      COALESCE(SUM(duration_sec), 0) AS observed_battle_time_sec,
+      MIN(start_time) AS first_battle_at,
+      MAX(start_time) AS last_battle_at
+    FROM observed
+  `)
+  selectPlayerReplayVehiclesStatement ??= getDb().prepare(`
+    WITH observed AS (
+      SELECT DISTINCT b.session_id, bp.vehicle, bp.vehicles
+      FROM battle_players bp
+      JOIN battles b ON b.session_id = bp.session_id
+      WHERE bp.user_id = ?
+        AND bp.user_id <> ''
+        AND (? IS NULL OR b.start_time >= ?)
+        AND (? IS NULL OR b.start_time < ?)
+    ), vehicle_rows AS (
+      SELECT session_id, trim(vehicle) AS vehicle_id
+      FROM observed
+      WHERE vehicle IS NOT NULL AND trim(vehicle) <> ''
+      UNION
+      SELECT observed.session_id, trim(CAST(item.value AS TEXT)) AS vehicle_id
+      FROM observed
+      CROSS JOIN json_each(
+        CASE WHEN json_valid(observed.vehicles) THEN observed.vehicles ELSE '[]' END
+      ) AS item
+      WHERE item.type = 'text' AND trim(CAST(item.value AS TEXT)) <> ''
+    )
+    SELECT vehicle_id, COUNT(*) AS battles
+    FROM vehicle_rows
+    GROUP BY vehicle_id
+    ORDER BY battles DESC, vehicle_id COLLATE NOCASE, vehicle_id
+  `)
+
+  const params = [userId, from, from, to, to] as const
+  const row = selectPlayerReplayStatsStatement.get(...params) as {
+    battles: number
+    wins: number
+    losses: number
+    unknown_results: number
+    win_rate: number | null
+    air_kills: number
+    ground_kills: number
+    naval_kills: number
+    ai_air_kills: number
+    ai_ground_kills: number
+    assists: number
+    deaths: number
+    score: number
+    team_kills: number
+    observed_battle_time_sec: number
+    first_battle_at: number | null
+    last_battle_at: number | null
+  }
+  const vehicles = selectPlayerReplayVehiclesStatement.all(...params) as unknown as {
+    vehicle_id: string
+    battles: number
+  }[]
+
+  return {
+    battles: row.battles,
+    wins: row.wins,
+    losses: row.losses,
+    unknownResults: row.unknown_results,
+    winRate: row.win_rate,
+    airKills: row.air_kills,
+    groundKills: row.ground_kills,
+    navalKills: row.naval_kills,
+    aiAirKills: row.ai_air_kills,
+    aiGroundKills: row.ai_ground_kills,
+    assists: row.assists,
+    deaths: row.deaths,
+    score: row.score,
+    teamKills: row.team_kills,
+    observedBattleTimeSec: row.observed_battle_time_sec,
+    firstBattleAt: row.first_battle_at,
+    lastBattleAt: row.last_battle_at,
+    vehicles: vehicles.map((vehicle) => ({ vehicleId: vehicle.vehicle_id, battles: vehicle.battles })),
+    coverageBattles: row.battles,
+  }
 }
 
 /** Текущий ПКР и дельта по каждому нику клана (по двум последним снимкам) */

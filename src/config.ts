@@ -38,6 +38,8 @@ export const config = {
   port: Number(process.env['PORT'] ?? 3000),
   /** Путь к файлу SQLite */
   dbPath: process.env['DB_PATH'] ?? './data/wtbot.db',
+  /** Ленивое получение account-статистики известных игроков через публичный ThunderInsights API. */
+  playerStatsEnabled: envBoolean('WT_PLAYER_STATS_ENABLED', true),
   /** Куки залогиненной сессии warthunder.com (identity_*) для парсера wt-replays */
   wtCookie: process.env['WT_COOKIE'] ?? '',
   /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
