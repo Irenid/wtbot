@@ -1,3 +1,8 @@
+import type {
+  PlayerStatsLookupInput,
+  PlayerStatsLookupResult,
+} from '../player-stats/comparison.js'
+
 export interface BotStatus {
   online: boolean
   tag: string | null
@@ -10,4 +15,7 @@ export interface WebDeps {
   getBotStatus(): BotStatus
   /** Пересканировать голосовые каналы и освежить ПКР — кнопка «Обновить» на дашборде */
   refreshVoice(): Promise<{ players: number; clans: number }>
+  playerStats: {
+    lookup(input: PlayerStatsLookupInput): PlayerStatsLookupResult
+  }
 }
