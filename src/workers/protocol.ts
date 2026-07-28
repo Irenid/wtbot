@@ -6,6 +6,7 @@ import type { MapImageViewport, MissileSeeker } from '../wrpl/battle-assets.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
 import type { BattleItemMeta } from '../wrpl/battle-transform.js'
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
+import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -171,6 +172,10 @@ export interface WorkerTaskMap {
   'parse-mission': {
     input: { document: ArrayBuffer }
     output: MissionDocSummary
+  }
+  'prepare-scene': {
+    input: { eventsBlob: ArrayBuffer; scene: ScenePrepareInput }
+    output: ArrayBuffer
   }
 }
 

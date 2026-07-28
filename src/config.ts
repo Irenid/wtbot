@@ -25,6 +25,20 @@ function envNumber(name: string, fallback: number, min: number, max: number): nu
   return parsed
 }
 
+function envCsvUnique(name: string): string[] {
+  const values: string[] = []
+  const seen = new Set<string>()
+  for (const raw of (process.env[name] ?? '').split(',')) {
+    const value = raw.trim()
+    if (value === '') continue
+    const key = value.normalize('NFKC').toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    values.push(value)
+  }
+  return values
+}
+
 const workers = workerResourcePlan()
 
 export const config = {
@@ -38,10 +52,32 @@ export const config = {
   port: Number(process.env['PORT'] ?? 3000),
   /** Путь к файлу SQLite */
   dbPath: process.env['DB_PATH'] ?? './data/wtbot.db',
-  /** Ленивое получение account-статистики известных игроков через публичный ThunderInsights API. */
+  /** Ленивое получение account-статистики известных игроков с профиля warthunder.com. */
   playerStatsEnabled: envBoolean('WT_PLAYER_STATS_ENABLED', true),
-  /** Куки залогиненной сессии warthunder.com (identity_*) для парсера wt-replays */
+  /** Дополнительный lazy snapshot StatShark по стабильному WT user id. */
+  statSharkPlayerStatsEnabled: envBoolean('STATSHARK_PLAYER_STATS_ENABLED', false),
+  /** Ники для периодического сбора профилей и реплеев (через запятую). */
+  playerNames: envCsvUnique('WT_PLAYER_NAMES'),
+  /** Куки залогиненной сессии warthunder.com (identity_*) для WT-парсеров. */
   wtCookie: process.env['WT_COOKIE'] ?? '',
+  /** Весь трафик warthunder.com идёт через настоящий Edge: Cloudflare не пропускает Node-fetch. */
+  wtBrowserEnabled: envBoolean('WT_BROWSER_ENABLED', true),
+  /**
+   * Прятать окно Edge. Настоящий headless Cloudflare не пропускает, поэтому
+   * окно остаётся обычным и уезжает за пределы экрана; при неудачной проверке
+   * оно автоматически возвращается на экран для ручного прохождения.
+   */
+  wtBrowserHeadless: envBoolean('WT_BROWSER_HEADLESS', true),
+  /** Максимальное время ожидания автоматической/ручной проверки Cloudflare. */
+  wtBrowserTimeoutMs: envNumber('WT_BROWSER_TIMEOUT_MS', 60_000, 15_000, 180_000),
+  /** Профиль Edge для сохранения пройденной проверки между перезапусками. */
+  wtBrowserProfileDir: process.env['WT_BROWSER_PROFILE_DIR']?.trim() ?? './data/wt-browser-profile',
+  /** Сколько вкладок Edge обслуживают запросы параллельно. */
+  wtBrowserPoolSize: Math.floor(envNumber('WT_BROWSER_POOL_SIZE', 3, 1, 8)),
+  /** Фиксированный DevTools-порт Edge; 0 — свободный порт, запомненный в профиле. */
+  wtBrowserCdpPort: Math.floor(envNumber('WT_BROWSER_CDP_PORT', 0, 0, 65_535)),
+  /** Необязательный путь к Edge/Chromium; по умолчанию используется канал msedge. */
+  wtBrowserExecutable: process.env['WT_BROWSER_EXECUTABLE']?.trim() ?? '',
   /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
   voiceChannelIds: (process.env['WT_VOICE_CHANNELS'] ?? '')
     .split(',')

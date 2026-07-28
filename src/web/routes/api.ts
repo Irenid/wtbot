@@ -10,6 +10,8 @@ import {
   getVoiceDashboardRows,
 } from '../../db/index.js'
 import { decorateTag } from '../../wrpl/render-battle.js'
+import { wtBrowserMetrics } from '../../parsers/sources/wt-browser.js'
+import { wtTransportMode } from '../../parsers/sources/wt-request.js'
 
 // JSON API — его же можно дергать из будущего фронтенда (React/Vue),
 // когда простой встроенной страницы станет мало.
@@ -26,13 +28,23 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
     parsers: getLatestParsePerSource(),
     items: getItemStats(),
     ingest: getIngestStats(),
+    wtTransport: { mode: wtTransportMode(), ...wtBrowserMetrics() },
   }))
 
   // Собранные записи (с результатом анализа, если есть):
   // GET /api/items?limit=20&source=demo-feed
-  app.get<{ Querystring: { source?: string; limit?: string } }>('/api/items', async (request) => {
-    const limit = Math.min(Number(request.query.limit ?? 20) || 20, 100)
-    return { items: getLatestItems(limit, request.query.source) }
+  app.get<{ Querystring: { source?: string; limit?: number } }>('/api/items', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          source: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+  }, async (request) => {
+    return { items: getLatestItems(request.query.limit ?? 20, request.query.source) }
   })
 
   app.get<{ Params: { source: string } }>('/api/parsers/:source/history', async (request) => ({

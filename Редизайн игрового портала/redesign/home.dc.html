@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#111015; color:#f2efe6; font-family:'Segoe UI',system-ui,sans-serif; }
+  a { color:#f5bc4a; text-decoration:none; }
+  a:hover { color:#f0d9a0; }
+  input::placeholder { color:#7d7885; }
+  @keyframes glowPulse { 0%,100% { opacity:.55; } 50% { opacity:.9; } }
+  @keyframes riseIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+</style>
+</helmet>
+
+<div style="min-height:100vh; display:flex; flex-direction:column; background:radial-gradient(900px 420px at 50% -80px, rgba(245,188,74,.20), transparent 62%), radial-gradient(700px 500px at 85% 10%, rgba(127,155,255,.07), transparent 60%), #111015">
+
+  <nav style="position:sticky; top:0; z-index:50; display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:10px clamp(14px,4vw,28px); background:rgba(17,16,20,.72); backdrop-filter:blur(18px) saturate(1.3); border-bottom:1px solid rgba(255,255,255,.06)">
+    <a href="home.dc.html" style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:19px; font-weight:700; color:#f2efe6; margin-right:14px; letter-spacing:.01em">wt<span style="color:#f5bc4a">bot</span></a>
+    <a href="home.dc.html" aria-current="page" style="padding:7px 13px; border-radius:8px; font-size:13.5px; font-weight:600; color:#f2efe6; background:rgba(245,188,74,.16); border:1px solid rgba(245,188,74,.25)">Поиск</a>
+    <a href="clans.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Кланы</a>
+    <a href="clan.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Клан</a><a href="player.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Игрок</a><a href="battles.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Бои</a>
+    <span style="flex:1"></span>
+    <a href="#" style="padding:7px 13px; border-radius:8px; font-size:13px; color:#7d7885; border:1px solid #2d2b33" style-hover="color:#b8b3ac; border-color:#4a4655">Панель бота</a>
+  </nav>
+
+  <section style="padding:clamp(44px,7vw,84px) 20px 30px; text-align:center; animation:riseIn .5s ease both">
+    <div style="display:inline-flex; align-items:center; gap:8px; padding:5px 12px; border-radius:999px; background:#18161b; border:1px solid #2d2b33; font-size:12px; color:#b8b3ac; margin-bottom:18px">
+      <span style="width:7px; height:7px; border-radius:50%; background:#8ee6a1; box-shadow:0 0 8px #8ee6a1; animation:glowPulse 2.4s ease infinite"></span>
+      данные обновлены сегодня в 19:11
+    </div>
+    <h1 style="margin:0 auto; max-width:760px; font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:clamp(28px,4.6vw,50px); font-weight:700; letter-spacing:-.02em; line-height:1.12; letter-spacing:-.01em">Вся статистика <span style="color:#f5bc4a; text-shadow:0 0 34px rgba(245,188,74,.45)">War Thunder</span><br>в одном месте</h1>
+    <p style="margin:14px auto 0; max-width:520px; color:#b8b3ac; font-size:clamp(14px,1.6vw,16px); text-wrap:pretty">Игроки, кланы и разборы боёв — всё, что нужно клану, в пару кликов.</p>
+
+    <div style="position:relative; max-width:640px; margin:34px auto 0">
+      <form style="display:flex; gap:8px; padding:8px; border-radius:16px; background:#18161b; border:1px solid #4a4655; box-shadow:0 34px 80px -30px rgba(0,0,0,.9), 0 0 80px -20px rgba(245,188,74,.30), 0 0 0 1px rgba(245,188,74,.14)">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="margin:auto 2px auto 10px; flex:none"><circle cx="11" cy="11" r="7" stroke="#7d7885" stroke-width="2"></circle><path d="M20 20l-3.6-3.6" stroke="#7d7885" stroke-width="2" stroke-linecap="round"></path></svg>
+        <input value="{{ q }}" onChange="{{ setQ }}" placeholder="Ник игрока или WT user id…" maxlength="64" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#f2efe6; font-size:16px; font-family:inherit">
+        <button type="submit" disabled="{{ searchDisabled }}" style="flex:none; padding:12px 22px; border:none; border-radius:10px; background:linear-gradient(135deg,#ffdf8a,#f0a72e); color:#231a06; font-weight:700; box-shadow:inset 0 1px 0 rgba(255,255,255,.45), 0 16px 32px -16px rgba(245,188,74,.55); font-size:14.5px; font-family:inherit; cursor:pointer; opacity:{{ searchOpacity }}" style-hover="filter:brightness(1.1)">Найти</button>
+      </form>
+      <sc-if value="{{ showSug }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute; left:8px; right:8px; top:calc(100% + 6px); z-index:30; background:#1e1c23; border:1px solid #4a4655; border-radius:12px; overflow:hidden; box-shadow:0 24px 60px -12px rgba(0,0,0,.7); text-align:left">
+          <sc-for list="{{ suggestions }}" as="s" hint-placeholder-count="0">
+            <a href="player.dc.html" style="display:flex; align-items:center; gap:10px; padding:11px 14px; border-bottom:1px solid #2d2b33; color:#f2efe6" style-hover="background:#18161b">
+              <span style="width:30px; height:30px; flex:none; border-radius:8px; background:linear-gradient(135deg,#ffd873,#e89b1f); display:grid; place-items:center; font-size:12px; font-weight:700; color:#111015">{{ s.init }}</span>
+              <span style="flex:1; min-width:0"><b style="font-weight:600">{{ s.nick }}</b> <span style="color:#7d7885; font-size:12px">{{ s.clan }}</span></span>
+              <span style="font-size:12px; color:#b8b3ac; font-variant-numeric:tabular-nums">ПКР {{ s.pkr }}</span>
+            </a>
+          </sc-for>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:16px; font-size:12.5px; color:#7d7885">
+      <span style="white-space:nowrap">Часто ищут:</span>
+      <a href="player.dc.html" style="padding:3px 10px; border-radius:999px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac" style-hover="border-color:#f5bc4a; color:#f2efe6">ViperAce</a>
+      <a href="clan.dc.html" style="padding:3px 10px; border-radius:999px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac" style-hover="border-color:#f5bc4a; color:#f2efe6">AURI</a>
+      <a href="clan.dc.html" style="padding:3px 10px; border-radius:999px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac" style-hover="border-color:#f5bc4a; color:#f2efe6">WOLF</a>
+    </div>
+  </section>
+
+  <section style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; max-width:860px; width:100%; margin:26px auto 0; padding:0 20px; box-sizing:border-box">
+    <div style="text-align:center; padding:16px 10px; border-radius:14px; background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.06)">
+      <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums">8</div>
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#7d7885; margin-top:2px">игроков</div>
+    </div>
+    <div style="text-align:center; padding:16px 10px; border-radius:14px; background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.06)">
+      <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums">2</div>
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#7d7885; margin-top:2px">клана</div>
+    </div>
+    <div style="text-align:center; padding:16px 10px; border-radius:14px; background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.06)">
+      <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums">96</div>
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#7d7885; margin-top:2px">боёв в базе</div>
+    </div>
+    <div style="text-align:center; padding:16px 10px; border-radius:14px; background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.06)">
+      <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums">14</div>
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#7d7885; margin-top:2px">боёв за 7 дней</div>
+    </div>
+  </section>
+
+  <section style="display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:16px; max-width:1180px; width:100%; margin:34px auto 0; padding:0 20px 40px; box-sizing:border-box">
+
+    <div style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:20px 20px 16px; display:flex; flex-direction:column; transition:transform .25s ease, border-color .25s ease" style-hover="border-color:rgba(245,188,74,.5); transform:translateY(-3px)">
+      <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:14px">
+        <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35); align-self:center"></span>
+        <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Топ кланов</h2>
+        <span style="margin-left:auto; font-size:11px; color:#7d7885">по сумме ПКР</span>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px; flex:1">
+        <a href="clan.dc.html" style="display:block; color:inherit; padding:10px 12px; border-radius:10px; background:#18161b; border:1px solid transparent" style-hover="border-color:#f5bc4a">
+          <div style="display:flex; align-items:center; gap:10px">
+            <span style="width:26px; height:26px; flex:none; border-radius:7px; background:linear-gradient(135deg,rgba(245,188,74,.35),rgba(245,188,74,.1)); border:1px solid rgba(245,188,74,.4); display:grid; place-items:center; font-size:12px; font-weight:700; color:#f5bc4a">1</span>
+            <span style="font-weight:700; color:#f2efe6">AURI</span>
+            <span style="color:#7d7885; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">Aurora Imperialis</span>
+            <span style="margin-left:auto; font-weight:700; font-variant-numeric:tabular-nums">9&nbsp;260</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:8px">
+            <div style="flex:1; height:5px; border-radius:3px; background:#111015; overflow:hidden"><div style="width:100%; height:100%; border-radius:3px; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div>
+            <span style="font-size:11px; color:#7d7885; flex:none">6 чел.</span>
+          </div>
+        </a>
+        <a href="clan.dc.html" style="display:block; color:inherit; padding:10px 12px; border-radius:10px; background:#18161b; border:1px solid transparent" style-hover="border-color:#f5bc4a">
+          <div style="display:flex; align-items:center; gap:10px">
+            <span style="width:26px; height:26px; flex:none; border-radius:7px; background:#1e1c23; border:1px solid #4a4655; display:grid; place-items:center; font-size:12px; font-weight:700; color:#b8b3ac">2</span>
+            <span style="font-weight:700; color:#f2efe6">WOLF</span>
+            <span style="color:#7d7885; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">Wolfpack</span>
+            <span style="margin-left:auto; font-weight:700; font-variant-numeric:tabular-nums">2&nbsp;907</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:8px">
+            <div style="flex:1; height:5px; border-radius:3px; background:#111015; overflow:hidden"><div style="width:31%; height:100%; border-radius:3px; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div>
+            <span style="font-size:11px; color:#7d7885; flex:none">2 чел.</span>
+          </div>
+        </a>
+      </div>
+      <a href="clans.dc.html" style="margin-top:12px; font-size:13px; font-weight:600">Все кланы →</a>
+    </div>
+
+    <div style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:20px 20px 16px; display:flex; flex-direction:column; transition:transform .25s ease, border-color .25s ease" style-hover="border-color:rgba(245,188,74,.5); transform:translateY(-3px)">
+      <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:14px">
+        <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35); align-self:center"></span>
+        <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Свежие бои</h2>
+        
+      </div>
+      <div style="display:flex; flex-direction:column; gap:8px; flex:1">
+        <a href="battle.dc.html" style="display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:10px; background:#18161b; border:1px solid transparent; color:inherit" style-hover="border-color:#f5bc4a">
+          <svg width="34" height="34" viewBox="0 0 34 34" style="flex:none; border-radius:8px; background:#111015"><rect x="4" y="20" width="9" height="9" rx="1.5" fill="#f2984a" opacity=".85"></rect><rect x="21" y="5" width="9" height="9" rx="1.5" fill="#7f9bff" opacity=".85"></rect><path d="M8 20 L25 14" stroke="#7d7885" stroke-width="1.4" stroke-dasharray="2.5 2.5"></path></svg>
+          <span style="flex:1; min-width:0">
+            <b style="display:block; font-weight:600; color:#f2efe6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Красная пустыня</b>
+            <span style="font-size:11.5px; color:#7d7885">земля · 8 игроков · 20 мин</span>
+          </span>
+          <span style="font-size:11.5px; color:#7d7885; flex:none; text-align:right">сегодня<br>13:11</span>
+        </a>
+        <a href="battle.dc.html" style="display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:10px; background:#18161b; border:1px solid transparent; color:inherit" style-hover="border-color:#f5bc4a">
+          <svg width="34" height="34" viewBox="0 0 34 34" style="flex:none; border-radius:8px; background:#111015"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="#f2984a" opacity=".85"></rect><rect x="20" y="20" width="9" height="9" rx="1.5" fill="#7f9bff" opacity=".85"></rect><path d="M10 10 L24 24" stroke="#7d7885" stroke-width="1.4" stroke-dasharray="2.5 2.5"></path></svg>
+          <span style="flex:1; min-width:0">
+            <b style="display:block; font-weight:600; color:#f2efe6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Прорыв линии Зигфрида</b>
+            <span style="font-size:11.5px; color:#7d7885">земля · 8 игроков · 15 мин</span>
+          </span>
+          <span style="font-size:11.5px; color:#7d7885; flex:none; text-align:right">вчера<br>15:11</span>
+        </a>
+        <a href="battle.dc.html" style="display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:10px; background:#18161b; border:1px solid transparent; color:inherit" style-hover="border-color:#f5bc4a">
+          <svg width="34" height="34" viewBox="0 0 34 34" style="flex:none; border-radius:8px; background:#111015"><rect x="4" y="13" width="9" height="9" rx="1.5" fill="#f2984a" opacity=".85"></rect><rect x="21" y="13" width="9" height="9" rx="1.5" fill="#7f9bff" opacity=".85"></rect><path d="M13 17 L21 17" stroke="#7d7885" stroke-width="1.4" stroke-dasharray="2.5 2.5"></path></svg>
+          <span style="flex:1; min-width:0">
+            <b style="display:block; font-weight:600; color:#f2efe6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Красная пустыня</b>
+            <span style="font-size:11.5px; color:#7d7885">земля · 6 игроков · 18 мин</span>
+          </span>
+          <span style="font-size:11.5px; color:#7d7885; flex:none; text-align:right">24.07<br>21:40</span>
+        </a>
+      </div>
+      <a href="battles.dc.html" style="margin-top:12px; font-size:13px; font-weight:600">Все бои →</a>
+    </div>
+
+    <sc-if value="{{ showActivity }}" hint-placeholder-val="{{ true }}">
+    <div style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:20px 20px 16px; display:flex; flex-direction:column; transition:transform .25s ease, border-color .25s ease" style-hover="border-color:rgba(245,188,74,.5); transform:translateY(-3px)">
+      <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:14px">
+        <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35); align-self:center"></span>
+        <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Активность за неделю</h2>
+        <span style="margin-left:auto; font-size:11px; color:#7d7885">боёв в день</span>
+      </div>
+      <svg viewBox="0 0 700 120" style="width:100%; height:140px; display:block" preserveAspectRatio="none" aria-label="Боёв в день за неделю">
+        <defs><linearGradient id="hgba" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd873" stop-opacity=".95"></stop><stop offset="1" stop-color="#e89b1f" stop-opacity=".35"></stop></linearGradient></defs>
+        <line x1="0" y1="110" x2="700" y2="110" stroke="#2d2b33" stroke-width="1"></line>
+        <rect x="22" y="86" width="54" height="24" rx="5" fill="url(#hgba)"></rect>
+        <rect x="118" y="62" width="54" height="48" rx="5" fill="url(#hgba)"></rect>
+        <rect x="214" y="98" width="54" height="12" rx="5" fill="url(#hgba)"></rect>
+        <rect x="310" y="107" width="54" height="3" rx="1.5" fill="#2d2b33"></rect>
+        <rect x="406" y="74" width="54" height="36" rx="5" fill="url(#hgba)"></rect>
+        <rect x="502" y="43" width="54" height="67" rx="5" fill="url(#hgba)"></rect>
+        <rect x="598" y="26" width="54" height="84" rx="5" fill="url(#hgba)"></rect>
+      </svg>
+      <div style="display:flex; justify-content:space-between; font-size:10.5px; color:#7d7885; padding:6px 4px 0">
+        <span>пн</span><span>вт</span><span>ср</span><span>чт</span><span>пт</span><span>сб</span><span>вс</span>
+      </div>
+      <div style="margin-top:10px; font-size:12.5px; color:#b8b3ac">Пик — воскресенье: <b style="color:#f2efe6">7 боёв</b>, клановые вылазки AURI</div>
+    </div>
+    </sc-if>
+  </section>
+
+  <footer style="margin-top:auto; padding:18px 20px 26px; text-align:center; font-size:12px; color:#7d7885; border-top:1px solid #18161b">
+    wtbot · <a href="#" style="color:#7d7885" style-hover="color:#b8b3ac">Панель бота</a>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showActivity&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Блоки&quot;}}">
+class Component extends DCLogic {
+  state = { q: "" };
+  renderVals() {
+    const q = this.state.q;
+    const all = [
+      { nick: "ViperAce", init: "V", clan: "AURI", pkr: "1 808" },
+      { nick: "ViperX_77", init: "V", clan: "—", pkr: "944" },
+      { nick: "NightHawk", init: "N", clan: "AURI", pkr: "1 671" },
+      { nick: "SilentWolf", init: "S", clan: "WOLF", pkr: "1 502" }
+    ];
+    const suggestions = q.trim().length >= 2
+      ? all.filter(p => p.nick.toLowerCase().includes(q.trim().toLowerCase()))
+      : [];
+    return {
+      q,
+      setQ: e => this.setState({ q: e.target.value }),
+      searchDisabled: q.trim().length < 2,
+      searchOpacity: q.trim().length < 2 ? 0.55 : 1,
+      showSug: suggestions.length > 0,
+      suggestions,
+      showActivity: this.props.showActivity ?? true
+    };
+  }
+}
+</script>
+</body>
+</html>

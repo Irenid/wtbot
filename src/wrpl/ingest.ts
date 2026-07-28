@@ -58,6 +58,27 @@ let currentAbort: AbortController | null = null
 let ingestConcurrency = 1
 /** Логируем размер бэклога один раз, чтобы не спамить в консоль каждый тик */
 let backlogLogged = false
+/**
+ * Синхронный SQLite-коммит блокирует event loop. Очередь не делает запись
+ * асинхронной, но не позволяет нескольким готовым runner-ам выполнить тяжёлые
+ * транзакции вплотную без промежуточного event-loop turn для Fastify/Discord.
+ */
+let sqliteCommitTail: Promise<void> = Promise.resolve()
+
+async function runSerializedSqliteCommit<T>(work: () => T): Promise<T> {
+  const previous = sqliteCommitTail
+  let release!: () => void
+  sqliteCommitTail = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  try {
+    await previous
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return work()
+  } finally {
+    release()
+  }
+}
 
 /** HTTP 404/410 от CDN — части ушли, повторять бесполезно */
 function isExpired(err: unknown): boolean {
@@ -93,11 +114,21 @@ async function ingestOne(
       signal,
     )
     if (signal.aborted) return 'cancelled'
-    const sqliteStarted = performance.now()
-    saveBattle(loaded.battle)
-    markBattleIngest(item.externalId, 'ok')
-    const committedAtMs = Date.now()
-    const sqliteMs = performance.now() - sqliteStarted
+    const sqliteQueuedAt = performance.now()
+    let sqliteMs = 0
+    const committedAtMs = await runSerializedSqliteCommit(() => {
+      if (signal.aborted || stopping) return null
+      const sqliteStarted = performance.now()
+      try {
+        saveBattle(loaded.battle)
+        markBattleIngest(item.externalId, 'ok')
+        return Date.now()
+      } finally {
+        sqliteMs = performance.now() - sqliteStarted
+      }
+    })
+    if (committedAtMs === null) return 'cancelled'
+    const sqliteQueueMs = Math.max(0, performance.now() - sqliteQueuedAt - sqliteMs)
     await dropReplayCache(loaded.header.sessionIdHex)
     const events = loaded.summary
     console.log(
@@ -105,7 +136,7 @@ async function ingestOne(
         `игроков ${loaded.results.players.length}, убийств ${events.kills}, ` +
         `победитель ${events.teamWon > 0 ? `команда ${events.teamWon}` : '?'}`,
     )
-    logIngestTiming(item, loaded.timing, committedAtMs, sqliteMs)
+    logIngestTiming(item, loaded.timing, committedAtMs, sqliteQueueMs, sqliteMs)
     return 'ok'
   } catch (err) {
     if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) return 'cancelled'
@@ -159,6 +190,7 @@ function logIngestTiming(
   item: PendingBattleItem,
   timing: Awaited<ReturnType<typeof loadBattleData>>['timing'],
   committedAtMs: number,
+  sqliteQueueMs: number,
   sqliteMs: number,
 ): void {
   const discoveredAtMs = item.firstSeenAt * 1000
@@ -173,7 +205,7 @@ function logIngestTiming(
       `cache→parsed ${formatMs(timing.workerFinishedAtMs - timing.replayReadyAtMs)} ` +
       `(input ${formatMs(timing.inputPrepareMs)}, queue ${formatMs(worker?.queueMs ?? 0)}, ` +
       `exec ${formatMs(worker?.executionMs ?? timing.workerWallMs)}), ` +
-      `SQLite ${formatMs(sqliteMs)}, ` +
+      `SQLite ${formatMs(sqliteMs)} (queue ${formatMs(sqliteQueueMs)}), ` +
       `discovered→commit ${formatMs(committedAtMs - discoveredAtMs)}`,
   )
 }

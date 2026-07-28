@@ -1,0 +1,56 @@
+<!-- @dsCard group="Colors" name="Палитра wtbot" -->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; background: #111015; color: #f2efe6; font: 13px 'Segoe UI', system-ui, sans-serif; }
+  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #7d7885; margin: 14px 0 8px; }
+  h3:first-child { margin-top: 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .sw { width: 132px; border: 1px solid #2d2b33; border-radius: 8px; overflow: hidden; }
+  .sw .c { height: 44px; }
+  .sw .l { padding: 6px 8px; font-size: 11px; }
+  .sw .l b { display: block; font-weight: 600; }
+  .sw .l span { color: #7d7885; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <h3>Поверхности и текст</h3>
+  <div class="row">
+    <div class="sw"><div class="c" style="background:#111015"></div><div class="l"><b>bg</b><span>#111015</span></div></div>
+    <div class="sw"><div class="c" style="background:#18161b"></div><div class="l"><b>bg-soft</b><span>#18161b</span></div></div>
+    <div class="sw"><div class="c" style="background:linear-gradient(180deg,#211f27,#18171d)"></div><div class="l"><b>card (градиент)</b><span>#211f27→#18171d</span></div></div>
+    <div class="sw"><div class="c" style="background:#1e1c23"></div><div class="l"><b>elevated</b><span>#1e1c23</span></div></div>
+    <div class="sw"><div class="c" style="background:#f2efe6"></div><div class="l"><b>ink</b><span>#f2efe6</span></div></div>
+    <div class="sw"><div class="c" style="background:#b8b3ac"></div><div class="l"><b>ink2</b><span>#b8b3ac</span></div></div>
+    <div class="sw"><div class="c" style="background:#7d7885"></div><div class="l"><b>muted</b><span>#7d7885</span></div></div>
+  </div>
+  <h3>Акцент — золото</h3>
+  <div class="row">
+    <div class="sw"><div class="c" style="background:#f5bc4a"></div><div class="l"><b>accent</b><span>#f5bc4a</span></div></div>
+    <div class="sw"><div class="c" style="background:linear-gradient(135deg,#ffdf8a,#f0a72e)"></div><div class="l"><b>gold-grad (кнопки)</b><span>#ffdf8a→#f0a72e</span></div></div>
+    <div class="sw"><div class="c" style="background:linear-gradient(90deg,#e89b1f,#ffd873)"></div><div class="l"><b>gold-bar (бары)</b><span>#e89b1f→#ffd873</span></div></div>
+  </div>
+  <h3>Серии графиков и команды — валидированы (контраст ≥ 3:1, CVD)</h3>
+  <div class="row">
+    <div class="sw"><div class="c" style="background:#5f80f2"></div><div class="l"><b>air / команда 1</b><span>#5f80f2</span></div></div>
+    <div class="sw"><div class="c" style="background:#d0731f"></div><div class="l"><b>ground / команда 2</b><span>#d0731f</span></div></div>
+    <div class="sw"><div class="c" style="background:#1fae86"></div><div class="l"><b>naval</b><span>#1fae86</span></div></div>
+    <div class="sw"><div class="c" style="background:#7f9bff"></div><div class="l"><b>team1-bright*</b><span>#7f9bff</span></div></div>
+    <div class="sw"><div class="c" style="background:#f2984a"></div><div class="l"><b>team2-bright*</b><span>#f2984a</span></div></div>
+  </div>
+  <div class="row" style="margin-top:6px"><span style="color:#7d7885; font-size:11px">* яркие версии — только мелкие акценты с текстовой подписью рядом, не заливки серий</span></div>
+  <h3>Нейтральные серии метрик (графики истории — не путать с ветками)</h3>
+  <div class="row">
+    <div class="sw"><div class="c" style="background:#8f7be8"></div><div class="l"><b>metric1 (бои)</b><span>#8f7be8</span></div></div>
+    <div class="sw"><div class="c" style="background:#d55181"></div><div class="l"><b>metric2 (винрейт/победы)</b><span>#d55181</span></div></div>
+  </div>
+  <h3>Статусы</h3>
+  <div class="row">
+    <div class="sw"><div class="c" style="background:#8ee6a1"></div><div class="l"><b>ok</b><span>#8ee6a1</span></div></div>
+    <div class="sw"><div class="c" style="background:#ff8fa3"></div><div class="l"><b>fail</b><span>#ff8fa3</span></div></div>
+  </div>
+</body>
+</html>

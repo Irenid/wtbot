@@ -1,0 +1,59 @@
+<!-- @dsCard group="Components" name="Таблица данных" -->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; background: #111015; color: #f2efe6; font: 13px 'Segoe UI', system-ui, sans-serif; }
+  .card { background: linear-gradient(180deg,#211f27,#18171d); border: 1px solid #37343f; border-radius: 16px; box-shadow: 0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); overflow: hidden; }
+  .sec-head { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid #2d2b33; }
+  .sec-head::before { content: ''; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg,#ffd873,#e89b1f); box-shadow: 0 0 12px rgba(245,188,74,.35); }
+  .sec-head h2 { margin: 0; font-size: 12.5px; text-transform: uppercase; letter-spacing: .08em; color: #b8b3ac; font-weight: 600; }
+  .sec-head .hint { margin-left: auto; font-size: 11px; color: #7d7885; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; color: #7d7885; font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; padding: 9px 8px; border-bottom: 1px solid #2d2b33; }
+  th:first-child, td:first-child { padding-left: 18px; }
+  th:last-child, td:last-child { padding-right: 18px; }
+  td { padding: 10px 8px; border-top: 1px solid #2d2b33; white-space: nowrap; }
+  tbody tr:hover { background: #18161b; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  a { color: #f2efe6; text-decoration: none; font-weight: 600; }
+  a:hover { color: #f5bc4a; }
+  .rank { color: #7d7885; font-variant-numeric: tabular-nums; width: 26px; }
+  .cell-bar { height: 4px; border-radius: 2px; background: #111015; margin-top: 6px; overflow: hidden; }
+  .cell-bar div { height: 100%; background: linear-gradient(90deg,#e89b1f,#ffd873); }
+  .cell-bar.lead div { box-shadow: 0 0 10px rgba(245,188,74,.5); }
+  .delta-pill { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .delta-pill.up { background: rgba(142,230,161,.12); color: #8ee6a1; }
+  .delta-pill.down { background: rgba(255,143,163,.12); color: #ff8fa3; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="sec-head"><h2>Ростер и ПКР</h2><span class="hint">вклад в сумму</span></div>
+    <table>
+      <tbody>
+        <tr>
+          <td class="rank">1</td>
+          <td style="min-width:200px"><a href="#">ViperAce</a><div class="cell-bar lead"><div style="width:100%"></div></div></td>
+          <td class="num" style="font-weight:700">1 808</td>
+          <td class="num"><span class="delta-pill down">−14</span></td>
+        </tr>
+        <tr>
+          <td class="rank">2</td>
+          <td><a href="#">NightHawk</a><div class="cell-bar"><div style="width:92%"></div></div></td>
+          <td class="num" style="font-weight:700">1 658</td>
+          <td class="num"><span class="delta-pill down">−3</span></td>
+        </tr>
+        <tr>
+          <td class="rank">3</td>
+          <td><a href="#">SteelRain</a><div class="cell-bar"><div style="width:88%"></div></div></td>
+          <td class="num" style="font-weight:700">1 604</td>
+          <td class="num"><span class="delta-pill up">+16</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>
