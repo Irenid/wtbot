@@ -76,11 +76,16 @@ function battle(
 }
 
 class FixtureProvider implements PlayerStatsProvider {
-  readonly source = 'fixture-player-stats'
+  readonly source: string
   calls = 0
   closed = false
 
-  constructor(private readonly now: () => number) {}
+  constructor(
+    private readonly now: () => number,
+    source = 'fixture-player-stats',
+  ) {
+    this.source = source
+  }
 
   async resolvePlayer(nick: string): Promise<PlayerReference[]> {
     const sourcePlayerId = nick === 'VoicePilot@psn' ? '701' : '501'
@@ -113,6 +118,7 @@ class FixtureProvider implements PlayerStatsProvider {
           category: null,
           battles,
           victories,
+          deaths: null,
           defeats: battles - victories,
           timePlayedSec: null,
           respawns: flyouts,
@@ -176,7 +182,18 @@ async function main(): Promise<void> {
     retryMaxSeconds: 60,
     now: () => now,
   })
-  const coordinator = new PlayerStatsCoordinator({ externalService: service })
+  const secondaryProvider = new FixtureProvider(() => now, 'fixture-secondary')
+  const secondaryService = new PlayerStatsService({
+    provider: secondaryProvider,
+    parserVersion: 'fixture-secondary-v1',
+    ttlSeconds: 60,
+    retryBaseSeconds: 5,
+    retryMaxSeconds: 60,
+    now: () => now,
+  })
+  const coordinator = new PlayerStatsCoordinator({
+    externalServices: [service, secondaryService],
+  })
   const app = buildServer(deps(coordinator))
   const disabledApp = buildServer(deps(new PlayerStatsCoordinator({
     externalService: null,
@@ -191,6 +208,14 @@ async function main(): Promise<void> {
     const health = await app.inject({ method: 'GET', url: '/health' })
     assert.equal(health.statusCode, 200)
     assert.deepEqual(health.json(), { ok: true })
+
+    const items = await app.inject({ method: 'GET', url: '/api/items?limit=1' })
+    assert.equal(items.statusCode, 200)
+    assert.ok(Array.isArray((items.json() as { items: unknown[] }).items))
+    for (const invalidLimit of ['-1', '0', '1.5', '101', 'not-a-number']) {
+      const invalidItems = await app.inject({ method: 'GET', url: `/api/items?limit=${invalidLimit}` })
+      assert.equal(invalidItems.statusCode, 400, `limit=${invalidLimit} должен быть отклонён`)
+    }
 
     const page = await app.inject({ method: 'GET', url: '/' })
     assert.equal(page.statusCode, 200)
@@ -244,12 +269,14 @@ async function main(): Promise<void> {
     const firstBody = first.json() as { ok: true; stats: PlayerStatsComparison }
     assert.equal(firstBody.stats.account.state, 'pending')
     assert.equal(firstBody.stats.account.refreshQueued, true)
+    assert.equal(firstBody.stats.accountSources.length, 2)
+    assert.equal(firstBody.stats.accountSources[1]?.state, 'pending')
     assert.equal(firstBody.stats.replay.stats?.battles, 2)
     assert.equal(firstBody.stats.replay.stats?.wins, 1)
     assert.equal(firstBody.stats.replay.stats?.losses, 1)
     assert.equal(firstBody.stats.replay.stats?.winRate, 0.5)
 
-    await service.waitForIdle()
+    await coordinator.waitForIdle()
     const cached = await app.inject({
       method: 'POST',
       url: '/api/player-stats',
@@ -257,6 +284,7 @@ async function main(): Promise<void> {
     })
     const cachedBody = cached.json() as { ok: true; stats: PlayerStatsComparison }
     assert.equal(cachedBody.stats.account.state, 'fresh')
+    assert.equal(cachedBody.stats.accountSources[1]?.state, 'fresh')
     assert.equal(cachedBody.stats.account.vehicles[0]?.flyouts, 10)
     assert.equal(cachedBody.stats.comparison.vehicleOverlapCount, 1)
     assert.equal(provider.calls, 1)
@@ -270,7 +298,7 @@ async function main(): Promise<void> {
     const staleBody = stale.json() as { ok: true; stats: PlayerStatsComparison }
     assert.equal(staleBody.stats.account.state, 'stale')
     assert.equal(staleBody.stats.account.refreshQueued, true)
-    await service.waitForIdle()
+    await coordinator.waitForIdle()
 
     const changed = await app.inject({
       method: 'POST',
@@ -299,7 +327,7 @@ async function main(): Promise<void> {
     assert.equal(voicePendingBody.stats.player.wtUserId, null)
     assert.equal(voicePendingBody.stats.account.refreshQueued, true)
     assert.equal(voicePendingBody.stats.replay.available, false)
-    await service.waitForIdle()
+    await coordinator.waitForIdle()
     const voiceResolved = await app.inject({
       method: 'POST',
       url: '/api/player-stats',
@@ -338,8 +366,9 @@ async function main(): Promise<void> {
     console.log('[player-stats-api-smoke] OK: identity, API, UI, cache, delta, coverage и rate limit')
   } finally {
     await Promise.allSettled([app.close(), disabledApp.close(), rateLimitApp.close()])
-    await service.stop()
+    await coordinator.stop()
     assert.equal(provider.closed, true)
+    assert.equal(secondaryProvider.closed, true)
     closeDb()
   }
 }

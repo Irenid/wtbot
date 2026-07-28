@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "site-preview",
+      "url": "http://localhost:3210",
+      "port": 3210
+    }
+  ]
+}

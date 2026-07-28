@@ -11,6 +11,7 @@ import {
   type PlayerReplayStats,
   type PlayerReplayStatsPeriod,
 } from '../db/index.js'
+import { OFFICIAL_PROFILE_SOURCE } from './normalizer.js'
 import type { PlayerStatsService } from './service.js'
 import type {
   NormalizedPlayerExternalTotal,
@@ -49,6 +50,7 @@ export interface PlayerExternalTotalDelta {
   battles: number | null
   victories: number | null
   defeats: number | null
+  deaths: number | null
   timePlayedSec: number | null
   respawns: number | null
   airKills: number | null
@@ -86,6 +88,27 @@ export type PlayerAccountState =
   | 'disabled_cached'
   | Exclude<PlayerExternalSnapshotStatus, 'ok'>
 
+export interface PlayerAccountStatsView {
+  source: string
+  enabled: boolean
+  state: PlayerAccountState
+  stale: boolean
+  refreshQueued: boolean
+  nextRetryAt: number | null
+  lastCheckStatus: PlayerExternalSnapshotStatus | null
+  error: string | null
+  fetchedAt: number | null
+  checkedAt: number | null
+  sourceUpdatedAt: number | null
+  totals: NormalizedPlayerExternalTotal[]
+  totalCount: number
+  totalsTruncated: boolean
+  vehicles: NormalizedPlayerExternalVehicle[]
+  vehicleCount: number
+  vehiclesTruncated: boolean
+  delta: PlayerExternalDelta | null
+}
+
 export interface PlayerStatsComparison {
   player: {
     wtUserId: string | null
@@ -96,26 +119,10 @@ export interface PlayerStatsComparison {
     from: number | null
     to: number | null
   }
-  account: {
-    source: string
-    enabled: boolean
-    state: PlayerAccountState
-    stale: boolean
-    refreshQueued: boolean
-    nextRetryAt: number | null
-    lastCheckStatus: PlayerExternalSnapshotStatus | null
-    error: string | null
-    fetchedAt: number | null
-    checkedAt: number | null
-    sourceUpdatedAt: number | null
-    totals: NormalizedPlayerExternalTotal[]
-    totalCount: number
-    totalsTruncated: boolean
-    vehicles: NormalizedPlayerExternalVehicle[]
-    vehicleCount: number
-    vehiclesTruncated: boolean
-    delta: PlayerExternalDelta | null
-  }
+  /** Основной источник, сохранённый для обратной совместимости API/табло. */
+  account: PlayerAccountStatsView
+  /** Все настроенные account-источники; первым всегда идёт `account`. */
+  accountSources: PlayerAccountStatsView[]
   replay: {
     source: 'wrpl'
     available: boolean
@@ -142,7 +149,10 @@ interface ComparisonContext {
 }
 
 interface PlayerStatsCoordinatorOptions {
-  externalService: PlayerStatsService | null
+  /** Legacy-форма для одного источника. */
+  externalService?: PlayerStatsService | null
+  /** Несколько независимых provider/service с общей identity. */
+  externalServices?: readonly PlayerStatsService[]
   externalSource?: string
 }
 
@@ -312,6 +322,7 @@ function totalView(row: PlayerExternalStats['totals'][number]): NormalizedPlayer
     battles: row.battles,
     victories: row.victories,
     defeats: row.defeats,
+    deaths: row.deaths,
     timePlayedSec: row.timePlayedSec,
     respawns: row.respawns,
     airKills: row.airKills,
@@ -378,6 +389,7 @@ function externalDelta(
         battles: before === undefined ? null : metricDelta(row.battles, before.battles),
         victories: before === undefined ? null : metricDelta(row.victories, before.victories),
         defeats: before === undefined ? null : metricDelta(row.defeats, before.defeats),
+        deaths: before === undefined ? null : metricDelta(row.deaths, before.deaths),
         timePlayedSec: before === undefined ? null : metricDelta(row.timePlayedSec, before.timePlayedSec),
         respawns: before === undefined ? null : metricDelta(row.respawns, before.respawns),
         airKills: before === undefined ? null : metricDelta(row.airKills, before.airKills),
@@ -412,6 +424,47 @@ function accountState(context: ComparisonContext): PlayerAccountState {
   return status === undefined || status === 'ok' ? 'empty' : status
 }
 
+interface AccountProjection {
+  view: PlayerAccountStatsView
+  allTotals: NormalizedPlayerExternalTotal[]
+  allVehicles: NormalizedPlayerExternalVehicle[]
+}
+
+function accountProjection(context: ComparisonContext): AccountProjection {
+  const current = context.cache.stats
+  const previous = current === null
+    ? null
+    : context.history.find((stats) => stats.snapshot.id !== current.snapshot.id) ?? null
+  const allVehicles = current === null ? [] : sortedAccountVehicles(current)
+  const vehicles = allVehicles.slice(0, MAX_ACCOUNT_VEHICLES)
+  const allTotals = current?.totals.map(totalView) ?? []
+  const totals = allTotals.slice(0, MAX_ACCOUNT_TOTALS)
+  return {
+    allTotals,
+    allVehicles,
+    view: {
+      source: context.externalSource,
+      enabled: context.externalEnabled,
+      state: accountState(context),
+      stale: context.cache.stale,
+      refreshQueued: context.cache.refreshQueued,
+      nextRetryAt: context.cache.nextRetryAt,
+      lastCheckStatus: context.cache.lastCheck?.status ?? null,
+      error: context.cache.lastCheck?.error ?? null,
+      fetchedAt: current?.snapshot.fetchedAt ?? null,
+      checkedAt: context.cache.lastCheck?.lastCheckedAt ?? current?.snapshot.lastCheckedAt ?? null,
+      sourceUpdatedAt: current?.snapshot.sourceUpdatedAt ?? null,
+      totals,
+      totalCount: allTotals.length,
+      totalsTruncated: allTotals.length > totals.length,
+      vehicles,
+      vehicleCount: allVehicles.length,
+      vehiclesTruncated: allVehicles.length > vehicles.length,
+      delta: externalDelta(current, previous),
+    },
+  }
+}
+
 function aggregateAccountWinRate(totals: readonly NormalizedPlayerExternalTotal[]): number | null {
   const aggregate = totals.find((row) =>
     row.gameType === null && row.mode === null && row.category === null,
@@ -424,15 +477,13 @@ export function getPlayerStatsComparison(
   identity: PlayerIdentity,
   period: PlayerReplayStatsPeriod,
   context: ComparisonContext,
+  additionalContexts: readonly ComparisonContext[] = [],
 ): PlayerStatsComparison {
-  const current = context.cache.stats
-  const previous = current === null
-    ? null
-    : context.history.find((stats) => stats.snapshot.id !== current.snapshot.id) ?? null
-  const allAccountVehicles = current === null ? [] : sortedAccountVehicles(current)
-  const accountVehicles = allAccountVehicles.slice(0, MAX_ACCOUNT_VEHICLES)
-  const allTotals = current?.totals.map(totalView) ?? []
-  const totals = allTotals.slice(0, MAX_ACCOUNT_TOTALS)
+  const primary = accountProjection(context)
+  const accountSources = [
+    primary.view,
+    ...additionalContexts.map((additional) => accountProjection(additional).view),
+  ]
 
   const replayRaw = identity.wtUserId === null
     ? null
@@ -442,9 +493,9 @@ export function getPlayerStatsComparison(
     ? null
     : { ...replayRaw, vehicles: replayRaw.vehicles.slice(0, MAX_REPLAY_VEHICLES) }
 
-  const accountWinRate = aggregateAccountWinRate(allTotals)
+  const accountWinRate = aggregateAccountWinRate(primary.allTotals)
   const replayWinRate = replayStats?.winRate ?? null
-  const accountVehicleIds = new Set(allAccountVehicles.map((vehicle) => vehicle.vehicleId))
+  const accountVehicleIds = new Set(primary.allVehicles.map((vehicle) => vehicle.vehicleId))
   const replayVehicleIds = new Set(replayRaw?.vehicles.map((vehicle) => vehicle.vehicleId) ?? [])
   let vehicleOverlapCount = 0
   for (const vehicleId of accountVehicleIds) {
@@ -461,26 +512,8 @@ export function getPlayerStatsComparison(
       from: period.from ?? null,
       to: period.to ?? null,
     },
-    account: {
-      source: context.externalSource,
-      enabled: context.externalEnabled,
-      state: accountState(context),
-      stale: context.cache.stale,
-      refreshQueued: context.cache.refreshQueued,
-      nextRetryAt: context.cache.nextRetryAt,
-      lastCheckStatus: context.cache.lastCheck?.status ?? null,
-      error: context.cache.lastCheck?.error ?? null,
-      fetchedAt: current?.snapshot.fetchedAt ?? null,
-      checkedAt: context.cache.lastCheck?.lastCheckedAt ?? current?.snapshot.lastCheckedAt ?? null,
-      sourceUpdatedAt: current?.snapshot.sourceUpdatedAt ?? null,
-      totals,
-      totalCount: allTotals.length,
-      totalsTruncated: allTotals.length > totals.length,
-      vehicles: accountVehicles,
-      vehicleCount: allAccountVehicles.length,
-      vehiclesTruncated: allAccountVehicles.length > accountVehicles.length,
-      delta: externalDelta(current, previous),
-    },
+    account: primary.view,
+    accountSources,
     replay: {
       source: 'wrpl',
       available: replayStats !== null,
@@ -504,49 +537,88 @@ export function getPlayerStatsComparison(
 
 /** Синхронный read-model: внешний HTTP только ставится в lazy-очередь и не блокирует Fastify. */
 export class PlayerStatsCoordinator {
-  private readonly externalService: PlayerStatsService | null
-  private readonly externalSource: string
+  private readonly services = new Map<string, PlayerStatsService>()
+  private readonly externalSources: readonly string[]
 
   constructor(options: PlayerStatsCoordinatorOptions) {
-    this.externalService = options.externalService
-    this.externalSource = options.externalSource?.trim()
-      || options.externalService?.source
-      || 'thunderinsights'
-    if (this.externalSource === '') throw new Error('Источник внешней статистики не может быть пустым')
-    if (this.externalService !== null && this.externalService.source !== this.externalSource) {
+    if (options.externalService !== undefined && options.externalServices !== undefined) {
+      throw new Error('Укажите externalService или externalServices, но не оба варианта')
+    }
+    const configuredServices = options.externalServices === undefined
+      ? options.externalService === null || options.externalService === undefined
+        ? []
+        : [options.externalService]
+      : [...options.externalServices]
+    for (const service of configuredServices) {
+      const source = service.source.trim()
+      if (source === '') throw new Error('Источник внешней статистики не может быть пустым')
+      if (this.services.has(source)) throw new Error(`Повторный внешний источник ${source}`)
+      this.services.set(source, service)
+    }
+
+    const primarySource = options.externalSource?.trim()
+      || configuredServices[0]?.source
+      || OFFICIAL_PROFILE_SOURCE
+    if (primarySource === '') throw new Error('Источник внешней статистики не может быть пустым')
+    if (
+      options.externalServices === undefined
+      && configuredServices.length === 1
+      && configuredServices[0]!.source !== primarySource
+    ) {
       throw new Error('Источник coordinator-а не совпадает с PlayerStatsService')
     }
+    this.externalSources = [
+      primarySource,
+      ...configuredServices
+        .map((service) => service.source)
+        .filter((source) => source !== primarySource),
+    ]
   }
 
   lookup(input: PlayerStatsLookupInput): PlayerStatsLookupResult {
     const resolution = resolveKnownPlayer(input.player)
     if (resolution.status !== 'ok') return resolution
     const period = normalizedPeriod(input)
-    const cache = this.externalService === null
-      ? {
-          stats: getLatestPlayerExternalStats(resolution.identity.id, this.externalSource),
-          stale: false,
-          refreshQueued: false,
-          lastCheck: getLatestPlayerExternalCheck(resolution.identity.id, this.externalSource),
-          nextRetryAt: null,
-        }
-      : this.externalService.request(resolution.identity.id)
-    const history = cache.stats === null
-      ? []
-      : getPlayerExternalStatsHistory(
-          resolution.identity.id,
-          this.externalSource,
-          1,
-          cache.stats.snapshot.id,
-        )
-    return {
-      status: 'ok',
-      stats: getPlayerStatsComparison(resolution.identity, period, {
-        externalSource: this.externalSource,
-        externalEnabled: this.externalService !== null,
+    const contexts = this.externalSources.map((source): ComparisonContext => {
+      const service = this.services.get(source) ?? null
+      const cache = service === null
+        ? {
+            stats: getLatestPlayerExternalStats(resolution.identity.id, source),
+            stale: false,
+            refreshQueued: false,
+            lastCheck: getLatestPlayerExternalCheck(resolution.identity.id, source),
+            nextRetryAt: null,
+          }
+        : service.request(resolution.identity.id)
+      const history = cache.stats === null
+        ? []
+        : getPlayerExternalStatsHistory(
+            resolution.identity.id,
+            source,
+            1,
+            cache.stats.snapshot.id,
+          )
+      return {
+        externalSource: source,
+        externalEnabled: service !== null,
         cache,
         history,
-      }),
+      }
+    })
+    const primary = contexts[0]!
+    return {
+      status: 'ok',
+      stats: getPlayerStatsComparison(resolution.identity, period, primary, contexts.slice(1)),
     }
+  }
+
+  /** Дождаться ленивых запросов всех включённых provider-ов. */
+  async waitForIdle(): Promise<void> {
+    await Promise.all([...this.services.values()].map((service) => service.waitForIdle()))
+  }
+
+  /** Запретить новые refresh и закрыть все provider-ы. */
+  async stop(): Promise<void> {
+    await Promise.all([...this.services.values()].map((service) => service.stop()))
   }
 }

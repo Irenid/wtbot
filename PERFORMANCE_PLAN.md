@@ -19,9 +19,12 @@
 (-66,3%), а суммарный `Resvg.init` — с 5,51 до 1,36 с (-75,3%). Относительно
 ранее зафиксированного `after-temporal-scene.json` bundle уменьшился с 4,18 до
 2,12 с. Результат закреплён corpus-серией из трёх боёв: для каждого выполнен
-отдельный cold start и 10 warm-прогонов на одном worker. P1.1 файлового кэша,
-P1.2 `/api/voice`, P1.3 stats/refresh и P1.4 replay download/ingest I/O
-выполнены; следующий этап — P2 worker scheduling, память и throughput.
+отдельный cold start и 10 warm-прогонов на одном worker. P1.2 `/api/voice`,
+P1.3 stats/refresh и P1.4 replay download/ingest I/O выполнены полностью; в P1.1
+закрыта только write amplification (LRU через commit marker и коалесцированный
+scan), а измерения cache hit, in-memory каталог, метрики hit/miss и
+версионирование metadata остаются открытыми. Следующий этап — P2 worker
+scheduling, память и throughput.
 Оставшийся `Resvg.init` отслеживается отдельно.
 
 Следствия для порядка работ:
@@ -38,6 +41,12 @@ render + PNG занял 425 мс, а `Resvg.init` — 1363 мс; GPU и смен
 начинать до corpus/p95 и проверки оставшегося font init.
 
 ## Актуальные измерения
+
+> Прогон 22.07.2026. Повторная проверка показала, что render с тех пор изменился
+> (3 из 7 PNG на `06f197b0001e41dc` не совпадают с SHA-256 из
+> `data/benchmarks/corpus-explicit-fonts.json`), поэтому таблицы ниже описывают
+> состояние на дату прогона, а не текущий HEAD — перед сравнением corpus нужно
+> перемерить.
 
 Среда последнего прогона: AMD Ryzen 5 3600X, 12 логических CPU, Windows x64,
 Node.js 24.11.0. Replay `06efea670015c595`: 11 частей, 15,1 МБ, 16 игроков,
@@ -122,8 +131,17 @@ npm run benchmark:replay -- data/replays/06efea670015c595 --runs=5 \
       заменяет зависший worker.
 - [x] Worker имеет old-generation limit и планово заменяется после 12 render-задач,
       чтобы ограничивать накопление native memory Resvg.
-- [x] Размер пула автоматически рассчитывается по CPU и доступной RAM; ручное
-      переопределение через `WT_WORKER_THREADS` сохранено.
+- [ ] Размер пула автоматически рассчитывается по CPU и доступной RAM; ручное
+      переопределение через `WT_WORKER_THREADS` сохранено. **Сломано:** ни
+      авто-план, ни явная ветка (`src/runtime-options.ts:122-125`) не ограничены
+      лимитом пула `MAX_CONFIGURABLE_WORKERS = 8` (`src/workers/pool.ts:98`);
+      конструктор бросает на `size > 8` (`pool.ts:141`), а синглтон
+      `new CpuWorkerPool()` создаётся на верхнем уровне модуля (`pool.ts:595`),
+      поэтому на 12 CPU со свободной RAM процесс падает во время ESM-импорта
+      (AUDIT.md H2). Локально это маскирует `WT_WORKER_THREADS=8` в `.env`.
+      Вместе с клемпом правь ассерт `src/analysis/worker-smoke.ts:63`
+      (`assert.equal(cpuPlan.workerThreads, 11)`), иначе `npm run verify:workers`
+      упадёт на корректном исправлении.
 - [x] Shutdown останавливает producers до закрытия CPU pool.
 
 ### Media, heatmap и кэш
@@ -140,8 +158,12 @@ npm run benchmark:replay -- data/replays/06efea670015c595 --runs=5 \
 - [x] Убийства индексируются по victim/killer и времени; поиск точек маршрута и
       первого убийства использует бинарный поиск.
 - [x] Spawn-кластеры, стоянки и минутные отметки готовятся до team-фильтрации.
-- [x] Все семь PNG после этих изменений побайтово совпали с baseline в
-      контрольном прогоне.
+- [x] Все семь PNG побайтово совпали с baseline в контрольном прогоне
+      22.07.2026. С тех пор render изменился: на `06f197b0001e41dc` три PNG
+      (`heatmap-ground`, `heatmap-team-0`, `heatmap-team-1`) больше не совпадают
+      с SHA-256 из `data/benchmarks/corpus-explicit-fonts.json`, а
+      `render-heatmap.test.ts` (:538, :677) и `render-battle-log.test.ts` (:76)
+      красные. Пока они не починены, сравнивать corpus с baseline нельзя.
 - [x] Файлы публикуются атомарно, `meta.json` записывается последним как commit
       marker.
 - [x] Дисковый кэш ограничен размером и вытесняет целые session bundles по LRU;
@@ -155,6 +177,14 @@ npm run benchmark:replay -- data/replays/06efea670015c595 --runs=5 \
 - [x] SQLite работает в WAL mode.
 - [x] Есть индексы для основных выборок items, snapshots, battles, players,
       kills и chat.
+- [ ] **Нет индекса на `battles.session_hex`.** Три горячих запроса
+      (`src/db/index.ts:3038`, `:3111`, `:3147`) делают
+      `WHERE session_id = ? OR session_hex = ?`; индексирована только PK-ветка
+      (`session_id TEXT PRIMARY KEY`, `:412`), поэтому SQLite вырождается в
+      `SCAN battles` по таблице 2,33 ГБ — 61,8 с холодно, блокируя event loop
+      вместе с Discord-heartbeat и Fastify (AUDIT.md H1). Добавить
+      `CREATE INDEX IF NOT EXISTS idx_battles_session_hex ON battles (session_hex);`
+      либо резолвить hex→decimal один раз на входе и запрашивать по PK.
 - [x] Parser sources защищены от наложения запусков; `saveItems()` пишет пачку в
       транзакции и пропускает неизменившийся `content_hash`.
 - [x] Replay cache ограничивает размер ответа, имеет timeout/retry, глобальный
@@ -245,8 +275,12 @@ visual-проверкой и исправлена ленивым Yu Gothic fallb
 - [ ] Держать лёгкий in-memory каталог `{session, bytes, lastAccess}` с
       восстановлением/reconciliation при старте и периодически.
 - [ ] Добавить hit/miss/corrupt/evicted bytes по `BattleMediaKind`.
-- [ ] Версионировать cache metadata по renderer/config/assets, чтобы смена
-      шрифта, масштаба или карты давала предсказуемый miss, а не устаревший PNG.
+- [x] Версионировать cache metadata по renderer/config: `BATTLE_MEDIA_VERSION` и
+      `BATTLE_MEDIA_RENDER_OPTIONS` пишутся в commit marker и сверяются в
+      `readBattleMetaFile()`, а `@2x`-файлы несут `BATTLE_MEDIA_RENDER_VARIANT` в имени.
+- [ ] Расширить версионирование на assets (набор файлов шрифтов из
+      `resolveRenderFonts()`, тактическая карта, unit icons), чтобы смена шрифта
+      или карты тоже давала предсказуемый miss, а не устаревший PNG.
 - [ ] По метрикам оценить точечный idle prewarm часто запрашиваемых материалов;
       не строить весь bundle фоном без спроса и свободного memory/CPU budget.
 
@@ -392,6 +426,12 @@ SQLite commit и discovered→commit раздельно.
       hysteresis; не запускать тяжёлые jobs только потому, что слот свободен.
 - [ ] Benchmark-ом подобрать 1/2/3/4 workers для одиночной latency и 2/4
       одновременных боёв; отдельно измерить ingest throughput.
+- [ ] Согласовать `MAX_CONFIGURABLE_WORKERS = 8` в `src/workers/pool.ts` с
+      `workerResourcePlan()`: `automaticThreads` клампится только по CPU и RAM
+      (на 12 CPU план даёт 11, см. `src/analysis/worker-smoke.ts`), а
+      `const pool = new CpuWorkerPool()` на верхнем уровне модуля бросает при
+      size > 8 — на машине с ≥9 доступными CPU и достаточной свободной RAM
+      импорт пула падает. Делать это до подбора числа workers.
 - [ ] Проверить порог замены worker после 12 render jobs: время холодного старта
       против memory plateau.
 - [ ] Только после P0 проверить 2–3 параллельные raster-задачи одного bundle.
@@ -406,10 +446,11 @@ SQLite commit и discovered→commit раздельно.
 ## P3. Оставшаяся геометрия и SVG
 
 Граф кода показывает кандидатов с высокой сложностью: `buildHeatmapSvg()` имеет
-четыре линейных поиска внутри циклов, а `routeCrossings()` — вложенные циклы.
+четыре линейных поиска внутри циклов, а `routeCrossings()` уже
+сравнивает рёбра через сетку 48 px, а не квадратично.
 Однако весь SVG сейчас занимает около 245 мс, поэтому это не P0.
 
-- [ ] Добавить grid/spatial index для пересечений маршрутов, collision подписей,
+- [ ] Добавить grid/spatial index для collision подписей (`placeSpawnLabel()`),
       death/camp/spawn markers и подтвердить снижение асимптотики на большом бою.
 - [ ] Повторно использовать неизменяемый SVG background между general/team
       вариантами, если visual diff подтверждает идентичность слоёв.
@@ -516,6 +557,11 @@ WRPL, ECS, SQLite, JSON и небольшие геометрические вы�
 ## Проверки каждого этапа
 
 - [ ] Сначала запускать проверку изменённого модуля.
+- [ ] `npm test` — оффлайн node:test по всем `*.test.ts`. До начала P3
+      зафиксировать текущий baseline: набор красный, падают
+      `src/wrpl/render-heatmap.test.ts:538`, `src/wrpl/render-heatmap.test.ts:677`
+      и `src/wrpl/render-battle-log.test.ts:76`. Иначе изменения
+      `buildHeatmapSvg()` не отличить от уже сломанных ожиданий.
 - [ ] `npm run build`.
 - [ ] Для worker/WRPL/render: `npm run verify:workers`.
 - [ ] После build: `npm run verify:workers:dist`.

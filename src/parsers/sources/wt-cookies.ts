@@ -158,6 +158,46 @@ export function cookieHeader(): Promise<string> {
   )
 }
 
+export interface WtCookieValue {
+  name: string
+  value: string
+}
+
+/** Возвращает текущие cookies в форме, которую понимает браузерный контекст. */
+export async function cookieValues(): Promise<WtCookieValue[]> {
+  const header = await cookieHeader()
+  return [...parseCookiePairs(header)].map(([name, value]) => ({ name, value }))
+}
+
+/**
+ * Обновляет общий jar cookies значениями из браузерного контекста.
+ * Node-хранилище остаётся единственным управляемым jar для auth-cookie; Edge
+ * использует нативный профиль для browser fingerprint, а clearance не копируется
+ * между Node и браузером.
+ */
+export function absorbCookieValues(values: readonly WtCookieValue[]): Promise<void> {
+  if (values.length === 0) return Promise.resolve()
+  return serialized(() =>
+    withFileLock(async () => {
+      const current = await currentJarUnlocked()
+      const next = new Map(current.map)
+      let changed = current.needsWrite
+      for (const cookie of values) {
+        if (!isCookiePair(cookie.name, cookie.value)) continue
+        if (next.get(cookie.name) !== cookie.value) {
+          next.set(cookie.name, cookie.value)
+          changed = true
+        }
+      }
+      if (changed) await persistJarUnlocked(next)
+      if (changed && !refreshLogged) {
+        refreshLogged = true
+        console.log('[wt-cookies] Cookies обновлены и сохранены в data/wt-cookies.json')
+      }
+    }),
+  )
+}
+
 export function absorbSetCookies(response: Response): Promise<void> {
   const headers = [...response.headers.getSetCookie()]
   if (headers.length === 0) return Promise.resolve()

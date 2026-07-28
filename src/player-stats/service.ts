@@ -124,7 +124,8 @@ export class PlayerStatsService {
     const active = this.jobs.get(identity.id)
     let refreshQueued = active !== undefined
 
-    if (active === undefined && this.accepting) {
+    const canResolve = identity.wtUserId !== null || this.provider.requiresWtUserId !== true
+    if (active === undefined && this.accepting && canResolve) {
       if (lastCheck?.status === 'ok' && now - lastCheck.lastCheckedAt < this.ttlSeconds) {
         this.metrics.skippedFresh += 1
       } else {

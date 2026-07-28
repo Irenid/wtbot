@@ -47,6 +47,16 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
     members.push({ nick: decodeHtml(m[1]!), rating: Number(m[2]) })
   }
   if (members.length === 0) throw new Error(`на странице клана ${clanName} не нашлась таблица участников`)
+  // Список используется как ПОЛНЫЙ ростер (clan_roster): неполный парс молча
+  // «выгонял» бы живых участников. Число якорей участников должно сойтись;
+  // выброс сохраняет прежнюю деградацию (fallback на сохранённые рейтинги).
+  const memberTable = html.slice(html.indexOf('squadrons-members'))
+  const anchorCount = (memberTable.match(/userinfo\/\?nick=/g) ?? []).length
+  if (anchorCount > 0 && members.length !== anchorCount) {
+    throw new Error(
+      `страница клана ${clanName}: распознано ${members.length} из ${anchorCount} участников — парс не полный`,
+    )
+  }
   return members
 }
 

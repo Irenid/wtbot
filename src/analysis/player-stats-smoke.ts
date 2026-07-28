@@ -384,6 +384,7 @@ function main(): void {
         battles: 10,
         victories: 6,
         defeats: 4,
+        deaths: 9,
         timePlayedSec: null,
         respawns: 14,
         airKills: 2,

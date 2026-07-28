@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#111015; color:#f2efe6; font-family:'Segoe UI',system-ui,sans-serif; }
+  a { color:#f5bc4a; text-decoration:none; }
+  a:hover { color:#f0d9a0; }
+  input[type="range"] { accent-color:#f5bc4a; }
+</style>
+</helmet>
+
+<div style="min-height:100vh; display:flex; flex-direction:column; background:radial-gradient(800px 360px at 80% -60px, rgba(242,152,74,.08), transparent 65%), #111015">
+
+  <nav style="position:sticky; top:0; z-index:50; display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:10px clamp(14px,4vw,28px); background:rgba(17,16,20,.72); backdrop-filter:blur(18px) saturate(1.3); border-bottom:1px solid rgba(255,255,255,.06)">
+    <a href="home.dc.html" style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:19px; font-weight:700; color:#f2efe6; margin-right:14px">wt<span style="color:#f5bc4a">bot</span></a>
+    <a href="home.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Поиск</a>
+    <a href="clans.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Кланы</a>
+    <a href="clan.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Клан</a><a href="player.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Игрок</a><a href="battles.dc.html" aria-current="page" style="padding:7px 13px; border-radius:8px; font-size:13.5px; font-weight:600; color:#f2efe6; background:rgba(245,188,74,.16); border:1px solid rgba(245,188,74,.25)">Бои</a>
+    <span style="flex:1"></span>
+    <a href="#" style="padding:7px 13px; border-radius:8px; font-size:13px; color:#7d7885; border:1px solid #2d2b33" style-hover="color:#b8b3ac; border-color:#4a4655">Панель бота</a>
+  </nav>
+
+  <main style="max-width:1180px; width:100%; margin:0 auto; padding:clamp(18px,4vw,30px) 20px 44px; box-sizing:border-box">
+    <div style="font-size:12.5px; color:#7d7885; margin-bottom:12px"><a href="battles.dc.html" style="color:#7d7885" style-hover="color:#b8b3ac">Бои</a> <span style="margin:0 4px">/</span> <span style="color:#b8b3ac">Красная пустыня</span></div>
+
+    <header style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px">
+      <h1 style="margin:0; font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:clamp(24px,3.4vw,30px); font-weight:700; letter-spacing:-.01em">Красная пустыня</h1>
+      <span style="padding:4px 11px; border-radius:999px; font-size:12px; font-weight:700; background:rgba(142,230,161,.14); color:#8ee6a1; border:1px solid rgba(142,230,161,.3)">Победа AURI</span>
+      <span style="padding:4px 11px; border-radius:999px; font-size:12px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; white-space:nowrap">земля</span><span style="padding:4px 11px; border-radius:999px; font-size:12px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; white-space:nowrap">Conquest #3</span>
+      <span style="padding:4px 11px; border-radius:999px; font-size:12px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; white-space:nowrap">сегодня, 13:11 · 15 мин</span>
+      <span style="padding:4px 11px; border-radius:999px; font-size:12px; background:#18161b; border:1px solid #2d2b33; color:#7d7885">v2.49.0.60</span>
+      <a href="https://warthunder.com/en/tournament/replay/900100000" target="_blank" rel="noreferrer" style="margin-left:auto; font-size:12px; font-weight:600; padding:5px 12px; border-radius:999px; border:1px solid rgba(245,188,74,.35); background:rgba(245,188,74,.10)">реплей ↗</a>
+    </header>
+
+    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:stretch; margin-bottom:16px">
+
+      <section style="flex:2 1 380px; min-width:0; background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:16px 18px">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; flex-wrap:wrap">
+          <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35)"></span>
+          <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Карта боя</h2>
+          <span style="font-size:11px; color:#7d7885">траектории, килы и зоны по времени</span>
+          <div style="margin-left:auto; display:flex; gap:12px; font-size:12px; color:#b8b3ac; flex-wrap:wrap">
+            <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px"><input type="checkbox" checked="{{ showTraj }}" onChange="{{ toggleTraj }}"></input>траектории</label>
+            <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px"><input type="checkbox" checked="{{ showKills }}" onChange="{{ toggleKills }}"></input>килы</label>
+            <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px"><input type="checkbox" checked="{{ showZones }}" onChange="{{ toggleZones }}"></input>зоны</label>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap">
+          <span style="font-weight:700; color:#7f9bff; font-size:13px; flex:none">AURI</span>
+          <span style="font-variant-numeric:tabular-nums; font-size:12.5px; color:#b8b3ac; flex:none; min-width:44px; text-align:right">{{ tick1 }}</span>
+          <div style="flex:1; min-width:80px; height:7px; border-radius:4px; background:#111015; overflow:hidden; display:flex; justify-content:flex-end"><div style="width:{{ tick1W }}; height:100%; background:linear-gradient(90deg,rgba(127,155,255,.35),#7f9bff)"></div></div>
+          <div style="flex:1; min-width:80px; height:7px; border-radius:4px; background:#111015; overflow:hidden"><div style="width:{{ tick2W }}; height:100%; background:linear-gradient(90deg,#f2984a,rgba(242,152,74,.35))"></div></div>
+          <span style="font-variant-numeric:tabular-nums; font-size:12.5px; color:#b8b3ac; flex:none; min-width:44px">{{ tick2 }}</span>
+          <span style="font-weight:700; color:#f2984a; font-size:13px; flex:none">Команда 2</span>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; align-items:center">
+          <sc-for list="{{ roster1 }}" as="r" hint-placeholder-count="4">
+            <span style="display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; font-size:11px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; opacity:{{ r.op }}"><span style="width:7px; height:7px; border-radius:50%; background:#7f9bff"></span>{{ r.name }}</span>
+          </sc-for>
+          <span style="flex:1"></span>
+          <sc-for list="{{ roster2 }}" as="r" hint-placeholder-count="4">
+            <span style="display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; font-size:11px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; opacity:{{ r.op }}"><span style="width:7px; height:7px; border-radius:50%; background:#f2984a"></span>{{ r.name }}</span>
+          </sc-for>
+        </div>
+        <div style="border-radius:12px; overflow:hidden; border:1px solid #4a4655; background:#0f0e13">
+          <svg viewBox="0 0 600 420" style="display:block; width:100%; height:auto" aria-label="Интерактивная карта боя">
+            <defs>
+              <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
+                <path d="M60 0 H0 V60" fill="none" stroke="#26232c" stroke-width="1"></path>
+              </pattern>
+            </defs>
+            <rect width="600" height="420" fill="#0f0e13"></rect>
+            <ellipse cx="150" cy="120" rx="110" ry="70" fill="#16141b"></ellipse>
+            <ellipse cx="460" cy="330" rx="130" ry="80" fill="#16141b"></ellipse>
+            <ellipse cx="320" cy="210" rx="90" ry="55" fill="#181621"></ellipse>
+            <rect width="600" height="420" fill="url(#grid)"></rect>
+            <text x="12" y="404" font-size="10" fill="#544f60">A1</text>
+            <text x="574" y="18" font-size="10" fill="#544f60">J7</text>
+
+            <sc-if value="{{ showZones }}" hint-placeholder-val="{{ true }}">
+              <g>
+                <circle cx="180" cy="240" r="30" fill="rgba(127,155,255,.1)" stroke="#7f9bff" stroke-width="1.5" stroke-dasharray="5 4"></circle>
+                <text x="180" y="245" text-anchor="middle" font-size="14" font-weight="700" fill="#7f9bff">A</text>
+                <circle cx="310" cy="160" r="30" fill="rgba(239,234,255,.06)" stroke="#7d7885" stroke-width="1.5" stroke-dasharray="5 4"></circle>
+                <text x="310" y="165" text-anchor="middle" font-size="14" font-weight="700" fill="#b8b3ac">B</text>
+                <circle cx="440" cy="240" r="30" fill="rgba(242,152,74,.1)" stroke="#f2984a" stroke-width="1.5" stroke-dasharray="5 4"></circle>
+                <text x="440" y="245" text-anchor="middle" font-size="14" font-weight="700" fill="#f2984a">C</text>
+              </g>
+            </sc-if>
+
+            <sc-if value="{{ showTraj }}" hint-placeholder-val="{{ true }}">
+              <g fill="none" stroke-width="1.4" stroke-dasharray="3 4" opacity=".35">
+                <polyline points="90,360 200,300 290,220 330,190 340,185" stroke="#7f9bff"></polyline>
+                <polyline points="70,330 150,240 240,170 300,120" stroke="#7f9bff"></polyline>
+                <polyline points="110,380 240,330 380,260 440,210" stroke="#7f9bff"></polyline>
+                <polyline points="60,300 140,180 210,120" stroke="#7f9bff"></polyline>
+                <polyline points="520,70 380,160" stroke="#f2984a"></polyline>
+                <polyline points="540,100 430,180 350,200" stroke="#f2984a"></polyline>
+                <polyline points="500,50 420,120 330,170" stroke="#f2984a"></polyline>
+                <polyline points="560,80 480,140 400,150" stroke="#f2984a"></polyline>
+              </g>
+            </sc-if>
+
+            <sc-if value="{{ showKills }}" hint-placeholder-val="{{ false }}">
+              <g>
+                <sc-for list="{{ kills }}" as="k" hint-placeholder-count="0">
+                  <text x="{{ k.x }}" y="{{ k.y }}" text-anchor="middle" font-size="15" font-weight="800" fill="#ff8fa3" filter="drop-shadow(0 0 4px rgba(255,143,163,.7))">✕</text>
+                </sc-for>
+              </g>
+            </sc-if>
+
+            <sc-for list="{{ units }}" as="u" hint-placeholder-count="0">
+              <circle cx="{{ u.x }}" cy="{{ u.y }}" r="6.5" filter="drop-shadow(0 0 5px rgba(255,236,180,.55))" fill="{{ u.fill }}" stroke="#0f0e13" stroke-width="2" opacity="{{ u.op }}"></circle>
+            </sc-for>
+          </svg>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap">
+          <button type="button" onClick="{{ togglePlay }}" style="border:none; cursor:pointer; font-family:inherit; padding:9px 18px; border-radius:9px; background:linear-gradient(135deg,#ffdf8a,#f0a72e); color:#231a06; font-weight:700; box-shadow:inset 0 1px 0 rgba(255,255,255,.45), 0 16px 32px -16px rgba(245,188,74,.55); font-size:13.5px" style-hover="filter:brightness(1.1)">{{ playLabel }}</button>
+          <div style="display:flex; gap:4px; background:#111015; border:1px solid #2d2b33; border-radius:9px; padding:3px">
+            <button type="button" onClick="{{ setS1 }}" style="border:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:5px 11px; border-radius:7px; background:{{ bgS1 }}; color:{{ cS1 }}">1×</button>
+            <button type="button" onClick="{{ setS4 }}" style="border:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:5px 11px; border-radius:7px; background:{{ bgS4 }}; color:{{ cS4 }}">4×</button>
+            <button type="button" onClick="{{ setS16 }}" style="border:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:5px 11px; border-radius:7px; background:{{ bgS16 }}; color:{{ cS16 }}">16×</button>
+          </div>
+          <span style="margin-left:auto; font-size:13px; color:#b8b3ac; font-variant-numeric:tabular-nums">{{ clock }}</span>
+        </div>
+        <input aria-label="Таймлайн боя" type="range" min="0" max="900" value="{{ t }}" onChange="{{ seek }}" style="width:100%; margin-top:8px; cursor:pointer"></input>
+        <div style="position:relative; height:8px; margin:2px 6px 0">
+          <sc-for list="{{ ticks }}" as="tk" hint-placeholder-count="0">
+            <span onClick="{{ tk.go }}" title="{{ tk.tip }}" style="position:absolute; left:{{ tk.left }}; top:0; width:4px; height:8px; border-radius:2px; background:{{ tk.color }}; cursor:pointer; transform:translateX(-2px)"></span>
+          </sc-for>
+        </div>
+      </section>
+
+      <section style="flex:1 1 260px; min-width:0; background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:16px 18px; display:flex; flex-direction:column">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px">
+          <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35)"></span>
+          <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Лента событий</h2>
+          <span style="margin-left:auto; font-size:11px; color:#7d7885">синхронно с картой</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:2px; overflow-y:auto; max-height:460px; padding-right:4px">
+          <sc-for list="{{ events }}" as="ev" hint-placeholder-count="6">
+            <div style="display:flex; gap:10px; align-items:flex-start; padding:7px 8px; border-radius:8px; opacity:{{ ev.op }}; background:{{ ev.bg }}">
+              <span style="flex:none; font-size:11.5px; color:#7d7885; font-variant-numeric:tabular-nums; padding-top:1px; min-width:34px">{{ ev.time }}</span>
+              <span style="flex:none; width:8px; height:8px; border-radius:50%; margin-top:4px; background:{{ ev.dot }}"></span>
+              <span style="font-size:12.5px; line-height:1.4; color:#f2efe6">{{ ev.text }} <span style="color:#7d7885; font-size:11px; white-space:nowrap">{{ ev.w }}</span></span>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px">
+      <section style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid rgba(127,155,255,.45); border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85); overflow:hidden">
+        <div style="display:flex; align-items:center; gap:10px; padding:13px 18px; background:linear-gradient(90deg,rgba(127,155,255,.16),transparent); border-bottom:1px solid #2d2b33">
+          <span style="width:10px; height:10px; border-radius:3px; background:#7f9bff"></span>
+          <h2 style="margin:0; font-size:13px; font-weight:700; color:#f2efe6">Команда 1 · AURI</h2><span style="font-size:11px; color:#7d7885">4 танка · 8 респ.</span>
+          <span style="margin-left:auto; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700; background:rgba(142,230,161,.14); color:#8ee6a1">Победа</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px">
+            <thead>
+              <tr style="color:#7d7885; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em">
+                <th style="text-align:left; padding:9px 8px 9px 18px; font-weight:600">Игрок</th><th style="text-align:left; padding:9px 8px; font-weight:600">Техника</th><th style="text-align:right; padding:9px 8px; font-weight:600">Возд</th><th style="text-align:right; padding:9px 8px; font-weight:600">Назем</th><th style="text-align:right; padding:9px 8px; font-weight:600">Захв</th><th style="text-align:right; padding:9px 8px; font-weight:600">См.</th><th style="text-align:right; padding:9px 8px; font-weight:600">Очки</th><th style="text-align:right; padding:9px 18px 9px 8px; font-weight:600">ПКР</th>
+              </tr>
+            </thead>
+            <tbody><tr style="border-top:1px solid #2d2b33; background:rgba(245,188,74,.05)" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><a href="player.dc.html" style="font-weight:600">ViperAce</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(127,155,255,.14); color:#7f9bff">Легенда</span> <span style="font-size:10px; color:#f5bc4a; font-weight:700">MVP</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">Leopard 2A4 <span style="color:#7d7885; font-size:11px">+2</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">5</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#f5bc4a">2</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">1</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;840<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:100%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+26</span></td></tr><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">NightHawk</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(245,188,74,.14); color:#f5bc4a">Элита</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">T-80U <span style="color:#7d7885; font-size:11px">+3</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">4</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#f5bc4a">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">2</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;310<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:71%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+18</span></td></tr><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><span style="color:#7d7885">⊗ </span><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">IronClad</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(142,230,161,.12); color:#8ee6a1">Хорошо</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">Challenger 2 <span style="color:#7d7885; font-size:11px">+1</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">3</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#f5bc4a">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">1</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;105<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:60%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+12</span></td></tr><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><span style="color:#7d7885">⊗ </span><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">StormRider</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(142,230,161,.12); color:#8ee6a1">Хорошо</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">M1A1 Abrams <span style="color:#7d7885; font-size:11px">+2</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">2</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">890<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:48%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+7</span></td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid rgba(242,152,74,.45); border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85); overflow:hidden">
+        <div style="display:flex; align-items:center; gap:10px; padding:13px 18px; background:linear-gradient(90deg,rgba(242,152,74,.14),transparent); border-bottom:1px solid #2d2b33">
+          <span style="width:10px; height:10px; border-radius:3px; background:#f2984a"></span>
+          <h2 style="margin:0; font-size:13px; font-weight:700; color:#f2efe6">Команда 2</h2><span style="font-size:11px; color:#7d7885">4 танка · 15 респ.</span>
+          <span style="margin-left:auto; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700; background:rgba(255,143,163,.14); color:#ff8fa3">Поражение</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:640px">
+            <thead>
+              <tr style="color:#7d7885; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em">
+                <th style="text-align:left; padding:9px 8px 9px 18px; font-weight:600">Игрок</th><th style="text-align:left; padding:9px 8px; font-weight:600">Техника</th><th style="text-align:right; padding:9px 8px; font-weight:600">Возд</th><th style="text-align:right; padding:9px 8px; font-weight:600">Назем</th><th style="text-align:right; padding:9px 8px; font-weight:600">Захв</th><th style="text-align:right; padding:9px 8px; font-weight:600">См.</th><th style="text-align:right; padding:9px 8px; font-weight:600">Очки</th><th style="text-align:right; padding:9px 18px 9px 8px; font-weight:600">ПКР</th>
+              </tr>
+            </thead>
+            <tbody><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><span style="color:#7d7885">⊗ </span><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">SilentWolf</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(142,230,161,.12); color:#8ee6a1">Хорошо</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">Т-72Б3 <span style="color:#7d7885; font-size:11px">+4</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">3</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#f5bc4a">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#ff8fa3">4</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">720<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:39%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(255,143,163,.12); color:#ff8fa3; font-variant-numeric:tabular-nums">−9</span></td></tr><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><span style="color:#7d7885">⊗ </span><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">RedBaron</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(184,179,172,.10); color:#b8b3ac">Норм</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">Leclerc S2 <span style="color:#7d7885; font-size:11px">+4</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">2</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#ff8fa3">4</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">640<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:35%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(255,143,163,.12); color:#ff8fa3; font-variant-numeric:tabular-nums">−14</span></td></tr><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><span style="color:#7d7885">⊗ </span><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">GhostRider</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(184,179,172,.10); color:#b8b3ac">Норм</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">Type 90 <span style="color:#7d7885; font-size:11px">+3</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#ff8fa3">3</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">415<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:23%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(255,143,163,.12); color:#ff8fa3; font-variant-numeric:tabular-nums">−21</span></td></tr><tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b"><td style="padding:10px 8px 10px 18px; white-space:nowrap"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">Maverick</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(184,179,172,.10); color:#b8b3ac">Норм</span></td><td style="padding:10px 8px; color:#b8b3ac; white-space:nowrap">AMX-40 <span style="color:#7d7885; font-size:11px">+4</span></td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; font-weight:700; color:#8ee6a1">1</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums">0</td><td style="padding:10px 8px; text-align:right; font-variant-numeric:tabular-nums; color:#ff8fa3">4</td><td style="padding:10px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">380<div style="height:3px; border-radius:2px; background:#111015; margin-top:5px; margin-left:auto; max-width:64px; overflow:hidden"><div style="width:21%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873)"></div></div></td><td style="padding:10px 18px 10px 8px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(255,143,163,.12); color:#ff8fa3; font-variant-numeric:tabular-nums">−23</span></td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div style="margin-top:14px; font-size:12px; color:#7d7885">Match ID: 900100000 · 8 игроков</div>
+  </main>
+
+  <footer style="margin-top:auto; padding:18px 20px 26px; text-align:center; font-size:12px; color:#7d7885; border-top:1px solid #18161b">
+    wtbot
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { t: 0, playing: false, speed: 4, showTraj: true, showKills: true, showZones: true };
+  componentDidMount() {
+    this._iv = setInterval(() => {
+      if (!this.state.playing) return;
+      this.setState(s => {
+        const nt = s.t + 0.1 * s.speed;
+        return nt >= 900 ? { t: 900, playing: false } : { t: nt };
+      });
+    }, 100);
+  }
+  componentWillUnmount() { clearInterval(this._iv); }
+  renderVals() {
+    const { t, playing, speed, showTraj, showKills, showZones } = this.state;
+    const UNITS = [
+      { id: "ViperAce", team: 1, d: null, p: [[0,90,360],[180,200,300],[420,290,220],[700,330,190],[900,340,185]] },
+      { id: "NightHawk", team: 1, d: null, p: [[0,70,330],[200,150,240],[500,240,170],[900,300,120]] },
+      { id: "IronClad", team: 1, d: 820, p: [[0,110,380],[250,240,330],[600,380,260],[820,440,210]] },
+      { id: "StormRider", team: 1, d: 640, p: [[0,60,300],[300,140,180],[640,210,120]] },
+      { id: "SilentWolf", team: 2, d: 300, p: [[0,520,70],[300,380,160]] },
+      { id: "RedBaron", team: 2, d: 520, p: [[0,540,100],[250,430,180],[520,350,200]] },
+      { id: "GhostRider", team: 2, d: 760, p: [[0,500,50],[400,420,120],[760,330,170]] },
+      { id: "Maverick", team: 2, d: null, p: [[0,560,80],[350,480,140],[900,400,150]] }
+    ];
+    const KILLS = [
+      { t: 300, x: 380, y: 160 }, { t: 520, x: 350, y: 200 }, { t: 640, x: 210, y: 120 },
+      { t: 760, x: 330, y: 170 }, { t: 820, x: 440, y: 210 }
+    ];
+    const EVENTS = [
+      { t: 95,  text: "AURI захватили точку A", dot: "#7f9bff" },
+      { t: 210, text: "Команда 2 захватила точку C", dot: "#f2984a" },
+      { t: 300, text: "ViperAce уничтожил SilentWolf", dot: "#ff8fa3", w: "· 120-мм DM53" },
+      { t: 430, text: "AURI захватили точку B", dot: "#7f9bff" },
+      { t: 520, text: "NightHawk уничтожил RedBaron", dot: "#ff8fa3", w: "· 125-мм 3БМ60" },
+      { t: 640, text: "Maverick уничтожил StormRider", dot: "#ff8fa3", w: "· 105-мм OFL" },
+      { t: 760, text: "IronClad уничтожил GhostRider", dot: "#ff8fa3", w: "· 120-мм L27A1" },
+      { t: 820, text: "Maverick уничтожил IronClad", dot: "#ff8fa3", w: "· 105-мм OFL" },
+      { t: 900, text: "Победа команды 1 — все зоны удержаны", dot: "#8ee6a1" }
+    ];
+    const lerp = (pts, tt) => {
+      if (tt <= pts[0][0]) return [pts[0][1], pts[0][2]];
+      for (let i = 1; i < pts.length; i++) {
+        if (tt <= pts[i][0]) {
+          const [t0,x0,y0] = pts[i-1], [t1,x1,y1] = pts[i];
+          const k = (tt - t0) / (t1 - t0);
+          return [x0 + (x1-x0)*k, y0 + (y1-y0)*k];
+        }
+      }
+      const last = pts[pts.length-1];
+      return [last[1], last[2]];
+    };
+    const units = UNITS.map(u => {
+      const dead = u.d != null && t >= u.d;
+      const [x, y] = lerp(u.p, dead ? u.d : t);
+      return { key: u.id, x: +x.toFixed(1), y: +y.toFixed(1), fill: u.team === 1 ? "#7f9bff" : "#f2984a", op: dead ? 0 : 1 };
+    });
+    const fmt = s => Math.floor(s/60) + ":" + String(Math.floor(s%60)).padStart(2, "0");
+    const segS = (v, key) => ({
+      ["bgS" + key]: speed === v ? "#f5bc4a" : "transparent",
+      ["cS" + key]: speed === v ? "#111015" : "#b8b3ac",
+      ["setS" + key]: () => this.setState({ speed: v })
+    });
+    return {
+      t: Math.round(t),
+      clock: fmt(t) + " / 15:00",
+      playLabel: playing ? "❚❚ Пауза" : "▶ Играть",
+      togglePlay: () => this.setState(s => ({ playing: !s.playing, t: s.t >= 900 ? 0 : s.t })),
+      seek: e => this.setState({ t: +e.target.value, playing: false }),
+      ...segS(1, "1"), ...segS(4, "4"), ...segS(16, "16"),
+      showTraj, showKills, showZones,
+      toggleTraj: () => this.setState(s => ({ showTraj: !s.showTraj })),
+      toggleKills: () => this.setState(s => ({ showKills: !s.showKills })),
+      toggleZones: () => this.setState(s => ({ showZones: !s.showZones })),
+      kills: KILLS.filter(k => t >= k.t),
+      units,
+      tick1: Math.max(0, Math.round(2000 - t * 0.65)).toLocaleString("ru-RU"),
+      tick2: Math.max(0, Math.round(2000 - t * 2.2)).toLocaleString("ru-RU"),
+      tick1W: Math.max(0, (2000 - t * 0.65) / 20).toFixed(1) + "%",
+      tick2W: Math.max(0, (2000 - t * 2.2) / 20).toFixed(1) + "%",
+      roster1: UNITS.filter(u => u.team === 1).map(u => ({ name: u.id, op: (u.d != null && t >= u.d) ? 0.35 : 1 })),
+      roster2: UNITS.filter(u => u.team === 2).map(u => ({ name: u.id, op: (u.d != null && t >= u.d) ? 0.35 : 1 })),
+      ticks: EVENTS.filter(ev => ev.t < 900).map(ev => ({
+        left: (ev.t / 900 * 100).toFixed(1) + "%",
+        color: ev.dot, tip: ev.text,
+        go: () => this.setState({ t: ev.t, playing: false })
+      })),
+      events: EVENTS.map(ev => ({
+        time: fmt(ev.t), text: ev.text, dot: ev.dot, w: ev.w || "",
+        op: t >= ev.t ? 1 : 0.38,
+        bg: t >= ev.t && t - ev.t < 40 ? "#18161b" : "transparent"
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

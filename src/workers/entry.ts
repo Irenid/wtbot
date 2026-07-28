@@ -12,6 +12,7 @@ import {
   type PreparedHeatmapScene,
 } from '../wrpl/render-heatmap.js'
 import { summarizeMissionDocument } from '../wrpl/mission-info.js'
+import { prepareSceneFromBlob } from '../wrpl/battle-scene-core.js'
 import { unpackVromfs } from '../wrpl/vromfs.js'
 import { buildVehicleDict } from '../wrpl/vehicles.js'
 import type {
@@ -451,6 +452,11 @@ function parseMission(input: Extract<AnyWorkerTask, { kind: 'parse-mission' }>['
   }
 }
 
+function prepareScene(input: Extract<AnyWorkerTask, { kind: 'prepare-scene' }>['input']) {
+  const sceneGzip = prepareSceneFromBlob(input.eventsBlob, input.scene)
+  return { value: sceneGzip, transfer: [sceneGzip] }
+}
+
 async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer: ArrayBuffer[] }> {
   switch (task.kind) {
     case 'parse-results':
@@ -471,6 +477,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return buildVehicles(task.input)
     case 'parse-mission':
       return parseMission(task.input)
+    case 'prepare-scene':
+      return prepareScene(task.input)
   }
 }
 

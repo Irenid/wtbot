@@ -9,197 +9,136 @@ import {
   initDb,
   savePlayerIdentity,
 } from '../db/index.js'
-import { THUNDERINSIGHTS_PARSER_VERSION } from '../player-stats/normalizer.js'
-import {
-  ThunderInsightsProvider,
-  type PlayerStatsFetch,
-} from '../player-stats/providers/thunderinsights.js'
+import { PlayerNotFoundError, PlayerSessionError } from '../parsers/sources/wt-player.js'
+import { WtRequestError } from '../parsers/sources/wt-request.js'
+import { OFFICIAL_PROFILE_PARSER_VERSION } from '../player-stats/normalizer.js'
+import { OfficialProfileProvider } from '../player-stats/providers/official-profile.js'
 import { PlayerStatsService } from '../player-stats/service.js'
 import {
-  PlayerStatsProviderFailure,
   type NormalizedPlayerStats,
   type PlayerReference,
   type PlayerStatsProvider,
   type RawPlayerStats,
 } from '../player-stats/types.js'
 
-function jsonResponse(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      ...headers,
-    },
-  })
+/** Фрагмент страницы профиля с той же разметкой, что и на warthunder.com. */
+function profileFixture(nick: string): string {
+  const row = (titles: string[], arcade: Array<string | null>): string => `
+    <div class="user-stat__list-row">
+      <ul class="user-stat__list user-stat__list--titles">
+        ${titles.map((title) => `<li class="user-stat__list-item">${title}</li>`).join('')}
+      </ul>
+      <ul class="user-stat__list arcadeFightTab is-visible">
+        ${arcade.map((value) => `<li class="user-stat__list-item">${value ?? 'N/A'}</li>`).join('')}
+      </ul>
+    </div>`
+  return `<!doctype html><html><body>
+    <div class="user-profile">
+      <ul class="user-profile__data-list">
+        <li class="user-profile__data-nick">${nick}</li>
+        <li class="user-profile__data-clan"><a href="/en/community/claninfo/x">┾WLILY┿</a></li>
+        <li class="user-profile__data-item">Level 100</li>
+        <li class="user-profile__data-regdate">Registration date 03.03.2019</li>
+      </ul>
+    </div>
+    <div class="user-profile__stat user-stat">
+      ${row(
+        [
+          'Statistics', 'Victories', 'Completed missions', 'Victories/battles ratio', 'Deaths',
+          'Lions earned', 'Play time', 'Air targets destroyed', 'Ground targets destroyed',
+          'Naval targets destroyed',
+        ],
+        ['Arcade battles', '477', '954', '50%', '2,442', '3,655,382', '4d 10h', '2704', '755', null],
+      )}
+    </div>
+    <div class="user-profile__stat user-stat user-stat--tabs">
+      ${row(
+        ['Air battles', 'Air battles in fighters', 'Time played in air battles', 'Air targets destroyed'],
+        ['1644', '1644', '2d 8h', '2559'],
+      )}
+    </div>
+  </body></html>`
 }
 
-const profilePayload = [{
-  userid: 42,
-  nick: 'Pilot@live',
-  last_update: '2026-07-21T10:00:00Z',
-}]
-
-const unitsPayload = [{
-  name: 'us_m4a1_76w_sherman',
-  type: 'tank',
-  gamemode: 'realistic',
-  spawns: 8,
-  victories: 5,
-  defeats: 3,
-  deaths: 6,
-  air_kills: 1,
-  ground_kills: 12,
-  naval_kills: 0,
-}, {
-  name: 'p-51d-30_na',
-  type: 'aircraft',
-  gamemode: null,
-  spawns: 2,
-  victories: 1,
-  defeats: 1,
-  deaths: 2,
-}]
-
-async function verifyThunderInsightsProvider(): Promise<void> {
-  const calls: URL[] = []
-  const fixtureFetch: PlayerStatsFetch = async (input, init) => {
-    const url = new URL(String(input))
-    calls.push(url)
-    assert.ok(init?.signal instanceof AbortSignal)
-    if (url.pathname.endsWith('/users/direct/search/')) {
-      assert.equal(url.searchParams.get('nick'), 'Pilot@live')
-      assert.equal(url.searchParams.get('limit'), '10')
-      return jsonResponse([{ userid: 42, nick: 'Pilot@live' }])
-    }
-    if (url.pathname.endsWith('/users/stats/42/units/')) return jsonResponse(unitsPayload)
-    if (url.pathname.endsWith('/users/stats/42')) return jsonResponse(profilePayload)
-    return jsonResponse({ detail: 'not found' }, 404)
-  }
-  const provider = new ThunderInsightsProvider({
-    baseUrl: 'https://fixture.invalid/v1',
-    fetchImpl: fixtureFetch,
+async function verifyOfficialProfileProvider(): Promise<void> {
+  const requested: string[] = []
+  const provider = new OfficialProfileProvider({
     now: () => 2_000,
-  })
-  const references = await provider.resolvePlayer('Pilot@live')
-  assert.deepEqual(references, [{
-    source: 'thunderinsights',
-    sourcePlayerId: '42',
-    wtUserId: '42',
-    nick: 'Pilot@live',
-    platform: 'live',
-  }])
-
-  const result = await provider.fetchPlayerStats(references[0]!)
-  assert.equal(result.status, 'ok')
-  assert.equal(result.fetchedAt, 2_000)
-  assert.equal(result.sourceUpdatedAt, Date.parse('2026-07-21T10:00:00Z') / 1_000)
-  assert.deepEqual(result.normalized?.totals, [])
-  assert.deepEqual(result.normalized?.vehicles, [{
-    gameType: 'tank',
-    mode: 'realistic',
-    vehicleId: 'us_m4a1_76w_sherman',
-    flyouts: 8,
-    victories: 5,
-    defeats: 3,
-    deaths: 6,
-    airKills: 1,
-    groundKills: 12,
-    navalKills: 0,
-    timePlayedSec: null,
-  }, {
-    gameType: 'aircraft',
-    mode: null,
-    vehicleId: 'p-51d-30_na',
-    flyouts: 2,
-    victories: 1,
-    defeats: 1,
-    deaths: 2,
-    airKills: null,
-    groundKills: null,
-    navalKills: null,
-    timePlayedSec: null,
-  }])
-  assert.deepEqual(Object.keys(JSON.parse(result.rawJson ?? '{}') as object), ['profile', 'units'])
-  assert.equal(calls.length, 3)
-
-  for (const [httpStatus, expected] of [[403, 'private'], [404, 'not_found'], [429, 'rate_limited']] as const) {
-    const statusProvider = new ThunderInsightsProvider({
-      baseUrl: 'https://fixture.invalid/v1',
-      fetchImpl: async () => jsonResponse({ detail: expected }, httpStatus),
-      now: () => 2_001,
-    })
-    const failed = await statusProvider.fetchPlayerStats(references[0]!)
-    assert.equal(failed.status, expected)
-    assert.equal(failed.normalized, null)
-  }
-
-  const malformedProvider = new ThunderInsightsProvider({
-    baseUrl: 'https://fixture.invalid/v1',
-    fetchImpl: async (input) => String(input).endsWith('/units/')
-      ? jsonResponse([{ ...unitsPayload[0], victories: '5' }])
-      : jsonResponse(profilePayload),
-    now: () => 2_002,
-  })
-  assert.equal((await malformedProvider.fetchPlayerStats(references[0]!)).status, 'schema_error')
-
-  const oversizedProvider = new ThunderInsightsProvider({
-    baseUrl: 'https://fixture.invalid/v1',
-    profileMaxBytes: 8,
-    fetchImpl: async () => new Response('{}', {
-      headers: {
-        'content-type': 'application/json',
-        'content-length': '100',
-      },
-    }),
-    now: () => 2_003,
-  })
-  assert.equal((await oversizedProvider.fetchPlayerStats(references[0]!)).status, 'schema_error')
-
-  const timeoutProvider = new ThunderInsightsProvider({
-    baseUrl: 'https://fixture.invalid/v1',
-    timeoutMs: 5,
-    fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
-      const signal = init?.signal
-      assert.ok(signal)
-      const keepAlive = setTimeout(() => reject(new Error('timeout signal не сработал')), 100)
-      const rejectAbort = (): void => {
-        clearTimeout(keepAlive)
-        reject(signal?.reason ?? new Error('aborted'))
+    fetchProfile: async (nickname) => {
+      requested.push(nickname)
+      if (nickname === 'Missing') throw new PlayerNotFoundError(`профиль ${nickname}: игрок не найден`)
+      if (nickname === 'Expired') throw new PlayerSessionError(`профиль ${nickname}: сессия WT истекла`)
+      if (nickname === 'Limited') throw new WtRequestError(429, false, 'HTTP 429')
+      if (nickname === 'Broken') {
+        return { html: '<html><body><div class="user-profile"><ul><li class="user-profile__data-nick">Broken</li></ul></div></body></html>', url: 'https://warthunder.com/' }
       }
-      if (signal?.aborted) rejectAbort()
-      else signal?.addEventListener('abort', rejectAbort, { once: true })
-    }),
-    now: () => 2_004,
+      return { html: profileFixture(nickname), url: `https://warthunder.com/en/community/userinfo/?nick=${nickname}` }
+    },
   })
-  assert.equal((await timeoutProvider.fetchPlayerStats(references[0]!)).status, 'error')
 
-  const shutdownProvider = new ThunderInsightsProvider({
-    baseUrl: 'https://fixture.invalid/v1',
-    timeoutMs: 1_000,
-    fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
-      const signal = init?.signal
-      assert.ok(signal)
-      const rejectAbort = (): void => reject(signal?.reason ?? new Error('aborted'))
-      if (signal?.aborted) rejectAbort()
-      else signal?.addEventListener('abort', rejectAbort, { once: true })
-    }),
-  })
-  const interrupted = shutdownProvider.resolvePlayer('Pilot')
-  await yieldImmediate()
-  shutdownProvider.close()
-  await assert.rejects(
-    interrupted,
-    (error: unknown) => error instanceof PlayerStatsProviderFailure && error.status === 'error',
-  )
+  // Профиль адресуется ником: поиска нет, ссылка одна и без числового id.
+  const references = await provider.resolvePlayer('Venukbr')
+  assert.deepEqual(references, [{
+    source: 'official-profile',
+    sourcePlayerId: 'Venukbr',
+    wtUserId: null,
+    nick: 'Venukbr',
+    platform: null,
+  }])
+  assert.equal((await provider.resolvePlayer('Console@psn'))[0]?.platform, 'psn')
 
-  const malformedSearch = new ThunderInsightsProvider({
-    baseUrl: 'https://fixture.invalid/v1',
-    fetchImpl: async () => jsonResponse({ users: [] }),
+  const ok = await provider.fetchPlayerStats({
+    source: 'official-profile',
+    sourcePlayerId: 'Venukbr',
+    // Числовой id известен identity из локальных реплеев и должен сохраниться.
+    wtUserId: '82922922',
+    nick: 'Venukbr',
+    platform: null,
   })
-  await assert.rejects(
-    malformedSearch.resolvePlayer('Pilot'),
-    (error: unknown) => error instanceof PlayerStatsProviderFailure && error.status === 'schema_error',
-  )
+  assert.equal(ok.status, 'ok')
+  assert.equal(ok.error, null)
+  assert.equal(ok.player.wtUserId, '82922922')
+  assert.equal(ok.fetchedAt, 2_000)
+  assert.ok(ok.rawJson !== null)
+  // В raw snapshot должны лежать извлечённые строки, а не HTML страницы.
+  assert.ok(!ok.rawJson.includes('<html'), 'raw snapshot не должен содержать HTML')
+  assert.ok(ok.rawJson.length < 8_000, 'raw snapshot должен быть компактным ради дедупликации')
+
+  const totals = ok.normalized?.totals ?? []
+  const aggregate = totals.find((row) => row.gameType === null && row.mode === null && row.category === null)
+  assert.equal(aggregate?.battles, 954)
+  assert.equal(aggregate?.victories, 477)
+  assert.equal(aggregate?.defeats, 477)
+  const arcade = totals.find((row) => row.gameType === null && row.mode === 'arcade')
+  assert.equal(arcade?.deaths, 2_442)
+  assert.equal(arcade?.timePlayedSec, 4 * 86_400 + 10 * 3_600)
+  // «N/A» остаётся неизвестным значением, а не нулём.
+  assert.equal(arcade?.navalKills, null)
+  const air = totals.find((row) => row.gameType === 'air' && row.category === 'all')
+  assert.equal(air?.respawns, 1_644)
+  assert.equal(air?.airKills, 2_559)
+  assert.equal(air?.battles, null, 'выходы на задания нельзя выдавать за бои')
+  assert.equal(ok.normalized?.vehicles.length, 0, 'профиль не публикует статистику по технике')
+
+  // Ошибки транспорта должны различаться в статусе snapshot.
+  for (const [nick, status] of [
+    ['Missing', 'not_found'],
+    ['Expired', 'private'],
+    ['Limited', 'rate_limited'],
+    ['Broken', 'schema_error'],
+  ] as const) {
+    const failed = await provider.fetchPlayerStats({
+      source: 'official-profile',
+      sourcePlayerId: nick,
+      wtUserId: null,
+      nick,
+      platform: null,
+    })
+    assert.equal(failed.status, status, `${nick} → ${status}`)
+    assert.equal(failed.normalized, null)
+    assert.ok(failed.error !== null && failed.error !== '')
+  }
+  assert.deepEqual(requested, ['Venukbr', 'Missing', 'Expired', 'Limited', 'Broken'])
 }
 
 interface FixtureResult {
@@ -431,6 +370,6 @@ async function verifyService(): Promise<void> {
   }
 }
 
-await verifyThunderInsightsProvider()
+await verifyOfficialProfileProvider()
 await verifyService()
-console.log(`ThunderInsights ${THUNDERINSIGHTS_PARSER_VERSION}, TTL и stale fallback: smoke-тест пройден`)
+console.log(`Профиль warthunder.com ${OFFICIAL_PROFILE_PARSER_VERSION}, TTL и stale fallback: smoke-тест пройден`)
