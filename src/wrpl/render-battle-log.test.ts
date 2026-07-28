@@ -73,8 +73,8 @@ test('battle log рисует клановые рамки тем же игров
     dict: {},
   }, true)
 
-  assert.ok(svg.includes('<tspan font-family="symbols_skyquake">╊</tspan>OEF'))
-  assert.ok(svg.includes('<tspan font-family="symbols_skyquake">┾</tspan>BriSs'))
+  assert.ok(svg.includes('<tspan font-family="symbols_skyquake" font-weight="400" font-style="normal">╊</tspan>OEF'))
+  assert.ok(svg.includes('<tspan font-family="symbols_skyquake" font-weight="400" font-style="normal">┾</tspan>BriSs'))
   assert.ok(!svg.includes('≋OEF≋'))
   assert.ok(!svg.includes('⚑BriSs⚑'))
 })

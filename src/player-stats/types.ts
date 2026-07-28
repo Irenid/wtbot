@@ -38,6 +38,8 @@ export interface RawPlayerStats {
 
 export interface PlayerStatsProvider {
   readonly source: string
+  /** Источник адресуется только стабильным WT user id и не умеет искать по нику. */
+  readonly requiresWtUserId?: boolean
   resolvePlayer(nick: string): Promise<PlayerReference[]>
   fetchPlayerStats(player: PlayerReference): Promise<RawPlayerStats>
   /** Прерывает незавершённые запросы при shutdown; повторное закрытие безопасно. */
@@ -64,7 +66,9 @@ export interface NormalizedPlayerExternalTotal {
   battles: number | null
   victories: number | null
   defeats: number | null
+  deaths: number | null
   timePlayedSec: number | null
+  /** Выходы на задания (spawns); у профиля WT это метрика веток техники. */
   respawns: number | null
   airKills: number | null
   groundKills: number | null

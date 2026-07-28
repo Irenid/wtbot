@@ -1,0 +1,38 @@
+<!-- @dsCard group="Components" name="KPI-плитки и донат" -->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; background: #111015; color: #f2efe6; font: 13px 'Segoe UI', system-ui, sans-serif; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .kpi { background: linear-gradient(180deg,#1b1a20,#151419); border: 1px solid #37343f; border-radius: 12px; padding: 14px 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+  .kpi .l { font-size: 11px; color: #7d7885; text-transform: uppercase; letter-spacing: .07em; }
+  .kpi .v { font-family: 'Space Grotesk','Segoe UI',sans-serif; font-size: 26px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .s { font-size: 12px; color: #7d7885; margin-top: 2px; }
+  .kpi.with-donut { display: flex; gap: 14px; align-items: center; }
+  .ok { color: #8ee6a1; font-weight: 700; } .fail { color: #ff8fa3; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Бои</div><div class="v">12 520</div><div class="s">1 182 ч в бою</div></div>
+    <div class="kpi with-donut">
+      <svg width="66" height="66" viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#111015" stroke-width="8"></circle>
+        <circle cx="32" cy="32" r="26" fill="none" stroke="#8ee6a1" stroke-width="8" stroke-linecap="round" filter="drop-shadow(0 0 4px rgba(142,230,161,.45))" stroke-dasharray="88.5 163.4" transform="rotate(-90 32 32)"></circle>
+        <text x="32" y="36" text-anchor="middle" font-size="12.5" font-weight="700" fill="#f2efe6">54.2%</text>
+      </svg>
+      <div>
+        <div class="l">Винрейт</div>
+        <div class="s"><span class="ok">6 786</span> побед<br><span class="fail">5 734</span> поражений</div>
+      </div>
+    </div>
+    <div class="kpi"><div class="l">Фраги / смерть</div><div class="v">1.49</div><div class="s">13 396 фрагов · 9 014 смертей</div></div>
+    <div class="kpi"><div class="l">Любимый класс</div><div class="v" style="color:#f2984a">земля</div><div class="s">74.8% фрагов · StatShark</div></div>
+  </div>
+</body>
+</html>

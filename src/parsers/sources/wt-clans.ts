@@ -1,4 +1,5 @@
 import { getClansStats, upsertClans } from '../../db/index.js'
+import { readResponseText } from '../../http-response.js'
 import type { ParserSource } from '../types.js'
 
 /**
@@ -21,6 +22,8 @@ const UA =
 const MAX_PAGES = 40
 const PAUSE_MS = 400
 const INTERVAL_MS = 12 * 60 * 60_000
+const FETCH_TIMEOUT_MS = 20_000
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 interface LbClan {
   tag?: string
@@ -28,7 +31,53 @@ interface LbClan {
   astat?: Record<string, unknown>
 }
 
+interface LbPage {
+  status: string
+  data: LbClan[]
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function parseLeaderboardPage(raw: string, page: number): LbPage {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    throw new Error(`лидерборд, страница ${page}: некорректный JSON`)
+  }
+  if (!isRecord(value) || typeof value['status'] !== 'string' || !Array.isArray(value['data'])) {
+    throw new Error(`лидерборд, страница ${page}: неожиданная схема ответа`)
+  }
+
+  const data: LbClan[] = []
+  for (const [index, rawClan] of value['data'].entries()) {
+    if (!isRecord(rawClan)) {
+      throw new Error(`лидерборд, страница ${page}: элемент ${index} не является объектом`)
+    }
+    const tag = rawClan['tag']
+    const name = rawClan['name']
+    const astat = rawClan['astat']
+    if (tag !== undefined && typeof tag !== 'string') {
+      throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный tag`)
+    }
+    if (name !== undefined && typeof name !== 'string') {
+      throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный name`)
+    }
+    if (astat !== undefined && !isRecord(astat)) {
+      throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный astat`)
+    }
+    const clan: LbClan = {}
+    if (tag !== undefined) clan.tag = tag
+    if (name !== undefined) clan.name = name
+    if (astat !== undefined) clan.astat = astat
+    data.push(clan)
+  }
+  return { status: value['status'], data }
+}
 
 export const wtClans: ParserSource = {
   name: 'wt-clans',
@@ -47,10 +96,22 @@ export const wtClans: ParserSource = {
       if (page > 1) await sleep(PAUSE_MS)
       const res = await fetch(`${LB_URL}/${page}/sort/dr_era5`, {
         headers: { accept: 'application/json', 'user-agent': UA },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status} на странице ${page} лидерборда`)
-      const json = (await res.json()) as { status?: string; data?: LbClan[] }
-      const clans = json.data ?? []
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined)
+        throw new Error(`HTTP ${res.status} на странице ${page} лидерборда`)
+      }
+      const contentType = res.headers.get('content-type')?.toLowerCase() ?? ''
+      if (contentType !== '' && !contentType.includes('json')) {
+        await res.body?.cancel().catch(() => undefined)
+        throw new Error(`лидерборд, страница ${page}: сервер вернул не JSON`)
+      }
+      const json = parseLeaderboardPage(
+        await readResponseText(res, MAX_RESPONSE_BYTES, `лидерборд, страница ${page}`),
+        page,
+      )
+      const clans = json.data
       if (json.status !== 'ok' || clans.length === 0) break
       pages = page
 

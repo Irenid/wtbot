@@ -1,0 +1,52 @@
+<!-- @dsCard group="Components" name="Карточки, панели, строки" -->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; background: radial-gradient(700px 300px at 30% -10%, rgba(245,188,74,.12), transparent 62%), #111015; color: #f2efe6; font: 13px 'Segoe UI', system-ui, sans-serif; }
+  .card { background: linear-gradient(180deg,#211f27,#18171d); border: 1px solid #37343f; border-radius: 16px; box-shadow: 0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding: 18px 20px; max-width: 520px; margin-bottom: 16px; transition: transform .25s ease, border-color .25s ease; }
+  .card:hover { border-color: rgba(245,188,74,.5); transform: translateY(-3px); }
+  .sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .sec-head::before { content: ''; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg,#ffd873,#e89b1f); box-shadow: 0 0 12px rgba(245,188,74,.35); }
+  .sec-head h2 { margin: 0; font-size: 12.5px; text-transform: uppercase; letter-spacing: .08em; color: #b8b3ac; font-weight: 600; }
+  .sec-head .hint { margin-left: auto; font-size: 11px; color: #7d7885; }
+  .row-item { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 10px; background: #18161b; border: 1px solid transparent; margin-bottom: 8px; text-decoration: none; color: inherit; }
+  .row-item:hover { border-color: #f5bc4a; }
+  .row-item .title { flex: 1; min-width: 0; font-weight: 600; color: #f2efe6; }
+  .row-item .sub { display: block; font-size: 11.5px; color: #7d7885; font-weight: 400; margin-top: 2px; }
+  .row-item .end { flex: none; font-size: 11.5px; color: #7d7885; text-align: right; }
+  .result-badge { font-weight: 700; border-radius: 6px; padding: 3px 9px; font-size: 11px; flex: none; }
+  .result-badge.win { color: #8ee6a1; background: rgba(142,230,161,.14); }
+  .hero-card { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 20px; border-radius: 16px; background: linear-gradient(140deg, rgba(245,188,74,.16), rgba(31,29,36,.85) 55%), #1e1c23; border: 1px solid rgba(245,188,74,.3); max-width: 520px; }
+  .avatar-tile { width: 58px; height: 58px; border-radius: 14px; background: linear-gradient(135deg,#ffd873,#e89b1f); display: grid; place-items: center; font-family: 'Space Grotesk', sans-serif; font-weight: 800; color: #111015; font-size: 22px; box-shadow: 0 10px 30px -8px rgba(245,188,74,.5); }
+  .hero-card h1 { margin: 0; font-family: 'Space Grotesk','Segoe UI',sans-serif; font-size: 26px; font-weight: 700; }
+  .hero-card .aside { text-align: right; border-left: 1px solid rgba(245,188,74,.22); padding-left: 22px; margin-left: auto; }
+  .hero-card .big { font-family: 'Space Grotesk',sans-serif; font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+  .hero-card .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: #b8b3ac; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="hero-card">
+    <span class="avatar-tile">AU</span>
+    <div><h1>AURI</h1><div style="color:#b8b3ac; font-size:12px; margin-top:4px">Aurora Imperialis</div></div>
+    <div class="aside"><div class="big">9 260</div><div class="label">суммарный ПКР</div></div>
+  </div>
+  <div style="height:16px"></div>
+  <div class="card">
+    <div class="sec-head"><h2>Секция с золотым маркером</h2><span class="hint">подсказка справа</span></div>
+    <a class="row-item" href="#">
+      <span class="result-badge win">Победа</span>
+      <span class="title">Красная пустыня<span class="sub">земля · 8 игроков · 15 мин</span></span>
+      <span class="end">сегодня<br>13:11</span>
+    </a>
+    <a class="row-item" href="#">
+      <span class="title">Строка-ссылка с hover-рамкой<span class="sub">вторичный текст</span></span>
+      <span class="end">→</span>
+    </a>
+  </div>
+</body>
+</html>

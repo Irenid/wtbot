@@ -3,3 +3,7 @@ node_modules
 dist
 .idea
 data/
+# Явно фиксируем чувствительный cookie jar и его межпроцессный lock (их также
+# покрывает правило data/ выше).
+data/wt-cookies.json
+data/wt-cookies.json.lock

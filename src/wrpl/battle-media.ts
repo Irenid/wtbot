@@ -682,6 +682,11 @@ let cacheEstimatedBytes: number | null = null
 let cacheCatalogUpdatedAt = 0
 let cacheCapTail = Promise.resolve()
 
+/** Scene-кэш сайта живёт в том же каталоге и подчиняется тому же лимиту. */
+export function enforceBattleCacheCap(writtenUpperBound = 0): Promise<void> {
+  return enforceCacheCap(writtenUpperBound)
+}
+
 function enforceCacheCap(writtenUpperBound = 0): Promise<void> {
   const addedBytes = Math.max(0, writtenUpperBound)
   const run = cacheCapTail.catch(() => undefined).then(async () => {

@@ -1,0 +1,55 @@
+<!-- @dsCard group="Charts" name="Бары, стек и режимы" -->
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; background: #111015; color: #f2efe6; font: 13px 'Segoe UI', system-ui, sans-serif; }
+  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #7d7885; margin: 16px 0 8px; }
+  h3:first-child { margin-top: 0; }
+  .bar-row { display: grid; grid-template-columns: 130px 1fr 90px; align-items: center; gap: 10px; padding: 4px 0; font-size: 13px; }
+  .bar-label { color: #b8b3ac; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-value { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-track { height: 6px; background: #111015; border-radius: 3px; overflow: hidden; border: 1px solid #18161b; }
+  .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg,#e89b1f,#ffd873); }
+  .bar-fill.glow { box-shadow: 0 0 10px rgba(245,188,74,.5); }
+  .bar-fill.best { background: linear-gradient(90deg,#8ee6a1,#b2f0bf); }
+  .stack { display: flex; height: 16px; border-radius: 8px; overflow: hidden; gap: 2px; margin: 6px 0 8px; max-width: 480px; }
+  .seg { height: 100%; border-radius: 3px; min-width: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12.5px; color: #b8b3ac; }
+  .legend b { color: #f2efe6; font-variant-numeric: tabular-nums; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+  .mode { padding: 12px 0; border-bottom: 1px solid #2d2b33; max-width: 480px; }
+  .mode .head { display: flex; align-items: baseline; gap: 8px; }
+  .mode b { font-weight: 600; }
+  .mode .meta { font-size: 11.5px; color: #7d7885; font-variant-numeric: tabular-nums; }
+  .mode .rate { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <h3>Золотые бары величин (лидер — со свечением)</h3>
+  <div class="bar-row"><span class="bar-label">AURI</span><div class="bar-track"><div class="bar-fill glow" style="width:100%"></div></div><span class="bar-value">9 260</span></div>
+  <div class="bar-row"><span class="bar-label">WOLF</span><div class="bar-track"><div class="bar-fill" style="width:31%"></div></div><span class="bar-value">2 907</span></div>
+  <h3>Стек «воздух / земля / флот» — 2px зазоры, легенда с долями</h3>
+  <div class="stack">
+    <div class="seg" style="background:#5f80f2;flex-grow:3130"></div>
+    <div class="seg" style="background:#d0731f;flex-grow:10016"></div>
+    <div class="seg" style="background:#1fae86;flex-grow:250"></div>
+  </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:#5f80f2"></span>воздух <b>3 130</b> · 23.4%</span>
+    <span><span class="swatch" style="background:#d0731f"></span>земля <b>10 016</b> · 74.8%</span>
+    <span><span class="swatch" style="background:#1fae86"></span>флот <b>250</b> · 1.9%</span>
+  </div>
+  <h3>Режимы — лучший подсвечен зелёным</h3>
+  <div class="mode">
+    <div class="head"><b>Реалистичные</b><span class="meta">6 510 боёв · K/D 1.46</span><span class="rate" style="color:#8ee6a1">56.3%</span></div>
+    <div class="bar-track" style="margin-top:8px"><div class="bar-fill best" style="width:56.3%"></div></div>
+  </div>
+  <div class="mode" style="border-bottom:none">
+    <div class="head"><b>Аркадные</b><span class="meta">5 258 боёв · K/D 1.46</span><span class="rate">51.6%</span></div>
+    <div class="bar-track" style="margin-top:8px"><div class="bar-fill" style="width:51.6%"></div></div>
+  </div>
+</body>
+</html>

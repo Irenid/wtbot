@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; background:#111015; color:#f2efe6; font-family:'Segoe UI',system-ui,sans-serif; }
+  a { color:#f5bc4a; text-decoration:none; }
+  a:hover { color:#f0d9a0; }
+</style>
+</helmet>
+
+<div style="min-height:100vh; display:flex; flex-direction:column; background:radial-gradient(800px 360px at 15% -60px, rgba(245,188,74,.12), transparent 65%), #111015">
+
+  <nav style="position:sticky; top:0; z-index:50; display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:10px clamp(14px,4vw,28px); background:rgba(17,16,20,.72); backdrop-filter:blur(18px) saturate(1.3); border-bottom:1px solid rgba(255,255,255,.06)">
+    <a href="home.dc.html" style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:19px; font-weight:700; color:#f2efe6; margin-right:14px">wt<span style="color:#f5bc4a">bot</span></a>
+    <a href="home.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Поиск</a>
+    <a href="clans.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Кланы</a>
+    <a href="clan.dc.html" aria-current="page" style="padding:7px 13px; border-radius:8px; font-size:13.5px; font-weight:600; color:#f2efe6; background:rgba(245,188,74,.16); border:1px solid rgba(245,188,74,.25)">Клан</a><a href="player.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Игрок</a><a href="battles.dc.html" style="padding:7px 13px; border-radius:8px; font-size:13.5px; color:#b8b3ac" style-hover="background:#18161b; color:#f2efe6">Бои</a>
+    <span style="flex:1"></span>
+    <a href="#" style="padding:7px 13px; border-radius:8px; font-size:13px; color:#7d7885; border:1px solid #2d2b33" style-hover="color:#b8b3ac; border-color:#4a4655">Панель бота</a>
+  </nav>
+
+  <main style="max-width:1180px; width:100%; margin:0 auto; padding:clamp(18px,4vw,30px) 20px 44px; box-sizing:border-box">
+    <div style="font-size:12.5px; color:#7d7885; margin-bottom:12px"><a href="clans.dc.html" style="color:#7d7885" style-hover="color:#b8b3ac">Кланы</a> <span style="margin:0 4px">/</span> <span style="color:#b8b3ac">AURI</span></div>
+
+    <header style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:20px; border-radius:16px; background:linear-gradient(140deg,rgba(245,188,74,.16),rgba(31,29,36,.85) 50%), #1e1c23; border:1px solid rgba(245,188,74,.3); margin-bottom:18px">
+      <span style="width:58px; height:58px; flex:none; border-radius:14px; background:linear-gradient(135deg,#ffd873,#e89b1f); display:grid; place-items:center; font-weight:800; color:#111015; font-size:22px; box-shadow:0 10px 30px -8px rgba(245,188,74,.5)">AU</span>
+      <div style="flex:1; min-width:200px">
+        <h1 style="margin:0; font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:clamp(24px,3.4vw,30px); font-weight:700; letter-spacing:-.01em; line-height:1.1">AURI <span style="font-size:15px; font-weight:400; color:#b8b3ac">Aurora Imperialis</span></h1>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; font-size:12px">
+          <span style="padding:3px 10px; border-radius:999px; background:rgba(245,188,74,.16); border:1px solid rgba(245,188,74,.35); color:#f5bc4a; font-weight:700">#1 в рейтинге</span>
+          <span style="padding:3px 10px; border-radius:999px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; white-space:nowrap">6 участников</span>
+          <span style="padding:3px 10px; border-radius:999px; background:#18161b; border:1px solid #2d2b33; color:#b8b3ac; white-space:nowrap">обновлено сегодня, 19:11</span>
+        </div>
+      </div>
+      <div style="text-align:right; border-left:1px solid rgba(245,188,74,.22); padding-left:22px; margin-left:6px">
+        <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:clamp(26px,3.6vw,34px); font-weight:800; font-variant-numeric:tabular-nums; line-height:1">9&nbsp;260</div>
+        <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; margin-top:4px">суммарный ПКР <span style="color:#8ee6a1; font-weight:700">+126</span></div>
+      </div>
+    </header>
+
+    <section style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:16px 18px; margin-bottom:16px">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px">
+        <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35)"></span>
+        <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Бои клана</h2>
+        
+        <div style="margin-left:auto; display:flex; gap:4px; background:#111015; border:1px solid #2d2b33; border-radius:9px; padding:3px">
+          <button type="button" onClick="{{ set7 }}" style="border:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:5px 12px; border-radius:7px; background:{{ bg7 }}; color:{{ c7 }}">7 дн.</button>
+          <button type="button" onClick="{{ set30 }}" style="border:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:5px 12px; border-radius:7px; background:{{ bg30 }}; color:{{ c30 }}">30 дн.</button>
+          <button type="button" onClick="{{ set90 }}" style="border:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; padding:5px 12px; border-radius:7px; background:{{ bg90 }}; color:{{ c90 }}">90 дн.</button>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px">
+        <div style="padding:14px 16px; border-radius:12px; min-height:104px; box-sizing:border-box; background:linear-gradient(180deg,#1b1a20,#151419); border:1px solid #37343f; box-shadow:inset 0 1px 0 rgba(255,255,255,.03)">
+          <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#7d7885">Бои</div>
+          <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:4px">{{ battles }}</div>
+          <div style="font-size:12px; color:#7d7885; margin-top:2px">{{ noresult }} без исхода</div>
+        </div>
+        <div style="padding:14px 16px; border-radius:12px; min-height:104px; box-sizing:border-box; background:linear-gradient(180deg,#1b1a20,#151419); border:1px solid #37343f; box-shadow:inset 0 1px 0 rgba(255,255,255,.03); display:flex; gap:14px; align-items:center">
+          <svg width="64" height="64" viewBox="0 0 64 64" style="flex:none">
+            <circle cx="32" cy="32" r="26" fill="none" stroke="#111015" stroke-width="8"></circle>
+            <circle cx="32" cy="32" r="26" fill="none" stroke="#8ee6a1" stroke-width="8" stroke-linecap="round" filter="drop-shadow(0 0 4px rgba(142,230,161,.45))" stroke-dasharray="{{ wrDash }}" transform="rotate(-90 32 32)"></circle>
+            <text x="32" y="36" text-anchor="middle" font-size="13" font-weight="700" fill="#f2efe6">{{ wr }}</text>
+          </svg>
+          <div>
+            <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#7d7885">Винрейт</div>
+            <div style="font-size:13px; color:#b8b3ac; margin-top:4px"><span style="color:#8ee6a1; font-weight:700">{{ wins }}</span> побед<br><span style="color:#ff8fa3; font-weight:700">{{ losses }}</span> поражений</div>
+          </div>
+        </div>
+        <div style="padding:14px 16px; border-radius:12px; min-height:104px; box-sizing:border-box; background:linear-gradient(180deg,#1b1a20,#151419); border:1px solid #37343f; box-shadow:inset 0 1px 0 rgba(255,255,255,.03)">
+          <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#7d7885">Фраги / смерти</div>
+          <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:4px">{{ kd }}</div>
+          <div style="font-size:12px; color:#7d7885; margin-top:2px">{{ frags }} фрагов · {{ deaths }} смертей</div>
+        </div>
+        <div style="padding:14px 16px; border-radius:12px; min-height:104px; box-sizing:border-box; background:linear-gradient(180deg,#1b1a20,#151419); border:1px solid #37343f; box-shadow:inset 0 1px 0 rgba(255,255,255,.03)">
+          <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:#7d7885">Очки</div>
+          <div style="font-family:'Space Grotesk','Segoe UI',sans-serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:4px">{{ score }}</div>
+          <div style="font-size:12px; color:#7d7885; margin-top:2px">{{ perBattle }} за бой</div>
+        </div>
+      </div>
+    </section>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; align-items:start">
+      <section style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); overflow:hidden">
+        <div style="display:flex; align-items:center; gap:8px; padding:14px 18px; border-bottom:1px solid #2d2b33">
+          <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35)"></span>
+          <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Ростер и ПКР</h2>
+          <span style="margin-left:auto; font-size:11px; color:#7d7885">вклад в сумму</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%; border-collapse:collapse; font-size:13.5px; min-width:420px">
+            <tbody>
+              <tr style-hover="background:#18161b">
+                <td style="padding:11px 8px 11px 18px; color:#7d7885; font-variant-numeric:tabular-nums; width:26px">1</td>
+                <td style="padding:11px 8px"><a href="player.dc.html" style="font-weight:600">ViperAce</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(245,188,74,.14); color:#f5bc4a">Элита</span><div style="height:4px; border-radius:2px; background:#111015; margin-top:6px; overflow:hidden"><div style="width:100%; height:100%; background:linear-gradient(90deg,#e89b1f,#ffd873); box-shadow:0 0 10px rgba(245,188,74,.5)"></div></div></td>
+                <td style="padding:11px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums; width:64px">1&nbsp;808</td>
+                <td style="padding:11px 18px 11px 4px; text-align:right; width:52px"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(255,143,163,.12); color:#ff8fa3; font-variant-numeric:tabular-nums">−14</span></td>
+              </tr>
+              <tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b">
+                <td style="padding:11px 8px 11px 18px; color:#7d7885; font-variant-numeric:tabular-nums">2</td>
+                <td style="padding:11px 8px"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">NightHawk</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(245,188,74,.14); color:#f5bc4a">Элита</span><div style="height:4px; border-radius:2px; background:#111015; margin-top:6px; overflow:hidden"><div style="width:92%; height:100%; background:#f5bc4a"></div></div></td>
+                <td style="padding:11px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;671</td>
+                <td style="padding:11px 18px 11px 4px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+22</span></td>
+              </tr>
+              <tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b">
+                <td style="padding:11px 8px 11px 18px; color:#7d7885; font-variant-numeric:tabular-nums">3</td>
+                <td style="padding:11px 8px"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">IronClad</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(142,230,161,.12); color:#8ee6a1">Хорошо</span><div style="height:4px; border-radius:2px; background:#111015; margin-top:6px; overflow:hidden"><div style="width:88%; height:100%; background:#f5bc4a"></div></div></td>
+                <td style="padding:11px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;590</td>
+                <td style="padding:11px 18px 11px 4px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+8</span></td>
+              </tr>
+              <tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b">
+                <td style="padding:11px 8px 11px 18px; color:#7d7885; font-variant-numeric:tabular-nums">4</td>
+                <td style="padding:11px 8px"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">StormRider</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(142,230,161,.12); color:#8ee6a1">Хорошо</span><div style="height:4px; border-radius:2px; background:#111015; margin-top:6px; overflow:hidden"><div style="width:85%; height:100%; background:#f5bc4a"></div></div></td>
+                <td style="padding:11px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;544</td>
+                <td style="padding:11px 18px 11px 4px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(255,143,163,.12); color:#ff8fa3; font-variant-numeric:tabular-nums">−3</span></td>
+              </tr>
+              <tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b">
+                <td style="padding:11px 8px 11px 18px; color:#7d7885; font-variant-numeric:tabular-nums">5</td>
+                <td style="padding:11px 8px"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">FrostByte</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(142,230,161,.12); color:#8ee6a1">Хорошо</span><div style="height:4px; border-radius:2px; background:#111015; margin-top:6px; overflow:hidden"><div style="width:77%; height:100%; background:#f5bc4a"></div></div></td>
+                <td style="padding:11px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;401</td>
+                <td style="padding:11px 18px 11px 4px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+41</span></td>
+              </tr>
+              <tr style="border-top:1px solid #2d2b33" style-hover="background:#18161b">
+                <td style="padding:11px 8px 11px 18px; color:#7d7885; font-variant-numeric:tabular-nums">6</td>
+                <td style="padding:11px 8px"><a href="player.dc.html" style="font-weight:600; color:#f2efe6" style-hover="color:#f5bc4a">Kestrel</a><span style="margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; background:rgba(184,179,172,.10); color:#b8b3ac">Норм</span><div style="height:4px; border-radius:2px; background:#111015; margin-top:6px; overflow:hidden"><div style="width:69%; height:100%; background:#f5bc4a"></div></div></td>
+                <td style="padding:11px 8px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums">1&nbsp;246</td>
+                <td style="padding:11px 18px 11px 4px; text-align:right"><span style="padding:2px 7px; border-radius:999px; font-size:11.5px; font-weight:600; background:rgba(142,230,161,.12); color:#8ee6a1; font-variant-numeric:tabular-nums">+12</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div style="display:flex; flex-direction:column; gap:16px; min-width:0">
+        <section style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:16px 18px">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px">
+            <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35)"></span>
+            <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Динамика суммы ПКР</h2>
+            <span style="margin-left:auto; font-size:11px; color:#7d7885">90 дней</span>
+          </div>
+          <svg viewBox="0 0 520 150" preserveAspectRatio="none" style="display:block; width:100%; height:150px" aria-label="Динамика суммарного ПКР">
+            <defs><linearGradient id="pkrg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f5bc4a" stop-opacity=".38"></stop><stop offset="1" stop-color="#f5bc4a" stop-opacity="0"></stop></linearGradient></defs>
+            <line x1="0" y1="30" x2="520" y2="30" stroke="#18161b" stroke-width="1"></line>
+            <line x1="0" y1="70" x2="520" y2="70" stroke="#18161b" stroke-width="1"></line>
+            <line x1="0" y1="110" x2="520" y2="110" stroke="#18161b" stroke-width="1"></line>
+            <path d="M0,118 C40,116 70,110 105,108 C140,106 170,96 210,92 C250,88 280,80 320,72 C360,64 400,52 450,38 C480,30 500,26 520,22 L520,150 L0,150 Z" fill="url(#pkrg)"></path>
+            <path d="M0,118 C40,116 70,110 105,108 C140,106 170,96 210,92 C250,88 280,80 320,72 C360,64 400,52 450,38 C480,30 500,26 520,22" fill="none" stroke="#f5bc4a" stroke-width="2.5" filter="drop-shadow(0 0 5px rgba(245,188,74,.6))"></path>
+            <circle cx="520" cy="22" r="4" fill="#f5bc4a"></circle>
+          </svg>
+          <div style="display:flex; justify-content:space-between; font-size:10.5px; color:#7d7885; margin-top:6px">
+            <span>май</span><span>июнь</span><span>июль</span>
+          </div>
+        </section>
+
+        <section style="background:linear-gradient(180deg,#211f27,#18171d); border:1px solid #37343f; border-radius:16px; box-shadow:0 24px 50px -34px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04); padding:16px 18px">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px">
+            <span style="width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#ffd873,#e89b1f); box-shadow:0 0 12px rgba(245,188,74,.35)"></span>
+            <h2 style="margin:0; font-size:12.5px; text-transform:uppercase; letter-spacing:.08em; color:#b8b3ac; font-weight:600; white-space:nowrap">Последние бои</h2><div style="display:flex; gap:4px; margin-left:8px"><button type="button" onClick="{{ setBfAll }}" style="border:1px solid #2d2b33; cursor:pointer; font-family:inherit; font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; background:{{ bfAllBg }}; color:{{ bfAllC }}">Все</button><button type="button" onClick="{{ setBfW }}" style="border:1px solid #2d2b33; cursor:pointer; font-family:inherit; font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; background:{{ bfWBg }}; color:{{ bfWC }}">Победы</button><button type="button" onClick="{{ setBfL }}" style="border:1px solid #2d2b33; cursor:pointer; font-family:inherit; font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; background:{{ bfLBg }}; color:{{ bfLC }}">Поражения</button></div>
+            <a href="battles.dc.html" style="margin-left:auto; font-size:12px; font-weight:600">Все →</a>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <a href="battle.dc.html" style="display:{{ bShow1 }}; align-items:center; gap:10px; padding:9px 12px; border-radius:10px; background:#18161b; border:1px solid transparent; color:inherit" style-hover="border-color:#f5bc4a">
+              <span style="padding:3px 9px; border-radius:6px; font-size:11px; font-weight:700; background:rgba(142,230,161,.14); color:#8ee6a1; flex:none">Победа</span>
+              <span style="flex:1; min-width:0; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#f2efe6">Красная пустыня</span>
+              <span style="font-size:11.5px; color:#7d7885; flex:none">57 : 12 · сегодня</span>
+            </a>
+            <a href="battle.dc.html" style="display:{{ bShow2 }}; align-items:center; gap:10px; padding:9px 12px; border-radius:10px; background:#18161b; border:1px solid transparent; color:inherit" style-hover="border-color:#f5bc4a">
+              <span style="padding:3px 9px; border-radius:6px; font-size:11px; font-weight:700; background:rgba(255,143,163,.14); color:#ff8fa3; flex:none">Поражение</span>
+              <span style="flex:1; min-width:0; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#f2efe6">Прорыв линии Зигфрида</span>
+              <span style="font-size:11.5px; color:#7d7885; flex:none">31 : 44 · вчера</span>
+            </a>
+            <a href="battle.dc.html" style="display:{{ bShow3 }}; align-items:center; gap:10px; padding:9px 12px; border-radius:10px; background:#18161b; border:1px solid transparent; color:inherit" style-hover="border-color:#f5bc4a">
+              <span style="padding:3px 9px; border-radius:6px; font-size:11px; font-weight:700; background:rgba(142,230,161,.14); color:#8ee6a1; flex:none">Победа</span>
+              <span style="flex:1; min-width:0; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#f2efe6">Красная пустыня</span>
+              <span style="font-size:11.5px; color:#7d7885; flex:none">49 : 20 · 24.07</span>
+            </a>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer style="margin-top:auto; padding:18px 20px 26px; text-align:center; font-size:12px; color:#7d7885; border-top:1px solid #18161b">
+    wtbot
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;defaultPeriod&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;7&quot;,&quot;30&quot;,&quot;90&quot;],&quot;default&quot;:&quot;7&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Данные&quot;}}">
+class Component extends DCLogic {
+  state = { period: null, bf: "all" };
+  renderVals() {
+    const period = this.state.period ?? (this.props.defaultPeriod ?? "30");
+    const D = {
+      "7":  { battles: 5,  noresult: 0, wins: 3,  losses: 2,  frags: 71,  deaths: 39,  score: "26 340", wr: 60.0 },
+      "30": { battles: 14, noresult: 0, wins: 9,  losses: 5,  frags: 206, deaths: 113, score: "75 906", wr: 64.3 },
+      "90": { battles: 41, noresult: 2, wins: 25, losses: 16, frags: 588, deaths: 342, score: "214 780", wr: 61.0 }
+    };
+    const d = D[period] || D["30"];
+    const circ = 2 * Math.PI * 26;
+    const seg = (p) => ({
+      ["bg" + p]: period === p ? "#f5bc4a" : "transparent",
+      ["c" + p]: period === p ? "#111015" : "#b8b3ac",
+      ["set" + p]: () => this.setState({ period: p })
+    });
+    const bf = (k, v) => ({
+      ["setBf" + k]: () => this.setState({ bf: v }),
+      ["bf" + k + "Bg"]: this.state.bf === v ? "#f5bc4a" : "transparent",
+      ["bf" + k + "C"]: this.state.bf === v ? "#111015" : "#b8b3ac"
+    });
+    const show = r => (this.state.bf === "all" || this.state.bf === r) ? "flex" : "none";
+    return {
+      battles: d.battles, noresult: d.noresult,
+      wins: d.wins, losses: d.losses,
+      wr: d.wr.toFixed(1) + "%",
+      wrDash: (circ * d.wr / 100).toFixed(1) + " " + circ.toFixed(1),
+      frags: d.frags, deaths: d.deaths,
+      kd: (d.frags / d.deaths).toFixed(2),
+      score: d.score,
+      perBattle: Math.round(parseInt(d.score.replace(/\s/g, "")) / d.battles).toLocaleString("ru-RU"),
+      ...seg("7"), ...seg("30"), ...seg("90"),
+      ...bf("All", "all"), ...bf("W", "w"), ...bf("L", "l"),
+      bShow1: show("w"), bShow2: show("l"), bShow3: show("w")
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -42,7 +42,16 @@ export interface VoiceTracker {
   stop(): Promise<void>
 }
 
-export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTracker {
+export interface VoiceTrackerOptions {
+  /** Вызывается после изменения сохранённого voice-снимка. */
+  onPresenceChange?: () => void | Promise<void>
+}
+
+export function startVoiceTracker(
+  client: Client,
+  channelIds: string[],
+  options: VoiceTrackerOptions = {},
+): VoiceTracker {
   const watched = new Set(channelIds)
   const active = new Set<Promise<unknown>>()
   let stopping = false
@@ -53,6 +62,22 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
   }
   const isTracked = (channelId: string | null): channelId is string =>
     channelId !== null && (watched.size === 0 || watched.has(channelId))
+
+  const notifyPresenceChange = (): void => {
+    if (stopping || options.onPresenceChange === undefined) return
+    try {
+      const result = options.onPresenceChange()
+      if (result !== undefined) {
+        void track(Promise.resolve(result)).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn(`[voice] не удалось уведомить подписчика снимка: ${message}`)
+        })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[voice] не удалось уведомить подписчика снимка: ${message}`)
+    }
+  }
 
   const entryFrom = (state: VoiceState, member: GuildMember): VoicePresenceEntry | null => {
     if (!isTracked(state.channelId)) return null
@@ -100,7 +125,8 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
       const entry = entryFrom(state, member)
       if (entry) entries.push(entry)
     }
-    syncVoicePresence(entries)
+    const syncResult = syncVoicePresence(entries)
+    if (syncResult.updated > 0 || syncResult.removed > 0) notifyPresenceChange()
     return entries.length
   }
 
@@ -134,6 +160,7 @@ export function startVoiceTracker(client: Client, channelIds: string[]): VoiceTr
       } else {
         removeVoicePresence(newState.guild.id, member.id)
       }
+      notifyPresenceChange()
     } catch (err) {
       console.error('[voice] Не смог обновить присутствие:', err)
     }

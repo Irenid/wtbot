@@ -4,6 +4,7 @@ import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton, stopWinnerUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
+import { stopPlayerBoardPublisher } from './player-board.js'
 
 let acceptingInteractions = true
 const activeInteractions = new Set<Promise<void>>()
@@ -111,6 +112,7 @@ export async function stopBotWork(graceMs = 10_000): Promise<void> {
   // Вызовы сразу выставляют stopping-флаги, поэтому запускаем их до ожидания.
   const drain = Promise.allSettled([
     stopBattleAnnouncer(),
+    stopPlayerBoardPublisher(),
     stopWinnerUpdates(),
     Promise.allSettled([...activeInteractions]),
   ])

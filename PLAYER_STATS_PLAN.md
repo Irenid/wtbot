@@ -1,11 +1,25 @@
 # План разделения статистики игрока War Thunder
 
+> **Статус реализации.** План выполнен. Основной источник `official-profile`
+> читает страницу профиля warthunder.com, а опциональный `statshark` добавляет
+> второй независимый account-snapshot по стабильному WT user id, включая
+> текущую статистику отдельных машин. Оба источника используют общие identity,
+> snapshots, TTL, stale fallback и read-model; API возвращает основной
+> `account` и полный список `accountSources`. Истории StatShark сохраняются в
+> `raw_json`, но не складываются повторно с текущими итогами. Актуальные правила
+> транспорта и нормализации находятся в AGENTS.md.
+
 ## Цель
 
 Хранить и показывать отдельно:
 
 1. **Статистику аккаунта из внешних источников** — агрегаты профиля игрока,
-   полученные через внешний provider (например, ThunderInsights), официальный
+   Реализованы два адаптера: основной `official-profile`
+(`src/player-stats/providers/official-profile.ts`, публичная страница профиля
+warthunder.com, включён по умолчанию — `WT_PLAYER_STATS_ENABLED`) и
+опциональный `statshark` (`src/player-stats/providers/statshark.ts`, выключен
+по умолчанию — `STATSHARK_PLAYER_STATS_ENABLED`). Новый источник добавляется
+без изменения DB/read-модели.
    профиль или другой согласованный источник.
 2. **Статистику собранных боёв** — факты, восстановленные из `.wrpl` и уже
    записанные в `battles`, `battle_players`, `battle_kills` и `battle_chat`.
@@ -74,10 +88,11 @@ PRIMARY KEY (identity_id, source, external_id, nick)
 ```text
 id                 INTEGER PRIMARY KEY
 identity_id        INTEGER NOT NULL
-source             TEXT NOT NULL       -- thunderinsights, official_profile, ...
+source             TEXT NOT NULL       -- official-profile, statshark, ...
 source_player_id   TEXT NULL
 nick               TEXT NULL
 fetched_at         INTEGER NOT NULL
+last_checked_at    INTEGER NOT NULL
 source_updated_at  INTEGER NULL
 status             TEXT NOT NULL       -- ok, private, not_found, rate_limited,
                                       -- schema_error, error
@@ -94,8 +109,9 @@ error              TEXT NULL
 - `(content_hash)` при необходимости дедупликации.
 
 Сохранять сырой ответ обязательно. Если ответ не изменился, допустимо не
-создавать второй большой snapshot, но нужно обновлять `last_checked_at` в
-таблице состояния provider или сохранять лёгкую запись проверки.
+создавать второй большой snapshot: неизменившийся ответ переиспользует уже
+сохранённую строку и двигает её колонку `last_checked_at` (отдельной таблицы
+состояния provider в схеме нет).
 
 ### 3. Нормализованные агрегаты внешнего источника
 
@@ -110,6 +126,7 @@ category
 battles
 victories
 defeats
+deaths
 time_played_sec
 respawns
 air_kills
@@ -149,6 +166,15 @@ wins
 losses
 unknown_results
 win_rate
+air_kills
+ground_kills
+naval_kills
+ai_air_kills
+ai_ground_kills
+assists
+deaths
+score
+team_kills
 observed_battle_time_sec
 first_battle_at
 last_battle_at
@@ -189,13 +215,21 @@ time_in_battle_sec
 ```ts
 interface PlayerStatsProvider {
   readonly source: string
+  /** Источник адресуется только стабильным WT user id и не умеет искать по нику. */
+  readonly requiresWtUserId?: boolean
   resolvePlayer(nick: string): Promise<PlayerReference[]>
   fetchPlayerStats(player: PlayerReference): Promise<RawPlayerStats>
+  /** Прерывает незавершённые запросы при shutdown; повторное закрытие безопасно. */
+  close?(): void | Promise<void>
 }
 ```
 
-Первым реализовать отдельный адаптер `thunderinsights`. В будущем можно добавить
-`official-profile` или другой источник без изменения DB/read-модели.
+Реализованы два адаптера: основной `official-profile`
+(`src/player-stats/providers/official-profile.ts`, публичная страница профиля
+warthunder.com, включён по умолчанию — `WT_PLAYER_STATS_ENABLED`) и
+опциональный `statshark` (`src/player-stats/providers/statshark.ts`, выключен
+по умолчанию — `STATSHARK_PLAYER_STATS_ENABLED`). Новый источник добавляется
+без изменения DB/read-модели.
 
 Provider обязан:
 
@@ -210,7 +244,10 @@ Provider обязан:
 ## Поток получения внешней статистики
 
 1. Найти игроков среди участников клана, voice presence или разобранных боёв.
-2. Разрешить ник в стабильный `wt_user_id`.
+2. Взять `wt_user_id` из identity (он приходит только из локальных реплеев);
+   provider-ы его не восстанавливают по нику — `official-profile` адресуется
+   ником и возвращает `wtUserId: null`, а `statshark` объявляет
+   `requiresWtUserId = true` и пропускается, пока id неизвестен.
 3. Проверить свежий snapshot; TTL по умолчанию — 24 часа.
 4. Если snapshot устарел, поставить игрока в фоновую очередь.
 5. Получить и проверить ответ provider-а.
@@ -228,8 +265,9 @@ Provider обязан:
 
 ```text
 getPlayerReplayStats(playerRef, period?)
-getLatestPlayerExternalStats(playerRef, source?)
-getPlayerStatsComparison(playerRef, period?)
+getLatestPlayerExternalStats(identityId, source?)
+getPlayerStatsComparison(identity, period, context, additionalContexts?)
+// публичная точка входа — PlayerStatsCoordinator.lookup({ player, from?, to? })
 ```
 
 `getPlayerStatsComparison()` возвращает два независимых блока:
@@ -237,19 +275,27 @@ getPlayerStatsComparison(playerRef, period?)
 ```json
 {
   "account": {
-    "source": "thunderinsights",
+    "source": "official-profile",
     "fetchedAt": 1760000000,
     "stale": false,
     "totals": {},
     "vehicles": []
   },
-  "replays": {
+  "replay": {
     "source": "wrpl",
-    "from": 1759000000,
-    "to": 1760000000,
-    "totals": {},
-    "vehicles": [],
-    "unknownResults": 0
+    "available": true,
+    "userId": "12345678",
+    "stats": {
+      "battles": 0,
+      "wins": 0,
+      "losses": 0,
+      "unknownResults": 0,
+      "winRate": null,
+      "coverageBattles": 0,
+      "vehicles": []
+    },
+    "vehicleCount": 0,
+    "vehiclesTruncated": false
   }
 }
 ```
@@ -264,14 +310,17 @@ getPlayerStatsComparison(playerRef, period?)
 
 1. `src/db/index.ts` — новые таблицы, миграции, индексы и функции чтения/записи.
 2. `src/player-stats/types.ts` — типы identity, snapshot и нормализованных метрик.
-3. `src/player-stats/providers/thunderinsights.ts` — внешний provider.
+3. `src/player-stats/providers/official-profile.ts` и
+   `src/player-stats/providers/statshark.ts` — внешние provider-ы.
 4. `src/player-stats/normalizer.ts` — преобразование сырого ответа в totals и
    vehicle rows.
 5. `src/player-stats/service.ts` — TTL, очередь, сохранение snapshot и связь с
    identity.
 6. `src/web/routes/` — отдельный endpoint сравнения, если он нужен dashboard.
-7. `src/web/pages.ts` или соответствующий клиентский код — отображение блоков
-   `account` и `replays` с источником и датой.
+7. `src/web/routes/pages.ts` или соответствующий клиентский код — отображение
+   блоков `account` и `replay` с источником и датой; тот же
+   `PlayerStatsComparison` рендерит Discord-табло `src/bot/player-board.ts`
+   и команда `src/bot/commands/player-board.ts`.
 8. `src/config.ts`, `.env.example`, `AGENTS.md` — только если появятся новые
    переменные provider-а или расписания.
 
@@ -304,7 +353,7 @@ getPlayerStatsComparison(playerRef, period?)
 
 ### Этап 4 — API и отображение
 
-- вернуть `account` и `replays` раздельно;
+- вернуть `account`, `accountSources` и `replay` раздельно;
 - показать источник, свежесть и покрытие;
 - явно маркировать неполные/неизвестные значения.
 
@@ -319,14 +368,18 @@ getPlayerStatsComparison(playerRef, period?)
 
 - Миграция не удаляет и не изменяет существующие строки боёв.
 - Старые `/api` и voice-вызовы продолжают работать.
-- В ответе явно различаются `account` и `replays`.
+- В ответе явно различаются `account`, `accountSources` и `replay`.
 - `team_won = 0` никогда не считается поражением.
 - Внешний provider не блокирует ingest и web при недоступности.
 - Для каждого внешнего значения известны `source`, `fetched_at` и статус.
 - Повторный одинаковый ответ не создаёт неконтролируемый рост нормализованных
   строк.
 - Поля, отсутствующие в источнике, остаются `NULL`.
-- Проверки: `npm run build` и изолированные SQLite/Fastify smoke-тесты.
+- Проверки: `npm run build`, `npm test` (node:test, см. AGENTS.md) и
+  изолированные SQLite/Fastify smoke-тесты `npm run verify:player-stats`,
+  `npm run verify:player-stats-provider`, `npm run verify:player-stats-api`.
+- Unit-тестов на `src/player-stats/comparison.ts` и `service.ts` пока нет —
+  их логика покрыта только smoke-скриптами.
 
 ## Риски и решения
 
@@ -338,4 +391,3 @@ getPlayerStatsComparison(playerRef, period?)
 - **Разные определения победы и времени:** не смешивать totals разных источников.
 - **Ограничения и приватность внешнего API:** опрашивать только публичные
   профили, с TTL и ограничением частоты; provider сделать отключаемым.
-
