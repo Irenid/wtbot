@@ -49,7 +49,13 @@ export const config = {
   /** ID тестового сервера: команды на нём регистрируются мгновенно (опционально) */
   guildId: process.env['GUILD_ID'],
   /** Порт веб-дашборда */
-  port: Number(process.env['PORT'] ?? 3000),
+  port: Math.floor(envNumber('PORT', 3000, 1, 65_535)),
+  /** Интерфейс веб-сервера; loopback по умолчанию не выставляет API в сеть. */
+  webHost: process.env['WEB_HOST']?.trim() || '127.0.0.1',
+  /** Общий bearer-token обязателен, если WEB_HOST не loopback. */
+  webToken: process.env['WEB_TOKEN']?.trim() ?? '',
+  /** Разрешить создание новой SQLite только явным флагом. */
+  allowNewDb: envBoolean('WTBOT_ALLOW_NEW_DB', false),
   /** Путь к файлу SQLite */
   dbPath: process.env['DB_PATH'] ?? './data/wtbot.db',
   /** Ленивое получение account-статистики известных игроков с профиля warthunder.com. */

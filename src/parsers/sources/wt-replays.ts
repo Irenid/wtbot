@@ -38,7 +38,7 @@ interface WtPlayer {
   fakeName: string
 }
 
-interface WtReplay {
+export interface WtReplay {
   sessionId: string
   missionName: string
   startTime: number
@@ -52,7 +52,7 @@ interface WtReplay {
   players: Record<string, WtPlayer[]>
 }
 
-interface WtListResponse {
+export interface WtListResponse {
   items: WtReplay[]
   count: number
   total_count: number
@@ -132,6 +132,26 @@ async function fetchParts(sessionId: string): Promise<string[] | null> {
   }
 }
 
+export interface ReplayCollectionDeps {
+  hasCookie(): boolean
+  fetchPage(page: number): Promise<WtListResponse>
+  fetchParts(sessionId: string): Promise<string[] | null>
+  isKnownReplay(sessionId: string): boolean
+  retryFirstPage(
+    request: () => Promise<WtListResponse>,
+    isInvalid: (response: WtListResponse) => boolean,
+    label: string,
+  ): Promise<WtListResponse>
+}
+
+const DEFAULT_COLLECTION_DEPS: ReplayCollectionDeps = {
+  hasCookie: () => config.wtCookie !== '',
+  fetchPage,
+  fetchParts,
+  isKnownReplay: (sessionId) => hasItem('wt-replays', sessionId),
+  retryFirstPage: retryAfterWtSessionRefresh,
+}
+
 export interface CollectOpts {
   /** Предел страниц; без значения листаем до нормальной границы. */
   maxPages?: number | undefined
@@ -160,13 +180,24 @@ export interface CollectResult {
   hitCap: boolean
 }
 
+export const PLANNED_REPLAYS_MAX_PAGES = 50
+
 /**
  * Листает список боёв и собирает те, которых ещё нет в БД. Пока страница
  * целиком новая — листает дальше (догон после простоя), пределы — maxPages,
  * первый известный бой (в инкрементальном режиме) и дата sinceTs.
  */
-export async function collectFreshReplays(opts: CollectOpts): Promise<CollectResult> {
-  if (!config.wtCookie) {
+export async function collectFreshReplays(
+  opts: CollectOpts,
+  deps: ReplayCollectionDeps = DEFAULT_COLLECTION_DEPS,
+): Promise<CollectResult> {
+  if (opts.maxPages !== undefined && (!Number.isInteger(opts.maxPages) || opts.maxPages < 1)) {
+    throw new RangeError('maxPages должен быть положительным целым числом')
+  }
+  if (opts.sinceTs !== undefined && (!Number.isSafeInteger(opts.sinceTs) || opts.sinceTs < 0)) {
+    throw new RangeError('sinceTs должен быть неотрицательным Unix-временем')
+  }
+  if (!deps.hasCookie()) {
     throw new Error('WT_COOKIE не задан в .env — скопируй куки identity_* из браузера (см. README)')
   }
 
@@ -176,12 +207,12 @@ export async function collectFreshReplays(opts: CollectOpts): Promise<CollectRes
   let hitCap = true // сбросится, если выйдем по нормальной границе, а не по пределу
   for (let page = 1; opts.maxPages === undefined || page <= opts.maxPages; page++) {
     const data = page === 1
-      ? await retryAfterWtSessionRefresh(
-          () => fetchPage(page),
+      ? await deps.retryFirstPage(
+          () => deps.fetchPage(page),
           (response) => response.total_count === 0 && response.items.length === 0,
           'Replay API вернул пустой список',
         )
-      : await fetchPage(page)
+      : await deps.fetchPage(page)
     totalOnSite = data.total_count
     pagesRead = page
     if (page === 1 && data.total_count === 0 && data.items.length === 0) {
@@ -198,7 +229,7 @@ export async function collectFreshReplays(opts: CollectOpts): Promise<CollectRes
         reachedCutoff = true
         continue
       }
-      if (!hasItem('wt-replays', replay.sessionId)) {
+      if (!deps.isKnownReplay(replay.sessionId)) {
         fresh.push(replay)
         unseenOnPage++
       }
@@ -214,7 +245,7 @@ export async function collectFreshReplays(opts: CollectOpts): Promise<CollectRes
   for (const replay of fresh) {
     let parts: string[] | null = null
     if (opts.fetchDetails !== false) {
-      parts = await fetchParts(replay.sessionId)
+      parts = await deps.fetchParts(replay.sessionId)
     }
     items.push({
       externalId: replay.sessionId,
@@ -235,7 +266,8 @@ export const wtReplays: ParserSource = {
   async run() {
     // Догон: листаем до первого уже сохранённого боя. Планировщик не допускает
     // параллельных запусков этого source, а запросы ограничены паузой 1,5 с.
-    const { items, totalOnSite, pagesRead } = await collectFreshReplays({
+    const { items, totalOnSite, pagesRead, hitCap } = await collectFreshReplays({
+      maxPages: PLANNED_REPLAYS_MAX_PAGES,
       stopAtKnown: true,
       // Точные URL частей восстанавливаются из url + partsCount. Отдельный
       // запрос на каждый новый бой замедляет догон и быстро приводит к 429.
@@ -244,6 +276,7 @@ export const wtReplays: ParserSource = {
 
     let summary = `Новых реплеев: ${items.length} (всего на сайте: ${totalOnSite})`
     if (pagesRead > 1) summary += ` · прочитано страниц: ${pagesRead}`
+    if (hitCap) summary += ` · достигнут предел ${PLANNED_REPLAYS_MAX_PAGES} страниц`
     return { summary, items }
   },
 }

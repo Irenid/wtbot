@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fetchClanHistory, fetchClans, type ClanHistoryPoint, type ClanListEntry } from '../api'
+import { fetchClanHistory, fetchClans, type ClanHistoryPoint, type ClanListEntry, type ClanSeasonContext } from '../api'
 import { fmtDateTime, fmtInt } from '../lib/format'
 import { t } from '../i18n'
+import { SeasonPanel } from '../components/SeasonPanel'
 import { BarTrack, DeltaPill, ErrorNotice, Loading, SecHead } from '../components/ui'
 
 /* Мини-спарклайн суммы ПКР на витринной карточке клана (как в макете). */
@@ -106,6 +107,7 @@ function ClanHeroCard({ clan, rank, leaderRating, history }: {
 
 export function ClansPage() {
   const [clans, setClans] = useState<ClanListEntry[] | null>(null)
+  const [season, setSeason] = useState<ClanSeasonContext | null>(null)
   const [histories, setHistories] = useState<Record<string, ClanHistoryPoint[]>>({})
   const [error, setError] = useState<unknown>(null)
 
@@ -114,6 +116,7 @@ export function ClansPage() {
     fetchClans()
       .then((body) => {
         if (cancelled) return
+        setSeason(body.season)
         setClans(body.clans)
         // Спарклайны только для двух витринных карточек — по одному запросу.
         for (const clan of body.clans.slice(0, 2)) {
@@ -141,6 +144,7 @@ export function ClansPage() {
         </span>
       </div>
       {error !== null && <ErrorNotice error={error} />}
+      {season !== null && <SeasonPanel context={season} />}
       {clans === null ? <Loading /> : clans.length === 0 ? (
         <div className="notice">{t('clans.empty')}</div>
       ) : (

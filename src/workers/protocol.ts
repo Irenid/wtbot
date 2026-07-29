@@ -122,9 +122,9 @@ export interface HeatmapRenderInput extends MediaRenderInput {
 export interface RenderedMediaResult {
   log: ArrayBuffer
   heatmapGround: ArrayBuffer
-  heatmapAir: ArrayBuffer
+  heatmapAir: ArrayBuffer | null
   heatmapTeamGround: [ArrayBuffer, ArrayBuffer]
-  heatmapTeamAir: [ArrayBuffer, ArrayBuffer]
+  heatmapTeamAir: [ArrayBuffer, ArrayBuffer] | null
   chat: string
   summary: BattleEventSummary
   profile: WorkerRenderProfile
@@ -144,6 +144,24 @@ export interface WorkerTaskMap {
   'parse-battle': {
     input: { parts: ArrayBuffer[]; realNames: [string, string][]; meta: BattleItemMeta; ecsHashesJson: string }
     output: ParsedBattleResult
+  }
+  'persist-ingested-battle': {
+    input: { dbPath: string; sessionId: string; battle: WireBattleInput }
+    output: {
+      committedAtMs: number
+      sqliteMs: number
+      transactionMs: number
+      checkpointMs: number
+      checkpointed: boolean
+    }
+  }
+  'checkpoint-ingest-database': {
+    input: { dbPath: string }
+    output: { checkpointMs: number }
+  }
+  'warm-sqlite': {
+    input: { dbPath: string; statements: string[] }
+    output: { elapsedMs: number; statements: number }
   }
   'render-scoreboard': {
     input: { input: BattleImageInput; assets: ScoreboardAssets }
@@ -203,6 +221,7 @@ export interface SerializedWorkerError {
 export interface WorkerTransportTiming {
   receivedAtMs: number
   completedAtMs: number
+  outputTransferBytes: number
 }
 
 export type WorkerResponse =

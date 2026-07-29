@@ -16,6 +16,7 @@ import type {
 } from '../workers/protocol.js'
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 import { readCachedEcsHashesJson } from '../wrpl/ecs.js'
+import { runBenchmarkLoad, type BenchmarkLoadMode } from './benchmark-load.js'
 
 type Temperature = 'cold' | 'warm'
 
@@ -33,8 +34,10 @@ interface ReplayDescriptor {
   parts: number
   inputBytes: number
   eventsBlobBytes: number
+  eventsBlobSha256: string
   players: number
   kills: number
+  chatMessages: number
   trajectories: number
   airTrajectories: number
 }
@@ -64,6 +67,12 @@ interface MainMemoryMeasurement {
 interface RunMeasurement {
   index: number
   temperature: Temperature
+  load: {
+    scheduledOffsetMs: number
+    startedOffsetMs: number
+    completedOffsetMs: number
+    startDelayMs: number
+  } | null
   inputPrepareMs: number
   parse: {
     elapsedMs: number
@@ -93,7 +102,7 @@ const args = process.argv.slice(2)
 const directoryArgs = args.filter((arg) => !arg.startsWith('--'))
 if (directoryArgs.length === 0) {
   throw new Error(
-    'Укажи один или несколько каталогов: npm run benchmark:workers -- data/replays/<session> [ещё-session] [--render] [--warm=10]',
+    'Укажи один или несколько каталогов: npm run benchmark:workers -- data/replays/<session> [ещё-session] [--render] [--warm=10] [--jobs=2] [--duration=30] [--arrival-rate=2]',
   )
 }
 
@@ -115,9 +124,23 @@ if (rawKind && !mediaKinds.has(rawKind as BattleMediaKind)) {
 if (kindOption && !rawKind) throw new Error('Укажи вид материала после --kind=')
 const kind = rawKind as BattleMediaKind | undefined
 const render = args.includes('--render') || kind !== undefined
+const warmOptionPresent = args.some((arg) => arg.startsWith('--warm='))
 const warmRuns = integerOption('--warm=', 0, 0, 100)
+const durationSeconds = numberOption('--duration=', null, 0.01, 3600)
+const durationMs = durationSeconds === null ? null : durationSeconds * 1000
+const arrivalRatePerSecond = numberOption('--arrival-rate=', null, 0.01, 64)
+const warmRunLimit = warmOptionPresent || durationMs === null ? warmRuns : null
+if (arrivalRatePerSecond !== null && durationMs === null && warmRuns === 0) {
+  throw new Error('--arrival-rate требует --duration или положительный --warm')
+}
 const resources = workerResourcePlan()
 const workerCount = integerOption('--workers=', resources.workerThreads, 1, 8)
+const concurrentJobs = integerOption('--jobs=', 1, 1, 32)
+const loadMode: BenchmarkLoadMode = arrivalRatePerSecond !== null
+  ? 'open-loop'
+  : durationMs !== null
+    ? 'closed-loop-duration'
+    : 'closed-loop-count'
 
 const jsonOption = args.find((arg) => arg === '--json' || arg.startsWith('--json='))
 const rawJsonPath = jsonOption?.startsWith('--json=') ? jsonOption.slice('--json='.length) : null
@@ -145,21 +168,55 @@ for (const directory of directories) {
     const coldResult = await executeRun(pool, source, 0, 'cold', scenarioArtifacts)
     logRun(coldResult.replay.sessionIdHex, coldResult.run)
 
-    const warm = []
-    const warmStarted = performance.now()
-    for (let index = 0; index < warmRuns; index++) {
-      const result = await executeRun(pool, source, index + 1, 'warm', null)
+    const warm: RunMeasurement[] = []
+    const loadResult = await runBenchmarkLoad(
+      {
+        concurrency: concurrentJobs,
+        maxRuns: warmRunLimit,
+        durationMs,
+        arrivalRatePerSecond,
+      },
+      (index) => executeRun(pool, source, index + 1, 'warm', null),
+    )
+    for (const sample of loadResult.runs) {
+      const result = sample.value
       assert.deepEqual(result.replay, coldResult.replay, 'Метаданные replay изменились между benchmark-прогонами')
       assertStableRender(coldResult.run.render, result.run.render)
-      warm.push(result.run)
-      logRun(result.replay.sessionIdHex, result.run)
+      const measuredRun: RunMeasurement = {
+        ...result.run,
+        load: {
+          scheduledOffsetMs: sample.scheduledOffsetMs,
+          startedOffsetMs: sample.startedOffsetMs,
+          completedOffsetMs: sample.completedOffsetMs,
+          startDelayMs: sample.startDelayMs,
+        },
+      }
+      warm.push(measuredRun)
+      logRun(result.replay.sessionIdHex, measuredRun)
     }
-    const warmElapsedMs = performance.now() - warmStarted
     const warmResult = warm.length > 0
       ? {
-          requestedRuns: warmRuns,
-          elapsedMs: warmElapsedMs,
-          throughputRunsPerSecond: warm.length * 1000 / warmElapsedMs,
+          mode: loadResult.mode,
+          requestedRuns: loadResult.requestedRuns,
+          requestedDurationMs: loadResult.requestedDurationMs,
+          requestedArrivalRatePerSecond: loadResult.requestedArrivalRatePerSecond,
+          offeredRuns: loadResult.offeredRuns,
+          completedRuns: loadResult.completedRuns,
+          concurrentJobs,
+          maxInFlight: loadResult.maxInFlight,
+          lastAdmissionOffsetMs: loadResult.lastAdmissionOffsetMs,
+          drainMs: Math.max(0, loadResult.elapsedMs - loadResult.lastAdmissionOffsetMs),
+          elapsedMs: loadResult.elapsedMs,
+          durationReached: loadResult.durationReached,
+          runLimitReached: loadResult.runLimitReached,
+          safetyLimitReached: loadResult.safetyLimitReached,
+          throughputRunsPerSecond: warm.length * 1000 / loadResult.elapsedMs,
+          loadGenerator: {
+            scheduledOffsetMs: summarize(warm.map((run) => run.load!.scheduledOffsetMs)),
+            startedOffsetMs: summarize(warm.map((run) => run.load!.startedOffsetMs)),
+            completedOffsetMs: summarize(warm.map((run) => run.load!.completedOffsetMs)),
+            startDelayMs: summarize(warm.map((run) => run.load!.startDelayMs)),
+          },
           runs: warm,
           summary: summarizeRuns(warm),
         }
@@ -178,6 +235,7 @@ for (const directory of directories) {
       read: { elapsedMs: source.readMs },
       cold: coldResult.run,
       warm: warmResult,
+      workerPool: pool.snapshot(),
     })
   } finally {
     await pool.close()
@@ -186,7 +244,7 @@ for (const directory of directories) {
 
 const allWarmRuns = scenarios.flatMap((scenario) => scenario.warm?.runs ?? [])
 const benchmark = {
-  schemaVersion: 2,
+  schemaVersion: 5,
   timestamp: new Date().toISOString(),
   environment: {
     hostname: hostname(),
@@ -201,7 +259,11 @@ const benchmark = {
     render,
     renderMode: render ? (kind ? 'single' : 'bundle') : 'none',
     kind: kind ?? null,
-    warmRunsPerScenario: warmRuns,
+    warmRunsPerScenario: warmRunLimit,
+    durationSeconds,
+    arrivalRatePerSecond,
+    loadMode,
+    concurrentJobs,
     workerCount,
     cacheState: 'bypassed',
     artifactsEnabled: artifactsDirectory !== null,
@@ -272,6 +334,7 @@ async function executeRun(
     run: {
       index,
       temperature,
+      load: null,
       inputPrepareMs: observed.value.inputPrepareMs,
       parse: observed.value.parse,
       render: observed.value.render,
@@ -288,8 +351,10 @@ function replayDescriptor(source: ReplaySource, parsed: ParsedBattleResult): Rep
     parts: source.names.length,
     inputBytes: source.inputBytes,
     eventsBlobBytes: parsed.battle.eventsBlob.byteLength,
+    eventsBlobSha256: sha256(parsed.battle.eventsBlob),
     players: parsed.results.players.length,
     kills: parsed.summary.kills,
+    chatMessages: parsed.summary.chat,
     trajectories: parsed.summary.units,
     airTrajectories: parsed.summary.airUnits,
   }
@@ -322,7 +387,7 @@ async function renderParsed(
     const selected = await pool.run(
       { kind: 'render-media-kind', input: { ...input, kind } },
       {
-        priority: 'normal',
+        priority: 'interactive',
         transferList: [parsed.battle.eventsBlob],
         timeoutMs: 180_000,
         onTiming: (value) => { timing = value },
@@ -364,15 +429,18 @@ async function renderParsed(
   const elapsedMs = performance.now() - started
   assert.equal(isPng(media.log), true)
   assert.equal(isPng(media.heatmapGround), true)
-  assert.equal(isPng(media.heatmapAir), true)
-  const artifacts = {
+  const artifacts: Record<string, ArrayBuffer> = {
     log: media.log,
     'heatmap-ground': media.heatmapGround,
-    'heatmap-air': media.heatmapAir,
     'heatmap-team-0': media.heatmapTeamGround[0],
     'heatmap-team-1': media.heatmapTeamGround[1],
-    'heatmap-team-air-0': media.heatmapTeamAir[0],
-    'heatmap-team-air-1': media.heatmapTeamAir[1],
+  }
+  assert.equal(media.heatmapAir === null, media.heatmapTeamAir === null)
+  if (media.heatmapAir && media.heatmapTeamAir) {
+    assert.equal(isPng(media.heatmapAir), true)
+    artifacts['heatmap-air'] = media.heatmapAir
+    artifacts['heatmap-team-air-0'] = media.heatmapTeamAir[0]
+    artifacts['heatmap-team-air-1'] = media.heatmapTeamAir[1]
   }
   if (runArtifactsDirectory) {
     await Promise.all(
@@ -429,8 +497,17 @@ async function observeMainThread<T>(action: () => Promise<T>): Promise<ObservedR
 
 function summarizeRuns(runs: RunMeasurement[]) {
   const renderRuns = runs.flatMap((run) => run.render ? [run.render] : [])
+  const loadRuns = runs.flatMap((run) => run.load ? [run.load] : [])
   return {
     runs: runs.length,
+    load: loadRuns.length > 0
+      ? {
+          scheduledOffsetMs: summarize(loadRuns.map((load) => load.scheduledOffsetMs)),
+          startedOffsetMs: summarize(loadRuns.map((load) => load.startedOffsetMs)),
+          completedOffsetMs: summarize(loadRuns.map((load) => load.completedOffsetMs)),
+          startDelayMs: summarize(loadRuns.map((load) => load.startDelayMs)),
+        }
+      : null,
     inputPrepareMs: summarize(runs.map((run) => run.inputPrepareMs)),
     parse: {
       elapsedMs: summarize(runs.map((run) => run.parse.elapsedMs)),
@@ -461,6 +538,9 @@ function summarizeRuns(runs: RunMeasurement[]) {
 function summarizeTimings(timings: WorkerTaskTiming[]) {
   return {
     coldWorkerRuns: timings.filter((timing) => timing.coldWorker).length,
+    reasons: countValues(timings.map((timing) => timing.reason)),
+    inputTransferBytes: summarize(timings.map((timing) => timing.inputTransferBytes)),
+    outputTransferBytes: summarize(timings.map((timing) => timing.outputTransferBytes)),
     queueMs: summarize(timings.map((timing) => timing.queueMs)),
     schedulerWaitMs: summarize(timings.map((timing) => timing.schedulerWaitMs)),
     workerStartupMs: summarize(timings.map((timing) => timing.workerStartupMs)),
@@ -469,6 +549,12 @@ function summarizeTimings(timings: WorkerTaskTiming[]) {
     resultTransferMs: summarizeNullable(timings.map((timing) => timing.resultTransferMs)),
     totalMs: summarize(timings.map((timing) => timing.totalMs)),
   }
+}
+
+function countValues(values: string[]): Record<string, number> {
+  const counts = new Map<string, number>()
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+  return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)))
 }
 
 function summarizePhases(profiles: WorkerRenderProfile[]): Record<string, NumericSummary> {
@@ -553,6 +639,21 @@ function integerOption(prefix: string, fallback: number, min: number, max: numbe
   const value = Number(option.slice(prefix.length))
   if (!Number.isInteger(value) || value < min || value > max) {
     throw new Error(`${prefix.slice(0, -1)} должно быть целым числом от ${min} до ${max}`)
+  }
+  return value
+}
+
+function numberOption(
+  prefix: string,
+  fallback: number | null,
+  min: number,
+  max: number,
+): number | null {
+  const option = args.find((arg) => arg.startsWith(prefix))
+  if (!option) return fallback
+  const value = Number(option.slice(prefix.length))
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${prefix.slice(0, -1)} должно быть числом от ${min} до ${max}`)
   }
   return value
 }

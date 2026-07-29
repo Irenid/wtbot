@@ -23,7 +23,7 @@ const flags = new Set(process.argv.slice(2).filter((a) => a.startsWith('--')))
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
 const wanted = args[0]
 
-initDb(config.dbPath)
+initDb(config.dbPath, { allowCreate: config.allowNewDb })
 
 let sessionId: string | undefined
 if (wanted) {

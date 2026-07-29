@@ -1,6 +1,6 @@
 import { EmbedBuilder, SlashCommandBuilder } from 'discord.js'
 import type { Command } from '../types.js'
-import { getCommandStats, getItemStats, getLatestParsePerSource } from '../../db/index.js'
+import { getClanSeasonContext, getCommandStats, getItemStats, getLatestParsePerSource } from '../../db/index.js'
 
 function formatUptime(totalSec: number): string {
   const d = Math.floor(totalSec / 86400)
@@ -21,6 +21,7 @@ export const stats: Command = {
     const cmdStats = getCommandStats()
     const parses = getLatestParsePerSource()
     const itemStats = getItemStats()
+    const season = getClanSeasonContext()
 
     const topCommands =
       cmdStats.byCommand
@@ -44,6 +45,15 @@ export const stats: Command = {
         { name: 'Серверов', value: String(interaction.client.guilds.cache.size), inline: true },
         { name: 'Команд выполнено', value: String(cmdStats.total), inline: true },
         { name: 'Собрано записей', value: String(itemStats.total), inline: true },
+        {
+          name: 'Клановый сезон',
+          value: season.currentStage && season.season
+            ? `${season.currentStage.endsAt === season.season.endsAt ? 'до конца сезона' : `${season.currentStage.week} неделя`} · макс. БР ${season.currentStage.maxBr.toFixed(1)} · <t:${season.currentStage.endsAt - 1}:d>`
+            : season.season
+              ? `${season.season.name} · завершён`
+              : 'расписание не задано',
+          inline: false,
+        },
         { name: 'Топ команд', value: topCommands },
         { name: 'Парсеры', value: parsers },
       )

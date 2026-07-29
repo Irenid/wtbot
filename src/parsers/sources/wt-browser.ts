@@ -48,6 +48,12 @@ interface PoolEntry {
   busy: boolean
 }
 
+interface PageWaiter {
+  resolve: (entry: PoolEntry) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
+
 interface BrowserState {
   browser: Browser
   context: BrowserContext
@@ -87,7 +93,7 @@ let clearanceTail: Promise<void> = Promise.resolve()
 let startupTail: Promise<BrowserState> | null = null
 let launchFailureLogged = false
 let windowRestored = false
-const waiters: Array<(entry: PoolEntry) => void> = []
+const waiters: PageWaiter[] = []
 const metrics: WtBrowserMetrics = {
   requests: 0,
   challenged: 0,
@@ -303,18 +309,25 @@ async function connectBrowser(): Promise<BrowserState> {
     port = spawned.port
   }
 
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
-  const context = browser.contexts()[0]
-  if (context === undefined) {
-    await browser.close().catch(() => undefined)
-    throw new WtBrowserError('в Edge нет доступного browser context')
+  let browser: Browser | null = null
+  try {
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+    const context = browser.contexts()[0]
+    if (context === undefined) {
+      throw new WtBrowserError('в Edge нет доступного browser context')
+    }
+    context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS)
+    const probe = context.pages()[0] ?? await context.newPage()
+    const userAgent = await probe
+      .evaluate(() => navigator.userAgent)
+      .catch(() => '') as string
+    return { browser, context, child, port, userAgent, pool: [] }
+  } catch (error) {
+    await browser?.close().catch(() => undefined)
+    if (child !== null && !child.killed) child.kill()
+    await killStaleProfileBrowsers()
+    throw error
   }
-  context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS)
-  const probe = context.pages()[0] ?? await context.newPage()
-  const userAgent = await probe
-    .evaluate(() => navigator.userAgent)
-    .catch(() => '') as string
-  return { browser, context, child, port, userAgent, pool: [] }
 }
 
 function browserStateIsUsable(current: BrowserState): boolean {
@@ -326,14 +339,32 @@ async function ensureBrowser(): Promise<BrowserState> {
   if (startupTail !== null) return startupTail
 
   startupTail = (async () => {
-    if (state !== null && !browserStateIsUsable(state)) state = null
+    if (state !== null && !browserStateIsUsable(state)) {
+      const stale = state
+      state = null
+      rejectPageWaiters(new WtBrowserError('Соединение с Edge потеряно'))
+      for (const entry of stale.pool) await entry.page.close().catch(() => undefined)
+      await stale.browser.close().catch(() => undefined)
+      if (stale.child !== null && !stale.child.killed) stale.child.kill()
+      await killStaleProfileBrowsers()
+    }
     const started = await connectBrowser()
     launchFailureLogged = false
     windowRestored = false
     state = started
-    await seedBrowserCookies(started.context)
-    await ensurePool(started)
-    return started
+    try {
+      await seedBrowserCookies(started.context)
+      await ensurePool(started)
+      return started
+    } catch (error) {
+      state = null
+      rejectPageWaiters(new WtBrowserError('Browser pool не запустился'))
+      for (const entry of started.pool) await entry.page.close().catch(() => undefined)
+      await started.browser.close().catch(() => undefined)
+      if (started.child !== null && !started.child.killed) started.child.kill()
+      await killStaleProfileBrowsers()
+      throw error
+    }
   })()
   try {
     return await startupTail
@@ -376,7 +407,9 @@ async function ensurePool(current: BrowserState): Promise<void> {
   for (const extra of current.pool.splice(config.wtBrowserPoolSize)) {
     await extra.page.close().catch(() => undefined)
   }
-  for (const entry of current.pool) await parkPage(entry.page)
+  for (const entry of current.pool) {
+    if (!entry.busy) await parkPage(entry.page)
+  }
   metrics.poolSize = current.pool.length
   // На свежем профиле первая вкладка — служебная страница edge://, где
   // evaluate запрещён, поэтому UA снимаем уже с припаркованной вкладки сайта.
@@ -388,13 +421,26 @@ async function ensurePool(current: BrowserState): Promise<void> {
   }
 }
 
+function rejectPageWaiters(error: Error): void {
+  for (const waiter of waiters.splice(0)) {
+    clearTimeout(waiter.timer)
+    waiter.reject(error)
+  }
+}
+
 function releasePage(entry: PoolEntry): void {
-  const waiter = waiters.shift()
-  if (waiter !== undefined) {
-    waiter(entry)
+  entry.busy = false
+  if (entry.page.isClosed() || state === null || !state.pool.includes(entry)) {
+    rejectPageWaiters(new WtBrowserError('Browser pool потерял рабочую вкладку'))
     return
   }
-  entry.busy = false
+  const waiter = waiters.shift()
+  if (waiter !== undefined) {
+    clearTimeout(waiter.timer)
+    entry.busy = true
+    waiter.resolve(entry)
+    return
+  }
 }
 
 async function acquirePage(): Promise<PoolEntry> {
@@ -407,13 +453,25 @@ async function acquirePage(): Promise<PoolEntry> {
   const broken = current.pool.filter((entry) => entry.page.isClosed())
   if (broken.length > 0) {
     await ensurePool(current)
-    const replaced = current.pool.find((entry) => !entry.busy)
+    const replaced = current.pool.find((entry) => !entry.busy && !entry.page.isClosed())
     if (replaced !== undefined) {
       replaced.busy = true
       return replaced
     }
   }
-  return new Promise<PoolEntry>((resolveEntry) => waiters.push(resolveEntry))
+  return new Promise<PoolEntry>((resolveEntry, rejectEntry) => {
+    const waiter: PageWaiter = {
+      resolve: resolveEntry,
+      reject: rejectEntry,
+      timer: setTimeout(() => {
+        const index = waiters.indexOf(waiter)
+        if (index >= 0) waiters.splice(index, 1)
+        rejectEntry(new WtBrowserError(`Ожидание свободной вкладки Edge превысило ${config.wtBrowserTimeoutMs} мс`))
+      }, config.wtBrowserTimeoutMs),
+    }
+    waiter.timer.unref()
+    waiters.push(waiter)
+  })
 }
 
 /**
@@ -763,7 +821,7 @@ export async function closeWtBrowser(): Promise<void> {
   state = null
   startupTail = null
   lastClearanceAt = 0
-  waiters.length = 0
+  rejectPageWaiters(new WtBrowserError('Browser pool остановлен'))
   if (current === null) return
 
   for (const entry of current.pool) {

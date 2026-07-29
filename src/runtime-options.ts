@@ -1,6 +1,8 @@
 import { availableParallelism, freemem, totalmem } from 'node:os'
 
 const BYTES_PER_MB = 1024 * 1024
+export const MAX_CONFIGURABLE_WORKERS = 8
+export const MAX_INGEST_CONCURRENCY = MAX_CONFIGURABLE_WORKERS * 4
 
 type WorkerResourceEnvironment = Readonly<Record<string, string | undefined>>
 let cachedDefaultPlan: WorkerResourcePlan | undefined
@@ -27,6 +29,7 @@ export interface WorkerResourcePlan {
   backgroundReserveSlots: number
   backgroundWorkerThreads: number
   ingestConcurrency: number
+  replayProcessByteBudgetMb: number
   maxOldGenerationSizeMb: number
 }
 
@@ -92,7 +95,7 @@ export function workerResourcePlan(options: WorkerResourcePlanOptions = {}): Wor
   const estimatedWorkerMemoryMb = integerSetting(
     env,
     'WT_WORKER_ESTIMATED_MB',
-    640,
+    320,
     128,
     4096,
   )
@@ -107,29 +110,66 @@ export function workerResourcePlan(options: WorkerResourcePlanOptions = {}): Wor
     0,
     Math.max(0, totalMemoryMb - 256),
   )
+  const workerAndReplayMemoryMb = Math.max(
+    estimatedWorkerMemoryMb,
+    Math.min(totalMemoryMb - reservedMemoryMb, freeMemoryMb - reservedMemoryMb),
+  )
+  // Два параллельных боя должны иметь место для двух worst-case WRPL-частей
+  // каждый (4 × 96 МиБ). На малой машине floor плавно уменьшается, но остаётся
+  // не ниже 128 МиБ. Резерв вычитается до выбора auto worker count, чтобы CPU
+  // workers и replay pipeline не планировали одну и ту же память дважды.
+  const minimumReplayProcessBudgetMb = Math.max(
+    128,
+    Math.min(384, workerAndReplayMemoryMb - estimatedWorkerMemoryMb),
+  )
   const memoryLimitedThreads = Math.max(
     1,
     Math.floor(
       Math.max(
         estimatedWorkerMemoryMb,
-        Math.min(totalMemoryMb - reservedMemoryMb, freeMemoryMb - reservedMemoryMb),
+        workerAndReplayMemoryMb - minimumReplayProcessBudgetMb,
       ) / estimatedWorkerMemoryMb,
     ),
   )
 
   const rawThreads = env['WT_WORKER_THREADS']?.trim().toLowerCase()
   const explicitWorkerThreads = rawThreads !== undefined && rawThreads !== '' && rawThreads !== 'auto'
-  const automaticThreads = Math.max(1, Math.min(cpuLimitedThreads, memoryLimitedThreads))
+  const automaticThreads = Math.max(
+    1,
+    Math.min(cpuLimitedThreads, memoryLimitedThreads, MAX_CONFIGURABLE_WORKERS),
+  )
   const workerThreads = explicitWorkerThreads
-    ? integerSetting(env, 'WT_WORKER_THREADS', automaticThreads, 1, availableCpus)
+    ? Math.min(
+        integerSetting(env, 'WT_WORKER_THREADS', automaticThreads, 1, availableCpus),
+        MAX_CONFIGURABLE_WORKERS,
+      )
     : automaticThreads
   const backgroundReserveSlots = workerThreads > 1
     ? integerSetting(env, 'WT_WORKER_BACKGROUND_RESERVE', 1, 0, workerThreads - 1)
     : 0
   const backgroundWorkerThreads = Math.max(1, workerThreads - backgroundReserveSlots)
+  // Ingest включает длительную загрузку частей с CDN, а не только CPU parse.
+  // Без явной настройки сохраняем безопасное соотношение 1:1 с фоновыми
+  // workers; явное значение может держать больше I/O-задач в полёте, пока
+  // CPU-пул разбирает уже скачанные replay.
   const ingestConcurrency = Math.min(
-    backgroundWorkerThreads,
     integerSetting(env, 'WT_INGEST_CONCURRENCY', backgroundWorkerThreads, 1, 1024),
+    MAX_INGEST_CONCURRENCY,
+  )
+  const replayBudgetMemoryMb = Math.max(
+    minimumReplayProcessBudgetMb,
+    workerAndReplayMemoryMb - workerThreads * estimatedWorkerMemoryMb,
+  )
+  const defaultReplayProcessByteBudgetMb = Math.min(
+    2048,
+    Math.floor(replayBudgetMemoryMb),
+  )
+  const replayProcessByteBudgetMb = integerSetting(
+    env,
+    'WT_REPLAY_PROCESS_BUDGET_MB',
+    defaultReplayProcessByteBudgetMb,
+    128,
+    8192,
   )
   const maxOldGenerationSizeMb = integerSetting(
     env,
@@ -153,6 +193,7 @@ export function workerResourcePlan(options: WorkerResourcePlanOptions = {}): Wor
     backgroundReserveSlots,
     backgroundWorkerThreads,
     ingestConcurrency,
+    replayProcessByteBudgetMb,
     maxOldGenerationSizeMb,
   }
   if (useCachedDefault) cachedDefaultPlan = plan

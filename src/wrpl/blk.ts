@@ -1,4 +1,5 @@
 import { zstdDecompressSync } from 'node:zlib'
+import { MAX_BLK_DECOMPRESSED_BYTES } from './decompression-limits.js'
 
 /**
  * Разбор бинарного формата BLK (Gaijin/Dagor Engine) — в нём War Thunder
@@ -29,7 +30,9 @@ export function parseBlk(input: Buffer): BlkMap {
       if (input.length < 4 + len) {
         throw new Error(`FAT_ZSTD: сжатые данные обрезаны: нужно ${4 + len}, есть ${input.length}`)
       }
-      const out = zstdDecompressSync(input.subarray(4, 4 + len))
+      const out = zstdDecompressSync(input.subarray(4, 4 + len), {
+        maxOutputLength: MAX_BLK_DECOMPRESSED_BYTES,
+      })
       if (out.length === 0 || out[0] !== 0x01) {
         throw new Error('FAT_ZSTD: внутри нет FAT-заголовка')
       }
@@ -71,11 +74,16 @@ function parseFatBlk(buf: Buffer): BlkMap {
   const paramsData = buf.subarray(ptr.at, ptr.at + paramsDataSize)
   ptr.at += paramsDataSize
 
-  if (ptr.at + paramsCount * 8 > buf.length) throw new Error('описания параметров обрезаны')
+  if (paramsCount > Math.floor((buf.length - ptr.at) / 8)) {
+    throw new Error('описания параметров обрезаны')
+  }
   const paramsInfo = buf.subarray(ptr.at, ptr.at + paramsCount * 8)
   ptr.at += paramsCount * 8
 
   // Описания блоков: имя, число полей, число детей, индекс первого ребёнка
+  if (totalBlocks > Math.floor((buf.length - ptr.at) / 3)) {
+    throw new Error('описания блоков обрезаны')
+  }
   const descs: BlockDesc[] = []
   for (let i = 0; i < totalBlocks; i++) {
     const nameId = readUleb128(buf, ptr)
@@ -195,15 +203,24 @@ function parseFatBlk(buf: Buffer): BlkMap {
       name = n
     }
     const fields = []
+    if (d.fieldCount > paramsCount - paramPtr) {
+      throw new Error('блок ссылается на параметры вне диапазона')
+    }
     for (let j = 0; j < d.fieldCount; j++) fields.push(getNthParam(paramPtr + j))
     paramPtr += d.fieldCount
     flat.push({ name, fields, childCount: d.childCount, firstChild: d.firstChild })
   }
 
   // Собираем дерево; повторяющиеся ключи склеиваются в массив
+  const visiting = new Set<number>()
   function build(idx: number): BlkMap {
     const fb = flat[idx]
     if (!fb) throw new Error(`блок ${idx} вне диапазона`)
+    if (visiting.has(idx)) throw new Error(`цикл в дереве BLK на блоке ${idx}`)
+    if (fb.firstChild > flat.length || fb.childCount > flat.length - fb.firstChild) {
+      throw new Error(`дочерние блоки ${idx} вне диапазона`)
+    }
+    visiting.add(idx)
     const m: BlkMap = {}
     for (const f of fb.fields) putKV(m, f.name, f.value)
     for (let c = fb.firstChild; c < fb.firstChild + fb.childCount; c++) {
@@ -211,6 +228,7 @@ function parseFatBlk(buf: Buffer): BlkMap {
       if (!child) throw new Error(`дочерний блок ${c} вне диапазона`)
       putKV(m, child.name, build(c))
     }
+    visiting.delete(idx)
     return m
   }
 
@@ -247,10 +265,14 @@ function readUleb128(b: Buffer, ptr: { at: number }): number {
   while (ptr.at < b.length) {
     const cur = b[ptr.at]!
     ptr.at++
-    val += (cur & 0x7f) * mult
+    const part = (cur & 0x7f) * mult
+    if (!Number.isSafeInteger(part) || val > Number.MAX_SAFE_INTEGER - part) {
+      throw new Error('uleb128: переполнение')
+    }
+    val += part
     if ((cur & 0x80) === 0) return val
+    if (mult > Number.MAX_SAFE_INTEGER / 128) throw new Error('uleb128: переполнение')
     mult *= 128
-    if (mult > 2 ** 49) throw new Error('uleb128: переполнение')
   }
   throw new Error('uleb128: буфер закончился')
 }

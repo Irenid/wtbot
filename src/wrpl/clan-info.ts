@@ -1,4 +1,5 @@
 import {
+  getClanSeasonContext,
   getClanNameByTag,
   getClanRatingsWithDelta,
   saveClanRatingSnapshots,
@@ -22,7 +23,7 @@ const UA =
 /** Не дёргать страницу клана чаще, чем раз в 2 минуты (спам-рендеры одного боя) */
 const COOLDOWN_MS = 2 * 60_000
 
-const lastFetch = new Map<string, number>()
+const lastFetch = new Map<string, { at: number; seasonId: string | null }>()
 
 export type { ClanRating }
 
@@ -71,17 +72,18 @@ export async function fetchRatingsForTags(
   opts: { force?: boolean } = {},
 ): Promise<Map<string, ClanRating>> {
   const result = new Map<string, ClanRating>()
+  const seasonId = getClanSeasonContext().season?.id ?? null
   for (const tag of tags) {
     if (!tag) continue
     try {
       const name = getClanNameByTag(tag)
       if (!name) continue // клана нет в словаре — источник wt-clans ещё не прошёлся
 
-      const last = lastFetch.get(tag) ?? 0
-      if (opts.force || Date.now() - last > COOLDOWN_MS) {
+      const last = lastFetch.get(tag)
+      if (opts.force || last?.seasonId !== seasonId || Date.now() - (last?.at ?? 0) > COOLDOWN_MS) {
         const members = await fetchClanMembers(name)
         saveClanRatingSnapshots(tag, members)
-        lastFetch.set(tag, Date.now())
+        lastFetch.set(tag, { at: Date.now(), seasonId })
       }
       for (const [nick, rating] of getClanRatingsWithDelta(tag)) {
         result.set(nick, rating)

@@ -63,9 +63,9 @@ const CACHE_SCAN_THRESHOLD = 0.9
 export interface BattleMedia {
   log: Buffer
   heatmapGround: Buffer
-  heatmapAir: Buffer
+  heatmapAir: Buffer | null
   heatmapTeamGround: [Buffer, Buffer]
-  heatmapTeamAir: [Buffer, Buffer]
+  heatmapTeamAir: [Buffer, Buffer] | null
   chat: string
 }
 
@@ -437,14 +437,14 @@ function mediaWorkerPayload(
   }
 }
 
-function selectBuiltMedia(media: BuiltBattleMedia, kind: BattleMediaKind): Buffer {
+function selectBuiltMedia(media: BuiltBattleMedia, kind: BattleMediaKind): Buffer | null {
   if (kind === 'log') return media.log
   if (kind === 'heatmap-ground') return media.heatmapGround
   if (kind === 'heatmap-air') return media.heatmapAir
   if (kind === 'heatmap-team-0') return media.heatmapTeamGround[0]
   if (kind === 'heatmap-team-1') return media.heatmapTeamGround[1]
-  if (kind === 'heatmap-team-air-0') return media.heatmapTeamAir[0]
-  if (kind === 'heatmap-team-air-1') return media.heatmapTeamAir[1]
+  if (kind === 'heatmap-team-air-0') return media.heatmapTeamAir?.[0] ?? null
+  if (kind === 'heatmap-team-air-1') return media.heatmapTeamAir?.[1] ?? null
   return Buffer.from(media.chat, 'utf8')
 }
 
@@ -461,7 +461,10 @@ export function buildBattleMediaKind(
   const runningBundle = inflightBuilds.get(sessionHex)
   if (runningBundle) {
     promoteBuild(runningBundle.state, priority)
-    return runningBundle.promise.then((media) => selectBuiltMedia(media, kind))
+    return runningBundle.promise.then((media) => {
+      const selected = selectBuiltMedia(media, kind)
+      return selected ?? buildBattleMediaKind(sessionId, partUrls, meta, kind, realNames, priority)
+    })
   }
 
   const key = `${sessionHex}:${kind}:1`
@@ -579,28 +582,35 @@ async function doBuildBattleMedia(
   ).finally(() => trackRender(null))
   const log = Buffer.from(rendered.log)
   const heatmapGround = Buffer.from(rendered.heatmapGround)
-  const heatmapAir = Buffer.from(rendered.heatmapAir)
+  const heatmapAir = rendered.heatmapAir ? Buffer.from(rendered.heatmapAir) : null
   const heatmapTeamGround: [Buffer, Buffer] = [
     Buffer.from(rendered.heatmapTeamGround[0]),
     Buffer.from(rendered.heatmapTeamGround[1]),
   ]
-  const heatmapTeamAir: [Buffer, Buffer] = [
-    Buffer.from(rendered.heatmapTeamAir[0]),
-    Buffer.from(rendered.heatmapTeamAir[1]),
-  ]
+  const heatmapTeamAir: [Buffer, Buffer] | null = rendered.heatmapTeamAir
+    ? [
+        Buffer.from(rendered.heatmapTeamAir[0]),
+        Buffer.from(rendered.heatmapTeamAir[1]),
+      ]
+    : null
   const summary = { ...rendered.summary, errors: parseErrors }
-  await publishBattleArtifacts(
-    header.sessionIdHex,
-    [
-      { kind: 'log', data: log },
-      { kind: 'heatmap-ground', data: heatmapGround },
+  const artifacts: BattleArtifact[] = [
+    { kind: 'log', data: log },
+    { kind: 'heatmap-ground', data: heatmapGround },
+    { kind: 'heatmap-team-0', data: heatmapTeamGround[0] },
+    { kind: 'heatmap-team-1', data: heatmapTeamGround[1] },
+    { kind: 'chat', data: rendered.chat },
+  ]
+  if (heatmapAir && heatmapTeamAir) {
+    artifacts.push(
       { kind: 'heatmap-air', data: heatmapAir },
-      { kind: 'heatmap-team-0', data: heatmapTeamGround[0] },
-      { kind: 'heatmap-team-1', data: heatmapTeamGround[1] },
       { kind: 'heatmap-team-air-0', data: heatmapTeamAir[0] },
       { kind: 'heatmap-team-air-1', data: heatmapTeamAir[1] },
-      { kind: 'chat', data: rendered.chat },
-    ],
+    )
+  }
+  await publishBattleArtifacts(
+    header.sessionIdHex,
+    artifacts,
     buildBattleMeta(summary, assets.dict),
     true,
   )

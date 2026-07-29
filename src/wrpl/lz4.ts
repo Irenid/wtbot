@@ -4,6 +4,9 @@
  * совпадения, длины 15 расширяются байтами 255, смещение u16 LE.
  */
 export function lz4DecompressBlock(src: Buffer, maxOut: number): Buffer {
+  if (!Number.isSafeInteger(maxOut) || maxOut < 0) {
+    throw new RangeError('LZ4: maxOut должен быть неотрицательным целым')
+  }
   const out = Buffer.alloc(maxOut)
   let s = 0
   let d = 0
@@ -11,8 +14,9 @@ export function lz4DecompressBlock(src: Buffer, maxOut: number): Buffer {
     const token = src[s++]!
     let litLen = token >> 4
     if (litLen === 15) {
-      let b
+      let b: number
       do {
+        if (s >= src.length) throw new Error('LZ4: обрезана длина литералов')
         b = src[s++]!
         litLen += b
       } while (b === 255)
@@ -23,13 +27,15 @@ export function lz4DecompressBlock(src: Buffer, maxOut: number): Buffer {
     d += litLen
     if (s >= src.length) break // последняя последовательность — без совпадения
 
+    if (s + 2 > src.length) throw new Error('LZ4: обрезано смещение')
     const offset = src[s]! | (src[s + 1]! << 8)
     s += 2
     if (offset === 0 || offset > d) throw new Error('LZ4: неверное смещение')
     let matchLen = (token & 0x0f) + 4
     if ((token & 0x0f) === 15) {
-      let b
+      let b: number
       do {
+        if (s >= src.length) throw new Error('LZ4: обрезана длина совпадения')
         b = src[s++]!
         matchLen += b
       } while (b === 255)
