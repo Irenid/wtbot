@@ -1,5 +1,6 @@
 import { getClansStats, upsertClans } from '../../db/index.js'
 import { readResponseText } from '../../http-response.js'
+import { fetchWtResponse } from './wt-request.js'
 import type { ParserSource } from '../types.js'
 
 /**
@@ -17,12 +18,8 @@ import type { ParserSource } from '../types.js'
  */
 
 const LB_URL = 'https://warthunder.com/en/community/getclansleaderboard/dif/_hist/page'
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0'
 const MAX_PAGES = 40
-const PAUSE_MS = 400
 const INTERVAL_MS = 12 * 60 * 60_000
-const FETCH_TIMEOUT_MS = 20_000
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 interface LbClan {
@@ -35,8 +32,6 @@ interface LbPage {
   status: string
   data: LbClan[]
 }
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -93,11 +88,12 @@ export const wtClans: ParserSource = {
     const entries: { tag: string; name: string }[] = []
     let pages = 0
     for (let page = 1; page <= MAX_PAGES; page++) {
-      if (page > 1) await sleep(PAUSE_MS)
-      const res = await fetch(`${LB_URL}/${page}/sort/dr_era5`, {
-        headers: { accept: 'application/json', 'user-agent': UA },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      })
+      const res = await fetchWtResponse(
+        `${LB_URL}/${page}/sort/dr_era5`,
+        { headers: { accept: 'application/json' } },
+        `лидерборд, страница ${page}`,
+        MAX_RESPONSE_BYTES,
+      )
       if (!res.ok) {
         await res.body?.cancel().catch(() => undefined)
         throw new Error(`HTTP ${res.status} на странице ${page} лидерборда`)

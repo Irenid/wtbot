@@ -1,14 +1,15 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rm } from 'node:fs/promises'
-import path from 'node:path'
+import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { writeFileAtomic } from '../../atomic-file.js'
 import { config } from '../../config.js'
+import { withRecoverableFileLock } from '../../recoverable-file-lock.js'
 
 /** Асинхронный cookie jar со скользящей сессией и атомарной записью. */
 
 const JAR_FILE = './data/wt-cookies.json'
 const LOCK_FILE = `${JAR_FILE}.lock`
 const LOCK_TIMEOUT_MS = 5_000
+const LOCK_STALE_MS = 60_000
 const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
 
 interface JarFileV2 {
@@ -99,53 +100,14 @@ async function persistJarUnlocked(map: Map<string, string>): Promise<void> {
 }
 
 async function withFileLock<T>(task: () => Promise<T>): Promise<T> {
-  await mkdir(path.dirname(LOCK_FILE), { recursive: true, mode: 0o700 })
-  const deadline = Date.now() + LOCK_TIMEOUT_MS
-  let handle: Awaited<ReturnType<typeof open>> | null = null
-  let ownerToken = ''
-  for (;;) {
-    try {
-      handle = await open(LOCK_FILE, 'wx', 0o600)
-      ownerToken = randomUUID()
-      try {
-        await handle.writeFile(JSON.stringify({ ownerToken, pid: process.pid, createdAt: Date.now() }), 'utf8')
-        await handle.sync()
-      } catch (error) {
-        await handle.close().catch(() => undefined)
-        handle = null
-        // Файл только что эксклюзивно создали мы; до его удаления другой
-        // владелец появиться не может.
-        await rm(LOCK_FILE, { force: true }).catch(() => undefined)
-        throw error
-      }
-      break
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      if (Date.now() >= deadline) {
-        throw new Error(
-          'таймаут блокировки cookie jar; если wtbot аварийно завершился, проверь и удали data/wt-cookies.json.lock',
-        )
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25 + Math.floor(Math.random() * 50)))
-    }
-  }
-  try {
-    return await task()
-  } finally {
-    await handle?.close().catch(() => undefined)
-    await releaseOwnedLock(ownerToken).catch((error: unknown) => {
-      console.warn(`[wt-cookies] не удалось освободить lock: ${error instanceof Error ? error.message : String(error)}`)
-    })
-  }
-}
-
-async function releaseOwnedLock(ownerToken: string): Promise<void> {
-  try {
-    const parsed = JSON.parse(await readFile(LOCK_FILE, 'utf8')) as { ownerToken?: unknown }
-    if (parsed.ownerToken === ownerToken) await rm(LOCK_FILE)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
-  }
+  return withRecoverableFileLock({
+    lockFile: LOCK_FILE,
+    timeoutMs: LOCK_TIMEOUT_MS,
+    staleMs: LOCK_STALE_MS,
+    onRecovered: (_lockFile, owner) => {
+      console.warn(`[wt-cookies] удалён stale lock${owner === null ? '' : ` процесса ${owner.pid}`}`)
+    },
+  }, task)
 }
 
 export function cookieHeader(): Promise<string> {

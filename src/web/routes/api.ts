@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import type { WebDeps } from '../types.js'
 import {
   getCommandStats,
+  getClanSeasonContext,
   getIngestStats,
   getItemStats,
   getLatestItems,
@@ -28,6 +29,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
     parsers: getLatestParsePerSource(),
     items: getItemStats(),
     ingest: getIngestStats(),
+    season: getClanSeasonContext(),
     wtTransport: { mode: wtTransportMode(), ...wtBrowserMetrics() },
   }))
 
@@ -92,7 +94,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
         lastBattleAt: row.lastBattleAt,
       })
     }
-    return { channels: [...channels.values()] }
+    return { season: getClanSeasonContext(), channels: [...channels.values()] }
   })
 
   // Кнопка «Обновить» на дашборде: пересканировать каналы и освежить ПКР

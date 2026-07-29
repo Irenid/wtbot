@@ -16,9 +16,15 @@ const BIG_TABLES = new Set([
   'player_identities',
 ])
 
-// Скан по (покрывающему) индексу — упорядоченный обход, а не полный перебор таблицы.
-function allowedScan(detail: string): boolean {
-  return detail.includes('USING COVERING INDEX') || detail.includes('USING INDEX')
+const ALLOWED_BIG_SCANS: Readonly<Record<string, readonly string[]>> = {
+  clanLatestMembers: ['SCAN clan_rating_snapshots USING INDEX idx_snapshots_clan_nick'],
+  battlesRecent: ['SCAN battles USING INDEX idx_battles_start'],
+  siteReplayPlayerCount: ['SCAN battle_players USING COVERING INDEX idx_bp_user_id'],
+  clanBaselineSumsAll: ['SCAN clan_rating_snapshots USING INDEX idx_snapshots_clan_nick'],
+}
+
+function allowedScan(key: string, detail: string): boolean {
+  return ALLOWED_BIG_SCANS[key]?.includes(detail) ?? false
 }
 
 function main(): void {
@@ -31,7 +37,7 @@ function main(): void {
       const scanMatch = /^SCAN (\S+)/.exec(row.detail)
       if (!scanMatch) continue
       const table = scanMatch[1]!
-      if (BIG_TABLES.has(table) && !allowedScan(row.detail)) {
+      if (BIG_TABLES.has(table) && !allowedScan(key, row.detail)) {
         failures.push(`${key}: недопустимый скан «${row.detail}»`)
       }
     }

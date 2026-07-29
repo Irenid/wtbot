@@ -161,6 +161,7 @@ const dashboardHtml = `<!doctype html>
     </div>
     <div class="card full">
       <h2 class="head-row">В голосовых каналах <button id="voice-refresh" class="btn">Обновить</button></h2>
+      <div id="season-status" class="muted small">Сезон: загрузка…</div>
       <div id="voice-list" class="muted">Загрузка…</div>
     </div>
     <div class="card full">
@@ -794,6 +795,22 @@ async function refresh() {
     const data = await responses[0].json();
     const itemsData = await responses[1].json();
     const voiceData = await responses[2].json();
+
+    const seasonStatus = document.getElementById('season-status');
+    const season = data.season || voiceData.season;
+    if (!season || !season.season) {
+      seasonStatus.textContent = 'Сезон: расписание не задано';
+    } else if (season.currentStage) {
+      seasonStatus.textContent =
+        season.season.name + ' · ' +
+        (season.currentStage.endsAt === season.season.endsAt ? 'до конца сезона' : season.currentStage.week + ' неделя') +
+        ' · макс. БР ' +
+        Number(season.currentStage.maxBr).toFixed(1) + ' · ' +
+        new Date(season.currentStage.startsAt * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) + '–' +
+        new Date((season.currentStage.endsAt - 1) * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' });
+    } else {
+      seasonStatus.textContent = season.season.name + ' · сезон завершён';
+    }
 
     document.getElementById('bot-dot').className = 'dot ' + (data.bot.online ? 'on' : 'off');
     document.getElementById('bot-tag').textContent = data.bot.tag || 'offline';

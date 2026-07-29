@@ -283,6 +283,9 @@ function readIString(r: BitReader, ctx: EcsParser): string {
 function listOf(item: (r: BitReader, ctx: EcsParser) => unknown): ComponentParser {
   return (r, ctx) => {
     const count = r.readCompressed()
+    if (count > Math.floor(r.remainingBits)) {
+      throw new Error(`ECS list: count ${count} превышает остаток буфера`)
+    }
     const out: unknown[] = []
     for (let i = 0; i < count; i++) out.push(item(r, ctx))
     return out
@@ -292,6 +295,7 @@ function listOf(item: (r: BitReader, ctx: EcsParser) => unknown): ComponentParse
 /** Хранилища моделей техники: varint-размер в битах + блоб */
 const storageParser: ComponentParser = (r) => {
   const bits = r.readCompressed()
+  if (bits > r.remainingBits) throw new Error(`ECS storage: размер ${bits} превышает остаток буфера`)
   r.ignoreBits(bits)
   return null
 }
@@ -376,6 +380,9 @@ const COMPONENT_PARSERS: Record<string, ComponentParser> = {
   'ecs::Object': (r, ctx) => {
     const obj = new EcsObject()
     const count = r.readCompressed()
+    if (count > Math.floor(r.remainingBits / 33)) {
+      throw new Error(`ECS object: count ${count} превышает остаток буфера`)
+    }
     for (let i = 0; i < count; i++) {
       const name = readIString(r, ctx)
       const typeHash = r.readU32()
@@ -385,6 +392,9 @@ const COMPONENT_PARSERS: Record<string, ComponentParser> = {
   },
   'ecs::Array': (r, ctx) => {
     const count = r.readCompressed()
+    if (count > Math.floor(r.remainingBits / 32)) {
+      throw new Error(`ECS array: count ${count} превышает остаток буфера`)
+    }
     const out: unknown[] = []
     for (let i = 0; i < count; i++) {
       const typeHash = r.readU32()
@@ -415,7 +425,11 @@ const COMPONENT_PARSERS: Record<string, ComponentParser> = {
   // Да, в Go-исходнике dm::PartIdList читает count<<3 значений, а
   // uint16_t разбирается как список — переносим поведение как есть.
   'dm::PartIdList': (r) => {
-    const count = r.readCompressed() << 3
+    const rawCount = r.readCompressed()
+    if (rawCount > Math.floor(r.remainingBits / 6 / 8)) {
+      throw new Error(`ECS PartIdList: count ${rawCount} превышает остаток буфера`)
+    }
+    const count = rawCount * 8
     const out: number[] = []
     for (let i = 0; i < count; i++) out.push(r.readBits(6)[0]!)
     return out

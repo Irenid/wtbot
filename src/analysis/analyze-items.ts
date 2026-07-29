@@ -19,7 +19,7 @@ const MODEL = 'claude-opus-4-8'
 const argLimit = Number(process.argv[2])
 const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : 3
 
-initDb(config.dbPath)
+initDb(config.dbPath, { allowCreate: config.allowNewDb })
 
 const items = getUnanalyzedItems(limit)
 if (items.length === 0) {

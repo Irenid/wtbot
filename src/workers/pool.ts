@@ -1,6 +1,6 @@
 import { Worker, type Transferable } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
-import { workerResourcePlan } from '../runtime-options.js'
+import { MAX_CONFIGURABLE_WORKERS, workerResourcePlan } from '../runtime-options.js'
 import type {
   AnyWorkerTask,
   WorkerMessage,
@@ -26,7 +26,10 @@ export interface WorkerTaskTiming {
   priority: WorkerPriority
   outcome: 'success' | 'error'
   stage: 'queue' | 'execution'
+  reason: string
   coldWorker: boolean
+  inputTransferBytes: number
+  outputTransferBytes: number
   queueMs: number
   schedulerWaitMs: number
   workerStartupMs: number
@@ -34,6 +37,63 @@ export interface WorkerTaskTiming {
   executionMs: number | null
   resultTransferMs: number | null
   totalMs: number
+}
+
+export interface WorkerPoolCompletedMetrics {
+  submitted: number
+  completed: number
+  succeeded: number
+  failed: number
+  rejected: number
+  inputTransferBytes: number
+  outputTransferBytes: number
+  queueMsTotal: number
+  queueMsMax: number
+  executionSamples: number
+  executionMsTotal: number
+  executionMsMax: number
+  reasons: Record<string, number>
+}
+
+export interface WorkerPoolWorkloadSnapshot extends WorkerPoolCompletedMetrics {
+  kind: WorkerTaskKind
+  priority: WorkerPriority
+  queued: number
+  running: number
+  queuedInputTransferBytes: number
+  runningInputTransferBytes: number
+  maxQueued: number
+  maxRunning: number
+  maxQueuedInputTransferBytes: number
+  maxRunningInputTransferBytes: number
+}
+
+export interface WorkerPoolSnapshot {
+  capturedAtMs: number
+  configuredWorkers: number
+  backgroundReserveSlots: number
+  closing: boolean
+  workers: {
+    live: number
+    ready: number
+    starting: number
+    busy: number
+  }
+  current: {
+    queued: number
+    running: number
+    queuedInputTransferBytes: number
+    runningInputTransferBytes: number
+  }
+  highWater: {
+    queued: number
+    running: number
+    queuedInputTransferBytes: number
+    runningInputTransferBytes: number
+  }
+  cumulative: WorkerPoolCompletedMetrics
+  recycleReasons: Record<string, number>
+  workloads: WorkerPoolWorkloadSnapshot[]
 }
 
 export interface CpuWorkerPoolOptions {
@@ -57,6 +117,7 @@ interface Job {
   coldWorker: boolean
   workerTiming: WorkerTransportTiming | null
   resultReceivedAt: number | null
+  inputTransferBytes: number
   transferList: readonly Transferable[]
   signal: AbortSignal | undefined
   abortHandler: (() => void) | null
@@ -81,6 +142,28 @@ interface WorkerSlot {
   readyAt: number | null
 }
 
+interface MutableCompletedMetrics extends Omit<WorkerPoolCompletedMetrics, 'reasons'> {
+  reasons: Map<string, number>
+}
+
+interface MutableWorkloadMetrics extends MutableCompletedMetrics {
+  kind: WorkerTaskKind
+  priority: WorkerPriority
+  maxQueued: number
+  maxRunning: number
+  maxQueuedInputTransferBytes: number
+  maxRunningInputTransferBytes: number
+}
+
+interface CurrentWorkload {
+  kind: WorkerTaskKind
+  priority: WorkerPriority
+  queued: number
+  running: number
+  queuedInputTransferBytes: number
+  runningInputTransferBytes: number
+}
+
 const PRIORITIES: WorkerPriority[] = ['interactive', 'normal', 'background']
 const DEFAULT_TIMEOUT_MS: Record<WorkerPriority, number> = {
   interactive: 45_000,
@@ -95,13 +178,13 @@ const MAX_STARTUP_BACKOFF_MS = 5_000
 const MAX_RENDER_JOBS_PER_WORKER = 12
 const BACKGROUND_MAX_WAIT_MS = 10_000
 const WORKER_RESOURCES = workerResourcePlan()
-const MAX_CONFIGURABLE_WORKERS = 8
 
 export type WorkerPoolErrorCode =
   | 'POOL_CLOSED'
   | 'QUEUE_FULL'
   | 'QUEUE_MEMORY'
   | 'QUEUE_TIMEOUT'
+  | 'EXEC_TIMEOUT'
   | 'STARTUP_FAILED'
   | 'TASK_TOO_LARGE'
 
@@ -125,11 +208,83 @@ function epochNow(): number {
   return performance.timeOrigin + performance.now()
 }
 
+function emptyCompletedMetrics(): MutableCompletedMetrics {
+  return {
+    submitted: 0,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    rejected: 0,
+    inputTransferBytes: 0,
+    outputTransferBytes: 0,
+    queueMsTotal: 0,
+    queueMsMax: 0,
+    executionSamples: 0,
+    executionMsTotal: 0,
+    executionMsMax: 0,
+    reasons: new Map(),
+  }
+}
+
+function snapshotCompletedMetrics(metrics: MutableCompletedMetrics): WorkerPoolCompletedMetrics {
+  return {
+    submitted: metrics.submitted,
+    completed: metrics.completed,
+    succeeded: metrics.succeeded,
+    failed: metrics.failed,
+    rejected: metrics.rejected,
+    inputTransferBytes: metrics.inputTransferBytes,
+    outputTransferBytes: metrics.outputTransferBytes,
+    queueMsTotal: metrics.queueMsTotal,
+    queueMsMax: metrics.queueMsMax,
+    executionSamples: metrics.executionSamples,
+    executionMsTotal: metrics.executionMsTotal,
+    executionMsMax: metrics.executionMsMax,
+    reasons: Object.fromEntries([...metrics.reasons].sort(([left], [right]) => left.localeCompare(right))),
+  }
+}
+
+function incrementReason(reasons: Map<string, number>, reason: string): void {
+  reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+}
+
+function taskReason(error: Error | null): string {
+  if (!error) return 'COMPLETED'
+  if (error instanceof WorkerPoolError) return error.code
+  if (error.name === 'AbortError') return 'ABORTED'
+  return 'TASK_ERROR'
+}
+
+function recycleReason(error: Error): string {
+  if (error instanceof WorkerPoolError) return error.code
+  if (error.name === 'AbortError') return 'ABORTED'
+  if (error.message.includes('плановая ротация')) return 'RENDER_RECYCLE'
+  if (error.message.includes('не запустился')) return 'STARTUP_TIMEOUT'
+  if (error.message.includes('неизвестным id')) return 'PROTOCOL_ERROR'
+  if (error.message.includes('отправить задачу')) return 'POST_MESSAGE_ERROR'
+  if (error.message.includes('неожиданно завершился')) return 'WORKER_EXIT'
+  if (error.message.includes('Ошибка сообщения')) return 'MESSAGE_ERROR'
+  return 'WORKER_ERROR'
+}
+
+function workloadKey(kind: WorkerTaskKind, priority: WorkerPriority): string {
+  return `${priority}\u0000${kind}`
+}
+
 export class CpuWorkerPool {
   private readonly size: number
   private readonly backgroundReserveSlots: number
   private readonly queues = new Map<WorkerPriority, Job[]>(PRIORITIES.map((p) => [p, []]))
   private readonly slots = new Set<WorkerSlot>()
+  private readonly completedMetrics = emptyCompletedMetrics()
+  private readonly workloadMetrics = new Map<string, MutableWorkloadMetrics>()
+  private readonly recycleReasons = new Map<string, number>()
+  private readonly highWater = {
+    queued: 0,
+    running: 0,
+    queuedInputTransferBytes: 0,
+    runningInputTransferBytes: 0,
+  }
   private nextId = 1
   private closing = false
   private startupFailures = 0
@@ -148,39 +303,119 @@ export class CpuWorkerPool {
     this.backgroundReserveSlots = backgroundReserveSlots
   }
 
+  snapshot(): WorkerPoolSnapshot {
+    const currentByWorkload = this.currentWorkloads()
+    const currentValues = [...currentByWorkload.values()]
+    const current = currentValues.reduce(
+      (total, workload) => ({
+        queued: total.queued + workload.queued,
+        running: total.running + workload.running,
+        queuedInputTransferBytes:
+          total.queuedInputTransferBytes + workload.queuedInputTransferBytes,
+        runningInputTransferBytes:
+          total.runningInputTransferBytes + workload.runningInputTransferBytes,
+      }),
+      {
+        queued: 0,
+        running: 0,
+        queuedInputTransferBytes: 0,
+        runningInputTransferBytes: 0,
+      },
+    )
+    const workloadKeys = new Set([
+      ...this.workloadMetrics.keys(),
+      ...currentByWorkload.keys(),
+    ])
+    const workloads = [...workloadKeys].map((key): WorkerPoolWorkloadSnapshot => {
+      const metrics = this.workloadMetrics.get(key)
+      const live = currentByWorkload.get(key)
+      if (!metrics && !live) throw new Error('Некорректный workload CPU pool')
+      const kind = metrics?.kind ?? live!.kind
+      const priority = metrics?.priority ?? live!.priority
+      return {
+        kind,
+        priority,
+        queued: live?.queued ?? 0,
+        running: live?.running ?? 0,
+        queuedInputTransferBytes: live?.queuedInputTransferBytes ?? 0,
+        runningInputTransferBytes: live?.runningInputTransferBytes ?? 0,
+        maxQueued: metrics?.maxQueued ?? live?.queued ?? 0,
+        maxRunning: metrics?.maxRunning ?? live?.running ?? 0,
+        maxQueuedInputTransferBytes:
+          metrics?.maxQueuedInputTransferBytes ?? live?.queuedInputTransferBytes ?? 0,
+        maxRunningInputTransferBytes:
+          metrics?.maxRunningInputTransferBytes ?? live?.runningInputTransferBytes ?? 0,
+        ...snapshotCompletedMetrics(metrics ?? emptyCompletedMetrics()),
+      }
+    }).sort((left, right) => {
+      const priorityOrder = PRIORITIES.indexOf(left.priority) - PRIORITIES.indexOf(right.priority)
+      return priorityOrder || left.kind.localeCompare(right.kind)
+    })
+    const slots = [...this.slots]
+    return {
+      capturedAtMs: Date.now(),
+      configuredWorkers: this.size,
+      backgroundReserveSlots: this.backgroundReserveSlots,
+      closing: this.closing,
+      workers: {
+        live: slots.length,
+        ready: slots.filter((slot) => slot.ready && !slot.retiring).length,
+        starting: slots.filter((slot) => !slot.ready && !slot.retiring).length,
+        busy: slots.filter((slot) => slot.job !== null).length,
+      },
+      current,
+      highWater: { ...this.highWater },
+      cumulative: snapshotCompletedMetrics(this.completedMetrics),
+      recycleReasons: Object.fromEntries(
+        [...this.recycleReasons].sort(([left], [right]) => left.localeCompare(right)),
+      ),
+      workloads,
+    }
+  }
+
   run<K extends WorkerTaskKind>(
     task: Extract<AnyWorkerTask, { kind: K }>,
     options: WorkerRunOptions = {},
   ): Promise<WorkerTaskResult<K>> {
-    if (this.closing) return Promise.reject(new WorkerPoolError('Пул CPU workers уже остановлен', 'POOL_CLOSED'))
-    if (options.signal?.aborted) return Promise.reject(abortError())
-    if (this.queuedCount() >= MAX_QUEUE) {
-      return Promise.reject(new WorkerPoolError(`Очередь CPU workers переполнена (${MAX_QUEUE} задач)`, 'QUEUE_FULL'))
-    }
+    const priority = options.priority ?? 'normal'
     const transferList = options.transferList ?? []
-    const queuedBytes = this.queuedTransferBytes()
     const taskBytes = transferList.reduce(
       (sum, item) => sum + (item instanceof ArrayBuffer ? item.byteLength : 0),
       0,
     )
+    if (this.closing) {
+      const error = new WorkerPoolError('Пул CPU workers уже остановлен', 'POOL_CLOSED')
+      this.recordRejected(task.kind, priority, error.code)
+      return Promise.reject(error)
+    }
+    if (options.signal?.aborted) {
+      const error = abortError()
+      this.recordRejected(task.kind, priority, 'ABORTED')
+      return Promise.reject(error)
+    }
+    if (this.queuedCount() >= MAX_QUEUE) {
+      const error = new WorkerPoolError(`Очередь CPU workers переполнена (${MAX_QUEUE} задач)`, 'QUEUE_FULL')
+      this.recordRejected(task.kind, priority, error.code)
+      return Promise.reject(error)
+    }
+    const queuedBytes = this.queuedTransferBytes()
     if (taskBytes > MAX_QUEUED_TRANSFER_BYTES) {
-      return Promise.reject(
-        new WorkerPoolError(
-          `CPU-задача передаёт больше допустимого объёма (${Math.ceil(taskBytes / 1024 / 1024)} МБ)`,
-          'TASK_TOO_LARGE',
-        ),
+      const error = new WorkerPoolError(
+        `CPU-задача передаёт больше допустимого объёма (${Math.ceil(taskBytes / 1024 / 1024)} МБ)`,
+        'TASK_TOO_LARGE',
       )
+      this.recordRejected(task.kind, priority, error.code)
+      return Promise.reject(error)
     }
     if (queuedBytes + taskBytes > MAX_QUEUED_TRANSFER_BYTES) {
-      return Promise.reject(
-        new WorkerPoolError(
-          `Очередь CPU workers удерживает слишком много данных (${Math.ceil((queuedBytes + taskBytes) / 1024 / 1024)} МБ)`,
-          'QUEUE_MEMORY',
-        ),
+      const error = new WorkerPoolError(
+        `Очередь CPU workers удерживает слишком много данных (${Math.ceil((queuedBytes + taskBytes) / 1024 / 1024)} МБ)`,
+        'QUEUE_MEMORY',
       )
+      this.recordRejected(task.kind, priority, error.code)
+      return Promise.reject(error)
     }
 
-    const priority = options.priority ?? 'normal'
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS[priority]
     return new Promise<WorkerTaskResult<K>>((resolve, reject) => {
       let finish = (): void => undefined
@@ -198,6 +433,7 @@ export class CpuWorkerPool {
         coldWorker: false,
         workerTiming: null,
         resultReceivedAt: null,
+        inputTransferBytes: taskBytes,
         transferList,
         signal: options.signal,
         abortHandler: null,
@@ -214,6 +450,8 @@ export class CpuWorkerPool {
         job.signal.addEventListener('abort', job.abortHandler, { once: true })
       }
       this.queues.get(priority)!.push(job)
+      this.recordSubmission(job)
+      this.observeHighWater()
       // Таймаут охватывает и очередь, и выполнение. Иначе при сломанном entry
       // первый Discord job мог ждать запуска worker бесконечно.
       job.timer = setTimeout(() => this.timeoutJob(job), timeoutMs)
@@ -295,6 +533,7 @@ export class CpuWorkerPool {
         resourceLimits: { maxOldGenerationSizeMb: WORKER_RESOURCES.maxOldGenerationSizeMb },
       })
     } catch (error) {
+      this.recordRecycleReason('STARTUP_FAILURE')
       this.onStartupFailure(error instanceof Error ? error : new Error(String(error)))
       return false
     }
@@ -391,6 +630,7 @@ export class CpuWorkerPool {
         this.retire(slot, new Error('Не удалось отправить задачу CPU worker'))
       }
     }
+    this.observeHighWater()
   }
 
   private nextRunnableJob(): Job | null {
@@ -444,15 +684,21 @@ export class CpuWorkerPool {
       const index = queue.indexOf(job)
       if (index >= 0) {
         queue.splice(index, 1)
+        this.recordPromotion(job, priority)
         job.priority = priority
         this.queues.get(priority)!.unshift(job)
+        this.observeHighWater()
         this.dispatch()
         return
       }
     }
     // Уже выполняющийся job нельзя прервать без потери transferred buffers,
     // но новая классификация корректирует reservation/fairness пула.
-    if ([...this.slots].some((slot) => slot.job === job)) job.priority = priority
+    if ([...this.slots].some((slot) => slot.job === job)) {
+      this.recordPromotion(job, priority)
+      job.priority = priority
+      this.observeHighWater()
+    }
   }
 
   private failControlledJob(job: Job, error: Error): void {
@@ -482,11 +728,17 @@ export class CpuWorkerPool {
       }
     }
     const slot = [...this.slots].find((candidate) => candidate.job === job)
-    if (slot) this.retire(slot, new Error(`CPU worker превысил таймаут выполнения ${job.timeoutMs} мс`))
+    if (slot) {
+      this.retire(
+        slot,
+        new WorkerPoolError(`CPU worker превысил таймаут выполнения ${job.timeoutMs} мс`, 'EXEC_TIMEOUT'),
+      )
+    }
   }
 
   private retire(slot: WorkerSlot, error: Error): void {
     if (slot.retiring) return
+    this.recordRecycleReason(recycleReason(error))
     const failedDuringStartup = !slot.ready
     slot.retiring = true
     clearTimeout(slot.startupTimer)
@@ -548,22 +800,27 @@ export class CpuWorkerPool {
     const resultTransferMs = job.workerTiming
       ? Math.max(0, completedAt - job.workerTiming.completedAtMs)
       : null
+    const timing: WorkerTaskTiming = {
+      kind: job.task.kind,
+      priority: job.priority,
+      outcome: error ? 'error' : 'success',
+      stage: job.dispatchedAt === null ? 'queue' : 'execution',
+      reason: taskReason(error),
+      coldWorker: job.coldWorker,
+      inputTransferBytes: job.inputTransferBytes,
+      outputTransferBytes: job.workerTiming?.outputTransferBytes ?? 0,
+      queueMs,
+      schedulerWaitMs: Math.max(0, queueMs - workerStartupMs),
+      workerStartupMs,
+      inputTransferMs,
+      executionMs,
+      resultTransferMs,
+      totalMs: Math.max(0, completedAt - job.queuedAt),
+    }
+    this.recordCompletion(timing)
     if (job.onTiming) {
       try {
-        job.onTiming({
-          kind: job.task.kind,
-          priority: job.priority,
-          outcome: error ? 'error' : 'success',
-          stage: job.dispatchedAt === null ? 'queue' : 'execution',
-          coldWorker: job.coldWorker,
-          queueMs,
-          schedulerWaitMs: Math.max(0, queueMs - workerStartupMs),
-          workerStartupMs,
-          inputTransferMs,
-          executionMs,
-          resultTransferMs,
-          totalMs: Math.max(0, completedAt - job.queuedAt),
-        })
+        job.onTiming(timing)
       } catch (timingError) {
         console.error(`[workers] ошибка обработчика timing: ${String(timingError)}`)
       }
@@ -571,6 +828,136 @@ export class CpuWorkerPool {
     if (error) job.reject(error)
     else job.resolve(value)
     job.finish()
+  }
+
+  private recordSubmission(job: Job): void {
+    this.completedMetrics.submitted++
+    this.workloadMetric(job.task.kind, job.priority).submitted++
+  }
+
+  private recordPromotion(job: Job, priority: WorkerPriority): void {
+    const previous = this.workloadMetric(job.task.kind, job.priority)
+    previous.submitted = Math.max(0, previous.submitted - 1)
+    this.workloadMetric(job.task.kind, priority).submitted++
+  }
+
+  private recordRejected(kind: WorkerTaskKind, priority: WorkerPriority, reason: string): void {
+    this.completedMetrics.rejected++
+    incrementReason(this.completedMetrics.reasons, reason)
+    const metrics = this.workloadMetric(kind, priority)
+    metrics.rejected++
+    incrementReason(metrics.reasons, reason)
+  }
+
+  private recordCompletion(timing: WorkerTaskTiming): void {
+    const metrics = [
+      this.completedMetrics,
+      this.workloadMetric(timing.kind, timing.priority),
+    ]
+    for (const metric of metrics) {
+      metric.completed++
+      if (timing.outcome === 'success') metric.succeeded++
+      else metric.failed++
+      metric.inputTransferBytes += timing.inputTransferBytes
+      metric.outputTransferBytes += timing.outputTransferBytes
+      metric.queueMsTotal += timing.queueMs
+      metric.queueMsMax = Math.max(metric.queueMsMax, timing.queueMs)
+      if (timing.executionMs !== null) {
+        metric.executionSamples++
+        metric.executionMsTotal += timing.executionMs
+        metric.executionMsMax = Math.max(metric.executionMsMax, timing.executionMs)
+      }
+      incrementReason(metric.reasons, timing.reason)
+    }
+  }
+
+  private recordRecycleReason(reason: string): void {
+    incrementReason(this.recycleReasons, reason)
+  }
+
+  private workloadMetric(kind: WorkerTaskKind, priority: WorkerPriority): MutableWorkloadMetrics {
+    const key = workloadKey(kind, priority)
+    const existing = this.workloadMetrics.get(key)
+    if (existing) return existing
+    const created: MutableWorkloadMetrics = {
+      kind,
+      priority,
+      ...emptyCompletedMetrics(),
+      maxQueued: 0,
+      maxRunning: 0,
+      maxQueuedInputTransferBytes: 0,
+      maxRunningInputTransferBytes: 0,
+    }
+    this.workloadMetrics.set(key, created)
+    return created
+  }
+
+  private currentWorkloads(): Map<string, CurrentWorkload> {
+    const current = new Map<string, CurrentWorkload>()
+    const workload = (job: Job): CurrentWorkload => {
+      const key = workloadKey(job.task.kind, job.priority)
+      const existing = current.get(key)
+      if (existing) return existing
+      const created: CurrentWorkload = {
+        kind: job.task.kind,
+        priority: job.priority,
+        queued: 0,
+        running: 0,
+        queuedInputTransferBytes: 0,
+        runningInputTransferBytes: 0,
+      }
+      current.set(key, created)
+      return created
+    }
+    for (const queue of this.queues.values()) {
+      for (const job of queue) {
+        const value = workload(job)
+        value.queued++
+        value.queuedInputTransferBytes += job.inputTransferBytes
+      }
+    }
+    for (const slot of this.slots) {
+      if (!slot.job) continue
+      const value = workload(slot.job)
+      value.running++
+      value.runningInputTransferBytes += slot.job.inputTransferBytes
+    }
+    return current
+  }
+
+  private observeHighWater(): void {
+    const workloads = [...this.currentWorkloads().values()]
+    let queued = 0
+    let running = 0
+    let queuedInputTransferBytes = 0
+    let runningInputTransferBytes = 0
+    for (const workload of workloads) {
+      queued += workload.queued
+      running += workload.running
+      queuedInputTransferBytes += workload.queuedInputTransferBytes
+      runningInputTransferBytes += workload.runningInputTransferBytes
+      const metrics = this.workloadMetric(workload.kind, workload.priority)
+      metrics.maxQueued = Math.max(metrics.maxQueued, workload.queued)
+      metrics.maxRunning = Math.max(metrics.maxRunning, workload.running)
+      metrics.maxQueuedInputTransferBytes = Math.max(
+        metrics.maxQueuedInputTransferBytes,
+        workload.queuedInputTransferBytes,
+      )
+      metrics.maxRunningInputTransferBytes = Math.max(
+        metrics.maxRunningInputTransferBytes,
+        workload.runningInputTransferBytes,
+      )
+    }
+    this.highWater.queued = Math.max(this.highWater.queued, queued)
+    this.highWater.running = Math.max(this.highWater.running, running)
+    this.highWater.queuedInputTransferBytes = Math.max(
+      this.highWater.queuedInputTransferBytes,
+      queuedInputTransferBytes,
+    )
+    this.highWater.runningInputTransferBytes = Math.max(
+      this.highWater.runningInputTransferBytes,
+      runningInputTransferBytes,
+    )
   }
 
   private queuedCount(): number {
@@ -601,6 +988,10 @@ export function runWorkerTask<K extends WorkerTaskKind>(
   return pool.run(task, options)
 }
 
+export function workerPoolSnapshot(): WorkerPoolSnapshot {
+  return pool.snapshot()
+}
+
 export function closeWorkerPool(graceMs?: number): Promise<void> {
   return pool.close(graceMs)
 }
@@ -612,6 +1003,7 @@ export function isWorkerPoolSchedulingError(error: unknown): error is WorkerPool
       error.code === 'QUEUE_FULL' ||
       error.code === 'QUEUE_MEMORY' ||
       error.code === 'QUEUE_TIMEOUT' ||
+      error.code === 'EXEC_TIMEOUT' ||
       error.code === 'STARTUP_FAILED')
   )
 }

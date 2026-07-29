@@ -247,7 +247,7 @@ export class PlayerStatsService {
   private scheduleDrain(): void {
     if (this.draining || this.drainScheduled) return
     this.drainScheduled = true
-    queueMicrotask(() => {
+    setImmediate(() => {
       this.drainScheduled = false
       void this.drain()
     })

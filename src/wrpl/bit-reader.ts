@@ -21,34 +21,57 @@ export class BitReader {
     this.data = data
   }
 
+  get remainingBits(): number {
+    return this.data.length * 8 - this.bitOffset
+  }
+
+  setBitOffset(offset: number): void {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > this.data.length * 8) {
+      throw new EofError()
+    }
+    this.bitOffset = offset
+  }
+
   ignoreBits(n: number): void {
-    this.bitOffset += n
+    if (!Number.isSafeInteger(n) || n < 0) throw new RangeError('число битов должно быть неотрицательным целым')
+    this.setBitOffset(this.bitOffset + n)
   }
 
   ignoreBytes(n: number): void {
-    this.bitOffset += n * 8
+    if (!Number.isSafeInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER / 8) {
+      throw new RangeError('число байт должно быть неотрицательным целым')
+    }
+    this.setBitOffset(this.bitOffset + n * 8)
   }
 
   /** Читает bits бит; неполный последний байт прижат к младшим битам */
   readBits(bits: number): Buffer {
+    if (!Number.isSafeInteger(bits) || bits < 0) {
+      throw new RangeError('число битов должно быть неотрицательным целым')
+    }
     if (bits === 0) return Buffer.alloc(0)
-    if ((this.bitOffset + bits + 7) >> 3 > this.data.length) throw new EofError()
+    if (bits > this.remainingBits) throw new EofError()
 
-    const offset = this.bitOffset & 7
-    if (offset === 0 && (bits & 7) === 0) {
-      const start = this.bitOffset >> 3
-      const out = this.data.subarray(start, start + (bits >> 3))
+    const offset = this.bitOffset % 8
+    if (offset === 0 && bits % 8 === 0) {
+      const start = Math.floor(this.bitOffset / 8)
+      const out = this.data.subarray(start, start + Math.floor(bits / 8))
       this.bitOffset += bits
       return out
     }
 
-    const out = Buffer.alloc((bits + 7) >> 3)
+    const out = Buffer.alloc(Math.ceil(bits / 8))
     let offs = 0
     let left = bits
     while (left > 0) {
-      let b = (this.data[this.bitOffset >> 3]! << offset) & 0xff
+      const byteIndex = Math.floor(this.bitOffset / 8)
+      const current = this.data[byteIndex]
+      if (current === undefined) throw new EofError()
+      let b = (current << offset) & 0xff
       if (offset > 0 && left > 8 - offset) {
-        b |= this.data[(this.bitOffset >> 3) + 1]! >> (8 - offset)
+        const next = this.data[byteIndex + 1]
+        if (next === undefined) throw new EofError()
+        b |= next >> (8 - offset)
       }
       if (left >= 8) {
         out[offs] = b
@@ -65,6 +88,9 @@ export class BitReader {
   }
 
   readBytes(n: number): Buffer {
+    if (!Number.isSafeInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER / 8) {
+      throw new RangeError('число байт должно быть неотрицательным целым')
+    }
     return this.readBits(n * 8)
   }
 
@@ -87,8 +113,15 @@ export class BitReader {
     let shift = 0
     for (;;) {
       const a = this.readByte()
-      v += (a & 0x7f) * 2 ** shift
+      const part = (a & 0x7f) * 2 ** shift
+      if (!Number.isSafeInteger(part) || !Number.isSafeInteger(v + part)) {
+        throw new RangeError('varint выходит за безопасный диапазон')
+      }
+      v += part
       shift += 7
+      if (shift > 56 && (a & 0x80) !== 0) {
+        throw new RangeError('varint слишком длинный')
+      }
       if ((a & 0x80) === 0) break
     }
     return v

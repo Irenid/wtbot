@@ -23,11 +23,11 @@ export const spaRoutes: FastifyPluginAsync = async (app) => {
     wildcard: true,
     // Имена ассетов Vite содержат content-hash — их можно кэшировать надолго;
     // index.html не кэшируется, чтобы деплой подхватывался сразу.
-    setHeaders: (res, filePath) => {
+    setHeaders: (reply, filePath) => {
       if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-        res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
+        reply.header('Cache-Control', 'public, max-age=604800, immutable')
       } else {
-        res.setHeader('Cache-Control', 'no-cache')
+        reply.header('Cache-Control', 'no-cache')
       }
     },
   })
@@ -36,6 +36,6 @@ export const spaRoutes: FastifyPluginAsync = async (app) => {
     if (request.method === 'GET' && request.url.startsWith('/app/')) {
       return reply.sendFile('index.html')
     }
-    return reply.code(404).send({ ok: false, error: 'Не найдено' })
+    return reply.code(404).send({ ok: false, code: 'NOT_FOUND', error: 'Не найдено' })
   })
 }

@@ -214,6 +214,286 @@ input[type='range'] { accent-color: var(--accent); }
 .stat-tile .l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-top: 2px; }
 
 /* --- Герой главной --- */
+/* --- Недельная активность --- */
+.week-activity-card {
+  grid-column: auto;
+  container-type: inline-size;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 18px;
+}
+.week-activity-card::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  right: -160px;
+  bottom: -210px;
+  width: 400px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(245, 188, 74, 0.045), transparent 68%);
+  pointer-events: none;
+}
+.week-activity-card > .sec-head,
+.week-activity-card > .week-chart,
+.week-activity-card > .week-chart__summary {
+  position: relative;
+  z-index: 1;
+}
+.week-activity-card > .sec-head { margin-bottom: 14px; }
+.week-activity-card > .sec-head::before {
+  width: 3px;
+  height: 17px;
+  border-radius: 999px;
+  box-shadow: 0 0 10px rgba(245, 188, 74, 0.28);
+}
+.week-activity-card > .sec-head h2 {
+  font-family: var(--font-display);
+  font-size: clamp(12.5px, 1.3vw, 14px);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+.week-activity-card > .sec-head .hint {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+}
+
+.week-chart {
+  --plot-height: clamp(210px, 24vw, 270px);
+  overflow: hidden;
+  padding: 16px clamp(10px, 1.5vw, 16px) 10px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 13px;
+  background: linear-gradient(180deg, rgba(10, 9, 13, 0.3), rgba(10, 9, 13, 0.15));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+.week-chart__body {
+  display: grid;
+  grid-template-columns: minmax(38px, auto) minmax(0, 1fr);
+  gap: clamp(8px, 1.2vw, 13px);
+  padding-top: 19px;
+}
+.week-chart__axis {
+  position: relative;
+  height: var(--plot-height);
+  min-width: 38px;
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.week-chart__axis-label {
+  position: absolute;
+  top: var(--tick-position);
+  right: 0;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+.week-chart__plot {
+  position: relative;
+  height: calc(var(--plot-height) + 38px);
+  min-width: 0;
+}
+.week-chart__grid {
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--plot-height);
+  pointer-events: none;
+}
+.week-chart__grid-line {
+  position: absolute;
+  top: var(--tick-position);
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(145, 140, 153, 0.18), rgba(145, 140, 153, 0.08));
+}
+.week-chart__grid-line:last-child {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(184, 179, 172, 0.28), rgba(145, 140, 153, 0.14));
+}
+.week-chart__bars {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: clamp(7px, 2vw, 22px);
+  height: 100%;
+  padding: 0 6px;
+  list-style: none;
+}
+.week-chart__day {
+  display: grid;
+  grid-template-rows: var(--plot-height) 38px;
+  min-width: 0;
+  outline: none;
+}
+.week-chart__bar-slot {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: var(--plot-height);
+}
+.week-chart__bar {
+  position: relative;
+  display: block;
+  width: min(58%, 48px);
+  min-width: 10px;
+  height: max(4px, var(--bar-height));
+  overflow: hidden;
+  border: 1px solid rgba(255, 224, 142, 0.14);
+  border-radius: 7px 7px 3px 3px;
+  background: linear-gradient(180deg, #f9d477 0%, #efb33a 48%, #dc901c 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 9px 18px -14px rgba(245, 188, 74, 0.48);
+  transform-origin: bottom center;
+  transition: filter 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  animation: weekBarRise 650ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: var(--bar-delay);
+}
+.week-chart__bar::before {
+  content: '';
+  position: absolute;
+  inset: 1px 18% auto;
+  height: 24%;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent);
+  pointer-events: none;
+}
+.week-chart__bar-value {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(var(--bar-height) + 9px);
+  left: 50%;
+  color: var(--ink2);
+  font-family: var(--font-display);
+  font-size: clamp(10px, 1vw, 11px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  animation: weekValueIn 420ms ease backwards;
+  animation-delay: calc(var(--bar-delay) + 260ms);
+}
+.week-chart__weekday {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0 5px 2px;
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 24px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+.week-chart__day.is-peak .week-chart__bar {
+  border-color: rgba(255, 229, 158, 0.35);
+  background: linear-gradient(180deg, #ffe39a 0%, #f9c24e 44%, #e3961e 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.44),
+    0 12px 24px -14px rgba(245, 188, 74, 0.58);
+}
+.week-chart__day.is-peak .week-chart__bar-value { color: var(--accent-hover); }
+.week-chart__day.is-today .week-chart__weekday {
+  color: var(--accent);
+}
+.week-chart__day.is-empty .week-chart__bar {
+  height: 4px;
+  border: none;
+  border-radius: 999px;
+  background: var(--line2);
+  box-shadow: none;
+}
+.week-chart__day.is-empty .week-chart__bar-value {
+  bottom: 11px;
+  color: var(--muted);
+}
+.week-chart__day:hover .week-chart__bar,
+.week-chart__day:focus-visible .week-chart__bar {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 12px 22px -14px rgba(245, 188, 74, 0.62);
+}
+.week-chart__day:focus-visible .week-chart__bar {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.week-chart__day:hover .week-chart__bar-value,
+.week-chart__day:focus-visible .week-chart__bar-value { color: var(--ink); }
+
+.week-chart__summary {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  color: var(--ink2);
+  font-size: 12.5px;
+}
+.week-chart__summary strong {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.week-chart__summary-icon {
+  display: none;
+}
+.week-chart__summary-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@keyframes weekBarRise {
+  from { opacity: 0.25; transform: scaleY(0.025); }
+}
+@keyframes weekValueIn {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+}
+
+/* В третьей колонке график ориентируется на ширину карточки, а не viewport. */
+@container (max-width: 430px) {
+  .week-activity-card > .sec-head { margin-bottom: 12px; }
+  .week-activity-card > .sec-head .hint { padding: 0; font-size: 10px; }
+  .week-chart {
+    --plot-height: 180px;
+    padding: 12px 7px 7px;
+    border-radius: 11px;
+  }
+  .week-chart__body {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 6px;
+    padding-top: 18px;
+  }
+  .week-chart__axis { min-width: 30px; font-size: 9px; }
+  .week-chart__axis-label:nth-child(even):not(:last-child) { display: none; }
+  .week-chart__grid-line:nth-child(even):not(:last-child) { opacity: 0.45; }
+  .week-chart__plot { height: calc(var(--plot-height) + 32px); }
+  .week-chart__bars { gap: 5px; padding: 0 2px; }
+  .week-chart__day { grid-template-rows: var(--plot-height) 32px; }
+  .week-chart__bar { width: min(62%, 34px); border-radius: 5px 5px 2px 2px; }
+  .week-chart__bar-value { bottom: calc(var(--bar-height) + 7px); font-size: 9px; }
+  .week-chart__weekday { padding-inline: 3px; font-size: 9.5px; line-height: 20px; }
+  .week-chart__summary { margin-top: 10px; padding-top: 9px; font-size: 11.5px; }
+  .week-chart__summary strong { font-size: 12.5px; }
+}
+
 .hero { padding: clamp(36px, 6vw, 72px) 4px 20px; text-align: center; animation: riseIn 0.5s ease both; }
 .hero .live-badge {
   display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px;
@@ -330,6 +610,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 
 /* --- Списки-строки и карточки-строки --- */
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 16px; align-items: start; }
+.home-feed-card { align-self: stretch; }
 .src-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 10px; }
 .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: none; }
@@ -408,11 +689,44 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
   font-size: 12px; color: var(--muted); border-top: 1px solid var(--bg-soft);
 }
 
+@media (max-width: 1083px) {
+  .week-activity-card { grid-column: 1 / -1; }
+}
+
 @media (max-width: 640px) {
   .bar-row { grid-template-columns: 96px 1fr 80px; }
   .hero-card .aside { border-left: none; padding-left: 0; margin-left: 0; text-align: left; }
   .tbl-scroll { margin: 0 -16px; }
+  .week-activity-card { padding: 14px 12px; }
+  .week-activity-card > .sec-head { margin-bottom: 12px; }
+  .week-activity-card > .sec-head .hint { padding: 0; font-size: 10px; }
+  .week-chart {
+    --plot-height: clamp(165px, 45vw, 180px);
+    padding: 12px 6px 7px;
+    border-radius: 11px;
+  }
+  .week-chart__body {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 6px;
+    padding-top: 18px;
+  }
+  .week-chart__axis { min-width: 30px; font-size: 9px; }
+  .week-chart__axis-label:nth-child(even):not(:last-child) { display: none; }
+  .week-chart__grid-line:nth-child(even):not(:last-child) { opacity: 0.45; }
+  .week-chart__plot { height: calc(var(--plot-height) + 32px); }
+  .week-chart__bars { gap: 4px; padding: 0 2px; }
+  .week-chart__day { grid-template-rows: var(--plot-height) 32px; }
+  .week-chart__bar { width: min(62%, 34px); border-radius: 5px 5px 2px 2px; }
+  .week-chart__bar-value { bottom: calc(var(--bar-height) + 7px); font-size: 9px; }
+  .week-chart__weekday { padding-inline: 3px; font-size: 9.5px; line-height: 20px; }
+  .week-chart__summary { margin-top: 10px; padding-top: 9px; font-size: 11.5px; }
+  .week-chart__summary strong { font-size: 12.5px; }
   /* На узких экранах хвост строки переносится, а не давит название в ноль. */
   .row-item { flex-wrap: wrap; }
   .row-item .title { flex: 1 1 auto; min-width: 55%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .week-chart__bar,
+  .week-chart__bar-value { animation: none; }
 }

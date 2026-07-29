@@ -10,10 +10,21 @@ import {
 } from 'discord.js'
 import type { Command } from '../types.js'
 import { heatmapQualityRow, heatmapScaleForUpload, type HeatmapScale } from '../battle-media-controls.js'
-import { getBattleWinner, getItemByExternalId, getLatestItems, hasBattle, hasBattleChat, type StoredItem } from '../../db/index.js'
+import {
+  canAdmitWinnerUpdate,
+  shouldQueueWinnerUpdate,
+} from '../battle-post-policy.js'
+import {
+  getBattlePostSummary,
+  getClanSeasonContext,
+  getItemByExternalId,
+  getLatestItems,
+  hasBattle,
+  hasBattleChat,
+  type StoredItem,
+} from '../../db/index.js'
 import {
   buildBattleHeatmap2x,
-  buildBattleMedia,
   buildBattleMediaKind,
   cachedBattleHeatmap2x,
   cachedBattleMedia,
@@ -90,8 +101,10 @@ export interface BattlePostPayload {
 export interface BattlePost {
   payload: BattlePostPayload
   sessionIdHex: string
-  /** null — победитель уже на картинке; иначе сборка материалов вернёт payload с отметкой (или null) */
+  /** null — durable summary уже доступен; иначе ожидание ingest вернёт обновлённый payload. */
   buildWinnerPayload: (() => Promise<BattlePostPayload | null>) | null
+  /** Консервативная оценка retained state замыкания фонового обновления. */
+  winnerUpdateBytes: number
 }
 
 /**
@@ -139,6 +152,7 @@ export async function renderBattlePost(
   // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
   let content =
     `Match ID: \`${header.sessionId}\`\n` +
+    seasonLine(header.startTime) +
     teams
       .map((t, i) => {
         const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
@@ -207,65 +221,130 @@ export async function renderBattlePost(
     }
   }
 
-  // Победителя в results-BLK нет. Берём его из БД (воркер ingest уже мог
-  // разобрать бой) или из кэша меты. Если ни там, ни там — собираем материалы
-  // в фоне: это и даст победителя, и подготовит кнопки к мгновенному ответу.
-  const dbWinner = getBattleWinner(sessionId) // null — бой ещё не разобран
+  // Победителя в results-BLK нет. Новая read model также хранит дешёвые
+  // has-air/chat flags и никогда не читает events_blob.
+  const dbSummary = getBattlePostSummary(sessionId)
   const mediaMeta = await cachedBattleMeta(header.sessionIdHex)
-  const metaWinner = mediaMeta?.teamWon ?? null
-  hasAir = mediaMeta?.hasAir ?? true
-  const known = dbWinner !== null || metaWinner !== null
-  const winner = dbWinner ?? metaWinner ?? 0
+  hasAir = dbSummary?.airUnitCount !== null && dbSummary?.airUnitCount !== undefined
+    ? dbSummary.airUnitCount > 0
+    : mediaMeta?.hasAir ?? true
+  const hasChat = dbSummary
+    ? dbSummary.chatCount === null
+      ? hasBattleChat(sessionId)
+      : dbSummary.chatCount > 0
+    : mediaMeta?.hasChat ?? true
+  const winner = dbSummary?.teamWon ?? mediaMeta?.teamWon ?? 0
+  const initialHasAir = hasAir
+  const initialHasChat = hasChat
   const payload = await makePayload(
     winner > 0 ? winner : null,
-    hasBattle(sessionId) ? hasBattleChat(sessionId) : mediaMeta?.hasChat ?? true,
+    hasChat,
   )
-  const buildWinnerPayload = known && mediaMeta
-    ? null
-    : async (): Promise<BattlePostPayload | null> => {
-        const built = await buildBattleMedia(
-          sessionId,
-          parts,
-          { missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
-          realNames,
-          'background',
-        )
-        const fresh = getBattleWinner(sessionId) ?? (await cachedBattleMeta(header.sessionIdHex))?.teamWon ?? 0
-        hasAir = built.summary.airUnits > 0
-        return makePayload(fresh > 0 ? fresh : null, built.summary.chat > 0, 'background')
+  const buildWinnerPayload = shouldQueueWinnerUpdate(dbSummary !== null, mediaMeta !== null)
+    ? async (): Promise<BattlePostPayload | null> => {
+        const fresh = await waitForBattlePostSummary(sessionId)
+        if (!fresh) return null
+        const freshHasAir = fresh.airUnitCount === null ? initialHasAir : fresh.airUnitCount > 0
+        const freshHasChat = fresh.chatCount === null ? hasBattleChat(sessionId) : fresh.chatCount > 0
+        if (fresh.teamWon <= 0 && freshHasAir === initialHasAir && freshHasChat === initialHasChat) {
+          return null
+        }
+        hasAir = freshHasAir
+        return makePayload(fresh.teamWon > 0 ? fresh.teamWon : null, freshHasChat, 'background')
       }
-  return { payload, sessionIdHex: header.sessionIdHex, buildWinnerPayload }
+    : null
+  return {
+    payload,
+    sessionIdHex: header.sessionIdHex,
+    buildWinnerPayload,
+    winnerUpdateBytes: buildWinnerPayload ? estimateWinnerUpdateBytes(results, content) : 0,
+  }
 }
 
-/**
- * Меты ещё нет — собирает материалы в фоне (даёт победителя и мгновенные
- * кнопки) и передаёт apply обновлённое сообщение с отметкой «Победа».
- * Защищено от параллельных сборок одной сессии.
- */
+function seasonLine(startTime: number): string {
+  const context = getClanSeasonContext(startTime)
+  if (!context.season) return ''
+  const stage = context.currentStage
+  if (!context.season.active || stage === null) {
+    return `Сезон: ${context.season.name} · завершён\n`
+  }
+  const stageName = stage.endsAt === context.season.endsAt ? 'до конца сезона' : `неделя ${stage.week}`
+  return `Сезон: ${context.season.name}, ${stageName}, макс. БР ${stage.maxBr.toFixed(1)} · <t:${stage.startsAt}:d>–<t:${stage.endsAt - 1}:d>\n`
+}
+
+/** Ждёт durable ingest summary и передаёт apply только обновлённую scoreboard. */
 export function queueWinnerUpdate(post: BattlePost, apply: (p: BattlePostPayload) => Promise<unknown>): void {
   const build = post.buildWinnerPayload
-  if (!build || winnerUpdatesStopping || winnerUpdates.has(post.sessionIdHex)) return
+  const sessionIdHex = post.sessionIdHex
+  const estimatedBytes = Math.max(0, Math.floor(post.winnerUpdateBytes))
+  if (!build || winnerUpdatesStopping || winnerUpdates.has(sessionIdHex)) return
+  if (!canAdmitWinnerUpdate(winnerUpdates.size, winnerUpdatesBytes, estimatedBytes)) {
+    console.warn(
+      `[bot] обновление победителя ${sessionIdHex} отложено: ` +
+        `очередь ${winnerUpdates.size}, ${(winnerUpdatesBytes / 1024 / 1024).toFixed(1)} МиБ`,
+    )
+    return
+  }
+  winnerUpdatesBytes += estimatedBytes
   const task = (async () => {
     try {
       const payload = await build()
       if (payload && !winnerUpdatesStopping) await apply(payload)
     } catch (err) {
       if (!winnerUpdatesStopping) {
-        console.warn(`[bot] фоновая сборка меты ${post.sessionIdHex}: ${(err as Error).message}`)
+        console.warn(`[bot] обновление победителя ${sessionIdHex}: ${(err as Error).message}`)
       }
     }
-  })().finally(() => winnerUpdates.delete(post.sessionIdHex))
-  winnerUpdates.set(post.sessionIdHex, task)
+  })().finally(() => {
+    const current = winnerUpdates.get(sessionIdHex)
+    if (current?.task !== task) return
+    winnerUpdates.delete(sessionIdHex)
+    winnerUpdatesBytes = Math.max(0, winnerUpdatesBytes - current.estimatedBytes)
+  })
+  winnerUpdates.set(sessionIdHex, { task, estimatedBytes })
   void task
 }
 
-/** Сессии, для которых уже идёт фоновая сборка материалов. */
-const winnerUpdates = new Map<string, Promise<void>>()
+interface WinnerUpdateEntry {
+  task: Promise<void>
+  estimatedBytes: number
+}
+
+const WINNER_UPDATE_WAIT_MS = 120_000
+const WINNER_UPDATE_POLL_MS = 1_000
+/** Сессии, ожидающие durable ingest summary; full media здесь не строится. */
+const winnerUpdates = new Map<string, WinnerUpdateEntry>()
+let winnerUpdatesBytes = 0
 let winnerUpdatesStopping = false
 
 export async function stopWinnerUpdates(): Promise<void> {
   winnerUpdatesStopping = true
-  await Promise.allSettled([...winnerUpdates.values()])
+  await Promise.allSettled([...winnerUpdates.values()].map((entry) => entry.task))
+}
+
+async function waitForBattlePostSummary(sessionId: string) {
+  const deadline = Date.now() + WINNER_UPDATE_WAIT_MS
+  while (!winnerUpdatesStopping) {
+    const summary = getBattlePostSummary(sessionId)
+    if (summary) return summary
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) return null
+    await sleepWinnerUpdate(Math.min(WINNER_UPDATE_POLL_MS, remainingMs))
+  }
+  return null
+}
+
+function sleepWinnerUpdate(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
+}
+
+function estimateWinnerUpdateBytes(results: ReplayResults, content: string): number {
+  return 64 * 1024
+    + Buffer.byteLength(content, 'utf8')
+    + Buffer.byteLength(JSON.stringify(results), 'utf8')
 }
 
 const KIND_NAMES: Record<BattleMediaKind, string> = {

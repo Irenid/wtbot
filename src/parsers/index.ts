@@ -7,13 +7,15 @@ import type { ParserSource } from './types.js'
 // в БД пачкой, результат запуска (успех/ошибка) — тоже в БД:
 // его видно на дашборде и в /stats.
 
-const timers: NodeJS.Timeout[] = []
+const MAX_SOURCE_BACKOFF_MS = 30 * 60_000
+const runtimes = new Map<string, { failures: number; timer: NodeJS.Timeout | null }>()
+let parsersRunning = false
 /** Источники, чей прошлый запуск ещё не завершился — чтобы догон парсера
  *  (может листать десятки страниц) не наложился на следующий тик */
 const running = new Set<string>()
 
-async function runOnce(source: ParserSource): Promise<void> {
-  if (running.has(source.name)) return
+async function runOnce(source: ParserSource): Promise<boolean> {
+  if (running.has(source.name)) return true
   running.add(source.name)
   try {
     const output = await source.run()
@@ -28,24 +30,74 @@ async function runOnce(source: ParserSource): Promise<void> {
     recordParseResult(source.name, true, summary, null)
     // Для replay показываем и нулевой результат: так видна исправность частого опроса.
     if (gotItems || source.name === 'wt-replays') console.log(`[parser:${source.name}] OK — ${summary}`)
+    return true
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     recordParseResult(source.name, false, null, message)
     console.error(`[parser:${source.name}] Ошибка — ${message}`)
+    return false
   } finally {
     running.delete(source.name)
   }
 }
 
-export function startParsers(): void {
-  for (const source of sources) {
+export function parserBackoffMs(intervalMs: number, failures: number): number {
+  if (!Number.isFinite(intervalMs) || intervalMs < 1) throw new RangeError('intervalMs должен быть положительным')
+  if (!Number.isInteger(failures) || failures < 0) throw new RangeError('число ошибок должно быть неотрицательным целым')
+  if (failures === 0) return intervalMs
+  return Math.min(intervalMs * 2 ** Math.min(failures - 1, 10), MAX_SOURCE_BACKOFF_MS)
+}
+
+function schedule(source: ParserSource, delayMs: number): void {
+  if (!parsersRunning) return
+  const runtime = runtimes.get(source.name)
+  if (!runtime) return
+  runtime.timer = setTimeout(() => {
+    runtime.timer = null
     void runOnce(source)
-    timers.push(setInterval(() => void runOnce(source), source.intervalMs))
+      .then((ok) => {
+        if (ok) {
+          runtime.failures = 0
+          schedule(source, source.intervalMs)
+          return
+        }
+        runtime.failures += 1
+        const nextDelay = parserBackoffMs(source.intervalMs, runtime.failures)
+        console.warn(
+          `[parser:${source.name}] backoff после ${runtime.failures} ошибок: следующая попытка через ${Math.ceil(nextDelay / 1_000)} с`,
+        )
+        schedule(source, nextDelay)
+      })
+      .catch((error: unknown) => {
+        runtime.failures += 1
+        console.error(`[parser:${source.name}] scheduler завершился ошибкой:`, error)
+        schedule(source, parserBackoffMs(source.intervalMs, runtime.failures))
+      })
+  }, Math.max(0, delayMs))
+}
+
+export function startParsers(sourceList: readonly ParserSource[] = sources): void {
+  const names = new Set<string>()
+  for (const source of sourceList) {
+    if (names.has(source.name)) throw new Error(`Повторяющееся имя parser source: ${source.name}`)
+    if (!Number.isFinite(source.intervalMs) || source.intervalMs < 1) {
+      throw new Error(`Некорректный interval parser source ${source.name}: ${source.intervalMs}`)
+    }
+    names.add(source.name)
   }
-  console.log(`[parsers] Запущено источников: ${sources.length}`)
+  if (parsersRunning) stopParsers()
+  parsersRunning = true
+  for (const source of sourceList) {
+    runtimes.set(source.name, { failures: 0, timer: null })
+    schedule(source, 0)
+  }
+  console.log(`[parsers] Запущено источников: ${sourceList.length}`)
 }
 
 export function stopParsers(): void {
-  for (const timer of timers) clearInterval(timer)
-  timers.length = 0
+  parsersRunning = false
+  for (const runtime of runtimes.values()) {
+    if (runtime.timer !== null) clearTimeout(runtime.timer)
+  }
+  runtimes.clear()
 }

@@ -41,10 +41,12 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 ## Источники истины
 
 Перед изменением поведения сверяйся в таком порядке: текущий код и схема БД,
-затем `AGENTS.md`. Это единственное основное руководство по репозиторию;
-не создавай параллельные файлы с дублирующими инструкциями. Пользовательские
-настройки документируются в `.env.example`, план производительности — в
-`PERFORMANCE_PLAN.md`.
+затем `AGENTS.md`. Это основное руководство по устройству и контрактам
+репозитория; `MASTER_PLAN.md` — актуальный roadmap и реестр статусов,
+`PERFORMANCE_PLAN.md` — специализированный план производительности,
+`.env.example` — пользовательская конфигурация. Старые audit/plan документы
+могут описывать уже закрытые дефекты, поэтому не считай их выше текущего кода
+или `MASTER_PLAN.md`.
 
 Актуальные факты, которые важнее устаревших фрагментов документации:
 
@@ -52,12 +54,13 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
   `zstdDecompressSync`.
 - Активны три источника: `wt-replays`, `wt-clans` и `wt-players`;
   `wt-cookies.ts` — общий cookie jar, а не самостоятельный `ParserSource`.
-- `wt-replays` опрашивается каждые 20 секунд. Константы `MAX_CATCHUP_PAGES` в
-  коде нет: плановый догон вызывает `collectFreshReplays()` без `maxPages` и без
-  `sinceTs`, поэтому единственный ранний выход — первая страница, на которой
-  встретился уже сохранённый бой. На пустой или сброшенной таблице он не
-  срабатывает никогда, и обход идёт до конца архива (AUDIT.md H5). Явный предел
-  страниц есть только в `src/parsers/backfill.ts`.
+- `wt-replays` опрашивается каждые 20 секунд. Плановый `wtReplays.run()` передаёт
+  `PLANNED_REPLAYS_MAX_PAGES = 50`, `stopAtKnown=true` и `fetchDetails=false`.
+  Обход прекращается после первой страницы, содержащей известную запись, на
+  последней неполной странице или по cap; явный backfill имеет отдельные
+  параметры и больший допустимый объём. `sinceTs` поддерживается для date
+  cutoff. Логика cap, known page, последней страницы и cutoff покрыта offline
+  source-level tests.
 - `wt-players` опрашивается каждые 30 минут, проходит `WT_PLAYER_NAMES`
   последовательно и запрашивает только первую страницу Replay API.
 - Разовый backfill уже реализован в `src/parsers/backfill.ts`; по умолчанию он
@@ -68,9 +71,11 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 - CPU-пул находится в `src/workers/`: auto-размер учитывает доступные CPU,
   свободную RAM и заданные резервы. Очередь ограничена количеством задач и
   суммой transferable bytes, интерактивный потребитель повышает приоритет уже
-  общей фоновой сборки, а параллельный ingest не занимает все готовые слоты. Timeout
-  выполнения завершает и заменяет worker; timeout/переполнение очереди не
-  расходуют попытки ingest и автоанонса.
+  общей фоновой сборки, а параллельный ingest не занимает все готовые слоты.
+  Timeout выполнения завершает и заменяет worker; `EXEC_TIMEOUT`, queue timeout
+  и переполнение очереди не расходуют попытки ingest и автоанонса.
+- Parser scheduler хранит ошибки отдельно по source, применяет exponential
+  backoff до 30 минут и имеет running-guard от наложения запусков.
 - Модули связаны не только через БД: bot/web/WRPL напрямую импортируют DB API и
   друг друга. Замена синхронной SQLite на async Postgres затронет вызывающий
   код, а не только `src/db/`.
@@ -97,22 +102,29 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
 Переменные окружения:
 
 - `TOKEN` — обязательный Discord bot token. Сейчас `src/config.ts` требует его
-  при любом импорте config, поэтому он фактически нужен и CLI-скриптам.
+  при любом импорте config, поэтому он нужен основному процессу и тем
+  CLI-скриптам, которые импортируют config (`battle`, `analyze`, `backfill`,
+  `deploy:commands`). `db:backup` и другие автономные CLI без этого импорта не
+  должны искусственно требовать Discord token.
 - `CLIENT_ID`, `GUILD_ID` — регистрация slash-команд.
-- `PORT`, `DB_PATH` — веб-порт и SQLite.
+- `PORT`, `WEB_HOST`, `WEB_TOKEN`, `DB_PATH`, `WTBOT_ALLOW_NEW_DB` —
+  веб-порт, интерфейс и bearer-token веб-панели, SQLite и явное разрешение
+  создать новую БД. По умолчанию `WEB_HOST=127.0.0.1`,
+  `WTBOT_ALLOW_NEW_DB=false`; при non-loopback интерфейсе `WEB_TOKEN` обязателен.
 - `WT_COOKIE` — чувствительная сессия warthunder.com для `wt-replays` и
   `wt-players`.
 - `WT_BROWSER_ENABLED`, `WT_BROWSER_HEADLESS`, `WT_BROWSER_TIMEOUT_MS`,
   `WT_BROWSER_PROFILE_DIR`, `WT_BROWSER_POOL_SIZE`, `WT_BROWSER_CDP_PORT` и
   `WT_BROWSER_EXECUTABLE` — транспорт warthunder.com через установленный Edge.
   Это не аварийный recovery, а основной путь: Cloudflare отклоняет прямые
-  запросы из Node. Отдельный Node-cookie jar не создаётся, Edge хранит
-  нативный профиль в указанном каталоге.
+  запросы из Node. Auth-cookie ведёт общий Node jar
+  `data/wt-cookies.json`, а Edge хранит нативный профиль и clearance в
+  указанном каталоге.
 - `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` — фильтры Discord
   и автоанонса.
 - `WT_PLAYER_STATS_ENABLED` — включает ленивое получение account-статистики
-  локально известных игроков со страницы профиля warthunder.com; replay-
-  статистика из SQLite доступна и при `false`.
+  локально известных игроков со страницы профиля warthunder.com; по умолчанию
+  сейчас `true`. Replay-статистика из SQLite доступна и при `false`.
 - `STATSHARK_PLAYER_STATS_ENABLED` — включает второй ленивый account-snapshot
   StatShark для identity с известным числовым WT user id. Источник использует
   общий Edge/CDP-пул и по умолчанию выключен.
@@ -125,20 +137,23 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
   `WT_HEATMAP_AIR_PADDING_PERCENT` — отображение авиационной карты.
 - `WT_WORKER_THREADS` — `auto` (по умолчанию) либо явное число CPU workers;
   `WT_WORKER_RESERVE_CPUS`, `WT_WORKER_MEMORY_RESERVE_MB` и
-  `WT_WORKER_ESTIMATED_MB` управляют автоматическим CPU/RAM-бюджетом.
-  Жёсткий лимит пула — **8** (`MAX_CONFIGURABLE_WORKERS`, `src/workers/pool.ts:98`),
-  но расчёт размера в `src/runtime-options.ts:122` его не учитывает: auto-режим
-  ограничен только числом CPU и свободной RAM, а явное значение — только числом
-  CPU (`runtime-options.ts:124`). `const pool = new CpuWorkerPool()`
-  (`src/workers/pool.ts:595`) выполняется на верхнем уровне модуля, поэтому на
-  машине с ≥10 логическими ядрами и достаточной свободной RAM конструктор
-  бросает `Число CPU workers должно быть целым от 1 до 8` прямо на ESM-импорте —
-  падает любой вход, который тянет `src/workers/pool.ts`. На таких машинах
-  задавай `WT_WORKER_THREADS` явно числом 1..8 (или подними
-  `WT_WORKER_RESERVE_CPUS`); значение >8 крашится так же, как auto.
+  `WT_WORKER_ESTIMATED_MB` управляют автоматическим CPU/RAM-бюджетом. Default
+  оценки worker — **320 МиБ**, выбранный по controlled parse+Resvg sweep с
+  запасом над измеренным peak.
+  Жёсткий лимит пула — **8** (`MAX_CONFIGURABLE_WORKERS` в
+  `src/runtime-options.ts`); auto-режим и явное значение ограничиваются этим
+  лимитом до создания `CpuWorkerPool`.
 - `WT_WORKER_BACKGROUND_RESERVE`, `WT_INGEST_CONCURRENCY` и
   `WT_WORKER_MAX_OLD_SPACE_MB` — резерв интерактивных slots, параллельность
-  backlog ingest и V8 old-space одного worker.
+  end-to-end backlog ingest и V8 old-space одного worker. Без явной настройки
+  ingest равен числу фоновых workers; явное значение до 32 может быть выше
+  размера пула, чтобы перекрыть CDN I/O, но одновременно удерживает больше
+  replay-буферов в RAM и требует отдельного измерения RSS/error rate.
+- `WT_REPLAY_PROCESS_BUDGET_MB` — общий hard limit удерживаемых replay-буферов
+  процесса (активные CDN-части, ready input и parse). Auto сначала резервирует
+  до 384 МиБ (четыре worst-case WRPL-части) перед расчётом worker count, затем
+  получает оставшуюся RAM с cap 2048 МиБ; явный диапазон 128–8192 МиБ.
+  Ожидание budget timeout откладывает ingest без расхода attempts.
 - `ANTHROPIC_API_KEY` — только для `npm run analyze`; вызовы платные.
 
 При добавлении новой переменной одновременно обновляй `src/config.ts`,
@@ -173,7 +188,11 @@ npm run verify:wt-transport # живой транспорт warthunder.com: пр
 npm test                  # оффлайн node:test по всем *.test.ts
 npm run verify:workers    # безопасный source-smoke CPU pool + Resvg
 npm run verify:workers:dist # тот же smoke после build, из dist
-npm run benchmark:workers -- data/replays/<sid> [--render] [--kind=heatmap-air] [--json=data/benchmarks/result.json] # локальный WRPL/PNG без сети/БД
+npm run verify:benchmark-corpus # SHA-256/outcome/data-contract фиксированного WRPL corpus
+npm run restore:benchmark-corpus # восстановить отсутствующие fixtures из CDN с byte/SHA-256 проверкой
+npm run benchmark:ingest-telemetry # bounded aggregate overhead на 100k lifecycle
+npm run benchmark:sqlite-ingest # сравнение checkpoint cadence на временной SQLite
+npm run benchmark:workers -- benchmarks/fixtures/replays/<sid> [--render] [--kind=heatmap-air] [--warm=10] [--jobs=2] [--duration=30] [--arrival-rate=2] [--json=data/benchmarks/result.json] # локальный WRPL/PNG без сети/БД
 npm run build:web         # сборка SPA сайта (frontend/ → frontend/dist, раздаётся на /app)
 npm run dev:web           # Vite dev-сервер SPA с proxy /api на :3000
 npm run dev               # живой бот + web + parsers, watch-режим
@@ -183,6 +202,7 @@ npm run start:bot         # запуск dist без фонового разбо
 npm run deploy:commands   # изменяет slash-команды в Discord
 npm run battle -- <id>    # бой; дополнительные флаги: --image --media --json
 npm run backfill -- 3     # сетевой добор боёв и запись в БД
+npm run db:backup -- [outputDir] [keep] # offline SQLite backup и rotation
 npm run site              # сайт на реальной data/wtbot.db без бота/парсеров (порт 3210)
 npm run analyze -- 3      # платные запросы к Anthropic и запись анализов
 npm run capture:map       # снимок карты из локального API игры (localhost:8111) в data/maps
@@ -190,15 +210,17 @@ npm run benchmark:replay  # оффлайн-бенчмарк скачивания
 npm run benchmark:voice   # бенчмарк voice-API на временной SQLite
 ```
 
+`db:backup` использует `VACUUM INTO`, read-only `quick_check`, free-space
+check, process lock и rotation. Восстановление выполняй только при остановленном
+сервисе: проверь backup, сохрани текущий DB-файл как `.pre-restore`, скопируй
+backup во временный файл, повтори `quick_check` и только затем замени `DB_PATH`.
+
 Линтера и CI нет, а юнит-тесты есть: `npm test` — `tsx --test "src/**/*.test.ts"`.
-**Набор красный уже в HEAD: `tests 44 / pass 41 / fail 3`** —
-`src/wrpl/render-heatmap.test.ts:538`, `:677` и
-`src/wrpl/render-battle-log.test.ts:76` (устаревшие ассерты на литеральный hex
-палитры и на `font-family`). Это известное состояние, а не твоя регрессия, но и
-не повод игнорировать падения: сверяй список упавших тестов до и после
-изменения, число падений не должно вырасти.
-`src/wrpl/render-heatmap.spec.ts` не запускается (`package.json:17` глобит
-только `*.test.ts`) и не тайпчекается (`tsconfig.json:49` исключает
+Зафиксированный baseline на **2026-07-29** — 106 pass, 0 fail. Сверяй список
+упавших тестов до и после изменения; если состав тестов изменился, обновляй
+baseline, а любое новое падение считай регрессией.
+`src/wrpl/render-heatmap.spec.ts` не запускается автоматически (`package.json`
+глобит только `*.test.ts`) и не тайпчекается (`tsconfig.json` исключает
 `**/*.spec.ts`) — это единственное покрытие `mergeNearbyCamps`,
 `routeStrokeParts` и `segmentIntersection`. Правя их, запускай файл вручную:
 `npx tsx --test src/wrpl/render-heatmap.spec.ts`. Минимальная проверка любого изменения —
@@ -232,9 +254,11 @@ npm run benchmark:voice   # бенчмарк voice-API на временной S
 
 - `src/index.ts` — порядок запуска и graceful shutdown.
 - `src/config.ts` — централизованная конфигурация окружения.
+- `src/clan-season.ts` — статическое UTC-расписание клановых сезонов и этапов.
 - `src/db/index.ts` — схема, миграции и весь SQL; ORM нет.
 - `src/bot/` — Discord client, voice tracker, announcer и slash-команды.
-- `src/web/` — Fastify API и встроенный HTML-дашборд.
+- `src/web/` — Fastify API, legacy dashboard на `/` и раздача React SPA на
+  `/app`, если существует `frontend/dist`.
 - `src/parsers/` — scheduler, `wt-replays`, `wt-clans`, `wt-players`
   (`wt-player.ts`), cookie jar, backfill.
 - `src/wrpl/` — загрузка, бинарный разбор, ingest, assets и рендер боя.
@@ -250,25 +274,45 @@ web и WRPL-код напрямую импортируют `src/db/index.ts`. SQ
 переход на Postgres потребует также распространить `async` по вызывающему коду.
 Важнее для повседневной работы другое: `node:sqlite` синхронна, поэтому
 **каждый** запрос блокирует event loop целиком — вместе с Discord-heartbeat,
-voice-трекером и Fastify. Один тяжёлый SELECT = зависший бот. Для любого нового
+voice-трекером и Fastify. Исключение — успешная ingest-запись:
+`persist-ingested-battle` выполняет её на CPU worker. Один тяжёлый SELECT =
+зависший бот. Для любого нового
 или изменённого SQL прогоняй `EXPLAIN QUERY PLAN`; `SCAN battles` недопустим:
-таблица держит `events_blob` и весит ~2.3 ГБ. Известный пример —
-`WHERE session_id = ? OR session_hex = ?` (`src/db/index.ts:3038`, `:3111`,
-`:3147`): у `session_hex` нет индекса, SQLite не оптимизирует такой `OR`, и
-открытие боя по hex стоит ~62 с на холодном кэше (замер в `AUDIT.md`). Не
-копируй этот шаблон.
+таблица держит `events_blob` и на 2026-07-29 весит около 2.4 ГиБ. Известный пример —
+`WHERE session_id = ? OR session_hex = ?`: для обеих ветвей теперь создан
+`idx_battles_session_hex`, но план
+обязательно проверяй через `EXPLAIN QUERY PLAN`, чтобы SQLite использовал
+multi-index OR, а не полный проход.
+
+Схема пока гибридная. `initDb()` сначала выполняет большой idempotent bootstrap
+через `CREATE TABLE/INDEX IF NOT EXISTS`, а `runDbMigrations()` отдельно
+версионирует legacy `ALTER`/backfill через `PRAGMA user_version`: возрастающие
+`{ version, apply }` применяются по одному в `BEGIN IMMEDIATE`, версия
+фиксируется только перед успешным `COMMIT`, lock/DDL errors пробрасываются.
+База с версией выше `DB_SCHEMA_VERSION` не открывается. Не считай новый
+`CREATE ... IF NOT EXISTS` полноценной миграцией существующей БД: новое
+изменение таблицы, индекса или ограничения добавляй отдельной migration
+version и одновременно обновляй bootstrap чистой БД; не возвращай цикл
+`ALTER TABLE` с широким `catch`.
+
 В worker передавай только structured-clone-совместимые данные и точные
 transferable `ArrayBuffer`; Discord/Fastify/SQLite handles туда передавать
 нельзя.
 
-Порядок старта в `src/index.ts`: инициализация SQLite -> Discord client ->
-publisher `playerboard` -> voice tracker -> Fastify -> parser scheduler -> ingest
-worker. Автоанонсер запускается по Discord `ClientReady`. При shutdown сначала запрещается новая
-работа parser/ingest/Fastify/Discord/voice, затем всему producer-drain
-(включая Fastify request и voice refresh) даётся до 10 секунд, уничтожается
-Discord client, закрывается CPU pool и последней — БД. Не закрывай pool до
-начала остановки производителей worker-задач; общая верхняя граница drain
-нужна для SIGTERM.
+Для `/api/players` не используй SQLite `COLLATE NOCASE` как Unicode casefold:
+поиск идёт по индексированным `canonical_nick_search`, `nick_search` и
+`battle_players.nick_search`. Ключи заполняются через deterministic
+`wtbot_casefold`, который выполняет JS `NFKC` и locale-neutral lowercase, а
+display nick остаётся неизменным.
+
+Порядок старта в `src/index.ts`: ранние signal/fatal handlers -> SQLite и
+warmup -> `PlayerStatsCoordinator` -> Discord client -> publisher
+`playerboard` -> voice tracker -> Fastify -> WT transport/cookie refresh ->
+parser scheduler -> ingest worker. Автоанонсер запускается по Discord
+`ClientReady`. При shutdown сначала запрещается новая работа
+parser/ingest/Fastify/Discord/voice/player-stats, затем producer-drain даётся до
+10 секунд, закрываются browser, Discord client, CPU pool и последней — БД. Не
+закрывай pool до начала остановки производителей worker-задач.
 
 ## Сбор данных и ingest
 
@@ -284,7 +328,9 @@ Discord client, закрывается CPU pool и последней — БД. 
   актуальные cookies в общий jar; после ошибки повторяет попытку через 5 минут.
   Edge хранит нативное состояние браузера (включая clearance) в
   `WT_BROWSER_PROFILE_DIR`; auth-cookie синхронизируются с общим
-  `data/wt-cookies.json`.
+  `data/wt-cookies.json`. Межпроцессный lock содержит owner token, PID и время:
+  stale lock reclaim-ится только после проверки возраста и того, что PID умер;
+  lock живого процесса не удаляется.
 
 - Транспорт warthunder.com (`wt-browser.ts`, `wt-request.ts`) построен на
   замерах, которые важно не «оптимизировать» обратно:
@@ -306,16 +352,16 @@ Discord client, закрывается CPU pool и последней — БД. 
   Живая проверка: `npm run verify:wt-transport`.
 - Сбор инкрементальный: `hasItem(source, sessionId)` прекращает обход после
   первой страницы, на которой встретился уже сохранённый бой
-  (`wt-replays.ts:196`), а не на первой известной записи. Постраничной паузы
-  400 мс нет: все запросы к warthunder.com идут через `fetchWtResponse()`
+  (`wt-replays.ts`), а плановый обход дополнительно ограничен 50 страницами.
+  Постраничной паузы 400 мс нет: все запросы к warthunder.com идут через `fetchWtResponse()`
   (`wt-request.ts`), который занимает слот в общей последовательной очереди с
   глобальным интервалом `REQUEST_INTERVAL_MS = 1_500` мс на весь процесс — один
   на все источники сразу, поэтому длинный обход `wt-replays` голодит
   `wt-players`. Новый код, ходящий на warthunder.com, обязан идти через
   `fetchWtResponse()` / `waitForRequestSlot()`, а не звать `fetch()` напрямую:
   иначе он обходит и интервал, и обработку `Retry-After`, и выбор
-  direct/browser-транспорта. Исключение — исторический `wt-clans.ts` со своим
-  `fetch` и паузой 400 мс; повторять этот паттерн не нужно.
+  direct/browser-транспорта. `wt-clans.ts` уже использует общий limiter; прямой
+  `fetch` допустим только для CDN binary fetch, которому браузер не нужен.
   Scheduler использует `running`-guard, поэтому длинный catch-up не должен
   накладываться на следующий тик.
 - Части реплея доступны на CDN примерно две недели. Новые items обрабатываются
@@ -324,14 +370,20 @@ Discord client, закрывается CPU pool и последней — БД. 
 - Ingest раз в 20 секунд берёт до двух волн рассчитанной параллельности,
   разносит старты CDN-загрузок на 500 мс и вызывает `loadBattleData()`
   (`parse-battle` выполняется в CPU worker). Независимые бои идут параллельно,
-  но синхронные `saveBattle()` выполняются main thread последовательно и заполняют
-  `battles`, `battle_players`, `battle_kills`, `battle_chat`. Состояние живёт
+  а успешные записи сериализуются и выполняются через `persist-ingested-battle`
+  на CPU worker с отдельной SQLite-связью; транзакция атомарно заполняет
+  `battles`, `battle_players`, `battle_kills`, `battle_chat` и состояние
   в `battle_ingest`: `ok`, `error`, `expired`, `no_parts`. Переполнение,
   startup-сбой и queue timeout CPU scheduler откладывают бой без увеличения
   `attempts`; ошибка уже выполнявшегося parser и одиночная задача больше
-  лимита transferable bytes считаются обычной попыткой.
+  лимита transferable bytes считаются обычной попыткой. Passive WAL checkpoint
+  выполняется не после каждого боя, а раз в 32 commit или 60 секунд на
+  worker-соединение; при graceful shutdown ingest явно запускает checkpoint
+  до закрытия CPU pool.
 - После успешного ingest части конкретной сессии удаляются из replay-cache:
   нормализованные строки и gzip `events_blob` уже позволяют восстановить бой.
+  Поэтому фиксированный benchmark corpus хранится только в
+  `benchmarks/fixtures/replays`, а не в `data/replays`.
 
 `items` сохраняются пачкой в транзакции. Уникальность —
 `UNIQUE(source, external_id)`, изменение определяется SHA-256 от title+JSON.
@@ -340,20 +392,17 @@ Discord client, закрывается CPU pool и последней — БД. 
 ## Формат WRPL и материалы боя
 
 Весь бинарный вход (`.wrpl`-части с CDN, BLK, vromfs, ECS-пакеты) — это
-**недоверенные удалённые данные** (`replay-cache.ts:190` тянет части обычным
+**недоверенные удалённые данные** (`replay-cache.ts` тянет части обычным
 `fetch()`), схемы у них нет. Поэтому в `bit-reader.ts`, `packet-stream.ts`,
 `lz4.ts`, `ecs.ts`, `gm-sync.ts` и `replay-events.ts` bounds-check обязателен, а
 не по желанию: `src[i]!` и `arr[i]!` — только компайл-тайм, в runtime дают
 `undefined`, а дальше NaN, который проходит мимо всех guard-сравнений.
-Действующие дыры, которые нельзя повторять в новом коде: `readBits`
-(`bit-reader.ts:35`) считает границу 32-битным `>>`, поэтому при `bits >= 2**31`
-проверка проходит и вместо `EofError` возвращается пустой буфер, а `bitOffset`
-уезжает вперёд; `readCompressed` (`bit-reader.ts:85`) без потолка сдвига
-накапливает `Infinity`; `deserializeIdFields32` (`packet-stream.ts:140`)
-зацикливается навсегда при маске >= 2**32. Сейчас всё это сдерживает только
-таймаут CPU-пула (45/90/180 с, `pool.ts:85-89`) с последующим `terminate()` —
-ещё одна причина не переносить бинарный разбор на main thread. Проверяй длины и
-диапазоны до арифметики, а не после.
+Критические ранее найденные случаи теперь закрыты bounds-check: большие
+bit-counts и varint shift, маски `deserializeIdFields32`, LZ4 literal/match
+lengths и offsets, ECS counts, FAT BLK ULEB/дерево, VROMFS tables и размеры.
+Публичные zlib/zstd/gzip вызовы используют output limits, а execution timeout
+worker получает отдельный `EXEC_TIMEOUT`. При добавлении нового parser-кода
+проверяй длины и диапазоны до арифметики, а не после.
 
 - Заголовок `.wrpl` имеет фиксированные поля; results-BLK обычно находится в
   последней части. BLK поддерживает FAT/FAT_ZSTD.
@@ -434,8 +483,20 @@ Discord client, закрывается CPU pool и последней — БД. 
   тега по последнему обходу (пустой список состав не трогает). Суммы, дельты и
   история ПКР на сайте считаются только по текущему составу; тег без строк
   ростера (до первого обхода после миграции) читается без фильтра.
-- Dashboard — одна HTML-строка в `pages.ts`; пользовательские данные вставляй
-  через DOM `textContent`, не через `innerHTML`.
+- Расписание кланового сезона задаётся статически в
+  `CLAN_SEASON_SCHEDULES` (`src/clan-season.ts`) полуоткрытыми UTC-интервалами
+  `[startsAt, endsAt)`. `initDb()` вызывает `seedClanSeasons()`, а
+  `getClanSeasonContext()` отдаёт сезон и текущий этап в API, SPA и `/battle`.
+  Сравнение рейтингов ограничено началом сезона, поэтому не убирай эту границу
+  из snapshot/delta/baseline-запросов.
+- Текущий `seedClanSeasons()` только upsert-ит расписание и не удаляет этапы,
+  убранные из уже существующего сезона. При изменении существующего
+  расписания добавляй reconciliation или явную data migration и проверяй
+  начало/конец каждого этапа, API и Discord-представление; не исправляй
+  seeded-расписание вручную только в рабочей SQLite.
+- Legacy dashboard `/` остаётся одной HTML-строкой в `pages.ts`; пользовательские
+  данные там вставляй через DOM `textContent`, не через `innerHTML`. Основной
+  сайт `/app` находится в `frontend/src` и собирается Vite.
 - `/api/player-stats` принимает только точный полный ник или стабильный WT user
   id уже известного локальным replay/voice/rating данным игрока. Внешний запрос
   каждого включённого source выполняется своей однослотовой lazy-очередью,
@@ -522,8 +583,9 @@ runtime-зависимости, через явный `WebDeps`, а не скр�
   Не очищай их без явного запроса; перед удалением покажи точный объём и цель.
 - Все пути `data/*` зависят от текущего рабочего каталога. Для сервиса задавай
   фиксированный `WorkingDirectory`.
-- Web сейчас слушает `0.0.0.0` и не имеет auth. Не выставляй порт наружу без
-  reverse proxy/auth; новые API валидируй схемами и ограничивай rate/limit.
+- Web по умолчанию слушает loopback и защищает non-loopback режим bearer-token
+  и CSRF-проверкой POST. Не выставляй порт наружу без reverse proxy/auth;
+  новые API валидируй схемами и ограничивай rate/limit.
 
 ## Лицензирование
 
@@ -539,20 +601,19 @@ AGPL не будут согласованы владельцем проекта.
 - Рабочее дерево может содержать незакоммиченные пользовательские изменения;
   не откатывай и не форматируй несвязанные файлы.
 - `data/`, `.env`, `dist/`, `node_modules/` и `.idea/` не коммитятся.
-- ВАЖНО: правило `data/` в `.gitignore` матчит только каталог, файлы-соседи под
-  него не попадают. Сейчас в корне лежит untracked `data.rar` (~1.2 ГБ, архив
-  того самого `data/`): `git check-ignore data.rar` ничего не находит, в
-  `git status` он висит как `?? data.rar`. Никогда не делай `git add -A` или
-  `git add .` — добавляй только конкретные файлы своего изменения. Перед
-  коммитом смотри `git status --porcelain -uall` на крупные untracked-файлы и
-  не добавляй в индекс архивы и дампы (`*.rar`, `*.zip`, `*.7z`, `.env.*.local`).
+- `.gitignore` отдельно исключает data-каталог, архивы (`*.rar`, `*.zip`,
+  `*.7z`), локальные env-файлы и tsbuildinfo. Всё равно никогда не делай
+  `git add -A` или `git add .`: добавляй только конкретные файлы своего
+  изменения. Перед коммитом смотри `git status --porcelain -uall` на крупные
+  untracked-файлы и не добавляй в индекс базы, backup, архивы, дампы и `.env`.
+- `frontend/tsconfig.tsbuildinfo` исторически уже tracked, поэтому правило
+  `*.tsbuildinfo` не скрывает его изменения. Не включай build-drift этого
+  файла в тематический коммит; удаление из индекса оформляй отдельным
+  осознанным изменением.
 - Перед сдачей изменения: запусти `npm run build` и `npm test`, проверь
   `git diff`, убедись, что секреты не попали в tracked-файлы, и перечисли
   непройденные runtime-проверки. Живой запуск не является обязательным, если он
   имеет внешние побочные эффекты.
-- На HEAD `npm run build` зелёный, а `npm test` падает ровно тремя известными
-  тестами — это не твоя регрессия, они чинятся отдельной задачей:
-  `src/wrpl/render-heatmap.test.ts:538` и `src/wrpl/render-heatmap.test.ts:677`
-  (оба ждут `stroke="#f04a50"`) и `src/wrpl/render-battle-log.test.ts:76`
-  (ждёт `font-family="symbols_skyquake"`). Любое другое падение `npm test`
-  считай регрессией своего изменения и чини до сдачи.
+- Baseline рабочей копии на 2026-07-29: `npm run build` зелёный, `npm test`
+  даёт 106 pass, 0 fail. Любое новое падение `npm test` считай регрессией
+  своего изменения и чини до сдачи.

@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import type { DatabaseSync } from 'node:sqlite'
 import { parentPort } from 'node:worker_threads'
 import { formatBattleChat } from '../wrpl/battle-chat.js'
 import { decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
@@ -31,9 +33,17 @@ import type {
   WorkerResponse,
 } from './protocol.js'
 import { resolveRenderFonts } from './render-fonts.js'
+import { SqliteCheckpointSchedule } from './sqlite-checkpoint.js'
 
 if (!parentPort) throw new Error('CPU worker запущен без parentPort')
 const port = parentPort
+interface IngestDatabaseState {
+  database: DatabaseSync
+  checkpoint: ReturnType<DatabaseSync['prepare']>
+  checkpointSchedule: SqliteCheckpointSchedule
+}
+
+const ingestDatabases = new Map<string, IngestDatabaseState>()
 
 function epochNow(): number {
   return performance.timeOrigin + performance.now()
@@ -225,6 +235,101 @@ async function parseBattle(input: Extract<AnyWorkerTask, { kind: 'parse-battle' 
   }
 }
 
+async function ingestDatabase(dbPath: string): Promise<IngestDatabaseState> {
+  const existing = ingestDatabases.get(dbPath)
+  if (existing) return existing
+  if (!existsSync(dbPath)) throw new Error(`SQLite для ingest не найден: ${dbPath}`)
+  const { DatabaseSync } = await import('node:sqlite')
+  const database = new DatabaseSync(dbPath)
+  database.exec('PRAGMA busy_timeout = 5000;')
+  // Автоматический checkpoint выполняется внутри COMMIT и продлевает
+  // эксклюзивный writer-lock. Делаем PASSIVE checkpoint отдельно после
+  // транзакции: диск по-прежнему обслуживает worker, а main connection может
+  // писать в WAL параллельно.
+  database.exec('PRAGMA wal_autocheckpoint = 0;')
+  const state: IngestDatabaseState = {
+    database,
+    checkpoint: database.prepare('PRAGMA wal_checkpoint(PASSIVE)'),
+    checkpointSchedule: new SqliteCheckpointSchedule(),
+  }
+  ingestDatabases.set(dbPath, state)
+  return state
+}
+
+async function persistIngestedBattle(
+  input: Extract<AnyWorkerTask, { kind: 'persist-ingested-battle' }>['input'],
+) {
+  const started = performance.now()
+  const [databaseState, { saveIngestedBattle }] = await Promise.all([
+    ingestDatabase(input.dbPath),
+    import('../db/index.js'),
+  ])
+  const { database, checkpoint, checkpointSchedule } = databaseState
+  const transactionStarted = performance.now()
+  saveIngestedBattle(
+    database,
+    { ...input.battle, eventsBlob: Buffer.from(input.battle.eventsBlob) },
+    input.sessionId,
+  )
+  const transactionMs = performance.now() - transactionStarted
+  let checkpointMs = 0
+  let checkpointed = false
+  if (checkpointSchedule.recordCommit()) {
+    const checkpointStarted = performance.now()
+    checkpoint.get()
+    checkpointMs = performance.now() - checkpointStarted
+    checkpointed = true
+    checkpointSchedule.markCheckpoint()
+  }
+  return {
+    value: {
+      committedAtMs: Date.now(),
+      sqliteMs: performance.now() - started,
+      transactionMs,
+      checkpointMs,
+      checkpointed,
+    },
+    transfer: [],
+  }
+}
+
+async function checkpointIngestDatabase(
+  input: Extract<AnyWorkerTask, { kind: 'checkpoint-ingest-database' }>['input'],
+) {
+  const { checkpoint, checkpointSchedule } = await ingestDatabase(input.dbPath)
+  const started = performance.now()
+  checkpoint.get()
+  checkpointSchedule.markCheckpoint()
+  return {
+    value: { checkpointMs: performance.now() - started },
+    transfer: [],
+  }
+}
+
+async function warmSqlite(
+  input: Extract<AnyWorkerTask, { kind: 'warm-sqlite' }>['input'],
+): Promise<{ value: { elapsedMs: number; statements: number }; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`SQLite для прогрева не найден: ${input.dbPath}`)
+  for (const sql of input.statements) {
+    if (!/^\s*SELECT\b/i.test(sql)) throw new Error('SQLite warmup разрешает только SELECT')
+  }
+  const { DatabaseSync } = await import('node:sqlite')
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 268435456;')
+    database.exec('PRAGMA cache_size = -65536;')
+    for (const sql of input.statements) database.exec(sql)
+    return {
+      value: { elapsedMs: performance.now() - started, statements: input.statements.length },
+      transfer: [],
+    }
+  } finally {
+    database.close()
+  }
+}
+
 async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-scoreboard' }>['input']) {
   const svg = buildBattleSvg(input.input, {
     unitIcons: new Map(input.assets.unitIcons.map(([id, data]) => [id, dataUri('image/png', data)])),
@@ -269,6 +374,10 @@ async function renderMedia(input: MediaRenderInput): Promise<{
     dict: input.dict,
     ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
   }
+
+  started = performance.now()
+  const summary = summarizeEvents(events)
+  addPhase(profile, 'summary', performance.now() - started)
 
   started = performance.now()
   const logSvg = buildBattleLogSvg(shared, gameFont)
@@ -325,16 +434,19 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const ground = await renderHeatmapMode('ground')
   const heatmapGround = ground.general
   const heatmapTeamGround = ground.teams
-  const air = await renderHeatmapMode('air')
-  const heatmapAir = air.general
-  const heatmapTeamAir = air.teams
+  const air = summary.airUnits > 0
+    ? await renderHeatmapMode('air')
+    : null
+  const heatmapAir = air?.general ?? null
+  const heatmapTeamAir = air?.teams ?? null
 
   started = performance.now()
   const chat = formatBattleChat(events)
   addPhase(profile, 'chat.format', performance.now() - started)
-  started = performance.now()
-  const summary = summarizeEvents(events)
-  addPhase(profile, 'summary', performance.now() - started)
+  const transfer = [log, heatmapGround, ...heatmapTeamGround]
+  if (heatmapAir && heatmapTeamAir) {
+    transfer.push(heatmapAir, ...heatmapTeamAir)
+  }
   return {
     value: {
       log,
@@ -346,7 +458,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
       summary,
       profile: finishRenderProfile(profile),
     },
-    transfer: [log, heatmapGround, heatmapAir, ...heatmapTeamGround, ...heatmapTeamAir],
+    transfer,
   }
 }
 
@@ -463,6 +575,12 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return { value: await parseResults(task.input), transfer: [] }
     case 'parse-battle':
       return parseBattle(task.input)
+    case 'persist-ingested-battle':
+      return persistIngestedBattle(task.input)
+    case 'checkpoint-ingest-database':
+      return checkpointIngestDatabase(task.input)
+    case 'warm-sqlite':
+      return warmSqlite(task.input)
     case 'render-scoreboard':
       return await renderScoreboard(task.input)
     case 'render-media':
@@ -491,11 +609,12 @@ port.on('message', (request: WorkerRequest) => {
   const receivedAtMs = epochNow()
   void execute(request.task).then(
     ({ value, transfer }) => {
+      const outputTransferBytes = transfer.reduce((sum, item) => sum + item.byteLength, 0)
       const response: WorkerResponse = {
         id: request.id,
         ok: true,
         value,
-        timing: { receivedAtMs, completedAtMs: epochNow() },
+        timing: { receivedAtMs, completedAtMs: epochNow(), outputTransferBytes },
       }
       const message: WorkerMessage = { type: 'result', response }
       port.postMessage(message, transfer)
@@ -506,11 +625,28 @@ port.on('message', (request: WorkerRequest) => {
         id: request.id,
         ok: false,
         error: serialized,
-        timing: { receivedAtMs, completedAtMs: epochNow() },
+        timing: { receivedAtMs, completedAtMs: epochNow(), outputTransferBytes: 0 },
       }
       port.postMessage({ type: 'result', response } satisfies WorkerMessage)
     },
   )
+})
+
+port.on('close', () => {
+  for (const { database, checkpoint, checkpointSchedule } of ingestDatabases.values()) {
+    try {
+      checkpoint.get()
+      checkpointSchedule.markCheckpoint()
+    } catch {
+      // При закрытии всё равно пытаемся закрыть connection; WAL восстановим.
+    }
+    try {
+      database.close()
+    } catch {
+      // Worker всё равно завершается; SQLite откатит незавершённую транзакцию.
+    }
+  }
+  ingestDatabases.clear()
 })
 
 port.postMessage({ type: 'ready' } satisfies WorkerMessage)

@@ -1,6 +1,6 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import {
   PLAYER_EXTERNAL_SNAPSHOT_STATUSES,
@@ -23,6 +23,7 @@ import {
   type SavePlayerExternalSnapshotResult,
   type SavePlayerIdentityInput,
 } from '../player-stats/types.js'
+import { CLAN_SEASON_SCHEDULES, stageAt } from '../clan-season.js'
 
 // Общий слой хранения: им пользуются и бот, и сайт, и парсеры.
 // SQLite встроен в Node 22.5+ — отдельный сервер БД не нужен.
@@ -44,6 +45,7 @@ let selectCommandBreakdownStatement: StatementSync | null = null
 let selectItemTotalStatement: StatementSync | null = null
 let selectItemBreakdownStatement: StatementSync | null = null
 let selectIngestStatsStatement: StatementSync | null = null
+let selectBattlePostSummaryStatement: StatementSync | null = null
 let selectDataVersionStatement: StatementSync | null = null
 let commandStatsCache: VersionedCache<CommandStats> | null = null
 let itemStatsCache: VersionedCache<ItemStats> | null = null
@@ -73,6 +75,7 @@ function resetPreparedStatements(): void {
   selectItemTotalStatement = null
   selectItemBreakdownStatement = null
   selectIngestStatsStatement = null
+  selectBattlePostSummaryStatement = null
   selectDataVersionStatement = null
   commandStatsCache = null
   itemStatsCache = null
@@ -115,8 +118,12 @@ export const DB_WARMUP_SQL: readonly { sql: string; expect: 'table' | 'index' }[
   // score не входит ни в один индекс — честный проход листьев battle_players.
   { sql: 'SELECT MAX(score) FROM battle_players', expect: 'table' },
   { sql: 'SELECT COUNT(*) FROM battle_players', expect: 'index' },
-  // duration_sec не индексирован — листья battles (без blob-цепочек).
-  { sql: 'SELECT MAX(duration_sec) FROM battles', expect: 'table' },
+  // Blob-heavy battles нельзя сканировать на main thread: греем компактный
+  // covering index, используемый dashboard-статистикой.
+  {
+    sql: 'SELECT MAX(duration_sec) FROM battles INDEXED BY idx_battles_metrics',
+    expect: 'index',
+  },
   // rating+seen_at вместе не покрыты ни одним индексом — листья снимков ПКР.
   { sql: 'SELECT MAX(rating), MAX(seen_at) FROM clan_rating_snapshots', expect: 'table' },
   // Индексы клановых чтений: latest-обход и диапазоны истории.
@@ -131,17 +138,256 @@ export const DB_WARMUP_SQL: readonly { sql: string; expect: 'table' | 'index' }[
   { sql: 'SELECT MAX(first_seen_at), MAX(match_confidence) FROM player_identity_aliases', expect: 'table' },
 ]
 
-export function warmupDbHotPages(): number {
+export const DB_BACKGROUND_WARMUP_SQL: readonly string[] = DB_WARMUP_SQL
+  .filter((statement) => statement.expect === 'table')
+  .map((statement) => statement.sql)
+
+export function warmupDbHotPages(includeTableScans = true): number {
   const started = process.hrtime.bigint()
   const database = getDb()
-  for (const statement of DB_WARMUP_SQL) database.exec(statement.sql)
+  for (const statement of DB_WARMUP_SQL) {
+    if (includeTableScans || statement.expect === 'index') database.exec(statement.sql)
+  }
   return Math.round(Number(process.hrtime.bigint() - started) / 1e6)
 }
 
-export function initDb(dbPath: string): void {
+export interface InitDbOptions {
+  allowCreate?: boolean
+}
+
+export interface DbMigration {
+  version: number
+  apply(database: DatabaseSync): void
+}
+
+function dbUserVersion(database: DatabaseSync): number {
+  const row = database.prepare('PRAGMA user_version').get() as { user_version: number } | undefined
+  const version = row?.user_version
+  if (!Number.isSafeInteger(version) || version === undefined || version < 0) {
+    throw new Error(`Некорректный PRAGMA user_version: ${String(version)}`)
+  }
+  return version
+}
+
+function validateMigrations(migrations: readonly DbMigration[]): number {
+  let previousVersion = 0
+  for (const migration of migrations) {
+    if (!Number.isSafeInteger(migration.version) || migration.version <= previousVersion) {
+      throw new Error('Миграции SQLite должны иметь возрастающие положительные версии')
+    }
+    previousVersion = migration.version
+  }
+  return previousVersion
+}
+
+function assertSupportedDbVersion(database: DatabaseSync, latestVersion: number): number {
+  const currentVersion = dbUserVersion(database)
+  if (currentVersion > latestVersion) {
+    throw new Error(
+      `Версия схемы SQLite ${currentVersion} новее поддерживаемой ${latestVersion}; обновите приложение`,
+    )
+  }
+  return currentVersion
+}
+
+export function runDbMigrations(
+  database: DatabaseSync,
+  migrations: readonly DbMigration[],
+): number {
+  const latestVersion = validateMigrations(migrations)
+  let currentVersion = assertSupportedDbVersion(database, latestVersion)
+
+  for (const migration of migrations) {
+    if (migration.version <= currentVersion) continue
+    let transactionStarted = false
+    try {
+      database.exec('BEGIN IMMEDIATE')
+      transactionStarted = true
+      currentVersion = assertSupportedDbVersion(database, latestVersion)
+      if (migration.version <= currentVersion) {
+        database.exec('COMMIT')
+        transactionStarted = false
+        continue
+      }
+      migration.apply(database)
+      database.exec(`PRAGMA user_version = ${migration.version}`)
+      database.exec('COMMIT')
+      transactionStarted = false
+      currentVersion = migration.version
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          database.exec('ROLLBACK')
+        } catch {
+          // Исходная ошибка миграции важнее ошибки rollback.
+        }
+      }
+      throw new Error(`Не удалось применить миграцию SQLite v${migration.version}`, { cause: error })
+    }
+  }
+
+  return currentVersion
+}
+
+function tableColumns(database: DatabaseSync, table: string): Set<string> {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  return new Set(rows.map((row) => row.name.toLowerCase()))
+}
+
+function addColumnIfMissing(
+  database: DatabaseSync,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  if (tableColumns(database, table).has(column.toLowerCase())) return
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+}
+
+const DB_MIGRATIONS: readonly DbMigration[] = [
+  {
+    version: 1,
+    apply(database) {
+      for (const [table, column, definition] of [
+        ['battles', 'mission_settings', 'TEXT'],
+        ['battles', 'game_version', 'TEXT'],
+        ['battles', 'player_count', 'INTEGER NOT NULL DEFAULT 0'],
+        ['battles', 'kill_count', 'INTEGER NOT NULL DEFAULT 0'],
+        ['player_identities', 'canonical_nick_search', "TEXT NOT NULL DEFAULT ''"],
+        ['player_identity_aliases', 'nick_search', "TEXT NOT NULL DEFAULT ''"],
+        ['clan_rating_snapshots', 'nick_base', "TEXT NOT NULL DEFAULT ''"],
+        ['voice_presence', 'wt_nick_base', "TEXT NOT NULL DEFAULT ''"],
+        ['battle_players', 'nick_base', "TEXT NOT NULL DEFAULT ''"],
+        ['battle_players', 'nick_search', "TEXT NOT NULL DEFAULT ''"],
+        ['battle_players', 'slot', 'INTEGER'],
+        ['battle_players', 'title', 'TEXT'],
+        ['battle_players', 'auto_squad', 'INTEGER'],
+        ['battle_chat', 'channel_valid', 'INTEGER NOT NULL DEFAULT 1'],
+        ['player_external_totals', 'deaths', 'INTEGER'],
+      ] as const) {
+        addColumnIfMissing(database, table, column, definition)
+      }
+
+      database.exec(`
+        UPDATE player_identities
+        SET canonical_nick_search = wtbot_casefold(canonical_nick)
+        WHERE canonical_nick_search = '';
+
+        UPDATE player_identity_aliases
+        SET nick_search = wtbot_casefold(nick)
+        WHERE nick_search = '';
+
+        UPDATE battle_players
+        SET nick_search = wtbot_casefold(nick)
+        WHERE nick_search = '';
+
+        UPDATE clan_rating_snapshots
+        SET nick_base = CASE
+          WHEN lower(nick) LIKE '%@psn' AND length(nick) > 4 THEN substr(nick, 1, length(nick) - 4)
+          WHEN (lower(nick) LIKE '%@live' OR lower(nick) LIKE '%@epic') AND length(nick) > 5
+            THEN substr(nick, 1, length(nick) - 5)
+          ELSE nick
+        END
+        WHERE nick_base = '';
+
+        UPDATE voice_presence
+        SET wt_nick_base = CASE
+          WHEN lower(wt_nick) LIKE '%@psn' AND length(wt_nick) > 4 THEN substr(wt_nick, 1, length(wt_nick) - 4)
+          WHEN (lower(wt_nick) LIKE '%@live' OR lower(wt_nick) LIKE '%@epic') AND length(wt_nick) > 5
+            THEN substr(wt_nick, 1, length(wt_nick) - 5)
+          ELSE wt_nick
+        END
+        WHERE wt_nick_base = '';
+
+        UPDATE battle_players
+        SET nick_base = CASE
+          WHEN lower(nick) LIKE '%@psn' AND length(nick) > 4 THEN substr(nick, 1, length(nick) - 4)
+          WHEN (lower(nick) LIKE '%@live' OR lower(nick) LIKE '%@epic') AND length(nick) > 5
+            THEN substr(nick, 1, length(nick) - 5)
+          ELSE nick
+        END
+        WHERE nick_base = '';
+
+        UPDATE battle_chat
+        SET channel_valid = CASE WHEN channel BETWEEN 0 AND 3 THEN 1 ELSE 0 END
+        WHERE channel_valid <> CASE WHEN channel BETWEEN 0 AND 3 THEN 1 ELSE 0 END;
+
+        CREATE INDEX IF NOT EXISTS idx_player_identities_nick_search
+          ON player_identities (canonical_nick_search);
+        CREATE INDEX IF NOT EXISTS idx_player_aliases_nick_search
+          ON player_identity_aliases (nick_search, last_seen_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_bp_nick_search
+          ON battle_players (nick_search, user_id);
+        CREATE INDEX IF NOT EXISTS idx_snapshots_nick_base
+          ON clan_rating_snapshots (nick_base, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_voice_nick_base
+          ON voice_presence (wt_nick_base);
+        CREATE INDEX IF NOT EXISTS idx_bp_nick_base
+          ON battle_players (nick_base);
+      `)
+
+      const rosterColumns = tableColumns(database, 'clan_roster')
+      if (!rosterColumns.has('clan_core')) {
+        database.exec(`
+          DROP TABLE clan_roster;
+          CREATE TABLE clan_roster (
+            clan_core       TEXT    NOT NULL,
+            nick            TEXT    NOT NULL,
+            last_present_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            PRIMARY KEY (clan_core, nick)
+          );
+        `)
+      }
+    },
+  },
+  {
+    version: 2,
+    apply(database) {
+      const battleColumns = tableColumns(database, 'battles')
+      if (!battleColumns.has('duration_sec')) {
+        database.exec('ALTER TABLE battles ADD COLUMN duration_sec INTEGER NOT NULL DEFAULT 0')
+      }
+      if (!battleColumns.has('session_hex')) {
+        database.exec(`
+          ALTER TABLE battles ADD COLUMN session_hex TEXT;
+          UPDATE battles
+          SET session_hex = lower(printf('%016x', CAST(session_id AS INTEGER)))
+          WHERE session_hex IS NULL OR session_hex = '';
+        `)
+      }
+      database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_battles_session_hex
+          ON battles (session_hex);
+        CREATE INDEX IF NOT EXISTS idx_battles_metrics
+          ON battles (duration_sec, player_count, kill_count);
+      `)
+    },
+  },
+  {
+    version: 3,
+    apply(database) {
+      addColumnIfMissing(database, 'battles', 'air_unit_count', 'INTEGER')
+      addColumnIfMissing(database, 'battles', 'chat_count', 'INTEGER')
+    },
+  },
+]
+
+export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
+
+export function initDb(dbPath: string, options: InitDbOptions = {}): void {
   resetPreparedStatements()
-  mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true })
-  db = new DatabaseSync(dbPath)
+  const isMemoryDatabase = dbPath === ':memory:'
+  const resolvedPath = path.resolve(dbPath)
+  if (!isMemoryDatabase && !existsSync(resolvedPath) && options.allowCreate !== true) {
+    throw new Error(
+      `Файл SQLite не найден: ${resolvedPath}. Проверьте DB_PATH или явно задайте WTBOT_ALLOW_NEW_DB=1`,
+    )
+  }
+  if (!isMemoryDatabase) mkdirSync(path.dirname(resolvedPath), { recursive: true })
+  const database = new DatabaseSync(dbPath)
+  db = database
+  try {
+    assertSupportedDbVersion(database, DB_SCHEMA_VERSION)
   // WAL: запись не блокирует чтение — сайт отвечает, пока парсеры пишут
   db.exec('PRAGMA journal_mode = WAL;')
   // SQLite синхронный и живёт в одном потоке с Discord-ботом: холодное чтение
@@ -152,6 +398,9 @@ export function initDb(dbPath: string): void {
   db.exec('PRAGMA mmap_size = 268435456;')
   db.exec('PRAGMA cache_size = -65536;')
   db.exec('PRAGMA busy_timeout = 5000;')
+  db.function('wtbot_casefold', { deterministic: true }, (value) =>
+    typeof value === 'string' ? normalizePlayerSearchKey(value) : '',
+  )
   db.exec(`
     CREATE TABLE IF NOT EXISTS command_usage (
       id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,6 +457,27 @@ export function initDb(dbPath: string): void {
       name       TEXT NOT NULL,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+
+    CREATE TABLE IF NOT EXISTS clan_seasons (
+      season_id  TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      starts_at  INTEGER NOT NULL,
+      ends_at    INTEGER NOT NULL,
+      CHECK (ends_at > starts_at)
+    );
+
+    CREATE TABLE IF NOT EXISTS clan_season_stages (
+      season_id  TEXT NOT NULL REFERENCES clan_seasons(season_id) ON DELETE CASCADE,
+      week       INTEGER NOT NULL,
+      starts_at  INTEGER NOT NULL,
+      ends_at    INTEGER NOT NULL,
+      max_br     REAL NOT NULL,
+      PRIMARY KEY (season_id, week),
+      CHECK (week > 0 AND ends_at > starts_at AND max_br > 0)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_clan_season_stages_time
+      ON clan_season_stages (starts_at, ends_at);
 
     -- Снимки личного кланового рейтинга (ПКР) участников: новая строка
     -- пишется только когда рейтинг изменился, поэтому два последних снимка
@@ -490,6 +760,8 @@ export function initDb(dbPath: string): void {
       game_version TEXT,
       player_count INTEGER NOT NULL DEFAULT 0,
       kill_count   INTEGER NOT NULL DEFAULT 0,
+      air_unit_count INTEGER,
+      chat_count   INTEGER,
       -- путь к файлу миссии из заголовка реплея (для границ карты хитмапа
       -- при перерисовке из БД, когда самого реплея уже нет)
       mission_settings TEXT,
@@ -594,88 +866,27 @@ export function initDb(dbPath: string): void {
     );
   `)
 
-  // Миграции для баз, созданных прошлой версией схемы: ADD COLUMN на уже
-  // существующей таблице бросает ошибку «duplicate column» — глушим её.
-  for (const sql of [
-    'ALTER TABLE battles ADD COLUMN mission_settings TEXT',
-    'ALTER TABLE battles ADD COLUMN game_version TEXT',
-    'ALTER TABLE battles ADD COLUMN player_count INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE battles ADD COLUMN kill_count INTEGER NOT NULL DEFAULT 0',
-    "ALTER TABLE clan_rating_snapshots ADD COLUMN nick_base TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE voice_presence ADD COLUMN wt_nick_base TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE battle_players ADD COLUMN nick_base TEXT NOT NULL DEFAULT ''",
-    'ALTER TABLE battle_players ADD COLUMN slot INTEGER',
-    'ALTER TABLE battle_players ADD COLUMN title TEXT',
-    'ALTER TABLE battle_players ADD COLUMN auto_squad INTEGER',
-    'ALTER TABLE battle_chat ADD COLUMN channel_valid INTEGER NOT NULL DEFAULT 1',
-    // Профиль WT публикует смерти отдельной метрикой; в vehicles колонка уже была.
-    'ALTER TABLE player_external_totals ADD COLUMN deaths INTEGER',
-  ]) {
-    try {
-      db.exec(sql)
-    } catch {
-      // колонка уже есть — так и надо
-    }
-  }
-
-  // Старые строки нормализуются один раз. Исходный ник остаётся в прежней
-  // колонке, а индексированный base используется только для сопоставления.
+  runDbMigrations(db, DB_MIGRATIONS)
+  // Post-migration bootstrap: legacy DB могла не иметь player_count/kill_count
+  // или session_hex, поэтому эти индексы нельзя создавать в раннем CREATE-блоке.
   db.exec(`
-    UPDATE clan_rating_snapshots
-    SET nick_base = CASE
-      WHEN lower(nick) LIKE '%@psn' AND length(nick) > 4 THEN substr(nick, 1, length(nick) - 4)
-      WHEN (lower(nick) LIKE '%@live' OR lower(nick) LIKE '%@epic') AND length(nick) > 5
-        THEN substr(nick, 1, length(nick) - 5)
-      ELSE nick
-    END
-    WHERE nick_base = '';
-
-    UPDATE voice_presence
-    SET wt_nick_base = CASE
-      WHEN lower(wt_nick) LIKE '%@psn' AND length(wt_nick) > 4 THEN substr(wt_nick, 1, length(wt_nick) - 4)
-      WHEN (lower(wt_nick) LIKE '%@live' OR lower(wt_nick) LIKE '%@epic') AND length(wt_nick) > 5
-        THEN substr(wt_nick, 1, length(wt_nick) - 5)
-      ELSE wt_nick
-    END
-    WHERE wt_nick_base = '';
-
-    UPDATE battle_players
-    SET nick_base = CASE
-      WHEN lower(nick) LIKE '%@psn' AND length(nick) > 4 THEN substr(nick, 1, length(nick) - 4)
-      WHEN (lower(nick) LIKE '%@live' OR lower(nick) LIKE '%@epic') AND length(nick) > 5
-        THEN substr(nick, 1, length(nick) - 5)
-      ELSE nick
-    END
-    WHERE nick_base = '';
-
-    UPDATE battle_chat
-    SET channel_valid = CASE WHEN channel BETWEEN 0 AND 3 THEN 1 ELSE 0 END
-    WHERE channel_valid <> CASE WHEN channel BETWEEN 0 AND 3 THEN 1 ELSE 0 END;
-
-    CREATE INDEX IF NOT EXISTS idx_snapshots_nick_base
-      ON clan_rating_snapshots (nick_base, id DESC);
-    CREATE INDEX IF NOT EXISTS idx_voice_nick_base
-      ON voice_presence (wt_nick_base);
-    CREATE INDEX IF NOT EXISTS idx_bp_nick_base
-      ON battle_players (nick_base);
+    CREATE INDEX IF NOT EXISTS idx_battles_session_hex
+      ON battles (session_hex);
+    CREATE INDEX IF NOT EXISTS idx_battles_metrics
+      ON battles (duration_sec, player_count, kill_count);
   `)
-  // Миграция clan_roster v1→v2 (ключ по ядру тега вместо сырого): таблица
-  // появилась только что, живые базы либо пусты, либо содержат один день
-  // данных присутствия — пересоздание без переноса безопасно, состав
-  // заполнится следующим обходом wt-clans.
-  const rosterColumns = db.prepare('PRAGMA table_info(clan_roster)').all() as { name: string }[]
-  if (!rosterColumns.some((column) => column.name === 'clan_core')) {
-    db.exec(`
-      DROP TABLE clan_roster;
-      CREATE TABLE clan_roster (
-        clan_core       TEXT    NOT NULL,
-        nick            TEXT    NOT NULL,
-        last_present_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        PRIMARY KEY (clan_core, nick)
-      );
-    `)
-  }
+  seedClanSeasons(db)
   seedWtPlayerSnapshots(db)
+  } catch (error) {
+    resetPreparedStatements()
+    try {
+      database.close()
+    } catch {
+      // Исходная ошибка инициализации важнее ошибки закрытия connection.
+    }
+    db = null
+    throw error
+  }
 }
 
 export function closeDb(): void {
@@ -1205,6 +1416,112 @@ export function setBotState(key: string, value: string): void {
     .run(key, value)
 }
 
+export interface ClanSeasonContext {
+  season: {
+    id: string
+    name: string
+    startsAt: number
+    endsAt: number
+    active: boolean
+  } | null
+  stages: {
+    week: number
+    startsAt: number
+    endsAt: number
+    maxBr: number
+  }[]
+  currentStage: {
+    week: number
+    startsAt: number
+    endsAt: number
+    maxBr: number
+  } | null
+}
+
+/** Расписание сезона хранится в SQLite, чтобы границы не зависели от часов процесса. */
+export function getClanSeasonContext(nowSec = Math.floor(Date.now() / 1_000)): ClanSeasonContext {
+  const database = getDb()
+  const seasonRow = database.prepare(`
+    SELECT season_id, name, starts_at, ends_at
+    FROM clan_seasons
+    WHERE starts_at <= ?
+    ORDER BY starts_at DESC
+    LIMIT 1
+  `).get(nowSec) as {
+    season_id: string
+    name: string
+    starts_at: number
+    ends_at: number
+  } | undefined
+  if (!seasonRow) return { season: null, stages: [], currentStage: null }
+
+  const stages = database.prepare(`
+    SELECT week, starts_at, ends_at, max_br
+    FROM clan_season_stages
+    WHERE season_id = ?
+    ORDER BY week
+  `).all(seasonRow.season_id) as unknown as {
+    week: number
+    starts_at: number
+    ends_at: number
+    max_br: number
+  }[]
+  const mappedStages = stages.map((stage) => ({
+    week: stage.week,
+    startsAt: stage.starts_at,
+    endsAt: stage.ends_at,
+    maxBr: stage.max_br,
+  }))
+  const schedule = { stages: mappedStages }
+  return {
+    season: {
+      id: seasonRow.season_id,
+      name: seasonRow.name,
+      startsAt: seasonRow.starts_at,
+      endsAt: seasonRow.ends_at,
+      active: nowSec < seasonRow.ends_at,
+    },
+    stages: mappedStages,
+    currentStage: stageAt(schedule, nowSec),
+  }
+}
+
+function currentClanSeasonStart(): number {
+  return getClanSeasonContext().season?.startsAt ?? 0
+}
+
+function seedClanSeasons(database: DatabaseSync): void {
+  const seasonStmt = database.prepare(`
+    INSERT INTO clan_seasons (season_id, name, starts_at, ends_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(season_id) DO UPDATE SET
+      name = excluded.name,
+      starts_at = excluded.starts_at,
+      ends_at = excluded.ends_at
+  `)
+  const stageStmt = database.prepare(`
+    INSERT INTO clan_season_stages (season_id, week, starts_at, ends_at, max_br)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(season_id, week) DO UPDATE SET
+      starts_at = excluded.starts_at,
+      ends_at = excluded.ends_at,
+      max_br = excluded.max_br
+  `)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    for (const season of CLAN_SEASON_SCHEDULES) {
+      seasonStmt.run(season.id, season.name, season.startsAt, season.endsAt)
+      for (const stage of season.stages) {
+        stageStmt.run(season.id, stage.week, stage.startsAt, stage.endsAt, stage.maxBr)
+      }
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
 export interface PlayerStatBoard {
   guildId: string
   channelId: string
@@ -1436,9 +1753,10 @@ export function getClansStats(): { count: number; newestAt: number } {
  */
 export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string; rating: number }[]): void {
   const database = getDb()
+  const seasonStart = currentClanSeasonStart()
   const lastStmt = database.prepare(`
     SELECT rating FROM clan_rating_snapshots
-    WHERE clan_tag = ? AND nick = ?
+    WHERE clan_tag = ? AND nick = ? AND seen_at >= ?
     ORDER BY id DESC LIMIT 1
   `)
   const insertStmt = database.prepare(
@@ -1453,7 +1771,7 @@ export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string
   database.exec('BEGIN IMMEDIATE')
   try {
     for (const r of ratings) {
-      const last = lastStmt.get(clanTag, r.nick) as { rating: number } | undefined
+      const last = lastStmt.get(clanTag, r.nick, seasonStart) as { rating: number } | undefined
       if (last === undefined || last.rating !== r.rating) {
         insertStmt.run(clanTag, r.nick, normalizeWtNick(r.nick), r.rating)
       }
@@ -1496,6 +1814,11 @@ export interface ClanRating {
 /** Базовый WT-ник без платформенного суффикса — общий ключ nick_base для всех таблиц. */
 export function normalizeWtNick(nick: string): string {
   return nick.replace(/@(psn|live|epic)$/i, '')
+}
+
+/** Unicode-стабильный ключ поиска, не меняющий отображаемый ник. */
+export function normalizePlayerSearchKey(nick: string): string {
+  return nick.normalize('NFKC').toLocaleLowerCase('und')
 }
 
 /**
@@ -1836,22 +2159,23 @@ export function savePlayerIdentity(input: SavePlayerIdentityInput): PlayerIdenti
     if (existing === undefined) {
       const result = database
         .prepare(`
-          INSERT INTO player_identities (wt_user_id, canonical_nick, platform)
-          VALUES (?, ?, ?)
+          INSERT INTO player_identities (wt_user_id, canonical_nick, canonical_nick_search, platform)
+          VALUES (?, ?, ?, ?)
         `)
-        .run(wtUserId, canonicalNick, requestedPlatform ?? null)
+        .run(wtUserId, canonicalNick, normalizePlayerSearchKey(canonicalNick), requestedPlatform ?? null)
       identityId = Number(result.lastInsertRowid)
     } else {
       identityId = existing.id
       database
         .prepare(`
           UPDATE player_identities
-          SET wt_user_id = ?, canonical_nick = ?, platform = ?, updated_at = unixepoch()
+          SET wt_user_id = ?, canonical_nick = ?, canonical_nick_search = ?, platform = ?, updated_at = unixepoch()
           WHERE id = ?
         `)
         .run(
           existing.wt_user_id ?? wtUserId,
           canonicalNick,
+          normalizePlayerSearchKey(canonicalNick),
           requestedPlatform === undefined ? existing.platform : requestedPlatform,
           identityId,
         )
@@ -1859,10 +2183,11 @@ export function savePlayerIdentity(input: SavePlayerIdentityInput): PlayerIdenti
 
     const aliasStatement = database.prepare(`
       INSERT INTO player_identity_aliases (
-        identity_id, source, external_id, nick, nick_base,
+        identity_id, source, external_id, nick, nick_search, nick_base,
         first_seen_at, last_seen_at, match_method, match_confidence
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT DO UPDATE SET
+        nick_search = excluded.nick_search,
         nick_base = excluded.nick_base,
         first_seen_at = MIN(player_identity_aliases.first_seen_at, excluded.first_seen_at),
         last_seen_at = MAX(player_identity_aliases.last_seen_at, excluded.last_seen_at),
@@ -1875,6 +2200,7 @@ export function savePlayerIdentity(input: SavePlayerIdentityInput): PlayerIdenti
         alias.source,
         alias.externalId,
         alias.nick,
+        normalizePlayerSearchKey(alias.nick),
         alias.nickBase,
         alias.seenAt,
         alias.seenAt,
@@ -2620,6 +2946,7 @@ export function getVoiceDashboardRows(): VoiceDashboardRow[] {
       FROM battle_players bp
       JOIN battles b ON b.session_id = bp.session_id
       WHERE bp.nick_base IN (SELECT wt_nick_base FROM voice_presence)
+        AND b.start_time >= ?
       GROUP BY bp.nick_base
     )
     SELECT
@@ -2641,18 +2968,19 @@ export function getVoiceDashboardRows(): VoiceDashboardRow[] {
     FROM voice_presence v
     LEFT JOIN clan_rating_snapshots latest ON latest.id = (
       SELECT s.id FROM clan_rating_snapshots s
-      WHERE s.nick_base = v.wt_nick_base
+      WHERE s.nick_base = v.wt_nick_base AND s.seen_at >= ?
       ORDER BY s.id DESC LIMIT 1
     )
     LEFT JOIN clan_rating_snapshots previous ON previous.id = (
       SELECT s.id FROM clan_rating_snapshots s
-      WHERE s.nick_base = v.wt_nick_base
+      WHERE s.nick_base = v.wt_nick_base AND s.seen_at >= ?
       ORDER BY s.id DESC LIMIT 1 OFFSET 1
     )
     LEFT JOIN battle_stats bs ON bs.nick_base = v.wt_nick_base
     ORDER BY v.guild_id, v.channel_id, v.joined_at
   `)
-  const rows = selectVoiceDashboardStatement.all() as unknown as {
+  const seasonStart = currentClanSeasonStart()
+  const rows = selectVoiceDashboardStatement.all(seasonStart, seasonStart, seasonStart) as unknown as {
     guild_id: string
     guild_name: string
     channel_id: string
@@ -2711,10 +3039,13 @@ export function getVoiceClanTags(): string[] {
 export function getPlayerRating(nick: string): (ClanRating & { clanTag: string }) | null {
   selectPlayerRatingStatement ??= getDb().prepare(`
     SELECT clan_tag, rating FROM clan_rating_snapshots
-    WHERE nick_base = ?
+    WHERE nick_base = ? AND seen_at >= ?
     ORDER BY id DESC LIMIT 2
   `)
-  const rows = selectPlayerRatingStatement.all(normalizeWtNick(nick)) as unknown as {
+  const rows = selectPlayerRatingStatement.all(
+    normalizeWtNick(nick),
+    currentClanSeasonStart(),
+  ) as unknown as {
     clan_tag: string
     rating: number
   }[]
@@ -2938,12 +3269,12 @@ export function getClanRatingsWithDelta(clanTag: string): Map<string, ClanRating
         SELECT nick, rating,
                ROW_NUMBER() OVER (PARTITION BY nick ORDER BY id DESC) AS rn
         FROM clan_rating_snapshots
-        WHERE clan_tag = ?
+        WHERE clan_tag = ? AND seen_at >= ?
       )
       WHERE rn <= 2
       ORDER BY nick, rn
     `)
-    .all(clanTag) as unknown as { nick: string; rating: number }[]
+    .all(clanTag, currentClanSeasonStart()) as unknown as { nick: string; rating: number }[]
   const result = new Map<string, ClanRating>()
   for (const row of rows) {
     const existing = result.get(row.nick)
@@ -3029,6 +3360,10 @@ export interface BattleInput {
   players: BattlePlayerInput[]
   kills: BattleKillInput[]
   chat: BattleChatInput[]
+  /** Старые/сторонние producers могут не знать summary; свежий WRPL ingest заполняет поле. */
+  airUnitCount?: number
+  /** Старые/сторонние producers могут не знать summary; свежий WRPL ingest заполняет поле. */
+  chatCount?: number
   /** gzip(JSON) полного ReplayEvents — для перерисовки картинок без реплея */
   eventsBlob: Buffer
 }
@@ -3056,17 +3391,15 @@ export function getBattleClanTags(sessionId: string): string[] {
  * чат. Повторный вызов заменяет данные (сначала удаляет старые строки),
  * поэтому переразбор боя идемпотентен.
  */
-export function saveBattle(b: BattleInput): void {
-  const database = getDb()
-  database.exec('BEGIN IMMEDIATE')
-  try {
+function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
     database
       .prepare(`
         INSERT INTO battles (
           session_id, session_hex, mission_name, level, game_mode, battle_type,
           environment, status, start_time, duration_sec, end_time_ms, team_won,
-          game_version, player_count, kill_count, mission_settings, events_blob, ingested_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+          game_version, player_count, kill_count, air_unit_count, chat_count,
+          mission_settings, events_blob, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
         ON CONFLICT (session_id) DO UPDATE SET
           session_hex = excluded.session_hex,
           mission_name = excluded.mission_name,
@@ -3082,6 +3415,8 @@ export function saveBattle(b: BattleInput): void {
           game_version = excluded.game_version,
           player_count = excluded.player_count,
           kill_count = excluded.kill_count,
+          air_unit_count = excluded.air_unit_count,
+          chat_count = excluded.chat_count,
           mission_settings = excluded.mission_settings,
           events_blob = excluded.events_blob,
           ingested_at = unixepoch()
@@ -3089,7 +3424,9 @@ export function saveBattle(b: BattleInput): void {
       .run(
         b.sessionId, b.sessionHex, b.missionName, b.level, b.gameMode, b.battleType,
         b.environment, b.status, b.startTime, b.durationSec, b.endTimeMs, b.teamWon,
-        b.gameVersion, b.players.length, b.kills.length, b.missionSettings, b.eventsBlob,
+        b.gameVersion, b.players.length, b.kills.length,
+        b.airUnitCount ?? null, b.chatCount ?? b.chat.length,
+        b.missionSettings, b.eventsBlob,
       )
 
     database.prepare('DELETE FROM battle_players WHERE session_id = ?').run(b.sessionId)
@@ -3098,14 +3435,14 @@ export function saveBattle(b: BattleInput): void {
 
     const pStmt = database.prepare(`
       INSERT INTO battle_players (
-        session_id, user_id, nick, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
+        session_id, user_id, nick, nick_search, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
         ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
         award_damage, team_kills, squad_id, vehicle, vehicles, disconnected, slot, title, auto_squad
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const p of b.players) {
       pStmt.run(
-        b.sessionId, p.userId, p.nick, normalizeWtNick(p.nick), p.clanTag, p.team, p.kills,
+        b.sessionId, p.userId, p.nick, normalizePlayerSearchKey(p.nick), normalizeWtNick(p.nick), p.clanTag, p.team, p.kills,
         p.groundKills, p.navalKills,
         p.aiKills, p.aiGroundKills, p.assists, p.deaths, p.captureZone, p.damageZone, p.score,
         p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
@@ -3134,21 +3471,56 @@ export function saveBattle(b: BattleInput): void {
       const valid = m.channelValid ?? isValidBattleChatChannel(m.channel)
       cStmt.run(b.sessionId, m.timeMs, m.sender, m.channel, valid ? 1 : 0, m.message)
     }
+}
 
+function runImmediateTransaction(database: DatabaseSync, work: () => void): void {
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    work()
     database.exec('COMMIT')
   } catch (err) {
     database.exec('ROLLBACK')
     throw err
   }
+}
+
+export function saveBattle(b: BattleInput): void {
+  const database = getDb()
+  runImmediateTransaction(database, () => saveBattleRows(database, b))
   ingestStatsCache = null
 }
 
 /** Номер победившей команды из разобранного боя (null — бой не разобран) */
 export function getBattleWinner(sessionId: string): number | null {
-  const row = getDb().prepare('SELECT NULLIF(team_won, 0) AS team_won FROM battles WHERE session_id = ?').get(sessionId) as
-    | { team_won: number | null }
-    | undefined
-  return row?.team_won ?? null
+  const teamWon = getBattlePostSummary(sessionId)?.teamWon ?? 0
+  return teamWon === 0 ? null : teamWon
+}
+
+export interface BattlePostSummary {
+  teamWon: number
+  airUnitCount: number | null
+  chatCount: number | null
+}
+
+/** Маленькая PK-read model без чтения events_blob и дочерних таблиц. */
+export function getBattlePostSummary(sessionId: string): BattlePostSummary | null {
+  selectBattlePostSummaryStatement ??= getDb().prepare(`
+    SELECT team_won, air_unit_count, chat_count
+    FROM battles
+    WHERE session_id = ?
+  `)
+  const row = selectBattlePostSummaryStatement.get(sessionId) as {
+      team_won: number
+      air_unit_count: number | null
+      chat_count: number | null
+    } | undefined
+  return row
+    ? {
+        teamWon: row.team_won,
+        airUnitCount: row.air_unit_count,
+        chatCount: row.chat_count,
+      }
+    : null
 }
 
 /** Ноль в team_won означает, что победитель неизвестен. */
@@ -3188,6 +3560,8 @@ export interface BattleRow {
   game_version: string | null
   player_count: number
   kill_count: number
+  air_unit_count: number | null
+  chat_count: number | null
   mission_settings: string | null
 }
 
@@ -3296,9 +3670,13 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
 
 export type BattleIngestStatus = 'ok' | 'error' | 'no_parts' | 'expired'
 
-/** Записывает исход разбора боя; при повторе увеличивает счётчик попыток */
-export function markBattleIngest(sessionId: string, status: BattleIngestStatus, error: string | null = null): void {
-  getDb()
+function markBattleIngestRow(
+  database: DatabaseSync,
+  sessionId: string,
+  status: BattleIngestStatus,
+  error: string | null,
+): void {
+  database
     .prepare(`
       INSERT INTO battle_ingest (session_id, status, attempts, error, updated_at)
       VALUES (?, ?, 1, ?, unixepoch())
@@ -3309,6 +3687,27 @@ export function markBattleIngest(sessionId: string, status: BattleIngestStatus, 
         updated_at = unixepoch()
     `)
     .run(sessionId, status, error)
+}
+
+/** Записывает исход разбора боя; при повторе увеличивает счётчик попыток */
+export function markBattleIngest(sessionId: string, status: BattleIngestStatus, error: string | null = null): void {
+  markBattleIngestRow(getDb(), sessionId, status, error)
+  ingestStatsCache = null
+}
+
+/**
+ * Атомарная запись успешного ingest для отдельного SQLite connection.
+ * CPU worker использует её, чтобы fsync/checkpoint не блокировали event loop.
+ */
+export function saveIngestedBattle(
+  database: DatabaseSync,
+  b: BattleInput,
+  sessionId: string,
+): void {
+  runImmediateTransaction(database, () => {
+    saveBattleRows(database, b)
+    markBattleIngestRow(database, sessionId, 'ok', null)
+  })
   ingestStatsCache = null
 }
 
@@ -3363,15 +3762,22 @@ export function getIngestStats(): IngestStats {
         COALESCE(SUM(CASE WHEN status IN ('error', 'expired', 'no_parts') THEN 1 ELSE 0 END), 0) AS failed,
         COALESCE(SUM(CASE WHEN status IN ('expired', 'no_parts') THEN 1 ELSE 0 END), 0) AS skipped
       FROM battle_ingest
+    ),
+    battle_totals AS (
+      SELECT
+        COUNT(*) AS ingested,
+        COALESCE(SUM(player_count), 0) AS players,
+        COALESCE(SUM(kill_count), 0) AS kills
+      FROM battles INDEXED BY idx_battles_metrics
     )
     SELECT
-      (SELECT COUNT(*) FROM battles) AS ingested,
+      battle_totals.ingested,
       (SELECT COUNT(*) FROM items WHERE source = 'wt-replays') AS total,
       ingest_state.failed,
       ingest_state.skipped,
-      (SELECT COALESCE(SUM(player_count), 0) FROM battles) AS players,
-      (SELECT COALESCE(SUM(kill_count), 0) FROM battles) AS kills
-    FROM ingest_state
+      battle_totals.players,
+      battle_totals.kills
+    FROM ingest_state, battle_totals
   `)
   const row = selectIngestStatsStatement.get() as {
     ingested: number
@@ -3411,8 +3817,8 @@ export const SITE_SQL = {
   searchIdentitiesByNick: `
     SELECT id, wt_user_id, canonical_nick, platform, updated_at
     FROM player_identities
-    WHERE canonical_nick COLLATE NOCASE >= ? AND canonical_nick COLLATE NOCASE < ?
-    ORDER BY canonical_nick COLLATE NOCASE
+    WHERE canonical_nick_search >= ? AND canonical_nick_search < ?
+    ORDER BY canonical_nick_search, canonical_nick
     LIMIT ?
   `,
   searchIdentityByWtUserId: `
@@ -3424,22 +3830,22 @@ export const SITE_SQL = {
     SELECT a.identity_id, a.nick, a.last_seen_at, i.wt_user_id, i.platform
     FROM player_identity_aliases a
     JOIN player_identities i ON i.id = a.identity_id
-    WHERE a.nick COLLATE NOCASE >= ? AND a.nick COLLATE NOCASE < ?
-    ORDER BY a.nick COLLATE NOCASE, a.last_seen_at DESC
+    WHERE a.nick_search >= ? AND a.nick_search < ?
+    ORDER BY a.nick_search, a.last_seen_at DESC
     LIMIT ?
   `,
   searchReplayNicks: `
     SELECT nick, user_id
     FROM battle_players
-    WHERE nick COLLATE NOCASE >= ? AND nick COLLATE NOCASE < ?
+    WHERE nick_search >= ? AND nick_search < ?
       AND user_id <> ''
-    GROUP BY user_id, nick
+    GROUP BY user_id, nick_search, nick
     LIMIT ?
   `,
   ratingHistoryByNicks: `
     SELECT nick, clan_tag, rating, seen_at
     FROM clan_rating_snapshots
-    WHERE nick IN (${siteInSlots(SITE_IN_SLOTS)})
+    WHERE nick IN (${siteInSlots(SITE_IN_SLOTS)}) AND seen_at >= ?
     ORDER BY id
     LIMIT ?
   `,
@@ -3473,11 +3879,13 @@ export const SITE_SQL = {
     JOIN (
       SELECT clan_tag, nick, MAX(id) AS max_id
       FROM clan_rating_snapshots
+      WHERE seen_at >= ?
       GROUP BY clan_tag, nick
     ) latest ON latest.max_id = s.id
+    WHERE s.seen_at >= ?
   `,
   clanRosterAll: `
-    SELECT clan_core, nick FROM clan_roster
+    SELECT clan_core, nick, last_present_at FROM clan_roster
   `,
   clanBattleTeams: `
     SELECT
@@ -3533,6 +3941,11 @@ export const SITE_SQL = {
            game_version, player_count, kill_count, mission_settings
     FROM battles
     WHERE session_id = ?
+  `,
+  battleBySessionOrHex: `
+    SELECT session_id
+    FROM battles
+    WHERE session_id = ? OR session_hex = ?
   `,
   battlePlayersBySession: `
     SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
@@ -3592,11 +4005,12 @@ export const SITE_SQL = {
     JOIN (
       SELECT clan_tag, nick, MAX(id) AS max_id
       FROM clan_rating_snapshots
-      WHERE clan_tag IN (${siteInSlots(SITE_IN_SLOTS)}) AND seen_at <= ?
+      WHERE clan_tag IN (${siteInSlots(SITE_IN_SLOTS)}) AND seen_at >= ? AND seen_at <= ?
       GROUP BY clan_tag, nick
     ) latest ON latest.max_id = s.id
-    WHERE EXISTS (SELECT 1 FROM clan_roster r WHERE r.clan_core = ? AND r.nick = s.nick)
-       OR NOT EXISTS (SELECT 1 FROM clan_roster r2 WHERE r2.clan_core = ?)
+    WHERE s.seen_at >= ?
+      AND (EXISTS (SELECT 1 FROM clan_roster r WHERE r.clan_core = ? AND r.nick = s.nick)
+       OR NOT EXISTS (SELECT 1 FROM clan_roster r2 WHERE r2.clan_core = ?))
   `,
   clanBaselineSumsAll: `
     SELECT s.clan_tag, s.nick, s.rating
@@ -3604,15 +4018,22 @@ export const SITE_SQL = {
     JOIN (
       SELECT clan_tag, nick, MAX(id) AS max_id
       FROM clan_rating_snapshots
-      WHERE seen_at <= ?
+      WHERE seen_at >= ? AND seen_at <= ?
       GROUP BY clan_tag, nick
     ) latest ON latest.max_id = s.id
+    WHERE s.seen_at >= ?
   `,
   battleTeamClans: `
     SELECT team, clan_tag, COUNT(*) AS players
     FROM battle_players
     WHERE session_id = ?
     GROUP BY team, clan_tag
+  `,
+  battleTeamClansBatch: `
+    SELECT session_id, team, clan_tag, COUNT(*) AS players
+    FROM battle_players
+    WHERE session_id IN (SELECT value FROM json_each(?))
+    GROUP BY session_id, team, clan_tag
   `,
 } as const
 
@@ -3681,8 +4102,8 @@ export interface SitePlayerSearchResult {
 export function searchSitePlayers(query: string, limit = 20): SitePlayerSearchResult[] {
   const normalized = siteSearchQueryText(query)
   const normalizedLimit = siteLimit(limit, 50, 'Лимит поиска игроков')
-  const lower = normalized
-  const upper = sitePrefixUpperBound(normalized)
+  const lower = normalizePlayerSearchKey(normalized)
+  const upper = sitePrefixUpperBound(lower)
 
   const results: SitePlayerSearchResult[] = []
   const seenIdentityIds = new Set<number>()
@@ -3752,7 +4173,7 @@ export function searchSitePlayers(query: string, limit = 20): SitePlayerSearchRe
   const knownWtUserIds = new Set(results.map((entry) => entry.wtUserId).filter(Boolean))
   for (const row of replayRows) {
     if (knownWtUserIds.has(row.user_id)) continue
-    const key = `${row.user_id}:${row.nick.toLowerCase()}`
+    const key = `${row.user_id}:${normalizePlayerSearchKey(row.nick)}`
     if (seenReplayKeys.has(key)) continue
     seenReplayKeys.add(key)
     results.push({
@@ -3765,11 +4186,11 @@ export function searchSitePlayers(query: string, limit = 20): SitePlayerSearchRe
     })
   }
 
-  const queryLower = normalized.toLowerCase()
+  const queryLower = normalizePlayerSearchKey(normalized)
   const originRank: Record<SitePlayerSearchOrigin, number> = { identity: 0, alias: 1, replay: 2 }
   results.sort((a, b) => {
-    const exactA = a.nick.toLowerCase() === queryLower ? 0 : 1
-    const exactB = b.nick.toLowerCase() === queryLower ? 0 : 1
+    const exactA = normalizePlayerSearchKey(a.nick) === queryLower ? 0 : 1
+    const exactB = normalizePlayerSearchKey(b.nick) === queryLower ? 0 : 1
     if (exactA !== exactB) return exactA - exactB
     if (originRank[a.origin] !== originRank[b.origin]) return originRank[a.origin] - originRank[b.origin]
     return (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0)
@@ -3796,7 +4217,11 @@ export function getSiteRatingHistory(
   if (filtered.length === 0) return []
   const normalizedLimit = siteLimit(limit, 2000, 'Лимит истории ПКР')
   const rows = siteStatement('ratingHistoryByNicks')
-    .all(...padSiteList(filtered.slice(0, SITE_IN_SLOTS), SITE_IN_SLOTS), normalizedLimit) as unknown as {
+    .all(
+      ...padSiteList(filtered.slice(0, SITE_IN_SLOTS), SITE_IN_SLOTS),
+      currentClanSeasonStart(),
+      normalizedLimit,
+    ) as unknown as {
       nick: string
       clan_tag: string
       rating: number
@@ -3941,7 +4366,8 @@ export interface SiteClanMemberLatest {
  * выполняется вызывающим кодом: украшения тега нестабильны и живут в TS.
  */
 export function getSiteClanLatestMembers(): SiteClanMemberLatest[] {
-  const rows = siteStatement('clanLatestMembers').all() as unknown as {
+  const seasonStart = currentClanSeasonStart()
+  const rows = siteStatement('clanLatestMembers').all(seasonStart, seasonStart) as unknown as {
     clan_tag: string
     nick: string
     rating: number
@@ -4008,10 +4434,13 @@ export function getSiteClanRatingBaseline(
   if (!Number.isSafeInteger(atTs) || atTs < 0) {
     throw new RangeError('atTs должен быть неотрицательным Unix-временем')
   }
+  const seasonStart = currentClanSeasonStart()
   const rows = siteStatement('clanRatingBaseline')
     .all(
       ...padSiteList(filtered.slice(0, SITE_IN_SLOTS), SITE_IN_SLOTS),
+      seasonStart,
       atTs,
+      seasonStart,
       clanCore,
       clanCore,
     ) as unknown as {
@@ -4022,10 +4451,18 @@ export function getSiteClanRatingBaseline(
   return rows.map((row) => ({ clanTag: row.clan_tag, nick: row.nick, rating: row.rating }))
 }
 
-/** Полный ростер всех кланов (ядро тега → ники) для фильтрации в снапшоте сайта. */
-export function getSiteClanRosterAll(): { clanCore: string; nick: string }[] {
-  const rows = siteStatement('clanRosterAll').all() as unknown as { clan_core: string; nick: string }[]
-  return rows.map((row) => ({ clanCore: row.clan_core, nick: row.nick }))
+/** Полный ростер всех кланов для фильтрации и отсечения устаревших участников. */
+export function getSiteClanRosterAll(): { clanCore: string; nick: string; lastPresentAt: number }[] {
+  const rows = siteStatement('clanRosterAll').all() as unknown as {
+    clan_core: string
+    nick: string
+    last_present_at: number
+  }[]
+  return rows.map((row) => ({
+    clanCore: row.clan_core,
+    nick: row.nick,
+    lastPresentAt: row.last_present_at,
+  }))
 }
 
 /** ПКР каждого (клан, ник) на момент atTs — базис честных дельт «за 30 дн.». */
@@ -4033,7 +4470,8 @@ export function getSiteClanBaselineRatings(atTs: number): { clanTag: string; nic
   if (!Number.isSafeInteger(atTs) || atTs < 0) {
     throw new RangeError('atTs должен быть неотрицательным Unix-временем')
   }
-  const rows = siteStatement('clanBaselineSumsAll').all(atTs) as unknown as {
+  const seasonStart = currentClanSeasonStart()
+  const rows = siteStatement('clanBaselineSumsAll').all(seasonStart, atTs, seasonStart) as unknown as {
     clan_tag: string
     nick: string
     rating: number
@@ -4057,6 +4495,29 @@ export function getSiteBattleTeamClans(sessionId: string): SiteBattleTeamClanRow
     players: number
   }[]
   return rows.map((row) => ({ team: row.team, clanTag: row.clan_tag, players: row.players }))
+}
+
+/** Клановые теги по командам нескольких сессий одним индексным запросом. */
+export function getSiteBattleTeamClansBatch(
+  sessionIds: readonly string[],
+): Map<string, SiteBattleTeamClanRow[]> {
+  if (sessionIds.length === 0) return new Map()
+  if (sessionIds.length > 100) throw new RangeError('За один запрос разрешено не более 100 session id')
+  const normalized = [...new Set(sessionIds.map((sessionId) => sessionId.trim()))]
+  if (normalized.some((sessionId) => sessionId === '')) throw new RangeError('Нужны непустые session id')
+  const rows = siteStatement('battleTeamClansBatch').all(JSON.stringify(normalized)) as unknown as {
+    session_id: string
+    team: number
+    clan_tag: string
+    players: number
+  }[]
+  const grouped = new Map<string, SiteBattleTeamClanRow[]>()
+  for (const row of rows) {
+    const sessionRows = grouped.get(row.session_id) ?? []
+    sessionRows.push({ team: row.team, clanTag: row.clan_tag, players: row.players })
+    grouped.set(row.session_id, sessionRows)
+  }
+  return grouped
 }
 
 export interface SiteClanBattleTeamRow {
@@ -4296,5 +4757,3 @@ export function getSiteAliasIdentities(nickBases: readonly string[]): SiteAliasI
   }
   return results
 }
-
-

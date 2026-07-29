@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { fetchClan, fetchClanHistory, fetchClans, SiteApiError, type ClanDetail, type ClanHistoryPoint } from '../api'
 import { battleVersusLabel, coreClanTag, fmtDateTime, fmtInt } from '../lib/format'
 import { Chip, DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl } from '../components/ui'
+import { SeasonPanel } from '../components/SeasonPanel'
 import { TimeChart } from '../components/TimeChart'
 import { t, tp, useLocale } from '../i18n'
 
@@ -114,6 +115,8 @@ export function ClanPage() {
         <span className="sep">/</span>
         <span className="here">{clan.displayTag}</span>
       </div>
+
+      <SeasonPanel context={detail.season} compact />
 
       <header className="hero-card">
         <span className="avatar-tile">{clan.coreTag.slice(0, 2).toUpperCase()}</span>
