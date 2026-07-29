@@ -275,6 +275,8 @@ async function main(): Promise<void> {
     assert.equal(firstBody.stats.replay.stats?.wins, 1)
     assert.equal(firstBody.stats.replay.stats?.losses, 1)
     assert.equal(firstBody.stats.replay.stats?.winRate, 0.5)
+    assert.equal(provider.calls, 0, 'внешний refresh не должен начинаться до отправки API-ответа')
+    assert.equal(secondaryProvider.calls, 0, 'второй provider тоже должен ждать отправки API-ответа')
 
     await coordinator.waitForIdle()
     const cached = await app.inject({

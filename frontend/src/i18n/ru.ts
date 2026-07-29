@@ -37,6 +37,12 @@ export const ru = {
   'common.duration.m': '{m}м',
   'common.chart.noData': 'Недостаточно данных для графика',
   'common.chart.date': 'Дата',
+  'season.title': 'Клановый сезон',
+  'season.week': '{n} неделя',
+  'season.maxBr': 'макс. БР {br}',
+  'season.untilEnd': 'до конца сезона',
+  'season.waiting': 'между этапами',
+  'season.ended': 'сезон завершён',
 
   // --- Навигация и заголовок вкладки ---
   'app.title': 'wtbot — статистика War Thunder',

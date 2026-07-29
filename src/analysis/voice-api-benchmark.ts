@@ -6,6 +6,7 @@ import { performance } from 'node:perf_hooks'
 import { DatabaseSync } from 'node:sqlite'
 import {
   closeDb,
+  getClanSeasonContext,
   getCommandStats,
   getIngestStats,
   getItemStats,
@@ -110,7 +111,7 @@ function battle(session: number, rows: number): BattleInput {
     battleType: null,
     environment: null,
     status: null,
-    startTime: 1_700_000_000 + session,
+    startTime: Math.floor(Date.now() / 1_000) + session,
     durationSec: 0,
     endTimeMs: 0,
     teamWon: 0,
@@ -180,7 +181,7 @@ function verifyLegacyMigration(): void {
       VALUES ('guild', 'Guild', 'channel', 'Channel', 'user', 'Legacy', 'legacy-player');
 
       CREATE TABLE battles (session_id TEXT PRIMARY KEY, start_time INTEGER NOT NULL);
-      INSERT INTO battles (session_id, start_time) VALUES ('legacy-session', 1700000000);
+      INSERT INTO battles (session_id, start_time) VALUES ('legacy-session', unixepoch());
       CREATE TABLE battle_players (
         session_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
@@ -272,7 +273,7 @@ function legacyVoicePayload() {
       lastBattleAt: battleStats.lastBattleAt,
     })
   }
-  return { channels: [...channels.values()] }
+  return { season: getClanSeasonContext(), channels: [...channels.values()] }
 }
 
 async function measure(url: string, runs: number): Promise<TimingSummary> {

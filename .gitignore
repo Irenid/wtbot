@@ -7,3 +7,8 @@ data/
 # покрывает правило data/ выше).
 data/wt-cookies.json
 data/wt-cookies.json.lock
+*.rar
+*.zip
+*.7z
+.env.*.local
+*.tsbuildinfo

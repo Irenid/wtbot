@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   fetchBattles,
@@ -14,6 +14,7 @@ import {
 import { t, tp } from '../i18n'
 import type { MessageKey } from '../i18n/ru'
 import { battleVersusLabel, fmtDateTime, fmtInt, modeLabel, weekdayShort } from '../lib/format'
+import { SeasonPanel } from '../components/SeasonPanel'
 import { BarTrack, Chip, ErrorNotice, Loading, RankBadge, SecHead } from '../components/ui'
 
 function playerHref(entry: PlayerSearchEntry): string | null {
@@ -28,42 +29,103 @@ const ORIGIN_LABELS: Record<PlayerSearchEntry['origin'], MessageKey> = {
   replay: 'home.origin.replay',
 }
 
-/* Недельная активность из макета: золотые столбики «боёв в день». */
+function niceActivityTickStep(maxValue: number): number {
+  if (maxValue <= 0) return 1
+  const roughStep = maxValue / 5
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep))
+  const normalized = roughStep / magnitude
+  const niceFactor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10
+  return Math.max(1, Math.ceil(niceFactor * magnitude))
+}
+
+/* Недельная активность: читаемая шкала и семь адаптивных столбцов. */
 function WeekActivity({ stats }: { stats: SiteStats }) {
+  const battlesByDay = new Map(stats.byDay.map((point) => [point.day, point.battles]))
   const days: { day: string; battles: number }[] = []
   for (let offset = 6; offset >= 0; offset -= 1) {
     const date = new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10)
-    days.push({ day: date, battles: stats.byDay.find((point) => point.day === date)?.battles ?? 0 })
+    days.push({ day: date, battles: battlesByDay.get(date) ?? 0 })
   }
-  const max = Math.max(1, ...days.map((point) => point.battles))
+  const maxBattles = Math.max(0, ...days.map((point) => point.battles))
+  const tickStep = niceActivityTickStep(maxBattles)
+  const axisMax = Math.max(tickStep * 5, Math.ceil(maxBattles / tickStep) * tickStep)
+  const ticks = Array.from(
+    { length: Math.round(axisMax / tickStep) + 1 },
+    (_, index) => axisMax - index * tickStep,
+  )
   const peak = days.reduce((best, point) => (point.battles > best.battles ? point : best))
+
   return (
-    <div className="card hoverable">
+    <div className="card hoverable week-activity-card">
       <SecHead title={t('home.activity')} hint={t('home.activity.hint')} />
-      <svg viewBox="0 0 700 120" style={{ width: '100%', height: 130, display: 'block' }} preserveAspectRatio="none" aria-label={t('a11y.activityWeek')}>
-        <defs>
-          <linearGradient id="week-bars" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#ffd873" stopOpacity="0.95" />
-            <stop offset="1" stopColor="#e89b1f" stopOpacity="0.35" />
-          </linearGradient>
-        </defs>
-        <line x1="0" y1="110" x2="700" y2="110" stroke="var(--line)" strokeWidth="1" />
-        {days.map((point, index) => {
-          const height = point.battles === 0 ? 3 : Math.max(6, (point.battles / max) * 84)
-          const x = 22 + index * 96
-          return point.battles === 0
-            ? <rect key={point.day} x={x} y={107} width="54" height="3" rx="1.5" fill="var(--line)" />
-            : <rect key={point.day} x={x} y={110 - height} width="54" height={height} rx="5" fill="url(#week-bars)">
-                <title>{`${point.day}: ${point.battles}`}</title>
-              </rect>
-        })}
-      </svg>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--muted)', padding: '6px 4px 0' }}>
-        {days.map((point) => <span key={point.day}>{weekdayShort(point.day)}</span>)}
+      <div className="week-chart" role="group" aria-label={t('a11y.activityWeek')}>
+        <div className="week-chart__body">
+          <div className="week-chart__axis" aria-hidden="true">
+            {ticks.map((tick) => (
+              <span
+                key={tick}
+                className="week-chart__axis-label"
+                style={{ '--tick-position': `${(1 - tick / axisMax) * 100}%` } as CSSProperties}
+              >
+                {fmtInt(tick)}
+              </span>
+            ))}
+          </div>
+          <div className="week-chart__plot">
+            <div className="week-chart__grid" aria-hidden="true">
+              {ticks.map((tick) => (
+                <span
+                  key={tick}
+                  className="week-chart__grid-line"
+                  style={{ '--tick-position': `${(1 - tick / axisMax) * 100}%` } as CSSProperties}
+                />
+              ))}
+            </div>
+            <ol className="week-chart__bars">
+              {days.map((point, index) => {
+                const barHeight = (point.battles / axisMax) * 100
+                const isPeak = point.battles > 0 && point.day === peak.day
+                const isToday = index === days.length - 1
+                const label = `${weekdayShort(point.day)}: ${tp('common.battles', point.battles)}`
+                return (
+                  <li
+                    key={point.day}
+                    className={`week-chart__day${isPeak ? ' is-peak' : ''}${isToday ? ' is-today' : ''}${point.battles === 0 ? ' is-empty' : ''}`}
+                    style={{
+                      '--bar-height': `${barHeight}%`,
+                      '--bar-delay': `${index * 45}ms`,
+                    } as CSSProperties}
+                    aria-label={label}
+                    aria-current={isToday ? 'date' : undefined}
+                    tabIndex={0}
+                    title={label}
+                  >
+                    <div className="week-chart__bar-slot" aria-hidden="true">
+                      <span className="week-chart__bar-value">{fmtInt(point.battles)}</span>
+                      <span className="week-chart__bar" />
+                    </div>
+                    <time className="week-chart__weekday" dateTime={point.day} aria-hidden="true">
+                      {weekdayShort(point.day)}
+                    </time>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
+        </div>
       </div>
       {peak.battles > 0 && (
-        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--ink2)' }}>
-          {t('home.activity.peak', { day: weekdayShort(peak.day) })} <b style={{ color: 'var(--ink)' }}>{tp('common.battles', peak.battles)}</b>
+        <div className="week-chart__summary">
+          <span className="week-chart__summary-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20" width="20" height="20">
+              <path d="M4 14.5 8.2 10l3 2.8L16 6.5" />
+              <path d="M12.5 6.5H16V10" />
+            </svg>
+          </span>
+          <span>
+            {t('home.activity.peak', { day: weekdayShort(peak.day) })}{' '}
+            <strong>{tp('common.battles', peak.battles)}</strong>
+          </span>
         </div>
       )}
     </div>
@@ -85,8 +147,8 @@ export function HomePage() {
 
   useEffect(() => {
     let cancelled = false
-    fetchClans().then((body) => { if (!cancelled) setClans(body.clans.slice(0, 6)) }).catch(() => {})
-    fetchBattles({ limit: 8 }).then((body) => { if (!cancelled) setRecent(body.battles) }).catch(() => {})
+    fetchClans().then((body) => { if (!cancelled) setClans(body.clans.slice(0, 8)) }).catch(() => {})
+    fetchBattles({ limit: 9 }).then((body) => { if (!cancelled) setRecent(body.battles) }).catch(() => {})
     fetchSiteStats().then((body) => { if (!cancelled) setStats(body) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
@@ -198,6 +260,8 @@ export function HomePage() {
         )}
       </section>
 
+      {stats !== null && <SeasonPanel context={stats.season} compact />}
+
       {stats !== null && (
         <section className="stat-tiles" style={{ marginBottom: 26 }}>
           <div className="stat-tile"><div className="v">{fmtInt(stats.players)}</div><div className="l">{t('home.stats.players')}</div></div>
@@ -238,7 +302,7 @@ export function HomePage() {
       )}
 
       <div className="grid-2">
-        <div className="card hoverable">
+        <div className="card hoverable home-feed-card">
           <SecHead title={t('home.card.topClans')} hint={t('home.card.topClans.hint')} />
           {clans === null ? <Loading /> : clans.length === 0 ? (
             <div className="muted small">{t('home.card.clans.empty')}</div>
@@ -265,7 +329,7 @@ export function HomePage() {
           )}
         </div>
 
-        <div className="card hoverable">
+        <div className="card hoverable home-feed-card">
           <SecHead title={t('home.card.recent')} />
           {recent === null ? <Loading /> : recent.length === 0 ? (
             <div className="muted small">{t('home.card.recent.empty')}</div>

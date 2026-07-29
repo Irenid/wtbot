@@ -1,15 +1,32 @@
+import path from 'node:path'
 import {
   getIngestStats,
   getPendingBattleItems,
   markBattleIngest,
-  saveBattle,
   type PendingBattleItem,
 } from '../db/index.js'
 import { loadBattleData } from './battle-data.js'
-import { isWorkerPoolSchedulingError } from '../workers/pool.js'
+import {
+  isWorkerPoolSchedulingError,
+  runWorkerTask,
+  transferableBuffer,
+} from '../workers/pool.js'
 import { dropReplayCache } from './replay-cache.js'
-import { ReplayPartsFetchError } from './replay-events.js'
+import {
+  ReplayPartsFetchError,
+  isReplayByteBudgetSchedulingError,
+  replayProcessByteBudgetSnapshot,
+} from './replay-events.js'
 import { realNamesFromItem, replayPartUrls } from './replay.js'
+import {
+  shouldContinueIngestImmediately,
+  type IngestOutcome,
+} from './ingest-scheduler.js'
+import {
+  IngestTelemetryAccumulator,
+  type IngestBattleTelemetry,
+  type IngestTelemetrySnapshot,
+} from './ingest-telemetry.js'
 
 /**
  * Фоновый разбор боёв (ingest).
@@ -35,6 +52,7 @@ const TICK_MS = 20_000
 export const INGEST_MAX_ATTEMPTS = 3
 /** Минимальный интервал между стартами загрузки разных боёв — вежливость к CDN. */
 const PAUSE_MS = 500
+const TELEMETRY_LOG_MS = 60_000
 
 const sleep = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
   if (signal.aborted) {
@@ -56,16 +74,18 @@ let stopping = false
 let activeTick: Promise<void> | null = null
 let currentAbort: AbortController | null = null
 let ingestConcurrency = 1
+let ingestDbPath: string | null = null
 /** Логируем размер бэклога один раз, чтобы не спамить в консоль каждый тик */
 let backlogLogged = false
+let lastTelemetryLogAtMs = 0
+const ingestTelemetry = new IngestTelemetryAccumulator()
 /**
- * Синхронный SQLite-коммит блокирует event loop. Очередь не делает запись
- * асинхронной, но не позволяет нескольким готовым runner-ам выполнить тяжёлые
- * транзакции вплотную без промежуточного event-loop turn для Fastify/Discord.
+ * SQLite допускает только одного writer. Сериализация оставляет один persist
+ * task в полёте, а сам fsync/checkpoint выполняет CPU worker вне event loop.
  */
 let sqliteCommitTail: Promise<void> = Promise.resolve()
 
-async function runSerializedSqliteCommit<T>(work: () => T): Promise<T> {
+async function runSerializedSqliteCommit<T>(work: () => T | Promise<T>): Promise<T> {
   const previous = sqliteCommitTail
   let release!: () => void
   sqliteCommitTail = new Promise<void>((resolve) => {
@@ -74,7 +94,7 @@ async function runSerializedSqliteCommit<T>(work: () => T): Promise<T> {
   try {
     await previous
     await new Promise<void>((resolve) => setImmediate(resolve))
-    return work()
+    return await work()
   } finally {
     release()
   }
@@ -89,7 +109,10 @@ function isExpired(err: unknown): boolean {
 async function ingestOne(
   item: PendingBattleItem,
   signal: AbortSignal,
-): Promise<'ok' | 'no_parts' | 'expired' | 'error' | 'cancelled' | 'deferred'> {
+  telemetry: IngestBattleTelemetry,
+): Promise<IngestOutcome> {
+  let outcome: IngestOutcome = 'error'
+  let terminalAtMs: number | undefined
   const data = item.data as {
     missionName?: string
     gameMode?: string
@@ -102,33 +125,67 @@ async function ingestOne(
   const parts = replayPartUrls(data)
   if (parts.length === 0) {
     markBattleIngest(item.externalId, 'no_parts', 'нет ссылок на части реплея')
-    return 'no_parts'
+    outcome = 'no_parts'
+    telemetry.finish(outcome)
+    return outcome
   }
 
   try {
+    telemetry.startDownload()
     const loaded = await loadBattleData(
       parts,
       realNamesFromItem(data),
       { missionName: data.missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
       'background',
       signal,
+      undefined,
+      (event) => {
+        if (event.phase === 'replay-ready') {
+          telemetry.replayReady(event.replay, event.atMs)
+        } else if (event.phase === 'worker-submitted') {
+          telemetry.parseSubmitted(event.inputBytes, event.atMs)
+        } else {
+          telemetry.parseFinished(event.worker, event.atMs)
+        }
+      },
     )
-    if (signal.aborted) return 'cancelled'
+    if (signal.aborted) {
+      outcome = 'cancelled'
+      return outcome
+    }
+    const dbPath = ingestDbPath
+    if (!dbPath) throw new Error('не задан путь SQLite для ingest worker')
     const sqliteQueuedAt = performance.now()
-    let sqliteMs = 0
-    const committedAtMs = await runSerializedSqliteCommit(() => {
+    const eventsBlob = transferableBuffer(loaded.battle.eventsBlob)
+    telemetry.persistQueued(eventsBlob.byteLength)
+    const persisted = await runSerializedSqliteCommit(async () => {
       if (signal.aborted || stopping) return null
-      const sqliteStarted = performance.now()
-      try {
-        saveBattle(loaded.battle)
-        markBattleIngest(item.externalId, 'ok')
-        return Date.now()
-      } finally {
-        sqliteMs = performance.now() - sqliteStarted
-      }
+      telemetry.persistStarted()
+      return await runWorkerTask(
+        {
+          kind: 'persist-ingested-battle',
+          input: {
+            dbPath,
+            sessionId: item.externalId,
+            battle: { ...loaded.battle, eventsBlob },
+          },
+        },
+        {
+          priority: 'normal',
+          transferList: [eventsBlob],
+          signal,
+        },
+      )
     })
-    if (committedAtMs === null) return 'cancelled'
+    if (persisted === null) {
+      outcome = 'cancelled'
+      return outcome
+    }
+    const { committedAtMs, sqliteMs, transactionMs, checkpointMs } = persisted
+    terminalAtMs = committedAtMs
+    telemetry.persistFinished(committedAtMs, sqliteMs)
     const sqliteQueueMs = Math.max(0, performance.now() - sqliteQueuedAt - sqliteMs)
+    telemetry.persistTiming(sqliteQueueMs, transactionMs, checkpointMs)
     await dropReplayCache(loaded.header.sessionIdHex)
     const events = loaded.summary
     console.log(
@@ -136,35 +193,66 @@ async function ingestOne(
         `игроков ${loaded.results.players.length}, убийств ${events.kills}, ` +
         `победитель ${events.teamWon > 0 ? `команда ${events.teamWon}` : '?'}`,
     )
-    logIngestTiming(item, loaded.timing, committedAtMs, sqliteQueueMs, sqliteMs)
-    return 'ok'
+    logIngestTiming(
+      item,
+      loaded.timing,
+      committedAtMs,
+      sqliteQueueMs,
+      sqliteMs,
+      transactionMs,
+      checkpointMs,
+    )
+    outcome = 'ok'
+    return outcome
   } catch (err) {
-    if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) return 'cancelled'
-    if (err instanceof ReplayPartsFetchError) logReplayFailureTiming(item, err)
+    if (err instanceof ReplayPartsFetchError) {
+      telemetry.replayFailed(err.timing)
+      if (!signal.aborted) logReplayFailureTiming(item, err)
+    }
+    if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+      outcome = 'cancelled'
+      return outcome
+    }
     const message = err instanceof Error ? err.message : String(err)
+    if (isReplayByteBudgetSchedulingError(err)) {
+      console.warn(`[ingest] бой ${item.externalId}: memory budget занят (${message}); попытка не расходуется`)
+      outcome = 'deferred'
+      return outcome
+    }
     if (isWorkerPoolSchedulingError(err)) {
       console.warn(`[ingest] бой ${item.externalId}: CPU scheduler занят (${message}); попытка не расходуется`)
-      return 'deferred'
+      outcome = 'deferred'
+      return outcome
     }
     if (isExpired(err)) {
       markBattleIngest(item.externalId, 'expired', message)
       console.warn(`[ingest] бой ${item.externalId}: части ушли с CDN — пропускаю`)
-      return 'expired'
+      outcome = 'expired'
+      return outcome
     }
     markBattleIngest(item.externalId, 'error', message)
     console.warn(`[ingest] бой ${item.externalId}: ${message}`)
-    return 'error'
+    outcome = 'error'
+    return outcome
+  } finally {
+    telemetry.finish(outcome, terminalAtMs)
   }
 }
 
 /**
  * Загружает независимые бои параллельно, но разносит старты CDN-запросов.
- * SQLite commit остаётся последовательным в main thread, а тяжёлый WRPL-
+ * SQLite commit остаётся последовательным вне main thread, а тяжёлый WRPL-
  * разбор ограничивает общий CPU pool.
  */
-async function ingestBatch(items: PendingBattleItem[], concurrency: number, signal: AbortSignal): Promise<void> {
+async function ingestBatch(
+  items: PendingBattleItem[],
+  concurrency: number,
+  signal: AbortSignal,
+): Promise<IngestOutcome[]> {
   let nextIndex = 0
   let nextStartAt = Date.now()
+  const outcomes = new Array<IngestOutcome | undefined>(items.length)
+  const telemetry = items.map((item) => ingestTelemetry.beginBattle(item.firstSeenAt * 1_000))
   const waitForStartSlot = async (): Promise<void> => {
     const now = Date.now()
     const startAt = Math.max(now, nextStartAt)
@@ -174,16 +262,21 @@ async function ingestBatch(items: PendingBattleItem[], concurrency: number, sign
   }
   const runner = async (): Promise<void> => {
     while (!signal.aborted && !stopping) {
-      const item = items[nextIndex++]
+      const index = nextIndex++
+      const item = items[index]
       if (!item) return
       await waitForStartSlot()
       if (signal.aborted || stopping) return
-      await ingestOne(item, signal)
+      outcomes[index] = await ingestOne(item, signal, telemetry[index]!)
     }
   }
   await Promise.all(
     Array.from({ length: Math.min(concurrency, items.length) }, () => runner()),
   )
+  for (let index = 0; index < outcomes.length; index += 1) {
+    if (outcomes[index] === undefined) telemetry[index]!.finish('cancelled')
+  }
+  return outcomes.filter((outcome): outcome is IngestOutcome => outcome !== undefined)
 }
 
 function logIngestTiming(
@@ -192,6 +285,8 @@ function logIngestTiming(
   committedAtMs: number,
   sqliteQueueMs: number,
   sqliteMs: number,
+  sqliteTransactionMs: number,
+  sqliteCheckpointMs: number,
 ): void {
   const discoveredAtMs = item.firstSeenAt * 1000
   const replay = timing.replay
@@ -205,7 +300,8 @@ function logIngestTiming(
       `cache→parsed ${formatMs(timing.workerFinishedAtMs - timing.replayReadyAtMs)} ` +
       `(input ${formatMs(timing.inputPrepareMs)}, queue ${formatMs(worker?.queueMs ?? 0)}, ` +
       `exec ${formatMs(worker?.executionMs ?? timing.workerWallMs)}), ` +
-      `SQLite ${formatMs(sqliteMs)} (queue ${formatMs(sqliteQueueMs)}), ` +
+      `SQLite ${formatMs(sqliteMs)} (queue ${formatMs(sqliteQueueMs)}, ` +
+      `write ${formatMs(sqliteTransactionMs)}, checkpoint ${formatMs(sqliteCheckpointMs)}), ` +
       `discovered→commit ${formatMs(committedAtMs - discoveredAtMs)}`,
   )
 }
@@ -230,15 +326,54 @@ function formatMiB(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} МиБ`
 }
 
-async function tick(): Promise<void> {
-  if (busy || stopping) return
+export function getIngestTelemetrySnapshot(): IngestTelemetrySnapshot & {
+  replayProcessByteBudget: ReturnType<typeof replayProcessByteBudgetSnapshot>
+} {
+  return {
+    ...ingestTelemetry.snapshot(),
+    replayProcessByteBudget: replayProcessByteBudgetSnapshot(),
+  }
+}
+
+function logIngestTelemetry(force = false): void {
+  const now = Date.now()
+  if (!force && now - lastTelemetryLogAtMs < TELEMETRY_LOG_MS) return
+  const snapshot = ingestTelemetry.snapshot(now)
+  const byteBudget = replayProcessByteBudgetSnapshot()
+  const oldest = snapshot.backlog.oldestAgeMs ?? snapshot.backlog.oldestAgeLowerBoundMs
+  const lowerBound = snapshot.backlog.oldestAgeMs === null ? '≥' : ''
+  console.log(
+    `[ingest:metrics] ${snapshot.battlesPerMinute} боёв/мин, ` +
+      `выбрано ${snapshot.backlog.selectedCount}/${snapshot.backlog.selectionLimit}, ` +
+      `oldest ${lowerBound}${formatMs(oldest)}, ` +
+      `active download/parse/persist ` +
+      `${snapshot.stages.download.currentActive}/${snapshot.stages.parse.currentActive}/` +
+      `${snapshot.stages.persist.currentActive}, ` +
+      `persist queue ${snapshot.stages.persist.currentQueued}, ` +
+      `memory ${(byteBudget.usedBytes / 1024 / 1024).toFixed(0)}/` +
+      `${(byteBudget.limitBytes / 1024 / 1024).toFixed(0)} МиБ ` +
+      `(wait ${byteBudget.queuedCount}), ` +
+      `replay ${formatMiB(snapshot.replay.bytes)}, retry ${snapshot.replay.retries}, ` +
+      `429 ${snapshot.replay.status.rateLimited429}, 5xx ${snapshot.replay.status.server5xx}, ` +
+      `TTFB p95 ${formatMs(snapshot.replay.ttfbMs.p95Ms ?? 0)}`,
+  )
+  lastTelemetryLogAtMs = now
+}
+
+async function tick(): Promise<boolean> {
+  if (busy || stopping) return false
   busy = true
   const controller = new AbortController()
   currentAbort = controller
   try {
     const concurrency = ingestConcurrency
-    const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, concurrency * BATCH_MULTIPLIER)
-    if (pending.length === 0) return
+    const selectionLimit = concurrency * BATCH_MULTIPLIER
+    const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, selectionLimit)
+    ingestTelemetry.recordSelection(
+      pending.map((item) => item.firstSeenAt),
+      selectionLimit,
+    )
+    if (pending.length === 0) return false
 
     if (!backlogLogged) {
       backlogLogged = true
@@ -246,18 +381,28 @@ async function tick(): Promise<void> {
       if (s.pending > 0) console.log(`[ingest] в очереди на разбор: ${s.pending} боёв (уже разобрано ${s.ingested})`)
     }
 
-    await ingestBatch(pending, concurrency, controller.signal)
+    const outcomes = await ingestBatch(pending, concurrency, controller.signal)
+    logIngestTelemetry()
+    return shouldContinueIngestImmediately(
+      pending.length,
+      selectionLimit,
+      outcomes,
+      stopping || controller.signal.aborted,
+    )
   } catch (err) {
     console.error(`[ingest] сбой тика: ${(err as Error).message}`)
+    return false
   } finally {
     if (currentAbort === controller) currentAbort = null
     busy = false
   }
 }
 
-export function startIngestWorker(concurrency = 1): void {
+export function startIngestWorker(concurrency = 1, dbPath = './data/wtbot.db'): void {
   stopping = false
   ingestConcurrency = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1
+  ingestDbPath = path.resolve(dbPath)
+  lastTelemetryLogAtMs = 0
   const s = getIngestStats()
   console.log(
     `[ingest] воркер запущен · разобрано боёв: ${s.ingested}, в очереди: ${s.pending}` +
@@ -270,8 +415,9 @@ export function startIngestWorker(concurrency = 1): void {
 
 function scheduleTick(): void {
   if (activeTick || stopping) return
-  activeTick = tick().finally(() => {
+  activeTick = tick().then((continueImmediately) => {
     activeTick = null
+    if (continueImmediately && !stopping) setImmediate(scheduleTick)
   })
 }
 
@@ -281,4 +427,25 @@ export async function stopIngestWorker(): Promise<void> {
   if (timer) clearInterval(timer)
   timer = null
   await activeTick
+  if (ingestDbPath) {
+    try {
+      const checkpoint = await runWorkerTask(
+        {
+          kind: 'checkpoint-ingest-database',
+          input: { dbPath: ingestDbPath },
+        },
+        {
+          priority: 'normal',
+          timeoutMs: 30_000,
+        },
+      )
+      console.log(`[ingest] shutdown WAL checkpoint ${formatMs(checkpoint.checkpointMs)}`)
+    } catch (error) {
+      console.warn(
+        `[ingest] shutdown WAL checkpoint не выполнен: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+  if (ingestTelemetry.snapshot().discoveredToTerminalMs.count > 0) logIngestTelemetry(true)
 }

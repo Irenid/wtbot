@@ -15,7 +15,10 @@ import {
 import type { BattleEventSummary } from '../workers/protocol.js'
 import type { BattleItemMeta } from './battle-transform.js'
 import { ensureEcsHashesJson } from './ecs.js'
-import { fetchReplayParts, type ReplayPartsTiming } from './replay-events.js'
+import {
+  fetchReplayPartsRetained,
+  type ReplayPartsTiming,
+} from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 
 export type { BattleItemMeta } from './battle-transform.js'
@@ -42,6 +45,23 @@ export interface BattleLoadTiming {
   worker: WorkerTaskTiming | null
 }
 
+export type BattleLoadPhaseEvent =
+  | {
+      phase: 'replay-ready'
+      atMs: number
+      replay: ReplayPartsTiming
+    }
+  | {
+      phase: 'worker-submitted'
+      atMs: number
+      inputBytes: number
+    }
+  | {
+      phase: 'worker-finished'
+      atMs: number
+      worker: WorkerTaskTiming | null
+    }
+
 /**
  * Сеть и файловый cache остаются в main thread, а WRPL/zlib/zstd/JSON/gzip
  * выполняются в пуле worker_threads. Части передаются без structured-clone.
@@ -53,25 +73,46 @@ export async function loadBattleData(
   priority: WorkerPriority | (() => WorkerPriority) = 'background',
   signal?: AbortSignal,
   onWorkerControl?: (control: WorkerTaskControl) => void,
+  onPhase?: (event: BattleLoadPhaseEvent) => void,
 ): Promise<LoadedBattle> {
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
   const startedAtMs = Date.now()
   const started = performance.now()
   const replayTimingBox: { value: ReplayPartsTiming | null } = { value: null }
-  const [parts, ecsHashesJson] = await Promise.all([
-    fetchReplayParts(partUrls, signal, {
+  const [replayResult, ecsResult] = await Promise.allSettled([
+    fetchReplayPartsRetained(partUrls, signal, {
       onTiming: (timing) => { replayTimingBox.value = timing },
     }),
     ensureEcsHashesJson(),
   ])
+  if (replayResult.status === 'rejected') throw replayResult.reason
+  const retainedReplay = replayResult.value
+  if (ecsResult.status === 'rejected') {
+    retainedReplay.release()
+    throw ecsResult.reason
+  }
+  const parts = retainedReplay.parts
+  const ecsHashesJson = ecsResult.value
+  try {
   const replayTiming = replayTimingBox.value
   if (!replayTiming) throw new Error('не получены метрики загрузки replay')
+  emitBattleLoadPhase(onPhase, {
+    phase: 'replay-ready',
+    atMs: Date.now(),
+    replay: replayTiming,
+  })
   const inputStarted = performance.now()
   const wireParts = parts.map(transferableBuffer)
+  const inputBytes = wireParts.reduce((sum, part) => sum + part.byteLength, 0)
   const taskPriority = typeof priority === 'function' ? priority() : priority
   const workerInput = { parts: wireParts, realNames: [...realNames], meta, ecsHashesJson }
   const inputPrepareMs = performance.now() - inputStarted
   const workerSubmittedAtMs = Date.now()
+  emitBattleLoadPhase(onPhase, {
+    phase: 'worker-submitted',
+    atMs: workerSubmittedAtMs,
+    inputBytes,
+  })
   const workerStarted = performance.now()
   let workerTiming: WorkerTaskTiming | null = null
   const parsed = await runWorkerTask(
@@ -89,6 +130,11 @@ export async function loadBattleData(
   )
   const workerWallMs = performance.now() - workerStarted
   const workerFinishedAtMs = Date.now()
+  emitBattleLoadPhase(onPhase, {
+    phase: 'worker-finished',
+    atMs: workerFinishedAtMs,
+    worker: workerTiming,
+  })
   const completedAtMs = Date.now()
   return {
     header: parsed.header,
@@ -107,6 +153,21 @@ export async function loadBattleData(
       replay: replayTiming,
       worker: workerTiming,
     },
+  }
+  } finally {
+    retainedReplay.release()
+  }
+}
+
+function emitBattleLoadPhase(
+  callback: ((event: BattleLoadPhaseEvent) => void) | undefined,
+  event: BattleLoadPhaseEvent,
+): void {
+  if (!callback) return
+  try {
+    callback(event)
+  } catch {
+    // Диагностический callback не должен менять результат загрузки боя.
   }
 }
 

@@ -124,24 +124,30 @@ export function deserializeIdFields32(
   if (start & 7) throw new Error('IdFieldSerializer32 не выровнен по байту')
   const offset = r.readU16()
   let fields = r.readCompressed()
+  if (!Number.isSafeInteger(fields) || fields > 0xffff_ffff) {
+    throw new Error(`IdFieldSerializer32: маска вне uint32 (${fields})`)
+  }
   const startBody = r.bitOffset
 
   // Кол-во установленных бит = число полей; их размеры лежат по offset
   let count = 0
   for (let f = fields; f > 0; f >>>= 1) count += f & 1
-  r.bitOffset = offset * 8 + start
+  r.setBitOffset(offset * 8 + start)
   const sizes: number[] = []
   for (let i = 0; i < count; i++) sizes.push(readFieldSize(r))
-  r.bitOffset = startBody
+  r.setBitOffset(startBody)
 
   let ordinal = 0
   while (fields > 0) {
     let fieldNum = 0
-    while (((fields >>> fieldNum) & 1) === 0) fieldNum++
+    while (fieldNum < 32 && ((fields >>> fieldNum) & 1) === 0) fieldNum++
+    if (fieldNum >= 32) throw new Error('IdFieldSerializer32: бит поля вне диапазона')
     fields = (fields & ~(1 << fieldNum)) >>> 0
     const before = r.bitOffset
     const res = fieldReader(fieldNum)
-    if (res === SKIP_FIELD) r.bitOffset = before + sizes[ordinal]!
+    const fieldSize = sizes[ordinal]
+    if (fieldSize === undefined) throw new Error('IdFieldSerializer32: отсутствует размер поля')
+    if (res === SKIP_FIELD) r.setBitOffset(before + fieldSize)
     ordinal++
   }
 }
@@ -165,7 +171,7 @@ export function deserializeIdFields255(
   const bitsPerId = count >>> 12
   const startBody = r.bitOffset
 
-  r.bitOffset = offset * 8 + start
+  r.setBitOffset(offset * 8 + start)
   const sizes: number[] = []
   for (let i = 0; i < fieldsCount; i++) sizes.push(readFieldSize(r))
 
@@ -173,17 +179,17 @@ export function deserializeIdFields255(
   const bitsForIndices = alignedToByte(bitsPerId * fieldsCount)
   const indicesAt = startBody - 32 + offset * 8 - bitsForIndices
   if (indicesAt < 0) throw new Error('IdFieldSerializer255: таблица индексов вне буфера')
-  r.bitOffset = indicesAt
+  r.setBitOffset(indicesAt)
   const indexes: number[] = []
   for (let i = 0; i < fieldsCount; i++) {
     const b = r.readBits(bitsPerId)
     indexes.push(b.length > 1 ? b[0]! | (b[1]! << 8) : b[0] ?? 0)
   }
 
-  r.bitOffset = startBody
+  r.setBitOffset(startBody)
   for (let i = 0; i < fieldsCount; i++) {
     const before = r.bitOffset
     fieldReader(indexes[i]!, sizes[i]!)
-    r.bitOffset = before + sizes[i]!
+    r.setBitOffset(before + sizes[i]!)
   }
 }

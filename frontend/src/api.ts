@@ -33,6 +33,25 @@ export interface PlayerSearchEntry {
   lastSeenAt: number | null
 }
 
+export interface ClanSeasonStage {
+  week: number
+  startsAt: number
+  endsAt: number
+  maxBr: number
+}
+
+export interface ClanSeasonContext {
+  season: {
+    id: string
+    name: string
+    startsAt: number
+    endsAt: number
+    active: boolean
+  } | null
+  stages: ClanSeasonStage[]
+  currentStage: ClanSeasonStage | null
+}
+
 export function searchPlayers(query: string, limit = 20): Promise<{ ok: true; players: PlayerSearchEntry[] }> {
   return getJson(`/api/players?query=${encodeURIComponent(query)}&limit=${limit}`)
 }
@@ -164,12 +183,13 @@ export interface ClanListEntry {
   delta30d: number | null
 }
 
-export function fetchClans(): Promise<{ ok: true; clans: ClanListEntry[] }> {
+export function fetchClans(): Promise<{ ok: true; season: ClanSeasonContext; clans: ClanListEntry[] }> {
   return getJson('/api/clans')
 }
 
 export interface SiteStats {
   ok: true
+  season: ClanSeasonContext
   players: number
   clans: number
   battlesTotal: number
@@ -188,6 +208,7 @@ export interface ClanHistory {
   ok: true
   days: number
   points: ClanHistoryPoint[]
+  season: ClanSeasonContext
   /** true — серия упёрлась в лимит событий и не полна. */
   truncated: boolean
 }
@@ -222,6 +243,7 @@ export interface BattleListEntry {
 
 export interface ClanDetail {
   ok: true
+  season: ClanSeasonContext
   clan: {
     coreTag: string
     displayTag: string

@@ -1,5 +1,17 @@
 import { inflateSync, zstdDecompressSync } from 'node:zlib'
+import { workerResourcePlan } from '../runtime-options.js'
 import { BitReader, EofError } from './bit-reader.js'
+import {
+  AsyncByteBudget,
+  ByteBudgetOversizeError,
+  ByteBudgetTimeoutError,
+  type ByteBudgetReservation,
+  type ByteBudgetSnapshot,
+} from './byte-budget.js'
+import {
+  MAX_REPLAY_STREAM_BYTES,
+  MAX_SLOT_PACKET_BYTES,
+} from './decompression-limits.js'
 import { EcsParser, type ComponentHashMaps, type EcsEntity } from './ecs.js'
 import { GmSyncParser } from './gm-sync.js'
 import {
@@ -135,10 +147,18 @@ class SlotParser {
     let data = r
     if (compressed > 0) {
       const compSize = r.readCompressed()
-      r.readCompressed() // размер после распаковки — не нужен
-      const at = r.bitOffset >> 3
+      const decompressedSize = r.readCompressed()
+      if (decompressedSize > MAX_SLOT_PACKET_BYTES) {
+        throw new Error(`слот: распакованный пакет слишком большой (${decompressedSize} байт)`)
+      }
+      const at = Math.floor(r.bitOffset / 8)
+      if (compSize > payload.length - 4 - at) {
+        throw new Error('слот: сжатый пакет выходит за пределы payload')
+      }
       const src = payload.subarray(4 + at, 4 + at + compSize)
-      data = new BitReader(zstdDecompressSync(src))
+      data = new BitReader(zstdDecompressSync(src, {
+        maxOutputLength: Math.max(decompressedSize, 1),
+      }))
     }
     const messageCount = data.readU16()
     for (let m = 0; m < messageCount; m++) {
@@ -643,7 +663,9 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
   for (const { buf, header } of ordered) {
     let stream: Buffer
     try {
-      stream = inflateSync(buf.subarray(1234 + header.settingsBlkSize))
+      stream = inflateSync(buf.subarray(1234 + header.settingsBlkSize), {
+        maxOutputLength: MAX_REPLAY_STREAM_BYTES,
+      })
     } catch (err) {
       errors.push(`часть ${header.partNumber}: zlib: ${(err as Error).message}`)
       continue
@@ -812,6 +834,14 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
 
 export const DEFAULT_REPLAY_FETCH_CONCURRENCY = 2
 export const REPLAY_TOTAL_MAX_BYTES = 512 * 1024 * 1024
+const PROCESS_BUDGET_WAIT_TIMEOUT_MS = 30_000
+const replayProcessByteBudget = new AsyncByteBudget(
+  workerResourcePlan().replayProcessByteBudgetMb * 1024 * 1024,
+)
+
+export function replayProcessByteBudgetSnapshot(): ByteBudgetSnapshot {
+  return replayProcessByteBudget.snapshot()
+}
 
 export interface IndexedReplayPartTiming extends ReplayPartTiming {
   index: number
@@ -838,6 +868,9 @@ export interface ReplayPartsTiming {
   ttfbMs: number
   downloadMs: number
   retryDelayMs: number
+  processBudgetWaitMs: number
+  processBudgetLimitBytes: number
+  processBudgetPeakBytes: number
   parts: IndexedReplayPartTiming[]
 }
 
@@ -846,7 +879,15 @@ export interface ReplayPartsFetchOptions {
   maxTotalBytes?: number
   /** Только для изолированных benchmark/smoke; undefined использует production cache. */
   cacheDirectory?: string | null
+  /** null отключает process budget только в изолированном benchmark/test. */
+  processByteBudget?: AsyncByteBudget | null
+  processBudgetTimeoutMs?: number
   onTiming?: (timing: ReplayPartsTiming) => void
+}
+
+export interface RetainedReplayParts {
+  parts: Buffer[]
+  release(): void
 }
 
 export class ReplayPartsFetchError extends Error {
@@ -861,6 +902,11 @@ export class ReplayPartsFetchError extends Error {
   }
 }
 
+export function isReplayByteBudgetSchedulingError(error: unknown): boolean {
+  const cause = error instanceof ReplayPartsFetchError ? error.originalError : error
+  return cause instanceof ByteBudgetTimeoutError || cause instanceof ByteBudgetOversizeError
+}
+
 /**
  * Все части реплея (для событий нужен весь поток пакетов) — через дисковый
  * cache. Pipeline ограничен числом ответов и worst-case суммой уже загруженных
@@ -871,8 +917,30 @@ export async function fetchReplayParts(
   signal?: AbortSignal,
   options: ReplayPartsFetchOptions = {},
 ): Promise<Buffer[]> {
+  const retained = await fetchReplayPartsRetained(partUrls, signal, options)
+  try {
+    return retained.parts
+  } finally {
+    retained.release()
+  }
+}
+
+export async function fetchReplayPartsRetained(
+  partUrls: string[],
+  signal?: AbortSignal,
+  options: ReplayPartsFetchOptions = {},
+): Promise<RetainedReplayParts> {
   const started = performance.now()
   const startedAtMs = Date.now()
+  const processBudget = options.processByteBudget === undefined
+    ? replayProcessByteBudget
+    : options.processByteBudget
+  const requestedProcessBudgetTimeoutMs =
+    options.processBudgetTimeoutMs ?? PROCESS_BUDGET_WAIT_TIMEOUT_MS
+  const processBudgetTimeoutMs =
+    Number.isFinite(requestedProcessBudgetTimeoutMs) && requestedProcessBudgetTimeoutMs >= 0
+      ? requestedProcessBudgetTimeoutMs
+      : PROCESS_BUDGET_WAIT_TIMEOUT_MS
   const requestedConcurrency = options.concurrency ?? DEFAULT_REPLAY_FETCH_CONCURRENCY
   const concurrency = Number.isFinite(requestedConcurrency)
     ? Math.max(1, Math.min(3, Math.floor(requestedConcurrency)))
@@ -893,6 +961,16 @@ export async function fetchReplayParts(
   let peakBudgetBytes = 0
   let failed = false
   let firstError: unknown = null
+  let processBudgetWaitMs = 0
+  let processBudgetPeakBytes = processBudget?.snapshot().usedBytes ?? 0
+  const processReservations = new Set<ByteBudgetReservation>()
+  let processReservationsReleased = false
+  const releaseProcessReservations = (): void => {
+    if (processReservationsReleased) return
+    processReservationsReleased = true
+    for (const reservation of processReservations) reservation.release()
+    processReservations.clear()
+  }
 
   const reservePartBytes = (index: number): void => {
     const nextBudget = loadedBytes + reservedBytes + REPLAY_PART_MAX_BYTES
@@ -934,17 +1012,28 @@ export async function fetchReplayParts(
       if (index >= partUrls.length) return
 
       let reserved = false
+      let activeStarted = false
+      let processReservation: ByteBudgetReservation | null = null
+      let retainProcessReservation = false
       try {
         reservePartBytes(index)
         reserved = true
-      } catch (error) {
-        fail(error)
-        throw error
-      }
-
-      active += 1
-      peakActive = Math.max(peakActive, active)
-      try {
+        if (processBudget) {
+          const budgetWaitStarted = performance.now()
+          processReservation = await processBudget.acquire(REPLAY_PART_MAX_BYTES, {
+            signal: combinedSignal,
+            timeoutMs: processBudgetTimeoutMs,
+          })
+          processBudgetWaitMs += performance.now() - budgetWaitStarted
+          processReservations.add(processReservation)
+          processBudgetPeakBytes = Math.max(
+            processBudgetPeakBytes,
+            processBudget.snapshot().usedBytes,
+          )
+        }
+        active += 1
+        activeStarted = true
+        peakActive = Math.max(peakActive, active)
         const part = await fetchReplayPart(partUrls[index]!, {
           signal: combinedSignal,
           ...(options.cacheDirectory === undefined
@@ -955,14 +1044,26 @@ export async function fetchReplayParts(
           },
         })
         parts[index] = part
+        processReservation?.shrinkTo(part.byteLength)
+        if (processBudget) {
+          processBudgetPeakBytes = Math.max(
+            processBudgetPeakBytes,
+            processBudget.snapshot().usedBytes,
+          )
+        }
         commitReservation(part.byteLength)
         reserved = false
+        retainProcessReservation = true
       } catch (error) {
         fail(error)
         throw error
       } finally {
+        if (processReservation && !retainProcessReservation) {
+          processReservations.delete(processReservation)
+          processReservation.release()
+        }
         if (reserved) releaseReservation()
-        active -= 1
+        if (activeStarted) active -= 1
       }
     }
   }
@@ -987,11 +1088,17 @@ export async function fetchReplayParts(
     maxTotalBytes,
     peakBudgetBytes,
     bytes: loadedBytes,
+    processBudgetWaitMs,
+    processBudgetLimitBytes: processBudget?.limitBytes ?? 0,
+    processBudgetPeakBytes,
     parts: partTimings.filter((value): value is IndexedReplayPartTiming => value !== undefined),
   })
   emitReplayPartsTiming(options.onTiming, timing)
-  if (failed) throw new ReplayPartsFetchError(firstError, timing)
-  return parts
+  if (failed) {
+    releaseProcessReservations()
+    throw new ReplayPartsFetchError(firstError, timing)
+  }
+  return { parts, release: releaseProcessReservations }
 }
 
 function summarizeReplayPartsTiming(input: {
@@ -1004,6 +1111,9 @@ function summarizeReplayPartsTiming(input: {
   maxTotalBytes: number
   peakBudgetBytes: number
   bytes: number
+  processBudgetWaitMs: number
+  processBudgetLimitBytes: number
+  processBudgetPeakBytes: number
   parts: IndexedReplayPartTiming[]
 }): ReplayPartsTiming {
   const attempts = input.parts.flatMap((part) => part.attempts)
@@ -1029,6 +1139,9 @@ function summarizeReplayPartsTiming(input: {
     ttfbMs: attempts.reduce((sum, attempt) => sum + (attempt.ttfbMs ?? 0), 0),
     downloadMs: attempts.reduce((sum, attempt) => sum + (attempt.downloadMs ?? 0), 0),
     retryDelayMs: attempts.reduce((sum, attempt) => sum + attempt.retryDelayMs, 0),
+    processBudgetWaitMs: input.processBudgetWaitMs,
+    processBudgetLimitBytes: input.processBudgetLimitBytes,
+    processBudgetPeakBytes: input.processBudgetPeakBytes,
     parts: input.parts.sort((a, b) => a.index - b.index),
   }
 }

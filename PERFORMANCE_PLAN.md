@@ -1,596 +1,432 @@
 # План производительности wtbot
 
-Обновлено: 2026-07-22.
-
-Документ сверён с текущим кодом, схемой SQLite, графом зависимостей и локальными
-профилями из `data/benchmarks/`. Галочка `[x]` означает, что механизм уже есть в
-текущей рабочей копии. Галочка `[ ]` означает, что пункт ещё предстоит реализовать
-или подтвердить репрезентативным benchmark.
-
-## Вывод анализа
-
-Первый крупный bottleneck устранён в текущей рабочей копии: `rasterize()` больше
-не сканирует все системные шрифты для каждого PNG. Worker один раз находит
-небольшой установленный UI-набор, а CJK fallback подключает только если
-соответствующие символы есть в конкретном SVG. Если нужного файла в minimal ОС
-нет, остаётся безопасный `loadSystemFonts: true` fallback.
-
-На том же replay парный cold-прогон сократил полный bundle с 6,30 до 2,12 с
-(-66,3%), а суммарный `Resvg.init` — с 5,51 до 1,36 с (-75,3%). Относительно
-ранее зафиксированного `after-temporal-scene.json` bundle уменьшился с 4,18 до
-2,12 с. Результат закреплён corpus-серией из трёх боёв: для каждого выполнен
-отдельный cold start и 10 warm-прогонов на одном worker. P1.2 `/api/voice`,
-P1.3 stats/refresh и P1.4 replay download/ingest I/O выполнены полностью; в P1.1
-закрыта только write amplification (LRU через commit marker и коалесцированный
-scan), а измерения cache hit, in-memory каталог, метрики hit/miss и
-версионирование metadata остаются открытыми. Следующий этап — P2 worker
-scheduling, память и throughput.
-Оставшийся `Resvg.init` отслеживается отдельно.
-
-Следствия для порядка работ:
-
-1. Сохранять воспроизводимый corpus/p50/p95 как regression baseline.
-2. Оптимизировать файловый кэш, синхронные SQLite-запросы web/voice и
-   admission control worker-пула.
-3. После этого повторно профилировать WRPL parser и геометрию.
-4. Rust, бинарный `events_blob` и GPU разрешать только по измеримому порогу.
-
-Сейчас перенос JSON в бинарный формат не приоритетен: gunzip + UTF-8 +
-`JSON.parse` по-прежнему занимают около 8 мс. В финальном прогоне фактический
-render + PNG занял 425 мс, а `Resvg.init` — 1363 мс; GPU и смену renderer нельзя
-начинать до corpus/p95 и проверки оставшегося font init.
-
-## Актуальные измерения
-
-> Прогон 22.07.2026. Повторная проверка показала, что render с тех пор изменился
-> (3 из 7 PNG на `06f197b0001e41dc` не совпадают с SHA-256 из
-> `data/benchmarks/corpus-explicit-fonts.json`), поэтому таблицы ниже описывают
-> состояние на дату прогона, а не текущий HEAD — перед сравнением corpus нужно
-> перемерить.
-
-Среда последнего прогона: AMD Ryzen 5 3600X, 12 логических CPU, Windows x64,
-Node.js 24.11.0. Replay `06efea670015c595`: 11 частей, 15,1 МБ, 16 игроков,
-15 убийств, 39 траекторий.
-
-| Показатель | Исторический baseline | Перед P0.2 | После P0.2 |
-| --- | ---: | ---: | ---: |
-| Чтение replay | — | 394 мс¹ | 3,2 мс |
-| WRPL parse | 2206 мс | 1599 мс | 1555 мс |
-| Полный media bundle | 5295 мс | 6301 мс | 2125 мс |
-| Одна `heatmap-air` | 739–832 мс | 642 мс² | 389 мс |
-| Максимальный event-loop lag | 45 мс | 13,8 мс | 8,4 мс |
-| Peak RSS worker при bundle | — | 296 МиБ | 300 МиБ |
-| Peak RSS процесса при bundle | — | 296 МиБ | 300 МиБ |
-
-¹ Первый pre-change read попал на холодный файловый кэш и не входит во время
-render. ² Значение из предыдущего одиночного профиля, не парный прогон.
-
-Репрезентативная серия `corpus-explicit-fonts.json`, 1 cold + 10 warm на
-сценарий, `--workers=1`, прямой worker render без файлового media-кэша:
-
-| Replay | Характеристика | Parse p50/p95 | Bundle p50/p95 | Resvg init p50/p95 | Lag p50/p95 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `06f197b0001e41dc` | 2,9 МиБ, ground, 34 траектории | 316/351 мс | 961/1366 мс | 558/794 мс | 12,7/44,6 мс |
-| `06f1a10e001e66d2` | 4,8 МиБ, mixed, 37+5 air | 332/374 мс | 1052/1166 мс | 639/708 мс | 9,7/13,5 мс |
-| `06efea670015c595` | 15,1 МиБ, mixed, 39+8 air | 1258/1399 мс | 2080/2289 мс | 1427/1537 мс | 9,7/16,1 мс |
-
-Во всех 33 render-прогонах размеры и SHA-256 семи PNG совпали. Warm queue p95
-ниже 0,1 мс, input transfer полного bundle — ниже 4,1 мс, result transfer —
-ниже 0,6 мс; основное время действительно находится внутри worker execution.
-Process RSS в последовательной серии дошёл до 461 МиБ p95 на большом сценарии;
-это включает retained/native allocator state предыдущих сценариев и требует
-отдельного plateau/recycle-теста, а не трактовки как независимого peak боя.
-
-Разложение 2122 мс внутри worker после P0.2:
-
-| Фаза | Время | Доля |
-| --- | ---: | ---: |
-| Resvg init | 1363 мс | 64,2% |
-| SVG + подготовка scene | 297 мс | 14,0% |
-| PNG encode | 251 мс | 11,8% |
-| Resvg render | 174 мс | 8,2% |
-| gunzip + UTF-8 + JSON | 8 мс | 0,4% |
-| Загрузка модуля/выбор шрифтов | < 20 мс | < 1,0% |
-| Копирование результата | < 1 мс | < 0,1% |
-
-Corpus подтверждает текущий warm профиль, но сопоставимого legacy-font corpus
-до изменения нет, поэтому точный before/after p95 не заявляется. Отдельно пока
-не измерены чтение `events_blob` из SQLite, media cache hit и
-запись/вытеснение файлового кэша.
-
-Команда воспроизведения:
-
-```bash
-npm run benchmark:workers -- data/replays/06efea670015c595 --render
-# Corpus, отдельный cold pool и 10 warm-прогонов на сценарий:
-npm run benchmark:workers -- data/replays/06f197b0001e41dc \
-  data/replays/06f1a10e001e66d2 data/replays/06efea670015c595 \
-  --render --warm=10 --workers=1 --json=data/benchmarks/corpus.json
-# Для visual/golden проверки:
-npm run benchmark:workers -- data/replays/06efea670015c595 --render \
-  --artifacts=data/benchmarks/render-artifacts
-# Replay I/O: controlled loopback, реальные WRPL payload, c1/c2/c3 + safety checks:
-npm run benchmark:replay -- data/replays/06efea670015c595 --runs=5 \
-  --json=data/benchmarks/replay-download-pipeline.json
-```
-
-## Что уже сделано
-
-### Worker-пул и изоляция main thread
-
-- [x] WRPL, gzip/zstd, SVG -> PNG и тяжёлая геометрия выполняются в
-      `worker_threads`.
-- [x] Большие входы передаются через transferable `ArrayBuffer` без лишнего
-      clone внутри одной задачи.
-- [x] Очередь ограничена количеством задач и суммой входных transferable bytes.
-- [x] Есть приоритеты `interactive`, `normal`, `background`, резерв для
-      интерактивных запросов и защита background ingest от starvation.
-- [x] Backlog ingest разбирается несколькими background workers, но не занимает
-      все готовые слоты.
-- [x] Queue timeout не расходует попытку ingest; execution timeout завершает и
-      заменяет зависший worker.
-- [x] Worker имеет old-generation limit и планово заменяется после 12 render-задач,
-      чтобы ограничивать накопление native memory Resvg.
-- [ ] Размер пула автоматически рассчитывается по CPU и доступной RAM; ручное
-      переопределение через `WT_WORKER_THREADS` сохранено. **Сломано:** ни
-      авто-план, ни явная ветка (`src/runtime-options.ts:122-125`) не ограничены
-      лимитом пула `MAX_CONFIGURABLE_WORKERS = 8` (`src/workers/pool.ts:98`);
-      конструктор бросает на `size > 8` (`pool.ts:141`), а синглтон
-      `new CpuWorkerPool()` создаётся на верхнем уровне модуля (`pool.ts:595`),
-      поэтому на 12 CPU со свободной RAM процесс падает во время ESM-импорта
-      (AUDIT.md H2). Локально это маскирует `WT_WORKER_THREADS=8` в `.env`.
-      Вместе с клемпом правь ассерт `src/analysis/worker-smoke.ts:63`
-      (`assert.equal(cpuPlan.workerThreads, 11)`), иначе `npm run verify:workers`
-      упадёт на корректном исправлении.
-- [x] Shutdown останавливает producers до закрытия CPU pool.
-
-### Media, heatmap и кэш
-
-- [x] `render-media-kind` строит только запрошенный материал.
-- [x] Cache miss и режим `WT_BATTLE_CACHE_ENABLED=false` не создают весь bundle
-      ради одного PNG/TXT.
-- [x] Одновременные сборки одной session дедуплицируются; интерактивный join
-      повышает приоритет уже активных worker-зависимостей.
-- [x] Bundle один раз декодирует `events_blob`, загружает assets и создаёт data URI
-      фоновых карт, затем повторно использует их для общих и team-вариантов.
-- [x] Введён `PreparedHeatmapScene`: bounds, экранные координаты, непрерывные
-      сегменты, Douglas–Peucker, дистанции и стрелки готовятся один раз.
-- [x] Убийства индексируются по victim/killer и времени; поиск точек маршрута и
-      первого убийства использует бинарный поиск.
-- [x] Spawn-кластеры, стоянки и минутные отметки готовятся до team-фильтрации.
-- [x] Все семь PNG побайтово совпали с baseline в контрольном прогоне
-      22.07.2026. С тех пор render изменился: на `06f197b0001e41dc` три PNG
-      (`heatmap-ground`, `heatmap-team-0`, `heatmap-team-1`) больше не совпадают
-      с SHA-256 из `data/benchmarks/corpus-explicit-fonts.json`, а
-      `render-heatmap.test.ts` (:538, :677) и `render-battle-log.test.ts` (:76)
-      красные. Пока они не починены, сравнивать corpus с baseline нельзя.
-- [x] Файлы публикуются атомарно, `meta.json` записывается последним как commit
-      marker.
-- [x] Дисковый кэш ограничен размером и вытесняет целые session bundles по LRU;
-      активная сборка защищена от eviction.
-- [x] Старые материалы восстанавливаются из нормализованных таблиц и
-      `events_blob`, а не требуют сохранённого replay.
-- [x] Кэш включён в конфигурации по умолчанию и может быть отключён явно.
-
-### SQLite и наблюдаемость
-
-- [x] SQLite работает в WAL mode.
-- [x] Есть индексы для основных выборок items, snapshots, battles, players,
-      kills и chat.
-- [ ] **Нет индекса на `battles.session_hex`.** Три горячих запроса
-      (`src/db/index.ts:3038`, `:3111`, `:3147`) делают
-      `WHERE session_id = ? OR session_hex = ?`; индексирована только PK-ветка
-      (`session_id TEXT PRIMARY KEY`, `:412`), поэтому SQLite вырождается в
-      `SCAN battles` по таблице 2,33 ГБ — 61,8 с холодно, блокируя event loop
-      вместе с Discord-heartbeat и Fastify (AUDIT.md H1). Добавить
-      `CREATE INDEX IF NOT EXISTS idx_battles_session_hex ON battles (session_hex);`
-      либо резолвить hex→decimal один раз на входе и запрашивать по PK.
-- [x] Parser sources защищены от наложения запусков; `saveItems()` пишет пачку в
-      транзакции и пропускает неизменившийся `content_hash`.
-- [x] Replay cache ограничивает размер ответа, имеет timeout/retry, глобальный
-      интервал между стартами CDN-запросов и атомарную запись файлов.
-- [x] Benchmark сохраняет JSON с окружением, входным размером, временем parse и
-      render, event-loop lag, main/worker memory и фазами rasterization.
-- [x] Benchmark сохраняет font-mode/counts и по `--artifacts=<dir>` выгружает
-      PNG/TXT для visual/golden diff.
-- [x] Source и dist worker smoke проверяют CPU pool и Resvg.
-- [x] Resvg использует явный UI/Cyrillic-набор и ленивые CJK fallback-файлы;
-      повторный системный scan отключён на поддерживаемой конфигурации.
-
-## P0. Измерения и устранение Resvg font init
-
-Основной кодовый пункт P0.2 и базовый corpus/p50/p95 выполнены. Недостающие
-DB/cache и подробные parse-фазы добавляются вместе с соответствующими этапами.
-
-### P0.1. Репрезентативный benchmark
-
-- [x] Зафиксировать corpus минимум из малого, среднего и большого ground/air боя;
-      включить длинный бой с большим количеством траекторий и текста.
-- [x] Для каждого сценария собирать cold start и не менее 10 warm-прогонов:
-      p50/p95, throughput, event-loop lag, peak/steady RSS, heap, external и
-      ArrayBuffer memory.
-- [x] Разделить worker queue wait, worker startup, input transfer, execution и
-      result transfer.
-- [ ] Добавить отдельные фазы чтения `events_blob`, cache lookup/read/write,
-      atomic rename и eviction scan.
-- [ ] Разбить WRPL parse на header/results BLK, packet stream, ECS/GMSync/FM,
-      event extraction, transform и gzip.
-- [x] Сохранять параметры рендера, число/размер PNG, cache state и число workers,
-      чтобы результаты разных конфигураций были сравнимы.
-
-Затрагиваемые места: `src/analysis/worker-replay-check.ts`,
-`src/workers/protocol.ts`, `src/workers/entry.ts`, `src/wrpl/battle-media.ts`.
-
-### P0.2. Явный набор шрифтов для Resvg
-
-- [x] В `rasterize()` заменить безусловный `loadSystemFonts: true` на режим с
-      явно разрешёнными UI/Cyrillic и игровыми/symbol font files.
-- [x] На Windows находить установленный системный UI-шрифт один раз, не копируя
-      и не распространяя его; для Linux определить документированный fallback.
-- [x] Проверить `loadSystemFonts: false` отдельно для log, scoreboard, ground/air
-      и team-вариантов.
-- [x] Проверить русский текст, WT-ники, клан-теги, спецсимволы и fallback glyphs.
-- [x] Сравнить cold/warm `resvg.init`, bundle p50/p95 и RSS.
-- [ ] Если явные `fontFiles` всё ещё парсятся для каждого экземпляра, исследовать
-      backend/API с одним process-level font database либо специализированную
-      batch-raster задачу. Не менять renderer до подтверждённого выигрыша.
-
-Критерий принятия: отсутствие пропавших glyphs и неприемлемого visual diff,
-bundle p50 быстрее минимум на 20% без роста peak RSS. Целевой ориентир для
-эксперимента — `resvg.init` bundle ниже 1,5 с.
-
-Первичный результат на одном replay: glyph regression CJK-ника обнаружена
-visual-проверкой и исправлена ленивым Yu Gothic fallback; `loadSystemFonts=false`,
-`resvg.init=1,36 с`, bundle 2,12 с. Peak RSS изменился с 296 до 300 МиБ (+1,2%,
-в пределах шума одиночного прогона). В corpus большой replay дал warm
-`resvg.init` p50/p95 1,43/1,54 с и bundle 2,08/2,29 с; одинаковые SHA-256
-подтверждают отсутствие алгоритмического drift.
-
-Проверено для P0.2:
-
-- [x] `npm run build`.
-- [x] `npm run verify:workers` и `npm run verify:workers:dist`.
-- [x] Bundle, одиночная heatmap, scoreboard, русский и CJK-текст; visual review
-      не показывает пропавших glyphs.
-- [x] Репрезентативный corpus и не менее 10 warm-прогонов на сценарий.
-
-Затрагиваемые функции: `src/workers/entry.ts:rasterize`,
-`src/workers/render-fonts.ts:resolveRenderFonts`, загрузчики шрифтов в
-`src/wrpl/wt-fonts.ts` и `src/wrpl/battle-assets.ts`.
-
-## P1. Быстрый cache hit, SQLite и web/voice
-
-### P1.1. Уменьшить write amplification файлового кэша
-
-До P1.1 чтение metadata вызывало `touchBattleBundle()` и до десяти `utimes`, а
-чтение самого материала обновляло файл ещё раз. Теперь единым LRU timestamp
-служит commit marker, а scan лимита коалесцирован консервативной оценкой bytes.
-
-- [ ] Измерить p50/p95 cache hit на SSD и количество filesystem operations.
-- [x] Использовать mtime commit marker как last-access всего bundle и обновлять
-      его не чаще заданного интервала, например раз в 1–5 минут на session.
-- [x] Не трогать каждый PNG/TXT при каждом чтении metadata.
-- [x] Коалесцировать проверки лимита и не сканировать каталог после каждой
-      публикации, если известный размер заведомо ниже порога.
-- [ ] Держать лёгкий in-memory каталог `{session, bytes, lastAccess}` с
-      восстановлением/reconciliation при старте и периодически.
-- [ ] Добавить hit/miss/corrupt/evicted bytes по `BattleMediaKind`.
-- [x] Версионировать cache metadata по renderer/config: `BATTLE_MEDIA_VERSION` и
-      `BATTLE_MEDIA_RENDER_OPTIONS` пишутся в commit marker и сверяются в
-      `readBattleMetaFile()`, а `@2x`-файлы несут `BATTLE_MEDIA_RENDER_VARIANT` в имени.
-- [ ] Расширить версионирование на assets (набор файлов шрифтов из
-      `resolveRenderFonts()`, тактическая карта, unit icons), чтобы смена шрифта
-      или карты тоже давала предсказуемый miss, а не устаревший PNG.
-- [ ] По метрикам оценить точечный idle prewarm часто запрашиваемых материалов;
-      не строить весь bundle фоном без спроса и свободного memory/CPU budget.
-
-Сохранить текущие гарантии: meta удаляется первым, публикация meta выполняется
-последней, активный session bundle не вытесняется.
-
-Затрагиваемые функции: `cachedBattleMeta()`, `cachedBattleMedia()`,
-`touchBattleBundle()`, `publishBattleArtifacts()`, `doEnforceCacheCap()` в
-`src/wrpl/battle-media.ts`.
-
-### P1.2. Убрать N+1 в `/api/voice`
-
-Сейчас маршрут сначала читает `voice_presence`, затем для каждого игрока
-вызывает `getPlayerRating()` и `getPlayerBattleStats()`. Один игрок создаёт ещё
-2–3 синхронных SQLite-запроса; fallback `nick LIKE '<nick>@%'` усложняет
-использование индекса.
-
-- [x] Добавить типизированный DB API, возвращающий voice rows, две последние
-      rating-записи и battle aggregates одним или ограниченным числом запросов.
-- [x] Нормализовать базовый WT-ник при записи и индексировать его, сохранив
-      исходный display nick; убрать массовый fallback `LIKE` из hot path.
-- [x] Для latest/previous rating использовать оконную функцию или ограниченный
-      batch по набору активных ников.
-- [x] Подготовить и повторно использовать частые statements, учитывая
-      повторную инициализацию/закрытие БД в smoke-тестах.
-- [x] Сравнить Fastify `inject()` p50/p95 на 0, 10, 50 и 200 voice rows.
-
-Реализованный `getVoiceDashboardRows()` выполняет один prepared SQL: две
-последние rating-строки выбираются ограниченными индексными lookup, battle
-aggregate строится один раз для активных base nick. Исходные `nick`/`wt_nick`
-не изменяются; добавлены и мигрируются `nick_base`/`wt_nick_base` и три индекса.
-Кэш statements очищается в `initDb()`/`closeDb()`. Benchmark дополнительно
-проверяет миграцию старой схемы с `@psn`/`@live`.
-
-Локальный `npm run benchmark:voice -- --runs=500` (Fastify `inject()`, SQLite
-`:memory:`, три боя на игрока):
-
-| Voice rows | Batch p50 / p95 | N+1 p50 / p95 | Изменение p95 |
-| ---: | ---: | ---: | ---: |
-| 0 | 0,081 / 0,138 мс | 0,047 / 0,090 мс | шум на пустом ответе |
-| 10 | 0,165 / 0,225 мс | 0,183 / 0,285 мс | -21,1% |
-| 50 | 0,548 / 0,697 мс | 0,674 / 1,001 мс | -30,4% |
-| 200 | 1,894 / 2,547 мс | 2,448 / 3,809 мс | -33,1% |
-
-N+1 baseline здесь консервативный: одиночные функции уже используют новые
-base-index и prepared statements, но по-прежнему делают два запроса на игрока.
-
-Затрагиваемые функции: `apiRoutes()`, `getPlayerRating()`,
-`getPlayerBattleStats()` и схема/индексы в `src/db/index.ts`.
-
-### P1.3. Снизить стоимость `/api/stats` и refresh
-
-- [x] Объединить шесть `COUNT` из `getIngestStats()` условными агрегатами либо
-      кэшировать dashboard snapshot на 1–5 секунд.
-- [x] Аналогично не пересчитывать command/item aggregates на каждом polling tick,
-      если соответствующие таблицы не изменились.
-- [x] Ввести single-flight для `refreshVoice()`: параллельные POST должны ждать
-      одну сборку snapshot, а не запускать несколько.
-- [x] Не выполнять `DELETE` + полную вставку `voice_presence`, если snapshot не
-      изменился; затем перейти к diff upsert/delete при доказанной пользе.
-- [x] Ограниченно и параллельно загружать только отсутствующих Discord members,
-      не сериализуя сетевые fetch внутри двойного цикла.
-- [x] Добавить route rate limit для POST refresh. Cooldown ratings не заменяет
-      ограничение Discord snapshot и SQLite-записи.
-
-`getIngestStats()` теперь выполняет один prepared statement и сканирует
-`battle_ingest` один раз. Command/item/ingest aggregates возвращаются из
-versioned-кэша; локальные writers инвалидируют его сразу, а `PRAGMA data_version`
-обнаруживает commit другого процесса не позднее чем через секунду. Voice snapshot
-делает diff upsert/delete и сохраняет `joined_at` неизменившихся строк. Отсутствующие
-Discord members загружаются с concurrency 4, active clan tags выбираются одним SQL,
-refresh имеет single-flight, а POST — single-flight плюс глобальный cooldown 5 с.
-
-`benchmark:voice` проверяет cache invalidation, нулевой diff повторного snapshot,
-два одновременных POST с одним вызовом dependency и последующий HTTP 429. Живой
-Discord REST smoke сознательно не запускался.
-
-Затрагиваемые функции: `getIngestStats()`, `getCommandStats()`, `getItemStats()`,
-`snapshot()`, `refresh()` и `syncVoicePresence()`.
-
-### P1.4. Replay download и ingest I/O
-
-`fetchReplayParts()` теперь использует bounded pipeline c production concurrency
-2. Исходный порядок частей, timeout, retry, лимит 96 МиБ на часть и глобальная
-пауза 150 мс между стартами CDN-запросов сохранены.
-
-- [x] Измерять local cache hit, ожидание fetch slot, TTFB, download time и bytes
-      отдельно для каждой части и всего боя.
-- [x] Проверить bounded pipeline на 2–3 одновременных ответа с сохранением
-      исходного порядка частей и существующего интервала между стартами.
-- [x] Ограничить не только число запросов, но и суммарные in-flight/loaded bytes;
-      корректно отменять оставшиеся запросы при abort или фатальной ошибке.
-- [x] Сравнить cold ingest latency, CDN error/retry rate и peak RSS; не повышать
-      concurrency, если выигрыш мал или сервер отвечает хуже.
-- [x] Отдельно измерять путь `item discovered → replay cached → worker parsed →
-      SQLite committed`, чтобы сеть не смешивалась с CPU parse.
-
-Pipeline резервирует worst-case 96 МиБ на каждый активный ответ и не допускает
-сумму loaded + in-flight выше 512 МиБ. Первая фатальная ошибка или внешний abort
-отменяет соседние fetch, ожидание глобального slot и retry delay. Одинаковый part
-дедуплицируется отдельным file-lock; разные parts одной сессии читаются
-параллельно, а `dropReplayCache()`/TTL cleanup получают эксклюзивный session-lock.
-
-`benchmark:replay` раздаёт реальные corpus-файлы через управляемый loopback HTTP,
-для каждого cold-run использует новый временный cache, затем проверяет warm hit.
-Это воспроизводимое сравнение pipeline и памяти, а не заявление о скорости
-конкретного CDN:
-
-| Replay | Parts / bytes | c1 cold p50/p95 | c2 cold p50/p95 | c3 cold p50/p95 | c2 RSS Δ p95 | c3 RSS Δ p95 |
+Обновлено: 2026-07-30.
+
+Статус: измерительный контур и no-regret оптимизации закрыты; process-wide
+replay budget, memory-aware worker sizing и controlled WAL checkpoint
+реализованы. Следующий обязательный шаг — 30-минутный live soak текущего
+профиля. Только его telemetry определяет, что делать первым: staged ingest,
+SQLite writer, AIMD либо weighted memory admission.
+
+Этот документ содержит только актуальные решения, подтверждённые baseline,
+открытые bottleneck, порядок исполнения и regression gates. Источники истины:
+текущий код и схема БД, затем `AGENTS.md`; продуктовый roadmap —
+`MASTER_PLAN.md`. Сырые локальные результаты находятся в
+`data/benchmarks/`.
+
+## Разрешение на performance-работы
+
+Владелец проекта 29.07.2026 разрешил в рамках этого плана:
+
+- запускать development/production-сборку bot, web, parser/ingest и browser
+  transport;
+- выполнять сетевые canary/backfill;
+- писать в локальную SQLite и восстанавливаемые кэши;
+- менять локальную performance-конфигурацию и собирать профили.
+
+Перед live-запуском обязательно исключать случайный автоанонс: процессу
+передаётся пустой `WT_BATTLES_CHANNEL`. Разрешение не включает регистрацию
+Discord-команд, платные AI-запросы, destructive restore/delete и публикацию
+секретов из `.env`.
+
+## Итог исследования
+
+Цель — не 100% host CPU/RAM, а максимальный устойчивый ingest throughput при
+сохранении Discord/Fastify latency, bounded memory и корректности данных.
+
+Почему CPU и RAM не заполняются полностью:
+
+- discovery-запросы warthunder.com намеренно проходят через общую
+  последовательную очередь с интервалом 1500 мс и `Retry-After`;
+- CDN download, retry и SQLite — I/O waits, которые CPU workers не устраняют;
+- `node:sqlite` в main thread синхронна, поэтому тяжёлый SELECT блокирует bot,
+  даже если остальные ядра свободны;
+- один физический CPU также обслуживает main thread, Discord/Fastify,
+  transfer/GC, render, SQLite и ОС;
+- заполнение RAM вытесняет SQLite/page cache и создаёт swap/OOM вместо
+  throughput.
+
+Текущий локальный production-профиль подтверждён коротким live A/B:
+
+| Параметр | Значение |
+| --- | ---: |
+| `WT_WORKER_THREADS` | 5 |
+| `WT_WORKER_BACKGROUND_RESERVE` | 1 |
+| Активные background CPU slots | 4 |
+| `WT_WORKER_ESTIMATED_MB` | 320 |
+| `WT_INGEST_CONCURRENCY` | 8 |
+| `WT_REPLAY_PROCESS_BUDGET_MB` | 384 |
+| Production hard cap workers | 8 |
+
+Решения по worker count:
+
+- `5 workers / 4 background jobs` — основной профиль bot+web+ingest;
+- `6/5` даёт около +7,7% synthetic throughput, но ухудшает parse p95 примерно
+  на 20%, render p95 на 17% и RSS на 15,5%;
+- `6/4` статистически совпадает с `5/4`: шестой созданный worker не является
+  причиной регрессии, цена возникает от пятой активной background-задачи;
+- 8 workers показали максимум только в worker-only parse+render benchmark.
+  Это не доказательство преимущества в end-to-end ingest и не основание
+  менять live bot;
+- экспериментальные 9 workers медленнее 8 на длинном production-render
+  benchmark; временный cap удалён, hard cap остаётся 8.
+
+## Что уже реализовано
+
+| Область | Актуальное состояние |
+| --- | --- |
+| CPU pool | До 8 workers; interactive/normal/background priority, reserve, queue count и transferable bytes, queue/execution timeout, worker replacement, bounded current/high-water/cumulative telemetry |
+| Auto resources | Default estimate 320 МиБ; CPU, free RAM, OS reserve, workers и replay buffers планируются совместно |
+| Replay download | Любое число replay parts, но не более двух одновременных CDN download на бой; retry/dedup/abort, 96 МиБ на часть, 512 МиБ на бой |
+| Process replay budget | FIFO byte semaphore; worst-case reservation уменьшается до actual bytes, удерживается через ready/transfer/parse и освобождается в `finally` |
+| Ingest telemetry | Bounded stages eligible/download/ready/parse/persist, count/bytes/wait, battles/min, backlog age, TTFB/download/retry/status и process-budget wait/high-water |
+| Benchmark corpus | Четыре постоянных сценария в `benchmarks/fixtures/replays`; byte/SHA-256, success/error и normalized output contract; runtime LRU-cache запрещён verifier-ом |
+| Media | Air variants не строятся без air events; неизвестный winner не запускает background full bundle; winner update bounded/coalesced |
+| Read model боя | Nullable `air_unit_count`/`chat_count`, migration v3, индексированный `getBattlePostSummary()` без чтения `events_blob` |
+| SQLite ingest | Commit сериализован и выполняется вне main thread; worker connections/statements кэшируются; passive checkpoint — раз в 32 commit/60 с на connection и явно при shutdown |
+| SQLite warmup | Blocking startup warmup сокращён с 24 840 до 43 мс; тяжёлые table scans выполняются в read-only worker |
+
+Текущая незакрытая архитектурная связь: один runner в `ingestBatch()` держит
+свой concurrency slot через download → parse → serialized persist.
+`loadBattleData()` также используется интерактивным render path, поэтому
+разделять его нужно совместимо, без изменения `/battle`.
+
+## Подтверждённые baseline
+
+Среда controlled benchmark: AMD Ryzen 5 3600X, 6 physical/12 logical CPU,
+Windows x64, AMD Ryzen Balanced, Node.js 24.11.0.
+
+### Корректность и измерения
+
+- полный offline baseline: **106 pass, 0 fail**;
+- ingest telemetry overhead: p50/p95 около 0,0008 мс на lifecycle, то есть
+  примерно 0,0008% консервативного бюджета 100 мс;
+- snapshot после 100 000 lifecycle — 3515 bytes: cardinality bounded;
+- corpus:
+  - small mixed — 2,59 МиБ, 36 trajectories;
+  - large ground-only — 5,21 МиБ, 220 trajectories;
+  - large mixed-air — 11,81 МиБ, 37 trajectories;
+  - damaged — ожидаемый `results-BLK` error;
+- replay descriptors, normalized hashes и PNG SHA-256 стабильны во всех
+  worker sweeps.
+
+### Live ingest
+
+Короткий A/B после process budget:
+
+| Профиль | Commit | HTTP 429 | Дополнительные факты |
+| --- | ---: | ---: | --- |
+| auto 3 workers, ingest 14 | 12 | 26 | baseline |
+| 5 workers, ingest 8, replay 384 МиБ | 15 | 5 | +25% commit, −81% 429 |
+
+Во втором tuned canary `/health`, `/api/stats`, `/api/items` и `/api/voice`
+остались ≤36,4 мс, process-budget wait был равен нулю, shutdown прошёл
+штатно. Это положительный короткий сигнал, но не замена 30-минутному soak:
+RSS plateau, oldest backlog age и долгий error/retry rate ещё не доказаны.
+
+### Authoritative worker baseline
+
+Decision baseline — 30-секундный closed-loop large mixed-air,
+parse + production-priority `heatmap-air`, один interactive slot
+зарезервирован. Короткие 10-секундные sweeps считаются exploratory и не
+используются для выбора production profile.
+
+| Workers / jobs | Throughput | Parse p95 | Render p95 | Render queue p95 | Peak process RSS | Event-loop signal p95 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `06f197b0001e41dc` | 3 / 2,9 МиБ | 1068/1078 мс | 952/956 мс | 1116/1121 мс | 9,0 МиБ | 8,6 МиБ |
-| `06f1a10e001e66d2` | 4 / 4,8 МиБ | 1695/1699 мс | 1113/1115 мс | 1109/1112 мс | 9,3 МиБ | 11,1 МиБ |
-| `06efea670015c595` | 11 / 15,1 МиБ | 5102/5130 мс | 2839/2885 мс | 2358/2368 мс | 19,4 МиБ | 24,7 МиБ |
+| 4 / 3 | 1,738/с | 1584 мс | 293 мс | 0,056 мс | 970 МиБ | 23,3 мс |
+| 5 / 4 | 2,064/с | 1803 мс | 325 мс | 0,054 мс | 1216 МиБ | 33,1 мс |
+| 6 / 5 | 2,236/с | 2190 мс | 400 мс | 0,066 мс | 1404 МиБ | 36,2 мс |
+| 7 / 6 | 2,359/с | 2359 мс | 393 мс | 0,281 мс | 1652 МиБ | 30,2 мс |
+| 8 / 7 | **2,412/с** | 2903 мс | 465 мс | 0,141 мс | 1911 МиБ | 52,4 мс |
+| 9 / 8, experiment | 2,369/с | 3386 мс | 617 мс | 0,211 мс | 2104 МиБ | 47,5 мс |
 
-На среднем replay c3 улучшил p95 относительно c2 лишь на 0,3%, на малом стал
-медленнее. На большом выигрыш c3 составил 17,9%, но peak RSS вырос на 27%, а
-worst-case in-flight reservation — на 50%. Поэтому production остаётся на c2:
-он снимает 11–44% cold p95 относительно последовательной загрузки без лишнего
-третьего ответа к CDN.
+Event-loop timer внутри synthetic saturation используется как сравнительный
+signal, а не как live SLO: Windows scheduling даёт шум и немонотонные
+значения. Live event-loop/API latency измеряется отдельно.
 
-Safety-сценарии подтвердили исходный порядок, отдельные buffers для двух callers,
-ровно один HTTP request при duplicate, один успешный retry после 429, остановку
-после byte budget и отмену активных ответов за 224–456 мс при abort/HTTP 500.
-Короткий разрешённый live-run дал Discord ready, web startup и два реальных
-успешных ingest timing без ingest/network/fatal errors. Каждый успешный ingest
-теперь логирует backlog/discovered→cache, replay, worker queue/execution,
-SQLite commit и discovered→commit раздельно.
+Повторная проверка точки 6:
 
-Затрагиваемые функции: `fetchReplayParts()` в `src/wrpl/replay-events.ts`,
-`fetchReplayPart()`/`reserveFetchSlot()` в `src/wrpl/replay-cache.ts` и
-`loadBattleData()`, `ingestOne()` и `getPendingBattleItems()`.
+| Режим | Результат |
+| --- | --- |
+| `5/4` | median 2,061/с; parse/render p95 1867/325 мс; RSS 1216 МиБ |
+| `6/4` | 2,004–2,045/с; p95 1847–1871/338–340 мс; RSS 1213–1243 МиБ |
+| `6/5` | median 2,220/с; p95 2242/380 мс; RSS 1405 МиБ |
 
-## P2. Worker scheduling, память и throughput
+Вывод: размер пула 6 безопасен, но `reserve=1` открывает пятую background
+задачу. `6 workers + reserve 2` не показал преимущества над более простым
+`5 workers + reserve 1`.
 
-Текущий лимит queued bytes учитывает входные transferable buffers, но не
-размер SVG/PNG, native allocations Resvg и фактический peak RSS задачи.
+### Replay I/O
 
-- [ ] Ввести оценку веса задачи: parse WRPL, обычный PNG, 2× PNG и bundle;
-      учитывать ожидаемые pixels, output bytes и peak native memory.
-- [ ] Публиковать queue length/wait/execution по приоритету, timeout stage,
-      cold worker start, replacement reason и RSS до/после задачи.
-- [ ] Сделать admission control по оценённой памяти и текущей свободной RAM с
-      hysteresis; не запускать тяжёлые jobs только потому, что слот свободен.
-- [ ] Benchmark-ом подобрать 1/2/3/4 workers для одиночной latency и 2/4
-      одновременных боёв; отдельно измерить ingest throughput.
-- [ ] Согласовать `MAX_CONFIGURABLE_WORKERS = 8` в `src/workers/pool.ts` с
-      `workerResourcePlan()`: `automaticThreads` клампится только по CPU и RAM
-      (на 12 CPU план даёт 11, см. `src/analysis/worker-smoke.ts`), а
-      `const pool = new CpuWorkerPool()` на верхнем уровне модуля бросает при
-      size > 8 — на машине с ≥9 доступными CPU и достаточной свободной RAM
-      импорт пула падает. Делать это до подбора числа workers.
-- [ ] Проверить порог замены worker после 12 render jobs: время холодного старта
-      против memory plateau.
-- [ ] Только после P0 проверить 2–3 параллельные raster-задачи одного bundle.
-      Учитывать дублирование scene/assets/font state и рост RSS.
-- [ ] Если разделение bundle выгодно, передавать компактный prepared payload;
-      не клонировать полный `events_blob` и tactical map каждому worker без
-      измеренного выигрыша.
+Локальный HTTP fixture, small corpus:
 
-Затрагиваемые места: `CpuWorkerPool.run()`, `nextRunnableJob()`, `dispatch()`,
-`workerResourcePlan()`, worker protocol и ingest scheduling.
+| Concurrency частей одного боя | Cold p50/p95 | Peak RSS delta p95 |
+| --- | ---: | ---: |
+| 1 | 1163/1171 мс | 10,3 МиБ |
+| 2 | 879/910 мс | 7,8 МиБ |
+| 3 | 730/864 мс | 7,8 МиБ |
 
-## P3. Оставшаяся геометрия и SVG
+Production остаётся на concurrency 2: относительно 1 это около +24% по p50;
+retry, fatal cancellation, explicit abort, per-battle cap и duplicate dedupe
+проходят. Третий runner не увеличил фактический peak выше двух в fixture и
+не имеет live A/B. CDN binary download не должен идти через browser transport.
 
-Граф кода показывает кандидатов с высокой сложностью: `buildHeatmapSvg()` имеет
-четыре линейных поиска внутри циклов, а `routeCrossings()` уже
-сравнивает рёбра через сетку 48 px, а не квадратично.
-Однако весь SVG сейчас занимает около 245 мс, поэтому это не P0.
+### SQLite persist/checkpoint
 
-- [ ] Добавить grid/spatial index для collision подписей (`placeSpawnLabel()`),
-      death/camp/spawn markers и подтвердить снижение асимптотики на большом бою.
-- [ ] Повторно использовать неизменяемый SVG background между general/team
-      вариантами, если visual diff подтверждает идентичность слоёв.
-- [ ] Сократить промежуточные массивы и крупные конкатенации SVG только после
-      allocation/CPU profile.
-- [ ] Перевести массовые координаты в `Float32Array`/offset arrays, если corpus
-      показывает существенный выигрыш RSS или transfer size.
-- [ ] Сохранить текущие индексы убийств, binary search и prepared scene; не
-      возвращать вычисления в team-specific проходы.
+До исправления каждый commit выполнял `wal_checkpoint(PASSIVE)`.
+Live-инструментация показывала 835–954 мс SQLite, включая 356–489 мс
+checkpoint при transaction 346–537 мс.
 
-Затрагиваемые функции: `prepareHeatmapScene()`, `buildHeatmapSvg()`,
-`routeCrossings()` в `src/wrpl/render-heatmap.ts`.
+Controlled temporary SQLite:
 
-## P4. WRPL parser и возможный Rust core
+| Режим | Commit p50/p95 | Изменение |
+| --- | ---: | ---: |
+| Checkpoint после каждого боя | 7,2/7,9 мс | baseline |
+| Checkpoint раз в 32 commit/60 с | 3,4/4,2 мс | −53%/−47% |
 
-Parse последнего replay занимает 1,54 с и станет заметнее после ускорения
-рендера. Статический граф выделяет `extractReplayEvents()`, `parseFatBlk()`,
-`rle0kiDecompress()`, `parseVehicleState()` и packet deserializers, но
-сложность кода сама по себе не доказывает CPU bottleneck.
+После изменения обычный live commit имел `checkpoint=0`; shutdown checkpoint
+выполнился внутри worker. Соединения всё ещё распределены по CPU workers, а
+каждая транзакция сохраняет только один бой — это следующий возможный DB
+bottleneck, но его приоритет должен подтвердить soak.
 
-### P4.1. Сначала профиль TypeScript
+### Устранённая media-работа
 
-- [ ] Собрать CPU profile и пофазные тайминги на полном corpus.
-- [ ] Оптимизировать только функции, которые дают заметную долю parse p95:
-      уменьшать per-bit/per-packet calls, повторные bounds checks, временные
-      объекты и копирования buffers.
-- [ ] Проверять точное совпадение players, kills, chat, winner, trajectories,
-      DB rows и `events_blob` на fixtures.
-- [ ] Добавить damaged/truncated WRPL cases до смены реализации parser.
+- неизвестный winner больше не создаёт полный bundle в фоне;
+- ground-only не создаёт air variants;
+- ранее устраняемый warm bundle стоил 712/762 мс p50/p95 на ground-only и
+  1344/1404 мс на mixed-air;
+- ingest при необходимости строит только scoreboard update, остальные media
+  создаются по запросу.
 
-### P4.2. Rust через napi-rs — только по порогу
+## Открытые bottleneck
 
-- [ ] Создать изолированный prototype `native/wt-core`, если один устойчивый
-      CPU-кластер занимает не менее 20% parse p95.
-- [ ] Делать один крупный вызов Rust на `ArrayBuffer`, а не N-API вызов на
-      каждую точку/packet.
-- [ ] Возвращать компактный binary/TypedArray payload и выполнять native code
-      внутри существующего worker thread.
-- [ ] Требовать минимум 15% end-to-end выигрыша parse или двукратного ускорения
-      целевой фазы без роста RSS и ухудшения диагностики.
-- [ ] Сохранить TypeScript fixtures, fuzz-тесты, panic containment и prebuilt
-      Windows/Linux binaries.
-- [ ] До переноса согласовать происхождение и AGPL-атрибуцию портированного
-      WRPL-кода: смена языка не отменяет лицензию.
+| Приоритет | Проблема | Риск/следствие |
+| --- | --- | --- |
+| Gate | Нет 30-minute live soak профиля 5/8/384 | Нельзя доказательно выбрать staged queues, writer или AIMD первым |
+| P0 | Один ingest slot охватывает download, parse и persist | Медленная стадия удерживает admission другой стадии |
+| P0 | Нет одного SQLite writer/microbatch | Однобоевые транзакции не амортизируются, connections распределены по CPU workers |
+| P1 | Persist output, PNG и native Resvg memory не входят в weighted budget | Replay cap не гарантирует общий RSS plateau |
+| P1 | Нет AIMD и high/low watermarks | Статический admission не реагирует на 429, TTFB, RSS и persist pressure |
+| P2 | Newest-first без полноценного aging | Старый backlog может ждать при постоянном потоке новых items |
+| P2 | Синхронные SQLite read models | SELECT >10 мс может остановить Discord heartbeat/Fastify |
+| P3 | Нет полного CPU profile WRPL phases | Оптимизация parser/Rust пока не имеет доказанного hot phase |
+| P4 | Нет cache catalog/fingerprint и fairness WT source queue | Стабильность и observability, но не доказанный текущий throughput limiter |
 
-Порядок возможного переноса: `BitReader`/packet stream → ECS/GMSync/FM → event
-extraction → весь parser. Discord, Fastify, SQLite, scheduler и конфигурацию в
-Rust не переносить.
+Таблица `battles` содержит большой `events_blob`; full scan недопустим.
+Любой изменённый SQL обязан пройти `EXPLAIN QUERY PLAN`. Read path, устойчиво
+превышающий 10 мс, переносится в snapshot/read-only worker либо получает
+индекс — не маскируется увеличением workers.
 
-## P5. Версионированный `events_blob`
+## Следующий обязательный шаг: live soak
 
-Этап отложен: на текущем replay decode занимает 8 мс. Возвращаться к нему,
-только если большой corpus покажет decode > 10% render p95, значимый GC/RSS либо
-слишком большой объём SQLite.
+До новой архитектурной правки выполнить один воспроизводимый soak:
 
-- [ ] Сравнить текущий gzip JSON с zstd JSON, MessagePack и columnar
-      TypedArray/offset layout по decode time, blob size и peak RSS.
-- [ ] Ввести версию формата и сохранить чтение старого gzip JSON.
-- [ ] Хранить координаты в `Float32`, время в `Uint32`, маршруты через offsets,
-      только если точности достаточно для существующего рендера.
-- [ ] Выполнять ленивую безопасную миграцию без потери исходных данных.
-- [ ] Не смешивать долговечный нормализованный blob с восстанавливаемым cache
-      prepared scene.
+1. `npm run build`, затем production build с текущими performance-параметрами
+   5 workers / reserve 1 / ingest 8 / replay 384 МиБ.
+2. Передать процессу пустой `WT_BATTLES_CHANNEL`; не регистрировать команды и
+   не запускать платный analysis.
+3. Длительность — не менее 30 минут. Зафиксировать размер backlog и sample
+   count; пустой backlog не считается throughput-доказательством.
+4. Каждые 30 секунд снимать:
+   - process RSS/heap/external/arrayBuffers;
+   - worker active/queued/high-water по priority и kind;
+   - ingest stage count/bytes/wait/oldest age и battles/min;
+   - replay budget used/queued/high-water/wait;
+   - CDN TTFB/download/retry/status/429/5xx;
+   - SQLite queue/transaction/checkpoint;
+   - event-loop lag и latency `/health`, `/api/stats`, `/api/items`,
+     `/api/voice`.
+5. Остановить процесс graceful shutdown и проверить producer drain,
+   worker-side checkpoint, отсутствие watchdog/fatal и оставшегося Node на
+   порту 3000.
 
-## P6. Опциональный GPU renderer
+Decision gate по результату:
 
-GPU не начинать, пока P0 не устранит font init и новый профиль не покажет, что
-warm raster/render остаётся значимым bottleneck. В текущем профиле render + PNG
-занимают около 9,7% bundle.
+| Наблюдение | Первый пакет |
+| --- | --- |
+| Backlog есть, CPU background occupancy низкая, download/ready удерживает ingest slots | Staged download → ready → parse |
+| Persist wait/SQLite queue устойчиво занимает значимую долю end-to-end p95 | Dedicated writer + microbatch |
+| 429/retry/TTFB растут раньше CPU/persist saturation | AIMD admission; pipeline concurrency не повышать |
+| RSS после warmup не выходит на плато либо output/native memory доминирует | Weighted memory admission + hysteresis |
+| CPU стабильно насыщен, queues/RSS/SLO нормальны | WRPL phase profile до дальнейшей параллельности |
 
-Порог для prototype: raster/encode не менее 30% p95 либо throughput упирается в
-CPU при нескольких одновременных боях.
+Если несколько условий выполняются одновременно, сначала устраняется
+backpressure, создающий самый большой вклад в `discovered → committed` p95.
 
-- [ ] Один постоянный Rust + `wgpu` device/context и одна ограниченная GPU-очередь.
-- [ ] Передавать background textures, polylines и markers; текст сначала оставить
-      Resvg/CPU или использовать проверенный glyph atlas.
-- [ ] Отдельно измерять upload, render, readback и PNG encode.
-- [ ] Сохранить CPU Resvg fallback и автоматическое отключение GPU при ошибке.
-- [ ] Сравнивать cold start, p50/p95, throughput, VRAM/RAM, стабильность и
-      visual diff, а не только время shader pass.
+## Roadmap исполнения
 
-WRPL, ECS, SQLite, JSON и небольшие геометрические выборки на GPU не переносить.
+### G1 — representative soak: следующий
 
-## Метрики и начальные SLO
+- [ ] 30 минут на текущем профиле с непустым backlog.
+- [ ] Сохранить raw telemetry и краткий JSON summary.
+- [ ] Зафиксировать RSS slope/plateau, stage utilization, oldest age,
+  throughput, retry/status и API SLO.
+- [ ] Выбрать следующий пакет по decision gate выше.
 
-Цели необходимо подтвердить corpus-ом и затем закрепить как regression gates:
+### P2A — staged download/ready/parse: условный P0
 
-- cache hit одного материала: p95 < 100 мс без рендера;
-- cold render одного стандартного материала: p95 < 500 мс;
-- cold full bundle после font-оптимизации: p95 < 3 с;
-- WRPL parse: сначала зафиксировать p95, затем целиться ниже 1 с;
-- event-loop lag main thread под двумя тяжёлыми jobs: p95 < 50 мс;
-- отсутствие OOM/неограниченного RSS при длительном ingest;
-- timeout, queue overflow и worker replacement должны быть различимы в метриках.
+Выполнять первым только если G1 подтверждает lifecycle coupling.
 
-Минимальные метрики:
+1. Добавить rollback-switch `WT_INGEST_PIPELINE_ENABLED`; одновременно
+   обновить `src/config.ts`, `.env.example` и `AGENTS.md`.
+2. Сохранить публичный `loadBattleData()` для `/battle`; ingest-specific path
+   разделить на prepare/download и parse/consume.
+3. Ввести bounded ready queue по count и retained actual bytes. Existing
+   process byte reservation передаётся вместе с replay и освобождается только
+   после parse/error/abort/shutdown.
+4. На первой итерации оставить существующий serialized one-battle persist:
+   writer не смешивать с pipeline diff.
+5. Добавить high/low watermark producer pause/resume и отдельные reason codes.
+6. Проверить fatal sibling cancellation, queue timeout, admission defer,
+   worker replacement, graceful drain и replay-cache delete only after commit.
 
-- queue length, wait и execution по priority/task kind;
-- worker startup/replacement/timeout и memory snapshots;
-- cache hit/miss/corruption/eviction/bytes по material kind;
-- route latency `/api/stats`, `/api/voice`, `/api/voice/refresh`;
-- parse/render phase p50/p95 и event-loop lag.
+Изменяемые точки: ingest-specific API рядом с `loadBattleData()`,
+`ingestOne()/ingestBatch()`, telemetry transitions и новый bounded queue
+helper. Перед общей функцией повторно проверить обоих callers:
+`ingestOne()` и интерактивный `loadBattleRenderSource()`.
 
-## Проверки каждого этапа
+### P2B/P3 — persist queue и dedicated SQLite writer: условный P0
 
-- [ ] Сначала запускать проверку изменённого модуля.
-- [ ] `npm test` — оффлайн node:test по всем `*.test.ts`. До начала P3
-      зафиксировать текущий baseline: набор красный, падают
-      `src/wrpl/render-heatmap.test.ts:538`, `src/wrpl/render-heatmap.test.ts:677`
-      и `src/wrpl/render-battle-log.test.ts:76`. Иначе изменения
-      `buildHeatmapSvg()` не отличить от уже сломанных ожиданий.
-- [ ] `npm run build`.
-- [ ] Для worker/WRPL/render: `npm run verify:workers`.
-- [ ] После build: `npm run verify:workers:dist`.
-- [ ] Повторять весь benchmark corpus при одинаковой конфигурации и сравнивать
-      cold/warm p50/p95, throughput и memory.
-- [ ] Для алгоритмических изменений требовать прежние SHA-256 PNG; для
-      осознанной смены шрифтов — golden/visual diff и проверку glyph coverage.
-- [ ] Проверять ground/air, team 0/1, 1×/2×, cache on/off, cache corruption и
-      LRU eviction.
-- [ ] Проверять один и несколько одновременных боёв, interactive priority во
-      время ingest и bounded shutdown.
-- [ ] Для web/DB использовать Fastify `inject()` и SQLite fixture/`:memory:`;
-      живой Discord, backfill и внешние API ради performance-теста не запускать.
+Выполнять после P2A либо первым, если G1 показывает доминирующий persist wait.
 
-## Порядок реализации
+1. Bounded persist queue по count и serialized `events_blob` bytes.
+2. Один dedicated writer actor, одно соединение, cached statements.
+3. Microbatch 4–16 боёв либо максимум 50–100 мс ожидания.
+4. Одна атомарная transaction; rollback и безопасное деление batch при
+   повреждённой записи.
+5. Passive checkpoint по commit/time и фактическому WAL size; явный shutdown
+   checkpoint.
+6. Не менять `synchronous=FULL/NORMAL` без отдельного durability-решения и
+   controlled temporary-DB benchmark.
 
-```text
-явные шрифты и устранение повторного Resvg font scan ✓
-  → benchmark corpus, p50/p95 и недостающие фазы ✓
-  → cache write amplification / LRU hot path ✓
-  → batch SQLite для voice и TTL dashboard aggregates ✓
-  → bounded replay pipeline и ingest phase timing ✓
-  → task weights, memory-aware admission и подбор worker count
-  → spatial/SVG оптимизации по новому профилю
-  → WRPL CPU profile и точечные TypeScript-оптимизации
-  → Rust core только по измеренному порогу
-  → binary events_blob только по измеренному порогу
-  → GPU только по измеренному порогу
-```
+### P4 — adaptive и weighted admission
 
-Не планируются без новых доказательств: полный rewrite приложения, замена SQLite
-на Postgres ради скорости, перенос I/O-слоя в Rust и GPU-рендер текста/WRPL.
+- [ ] AIMD по 429/5xx/TTFB, replay-budget wait, RSS и persist pressure.
+- [ ] High/low watermarks без oscillation.
+- [ ] Aging backlog при сохранении newest-first для CDN expiry.
+- [ ] Weight по task kind/input/pixels/output/native peak.
+- [ ] Удерживать output buffers в budget до фактического освобождения.
+- [ ] Reason codes различают network defer, memory defer, queue overflow,
+  execution timeout и worker replacement.
+
+Общий limiter warthunder.com 1500 мс и `Retry-After` не ослаблять. AIMD для
+CDN/ingest не должен позволять новому source обходить `fetchWtResponse()`.
+
+### P5 — CPU profile и точечные оптимизации
+
+- [ ] Header/results BLK, packet stream, ECS/GMSync/FM, extraction,
+  transform и gzip как отдельные phases.
+- [ ] CPU profile внутри worker на полном corpus.
+- [ ] Менять только phase с долей ≥20% parse p95.
+- [ ] Rust/napi-rs рассматривать при prototype gain ≥15% end-to-end либо
+  ≥2× подтверждённой hot phase.
+
+Bounds-check недоверенного WRPL, output limits и worker execution timeout
+не ослаблять ради benchmark.
+
+### P6 — вторичные улучшения
+
+- [ ] Cache hit/miss/corrupt/evicted bytes и asset fingerprints.
+- [ ] Fair WT source queue без обхода общего limiter.
+- [ ] Read snapshots для оставшихся sync query >10 мс.
+
+## Методология и regression gates
+
+Не смешивать разные baseline:
+
+- worker/pool change сравнивается с 30-second `5/4` parse+heatmap baseline;
+- staged ingest сравнивается с G1 live soak и одинаковым controlled
+  CDN/SQLite fixture;
+- writer change сравнивается на временной SQLite и затем live canary;
+- media change сравнивается на одинаковом corpus и variant;
+- live CDN результаты не используются как точный controlled throughput A/B.
+
+Правила статистики:
+
+- короткий 10-second run — только exploratory;
+- decision run — не менее 30 секунд и достаточный sample count;
+- ожидаемая разница <10% требует минимум трёх interleaved/reversed-order
+  повторов; единичный результат считается шумом;
+- сравниваются median runs и p50/p95, а не лучший прогон;
+- `process.memoryUsage().rss` в worker threads — RSS всего процесса; значения
+  threads не суммируются.
+
+Приёмка изменения:
+
+- primary bottleneck metric улучшается минимум на 10% либо oldest-age/p95
+  уменьшается минимум на 20%;
+- throughput regression по несвязанному controlled path ≤5%;
+- players/kills/chat/winner/trajectories/rows/events и media hashes не
+  меняются;
+- queued/reserved bytes никогда не превышают hard limits;
+- timeout/abort/error/shutdown освобождают reservations и gauges;
+- retry-neutral backpressure не расходует ingest attempts;
+- 429/5xx/retry не ухудшаются относительно tuned live baseline;
+- process RSS выходит на плато без swap/OOM;
+- interactive worker queue p95 <100 мс, p99 <250 мс;
+- live event-loop p95 <20 мс, p99 <50 мс;
+- `/health` и cached API p95 <50 мс;
+- sync SQLite query >10 мс не добавляется в request path без
+  snapshot/worker/index.
+
+Большое архитектурное изменение не принимается только ради числа throughput:
+оно должно пройти rollback-switch и показать пользу выше measurement noise.
+
+## Проверка, rollout и rollback
+
+Для каждого пакета:
+
+1. Targeted tests изменённого модуля.
+2. `npm test` против baseline 106/106.
+3. `npm run build`.
+4. Worker/WRPL/render: `verify:workers` и `verify:workers:dist`.
+5. SQL: targeted DB test, `EXPLAIN QUERY PLAN`, `verify:site-db`.
+6. Corpus: `verify:benchmark-corpus`; при отсутствии fixtures сначала
+   `restore:benchmark-corpus`.
+7. Writer benchmark — только временная SQLite до live canary.
+8. A/B — одинаковые code/config/corpus, interleaved order, cold/warm p50/p95,
+   throughput, queue wait, RSS и hashes.
+9. Live canary — без autoannounce; проверить endpoints, Discord ready,
+   parser/ingest telemetry, watchdog/fatal/429 и duplicate item writes.
+
+Rollback выполняется, если primary metric не улучшился выше noise, API/event
+loop вышли из SLO, RSS не достигает плато, retry вырос либо изменилась
+семантика данных.
+
+## Ключевые артефакты
+
+- corpus и telemetry:
+  - `benchmarks/replay-corpus.json`;
+  - `data/benchmarks/performance-phase-0-telemetry-overhead.json`;
+  - `data/benchmarks/performance-phase-0-corpus-{fixed,duration,open-loop}.json`;
+- no-regret/media:
+  - `data/benchmarks/performance-phase-1-eliminated-bundle.json`;
+  - `data/benchmarks/performance-phase-1-summary-fields.json`;
+- replay budget:
+  - `data/benchmarks/performance-phase-2-replay-byte-budget.json`;
+- SQLite:
+  - `data/benchmarks/performance-phase-3-checkpoint-every-battle.json`;
+  - `data/benchmarks/performance-phase-3-checkpoint-batched.json`;
+- authoritative workers:
+  - `data/benchmarks/performance-phase-4-confirm30-render-workers{4,5,6,7,8,9}.json`;
+  - `data/benchmarks/performance-phase-4-six-recheck-{w6j5,w6j4,w5j4}-r{1,2}.json`;
+  - `data/benchmarks/performance-phase-4-auto-after.json`;
+- live:
+  - `data/benchmarks/live-phase-{b,c,d}.{out,err}.log`.
+
+Exploratory worker sweeps сохранены в `data/benchmarks/`, но не являются
+decision baseline.
+
+## Отложено
+
+Без новых измерений не выполнять:
+
+- Postgres или полный rewrite «ради скорости»;
+- 100% CPU/RAM любой ценой;
+- увеличение live workers выше 5 только по synthetic throughput;
+- снятие interactive reserve;
+- ослабление bounds-check, decompression/output limits или timeout;
+- `synchronous=NORMAL` без durability-решения;
+- новый `events_blob`, пока decode не превышает 10% render p95;
+- GPU, пока raster/encode не занимает ≥30% p95;
+- Rust без подтверждённой hot phase.

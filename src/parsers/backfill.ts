@@ -24,7 +24,7 @@ const sinceTs = Math.floor(Date.now() / 1000) - days * 86_400
 // ~473 боя/сутки, 20 на странице → с запасом, но с потолком
 const maxPages = Math.min(500, Math.ceil((days * 500) / 20) + 5)
 
-initDb(config.dbPath)
+initDb(config.dbPath, { allowCreate: config.allowNewDb })
 
 console.log(
   `Бэкфилл клановых боёв за последние ${days} дн (с ${new Date(sinceTs * 1000).toISOString().slice(0, 10)}), ` +

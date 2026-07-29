@@ -6,6 +6,7 @@ import type {
   BattlePlayerInput,
 } from '../db/index.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
+import { MAX_EVENTS_BLOB_BYTES } from './decompression-limits.js'
 import { parseComponentHashMaps } from './ecs.js'
 import { extractReplayEvents, isValidReplayChatChannel, type ReplayEvents } from './replay-events.js'
 import {
@@ -61,8 +62,9 @@ export async function parseBattleParts(
     player.slot = slot.slot
     player.title = slot.title
   }
-  const battle = buildBattleInput(meta, header, results, events, levelSettingsOf(parts[0]!))
-  return { header, results, battle, summary: summarizeEvents(events) }
+  const summary = summarizeEvents(events)
+  const battle = buildBattleInput(meta, header, results, events, levelSettingsOf(parts[0]!), summary)
+  return { header, results, battle, summary }
 }
 
 /** Путь к файлу миссии из заголовка (поле levelSettings, 260 байт с 136). */
@@ -101,6 +103,7 @@ function buildBattleInput(
   results: ReplayResults,
   events: ReplayEvents,
   missionSettings: string | null,
+  summary: BattleEventSummary,
 ): BattleInput {
   const slotByUserId = new Map(events.players.map((slot) => [slot.userId, slot]))
   const players: BattlePlayerInput[] = results.players.map((player) => {
@@ -170,6 +173,8 @@ function buildBattleInput(
     players,
     kills,
     chat,
+    airUnitCount: summary.airUnits,
+    chatCount: summary.chat,
     eventsBlob: encodeEventsBlob(events),
   }
 }
@@ -206,7 +211,7 @@ export function decodeEventsBlobProfiled(blob: Buffer): {
   profile: EventsBlobDecodeProfile
 } {
   let started = performance.now()
-  const json = gunzipSync(blob)
+  const json = gunzipSync(blob, { maxOutputLength: MAX_EVENTS_BLOB_BYTES })
   const gunzipMs = performance.now() - started
 
   started = performance.now()

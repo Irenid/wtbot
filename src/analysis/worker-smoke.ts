@@ -5,6 +5,7 @@ import {
   isWorkerPoolSchedulingError,
   runWorkerTask,
   transferableBuffer,
+  workerPoolSnapshot,
   WorkerPoolError,
 } from '../workers/pool.js'
 import { workerResourcePlan } from '../runtime-options.js'
@@ -60,11 +61,11 @@ const heartbeat = setInterval(() => {
 
 try {
   const cpuPlan = workerResourcePlan({ env: {}, availableCpus: 12, totalMemoryMb: 16_384 })
-  assert.equal(cpuPlan.workerThreads, 11)
+  assert.equal(cpuPlan.workerThreads, 8)
   assert.equal(cpuPlan.reservedCpus, 1)
   assert.equal(cpuPlan.backgroundReserveSlots, 1)
-  assert.equal(cpuPlan.backgroundWorkerThreads, 10)
-  assert.equal(cpuPlan.ingestConcurrency, 10)
+  assert.equal(cpuPlan.backgroundWorkerThreads, 7)
+  assert.equal(cpuPlan.ingestConcurrency, 7)
 
   const memoryPlan = workerResourcePlan({
     env: { WT_INGEST_CONCURRENCY: '8' },
@@ -72,9 +73,15 @@ try {
     totalMemoryMb: 2_048,
     freeMemoryMb: 2_048,
   })
-  assert.equal(memoryPlan.workerThreads, 2)
-  assert.equal(memoryPlan.memoryLimitedThreads, 2)
-  assert.equal(memoryPlan.ingestConcurrency, 1)
+  assert.equal(memoryPlan.workerThreads, 3)
+  assert.equal(memoryPlan.memoryLimitedThreads, 3)
+  assert.equal(memoryPlan.replayProcessByteBudgetMb, 576)
+  assert.equal(
+    memoryPlan.workerThreads * memoryPlan.estimatedWorkerMemoryMb +
+      memoryPlan.replayProcessByteBudgetMb,
+    memoryPlan.freeMemoryMb - memoryPlan.reservedMemoryMb,
+  )
+  assert.equal(memoryPlan.ingestConcurrency, 8)
 
   const explicitPlan = workerResourcePlan({
     env: {
@@ -93,7 +100,23 @@ try {
   assert.equal(explicitPlan.ingestConcurrency, 2)
   assert.equal(explicitPlan.maxOldGenerationSizeMb, 512)
 
+  const cappedExplicitPlan = workerResourcePlan({
+    env: { WT_WORKER_THREADS: '9' },
+    availableCpus: 12,
+    totalMemoryMb: 16_384,
+  })
+  assert.equal(cappedExplicitPlan.workerThreads, 8)
+  assert.equal(cappedExplicitPlan.backgroundWorkerThreads, 7)
+
+  const cappedIngestPlan = workerResourcePlan({
+    env: { WT_INGEST_CONCURRENCY: '999' },
+    availableCpus: 12,
+    totalMemoryMb: 16_384,
+  })
+  assert.equal(cappedIngestPlan.ingestConcurrency, 32)
+
   assert.equal(isWorkerPoolSchedulingError(new WorkerPoolError('queue', 'QUEUE_MEMORY')), true)
+  assert.equal(isWorkerPoolSchedulingError(new WorkerPoolError('execution timeout', 'EXEC_TIMEOUT')), true)
   assert.equal(isWorkerPoolSchedulingError(new WorkerPoolError('oversized', 'TASK_TOO_LARGE')), false)
 
   assert.equal(
@@ -256,16 +279,15 @@ try {
   assert.equal(isPng(scoreboard), true, 'scoreboard worker вернул не PNG')
   assert.equal(isPng(media.log), true, 'log worker вернул не PNG')
   assert.equal(isPng(media.heatmapGround), true, 'ground heatmap worker вернул не PNG')
-  assert.equal(isPng(media.heatmapAir), true, 'air heatmap worker вернул не PNG')
   assert.equal(isPng(media.heatmapTeamGround[0]), true, 'team 1 heatmap worker вернул не PNG')
   assert.equal(isPng(media.heatmapTeamGround[1]), true, 'team 2 heatmap worker вернул не PNG')
-  assert.equal(isPng(media.heatmapTeamAir[0]), true, 'team 1 air heatmap worker вернул не PNG')
-  assert.equal(isPng(media.heatmapTeamAir[1]), true, 'team 2 air heatmap worker вернул не PNG')
+  assert.equal(media.heatmapAir, null, 'ground-only bundle не должен рендерить air heatmap')
+  assert.equal(media.heatmapTeamAir, null, 'ground-only bundle не должен рендерить team air heatmaps')
   assert.equal(media.summary.teamWon, 1)
   assert.equal(media.summary.endTimeMs, 60_000)
+  assert.equal(media.summary.airUnits, 0)
   assert.ok(selected.media instanceof ArrayBuffer, 'одиночная heatmap вернула не ArrayBuffer')
   assert.equal(isPng(selected.media), true, 'одиночная heatmap worker вернула не PNG')
-  assert.equal(Buffer.from(selected.media).equals(Buffer.from(media.heatmapAir)), true, 'одиночная heatmap отличается от bundle')
   assert.equal(selected.summary.teamWon, media.summary.teamWon)
   assert.equal(typeof chat.media, 'string')
   assert.equal(chat.media, media.chat)
@@ -278,6 +300,22 @@ try {
     'CJK-текст не получил явный шрифт или системный fallback',
   )
   assert.equal(selected.profile.font?.source, media.profile.font.source)
+  const poolSnapshot = workerPoolSnapshot()
+  assert.equal(poolSnapshot.current.queued, 0)
+  assert.equal(poolSnapshot.current.running, 0)
+  assert.ok(poolSnapshot.highWater.queued >= 1)
+  assert.ok(poolSnapshot.highWater.running >= 1)
+  assert.ok(poolSnapshot.cumulative.completed >= 7)
+  assert.ok(poolSnapshot.cumulative.failed >= 2)
+  assert.ok(
+    (poolSnapshot.cumulative.reasons['EXEC_TIMEOUT'] ?? 0) +
+      (poolSnapshot.cumulative.reasons['QUEUE_TIMEOUT'] ?? 0) >= 1,
+    'pool snapshot не зафиксировал timeout reason',
+  )
+  const renderMetrics = poolSnapshot.workloads.find((entry) => entry.kind === 'render-media')
+  assert.ok(renderMetrics && renderMetrics.outputTransferBytes > 0)
+  const parseErrorMetrics = poolSnapshot.workloads.find((entry) => entry.kind === 'parse-results')
+  assert.ok(parseErrorMetrics && parseErrorMetrics.failed >= 1)
   assert.ok(maxLagMs < 250, `event loop задержался на ${Math.round(maxLagMs)} мс`)
   console.log(`[workers] smoke OK · max event-loop lag ${Math.round(maxLagMs)} мс`)
 } finally {

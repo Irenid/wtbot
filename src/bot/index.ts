@@ -38,6 +38,15 @@ export async function startBot(): Promise<Client> {
       console.log('[announce] Автоанонс боёв отключён')
     }
   })
+  client.on(Events.Error, (error) => {
+    console.error('[bot] Gateway client error:', error)
+  })
+  client.on(Events.ShardError, (error, shardId) => {
+    console.error(`[bot] Ошибка shard ${shardId}:`, error)
+  })
+  client.on(Events.ShardDisconnect, (closeEvent, shardId) => {
+    console.warn(`[bot] Shard ${shardId} отключён: код ${closeEvent.code}`)
+  })
 
   const handleInteraction = async (interaction: Interaction): Promise<void> => {
     // Кнопки под сообщением /battle (battle log, хитмапы, чат)
@@ -65,10 +74,10 @@ export async function startBot(): Promise<Client> {
     const command = commands.get(interaction.commandName)
     if (!command) return
 
-    // Учитываем вызов в статистике (даже если команда потом упадёт)
-    recordCommandUse(interaction.commandName, interaction.guildId, interaction.user.id)
-
     try {
+      // Учитываем вызов в статистике, но ошибка SQLite не должна оставить
+      // interaction без ответа и без записи в логе.
+      recordCommandUse(interaction.commandName, interaction.guildId, interaction.user.id)
       await command.execute(interaction)
     } catch (err) {
       if (isExpiredInteraction(err)) {
@@ -78,7 +87,7 @@ export async function startBot(): Promise<Client> {
       console.error(`[bot] Ошибка в /${interaction.commandName}:`, err)
       if (interaction.deferred || interaction.replied) {
         await interaction
-          .followUp({ content: 'Произошла ошибка при выполнении команды.', flags: MessageFlags.Ephemeral })
+          .editReply('Произошла ошибка при выполнении команды.')
           .catch(() => {})
       } else {
         await interaction
@@ -94,7 +103,10 @@ export async function startBot(): Promise<Client> {
     activeInteractions.add(task)
     task.then(
       () => activeInteractions.delete(task),
-      () => activeInteractions.delete(task),
+      (error) => {
+        activeInteractions.delete(task)
+        console.error('[bot] необработанная ошибка обработчика interaction:', error)
+      },
     )
   })
 

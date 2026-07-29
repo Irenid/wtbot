@@ -13,6 +13,7 @@
     "start:bot": "node dist/index.js --no-battle-background",
     "deploy:commands": "tsx src/bot/deploy-commands.ts",
     "analyze": "tsx src/analysis/analyze-items.ts",
+    "db:backup": "tsx src/analysis/db-backup.ts",
     "battle": "tsx src/analysis/battle-summary.ts",
     "capture:map": "tsx src/analysis/capture-map.ts",
     "backfill": "tsx src/parsers/backfill.ts",
@@ -30,6 +31,10 @@
     "verify:player-stats-api": "tsx src/analysis/player-stats-api-smoke.ts",
     "verify:site-db": "tsx src/analysis/site-db-explain.ts",
     "verify:site-api": "tsx src/analysis/site-api-smoke.ts",
+    "verify:benchmark-corpus": "tsx src/analysis/verify-benchmark-corpus.ts",
+    "restore:benchmark-corpus": "tsx src/analysis/restore-benchmark-corpus.ts",
+    "benchmark:ingest-telemetry": "tsx src/analysis/ingest-telemetry-benchmark.ts",
+    "benchmark:sqlite-ingest": "tsx src/analysis/sqlite-ingest-benchmark.ts",
     "benchmark:workers": "tsx src/analysis/worker-replay-check.ts",
     "benchmark:replay": "node --expose-gc --import tsx src/analysis/replay-download-benchmark.ts",
     "benchmark:voice": "tsx src/analysis/voice-api-benchmark.ts"
@@ -48,10 +53,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
-    "@fastify/static": "^8.3.0",
+    "@fastify/static": "^10.1.2",
     "@resvg/resvg-js": "^2.6.2",
     "cheerio": "^1.2.0",
-    "discord.js": "^14.26.5",
+    "discord.js": "^14.27.0",
+    "domhandler": "^5.0.3",
     "dotenv": "^17.4.2",
     "fastify": "^5.10.0",
     "playwright-core": "^1.62.0"

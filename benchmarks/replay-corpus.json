@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-07-29",
+  "hashAlgorithm": "sha256",
+  "cases": [
+    {
+      "id": "small-mixed",
+      "category": "small",
+      "directory": "benchmarks/fixtures/replays/06feb0d100099a2e",
+      "files": [
+        {
+          "name": "0000.wrpl",
+          "bytes": 44043,
+          "sha256": "73bc462439cfa92dbd186767612b7aba3041f71b03ed47fc326f9b862aac6e06"
+        },
+        {
+          "name": "0001.wrpl",
+          "bytes": 2639081,
+          "sha256": "4098c42d4526cd7a8a9cc348faca129a160f181dd1367ae9cbae5719bcb7d61a"
+        },
+        {
+          "name": "0002.wrpl",
+          "bytes": 15119,
+          "sha256": "1628eb95e1808681f5b911ab56851c324fc6baafbdd048b8332cef1311352b71"
+        },
+        {
+          "name": "0004.wrpl",
+          "bytes": 18402,
+          "sha256": "b7b064e78b58ca73abd4f2f8f3cf83d53f171a286800d675a35b217826981e2f"
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "sessionIdHex": "06feb0d100099a2e",
+        "inputBytes": 2716645,
+        "eventsBlobBytes": 24317,
+        "eventsBlobSha256": "422dd92d27a9cf3003f9cae91f3637522e7db539300d147b1afcbe65b00f62aa",
+        "players": 16,
+        "kills": 0,
+        "chatCount": 0,
+        "trajectories": 36,
+        "airTrajectories": 3
+      }
+    },
+    {
+      "id": "large-ground-only",
+      "category": "ground-only",
+      "directory": "benchmarks/fixtures/replays/06feb8640009c329",
+      "files": [
+        {
+          "name": "0000.wrpl",
+          "bytes": 63198,
+          "sha256": "33e12fcf400c2ab444e25f89dc661820adb7d817a86989d42ad479727ab2cad9"
+        },
+        {
+          "name": "0001.wrpl",
+          "bytes": 5364702,
+          "sha256": "de8f295bb7fb10235dcc4fd57341ea000e6a19fd4fe2918a4964715912d1ddd1"
+        },
+        {
+          "name": "0002.wrpl",
+          "bytes": 15764,
+          "sha256": "39d9c80c03044d7526db359ed7ddb9936350cdb8a18062aa271dfebcf96a75bd"
+        },
+        {
+          "name": "0004.wrpl",
+          "bytes": 23828,
+          "sha256": "b2b06bad1d813179d92584e42683b2ce5f3ba04fe9ebe5ceb7a9c010007a87ba"
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "sessionIdHex": "06feb8640009c329",
+        "inputBytes": 5467492,
+        "eventsBlobBytes": 104477,
+        "eventsBlobSha256": "576fc4c3a922edd946986db864a8153ecf0c81f2f6ef9fa376c62372d918b823",
+        "players": 16,
+        "kills": 0,
+        "chatCount": 0,
+        "trajectories": 220,
+        "airTrajectories": 0
+      }
+    },
+    {
+      "id": "large-mixed-air",
+      "category": "mixed-air",
+      "directory": "benchmarks/fixtures/replays/06fea91100096f5a",
+      "files": [
+        {
+          "name": "0000.wrpl",
+          "bytes": 48407,
+          "sha256": "dfc6c38f67386da952d68b84c9fd1ee456eb95737b733b8eba095caee52e746f"
+        },
+        {
+          "name": "0001.wrpl",
+          "bytes": 2539793,
+          "sha256": "54874a5d8aebbdc243dab12cb81d395997304e8030aa9be234938bcac7e85521"
+        },
+        {
+          "name": "0002.wrpl",
+          "bytes": 14885,
+          "sha256": "8e7a52b3a2daaf95d414bae3b17097a31333a95ec6b15b07ce47ec18035220ab"
+        },
+        {
+          "name": "0003.wrpl",
+          "bytes": 3520308,
+          "sha256": "c06a4ba9355f51668cd8b00eafd0d78fc830516fe0af955406c6c69b3e9511a3"
+        },
+        {
+          "name": "0004.wrpl",
+          "bytes": 17143,
+          "sha256": "208859ea66427c8f1b0fe159e296fa1046c07b0b1a9c7781ad915d7406703a22"
+        },
+        {
+          "name": "0005.wrpl",
+          "bytes": 3564612,
+          "sha256": "9b39c035a170ec27be1492075bd317f4006ae8c4dc8f19f4395f2258f921b19a"
+        },
+        {
+          "name": "0006.wrpl",
+          "bytes": 43527,
+          "sha256": "f2badec5b1e2042349b5586a97ec2923f01c57929d2dec641b9d73e6f92644c8"
+        },
+        {
+          "name": "0007.wrpl",
+          "bytes": 2632088,
+          "sha256": "49b7675279560bfb7faea83f92a4fa6b8ad6ba1cb5e79e956e6b05897ce8c59c"
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "sessionIdHex": "06fea91100096f5a",
+        "inputBytes": 12380763,
+        "eventsBlobBytes": 102388,
+        "eventsBlobSha256": "1afe7799c34ae654176e815c0a0de7ec63e152ffb73d77767bae83ba3c227495",
+        "players": 16,
+        "kills": 13,
+        "chatCount": 0,
+        "trajectories": 37,
+        "airTrajectories": 3
+      }
+    },
+    {
+      "id": "damaged-missing-results",
+      "category": "damaged",
+      "directory": "benchmarks/fixtures/replays/06fe749000083aab",
+      "files": [
+        {
+          "name": "0000.wrpl",
+          "bytes": 49089,
+          "sha256": "aa06bb1544656c02707c597ba2e1f19fb5d01c774fb417278e6dbbf40383d04b"
+        }
+      ],
+      "expected": {
+        "outcome": "error",
+        "errorIncludes": "results-BLK"
+      }
+    }
+  ]
+}

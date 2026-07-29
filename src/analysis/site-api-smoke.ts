@@ -7,6 +7,7 @@ import { rm } from 'node:fs/promises'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import {
   closeDb,
+  getClanSeasonContext,
   initDb,
   saveBattle,
   saveClanRatingSnapshots,
@@ -22,6 +23,7 @@ import { buildServer } from '../web/index.js'
 import { spaDistAvailable } from '../web/routes/spa.js'
 
 const CLAN_RAW_TAG = '=TST='
+const FORMULA_CLAN_RAW_TAG = '=FORM='
 
 function player(
   userId: string,
@@ -122,6 +124,15 @@ function aggregateTotals(battles: number, victories: number) {
 async function main(): Promise<void> {
   initDb(':memory:')
   const nowSec = Math.floor(Date.now() / 1_000)
+  const seasonAtStart = getClanSeasonContext(Date.parse('2026-07-01T00:00:00Z') / 1_000)
+  assert.equal(seasonAtStart.currentStage?.week, 1)
+  assert.equal(seasonAtStart.currentStage?.maxBr, 14.7)
+  const seasonAtFourthWeek = getClanSeasonContext(Date.parse('2026-07-22T12:00:00Z') / 1_000)
+  assert.equal(seasonAtFourthWeek.currentStage?.week, 4)
+  assert.equal(seasonAtFourthWeek.currentStage?.maxBr, 9.7)
+  const seasonAtEnd = getClanSeasonContext(Date.parse('2026-09-01T00:00:00Z') / 1_000)
+  assert.equal(seasonAtEnd.currentStage, null)
+  assert.equal(seasonAtEnd.season?.active, false)
 
   // Identity + два внешних снимка statshark для истории.
   const identity = savePlayerIdentity({
@@ -177,6 +188,12 @@ async function main(): Promise<void> {
     { nick: 'PilotOne', rating: 1_520 },
     { nick: 'Wingman', rating: 1_400 },
   ])
+  const formulaMembers = Array.from({ length: 130 }, (_, index) => ({
+    nick: `Formula${index}`,
+    rating: 1_000 + index,
+  }))
+  saveClanRatingSnapshots(FORMULA_CLAN_RAW_TAG, formulaMembers)
+  saveClanRatingSnapshots(FORMULA_CLAN_RAW_TAG, formulaMembers)
 
   // Смена украшений тега: ядро «var» одно, VarTwo уходит после смены варианта
   // и не должен «воскреснуть» из-под старого написания.
@@ -336,27 +353,44 @@ async function main(): Promise<void> {
     const siteStats = await app.inject({ method: 'GET', url: '/api/site-stats' })
     assert.equal(siteStats.statusCode, 200)
     const siteStatsBody = siteStats.json() as {
+      season: { currentStage: { week: number; maxBr: number } | null }
       players: number; clans: number; battlesTotal: number; battlesWeek: number; byDay: { battles: number }[]
     }
+    const expectedSeason = getClanSeasonContext()
+    assert.equal(siteStatsBody.season.currentStage?.week, expectedSeason.currentStage?.week)
+    assert.equal(siteStatsBody.season.currentStage?.maxBr, expectedSeason.currentStage?.maxBr)
     assert.equal(siteStatsBody.battlesTotal, 5)
     assert.equal(siteStatsBody.battlesWeek, 5)
     assert.equal(siteStatsBody.players, 6)
-    assert.equal(siteStatsBody.clans, 3)
+    assert.equal(siteStatsBody.clans, 4)
     assert.equal(siteStatsBody.byDay.reduce((sum, dayRow) => sum + dayRow.battles, 0), 5)
 
     // --- Кланы ---
     const clans = await app.inject({ method: 'GET', url: '/api/clans' })
     assert.equal(clans.statusCode, 200)
     const clansBody = clans.json() as {
-      clans: { coreTag: string; name: string | null; members: number; totalRating: number; delta30d: number | null }[]
+      clans: {
+        coreTag: string
+        name: string | null
+        members: number
+        totalRating: number
+        avgRating: number
+        delta30d: number | null
+      }[]
+      season: { currentStage: { week: number; maxBr: number } | null }
     }
-    assert.equal(clansBody.clans.length, 3)
-    assert.equal(clansBody.clans[0]?.coreTag, 'tst')
-    assert.equal(clansBody.clans[0]?.name, 'Test Clan')
+    assert.equal(clansBody.season.currentStage?.week, expectedSeason.currentStage?.week)
+    assert.equal(clansBody.clans.length, 4)
+    const testClan = clansBody.clans.find((clan) => clan.coreTag === 'tst')
+    assert.equal(testClan?.name, 'Test Clan')
     // Покинувший Ghost исключён из состава и суммы; базиса месяц назад нет.
-    assert.equal(clansBody.clans[0]?.members, 2)
-    assert.equal(clansBody.clans[0]?.totalRating, 1_520 + 1_400)
-    assert.equal(clansBody.clans[0]?.delta30d, null)
+    assert.equal(testClan?.members, 2)
+    assert.equal(testClan?.totalRating, 1_520 + 1_400)
+    assert.equal(testClan?.delta30d, null)
+    const formulaClan = clansBody.clans.find((clan) => clan.coreTag === 'form')
+    assert.equal(formulaClan?.members, 128, 'состав squadron не должен превышать игровой лимит')
+    assert.equal(formulaClan?.totalRating, 28_090, 'Total PSR должен учитывать 20 лучших и 5% остальных')
+    assert.equal(formulaClan?.avgRating, 1_066, 'Average должен быть обычным средним PSR состава')
     // Смена украшений: ядро группируется, ушедший под старым вариантом не в счёте.
     const varClan = clansBody.clans.find((clan) => clan.coreTag === 'var')
     assert.equal(varClan?.members, 1, 'смена украшений тега не должна воскрешать ушедшего')
@@ -504,6 +538,21 @@ async function main(): Promise<void> {
       const spaFallback = await app.inject({ method: 'GET', url: '/app/players/12345' })
       assert.equal(spaFallback.statusCode, 200, 'клиентские маршруты должны отдавать index.html')
       assert.match(spaFallback.headers['content-type'] ?? '', /text\/html/)
+    }
+
+    // --- Weighted rate limit дорогого battle-фильтра ---
+    for (let i = 0; i < 16; i += 1) {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/battles?player=501',
+        remoteAddress: '198.51.100.10',
+      })
+      if (i < 15) {
+        assert.equal(response.statusCode, 200)
+      } else {
+        assert.equal(response.statusCode, 429)
+        assert.ok(Number(response.headers['retry-after']) >= 1)
+      }
     }
 
     // --- Rate limit (последним: исчерпывает per-IP корзину) ---
