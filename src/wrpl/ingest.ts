@@ -1,5 +1,6 @@
 import path from 'node:path'
 import {
+  BATTLE_INGEST_MAX_ATTEMPTS,
   getIngestStats,
   getPendingBattleItems,
   markBattleIngest,
@@ -11,7 +12,7 @@ import {
   runWorkerTask,
   transferableBuffer,
 } from '../workers/pool.js'
-import { dropReplayCache } from './replay-cache.js'
+import { dropReplayCache, replayFetchAdmissionSnapshot } from './replay-cache.js'
 import {
   ReplayPartsFetchError,
   isReplayByteBudgetSchedulingError,
@@ -27,6 +28,10 @@ import {
   type IngestBattleTelemetry,
   type IngestTelemetrySnapshot,
 } from './ingest-telemetry.js'
+import {
+  IngestAdmissionController,
+  type IngestAdmissionSnapshot,
+} from './ingest-admission.js'
 
 /**
  * Фоновый разбор боёв (ingest).
@@ -49,7 +54,7 @@ const BATCH_MULTIPLIER = 2
 /** Как часто просыпаться */
 const TICK_MS = 20_000
 /** Сколько раз повторять разбор боя при временных ошибках, прежде чем сдаться */
-export const INGEST_MAX_ATTEMPTS = 3
+export const INGEST_MAX_ATTEMPTS = BATTLE_INGEST_MAX_ATTEMPTS
 /** Минимальный интервал между стартами загрузки разных боёв — вежливость к CDN. */
 const PAUSE_MS = 500
 const TELEMETRY_LOG_MS = 60_000
@@ -79,6 +84,7 @@ let ingestDbPath: string | null = null
 let backlogLogged = false
 let lastTelemetryLogAtMs = 0
 const ingestTelemetry = new IngestTelemetryAccumulator()
+let admission: IngestAdmissionController | null = null
 /**
  * SQLite допускает только одного writer. Сериализация оставляет один persist
  * task в полёте, а сам fsync/checkpoint выполняет CPU worker вне event loop.
@@ -186,6 +192,7 @@ async function ingestOne(
     telemetry.persistFinished(committedAtMs, sqliteMs)
     const sqliteQueueMs = Math.max(0, performance.now() - sqliteQueuedAt - sqliteMs)
     telemetry.persistTiming(sqliteQueueMs, transactionMs, checkpointMs)
+    admission?.observePersist(sqliteQueueMs)
     await dropReplayCache(loaded.header.sessionIdHex)
     const events = loaded.summary
     console.log(
@@ -328,10 +335,14 @@ function formatMiB(bytes: number): string {
 
 export function getIngestTelemetrySnapshot(): IngestTelemetrySnapshot & {
   replayProcessByteBudget: ReturnType<typeof replayProcessByteBudgetSnapshot>
+  replayFetchAdmission: ReturnType<typeof replayFetchAdmissionSnapshot>
+  admission: IngestAdmissionSnapshot | null
 } {
   return {
     ...ingestTelemetry.snapshot(),
     replayProcessByteBudget: replayProcessByteBudgetSnapshot(),
+    replayFetchAdmission: replayFetchAdmissionSnapshot(),
+    admission: admission?.snapshot() ?? null,
   }
 }
 
@@ -340,10 +351,12 @@ function logIngestTelemetry(force = false): void {
   if (!force && now - lastTelemetryLogAtMs < TELEMETRY_LOG_MS) return
   const snapshot = ingestTelemetry.snapshot(now)
   const byteBudget = replayProcessByteBudgetSnapshot()
+  const admissionSnapshot = admission?.snapshot()
   const oldest = snapshot.backlog.oldestAgeMs ?? snapshot.backlog.oldestAgeLowerBoundMs
   const lowerBound = snapshot.backlog.oldestAgeMs === null ? '≥' : ''
   console.log(
     `[ingest:metrics] ${snapshot.battlesPerMinute} боёв/мин, ` +
+      `очередь ${snapshot.backlog.pendingCount ?? '?'}, ` +
       `выбрано ${snapshot.backlog.selectedCount}/${snapshot.backlog.selectionLimit}, ` +
       `oldest ${lowerBound}${formatMs(oldest)}, ` +
       `active download/parse/persist ` +
@@ -355,7 +368,10 @@ function logIngestTelemetry(force = false): void {
       `(wait ${byteBudget.queuedCount}), ` +
       `replay ${formatMiB(snapshot.replay.bytes)}, retry ${snapshot.replay.retries}, ` +
       `429 ${snapshot.replay.status.rateLimited429}, 5xx ${snapshot.replay.status.server5xx}, ` +
-      `TTFB p95 ${formatMs(snapshot.replay.ttfbMs.p95Ms ?? 0)}`,
+      `TTFB p95 ${formatMs(snapshot.replay.ttfbMs.p95Ms ?? 0)}, ` +
+      `admission ${admissionSnapshot?.currentConcurrency ?? ingestConcurrency}/` +
+      `${admissionSnapshot?.maxConcurrency ?? ingestConcurrency} ` +
+      `(${admissionSnapshot?.reason ?? 'disabled'})`,
   )
   lastTelemetryLogAtMs = now
 }
@@ -366,22 +382,42 @@ async function tick(): Promise<boolean> {
   const controller = new AbortController()
   currentAbort = controller
   try {
-    const concurrency = ingestConcurrency
+    const concurrency = admission?.concurrency() ?? ingestConcurrency
     const selectionLimit = concurrency * BATCH_MULTIPLIER
+    const stats = getIngestStats()
     const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, selectionLimit)
     ingestTelemetry.recordSelection(
       pending.map((item) => item.firstSeenAt),
       selectionLimit,
+      Date.now(),
+      {
+        pendingCount: stats.pending,
+      },
     )
     if (pending.length === 0) return false
 
     if (!backlogLogged) {
       backlogLogged = true
-      const s = getIngestStats()
-      if (s.pending > 0) console.log(`[ingest] в очереди на разбор: ${s.pending} боёв (уже разобрано ${s.ingested})`)
+      if (stats.pending > 0) {
+        console.log(
+          `[ingest] в очереди на разбор: ${stats.pending} боёв ` +
+            `(уже разобрано ${stats.ingested})`,
+        )
+      }
     }
 
     const outcomes = await ingestBatch(pending, concurrency, controller.signal)
+    const snapshot = ingestTelemetry.snapshot()
+    const processBudget = replayProcessByteBudgetSnapshot()
+    admission?.observeReplay({
+      retries: snapshot.replay.retries,
+      rateLimited429: snapshot.replay.status.rateLimited429,
+      server5xx: snapshot.replay.status.server5xx,
+      processBudgetWaitMs: processBudget.waitMs.total,
+      processBudgetQueuedCount: processBudget.queuedCount,
+      processBudgetUsedBytes: processBudget.usedBytes,
+      processBudgetLimitBytes: processBudget.limitBytes,
+    })
     logIngestTelemetry()
     return shouldContinueIngestImmediately(
       pending.length,
@@ -398,10 +434,16 @@ async function tick(): Promise<boolean> {
   }
 }
 
-export function startIngestWorker(concurrency = 1, dbPath = './data/wtbot.db'): void {
+export function startIngestWorker(
+  concurrency = 1,
+  dbPath = './data/wtbot.db',
+  adaptiveAdmissionEnabled = false,
+): void {
   stopping = false
   ingestConcurrency = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1
+  admission = new IngestAdmissionController(ingestConcurrency, adaptiveAdmissionEnabled)
   ingestDbPath = path.resolve(dbPath)
+  backlogLogged = false
   lastTelemetryLogAtMs = 0
   const s = getIngestStats()
   console.log(

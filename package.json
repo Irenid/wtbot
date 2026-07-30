@@ -35,6 +35,7 @@
     "restore:benchmark-corpus": "tsx src/analysis/restore-benchmark-corpus.ts",
     "benchmark:ingest-telemetry": "tsx src/analysis/ingest-telemetry-benchmark.ts",
     "benchmark:sqlite-ingest": "tsx src/analysis/sqlite-ingest-benchmark.ts",
+    "benchmark:performance-soak": "node dist/analysis/performance-soak.js",
     "benchmark:workers": "tsx src/analysis/worker-replay-check.ts",
     "benchmark:replay": "node --expose-gc --import tsx src/analysis/replay-download-benchmark.ts",
     "benchmark:voice": "tsx src/analysis/voice-api-benchmark.ts"

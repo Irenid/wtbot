@@ -112,6 +112,10 @@ export const config = {
   workerResources: workers,
   /** Фактическая верхняя граница CPU workers. */
   workerThreads: workers.workerThreads,
+  /** AIMD admission ingest; выключен по умолчанию для безопасного rollback. */
+  ingestAdaptiveAdmissionEnabled: envBoolean('WT_INGEST_ADAPTIVE_ENABLED', false),
+  /** Reservation replay по фактическому размеру; эксперимент, default сохраняет worst-case. */
+  replayExactReservationEnabled: envBoolean('WT_REPLAY_EXACT_RESERVATION_ENABLED', false),
   /** Фоновый ingest .wrpl и автоанонс; флаг CLI удобен для облегчённого запуска бота. */
   battleBackgroundEnabled: !process.argv.includes('--no-battle-background'),
 }

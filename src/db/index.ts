@@ -3670,6 +3670,9 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
 
 export type BattleIngestStatus = 'ok' | 'error' | 'no_parts' | 'expired'
 
+/** Единый terminal threshold для ingest, API backlog и автоанонса. */
+export const BATTLE_INGEST_MAX_ATTEMPTS = 3
+
 function markBattleIngestRow(
   database: DatabaseSync,
   sessionId: string,
@@ -3747,6 +3750,7 @@ export function getPendingBattleItems(maxAttempts: number, limit: number): Pendi
 /** Сводка разбора для дашборда: сколько боёв разобрано, в очереди, провалено */
 export interface IngestStats {
   ingested: number
+  /** Точное число записей, которые getPendingBattleItems() ещё может выбрать. */
   pending: number
   failed: number
   players: number
@@ -3756,12 +3760,22 @@ export interface IngestStats {
 export function getIngestStats(): IngestStats {
   const dataVersion = getDataVersion()
   if (ingestStatsCache?.dataVersion === dataVersion) return ingestStatsCache.value
+  // battle_ingest создаётся исключительно для wt-replays items. Поэтому точная
+  // очередь = все replay items - любое terminal/nonterminal state + retryable
+  // errors. Это эквивалентно LEFT JOIN selection, но не делает 23k point lookup
+  // и остаётся <10 мс p95 на production DB.
   selectIngestStatsStatement ??= getDb().prepare(`
     WITH ingest_state AS (
       SELECT
+        COUNT(*) AS states,
         COALESCE(SUM(CASE WHEN status IN ('error', 'expired', 'no_parts') THEN 1 ELSE 0 END), 0) AS failed,
-        COALESCE(SUM(CASE WHEN status IN ('expired', 'no_parts') THEN 1 ELSE 0 END), 0) AS skipped
+        COALESCE(SUM(CASE WHEN status = 'error' AND attempts < ? THEN 1 ELSE 0 END), 0) AS retryable
       FROM battle_ingest
+    ),
+    item_state AS (
+      SELECT COUNT(*) AS total
+      FROM items
+      WHERE source = 'wt-replays'
     ),
     battle_totals AS (
       SELECT
@@ -3772,24 +3786,22 @@ export function getIngestStats(): IngestStats {
     )
     SELECT
       battle_totals.ingested,
-      (SELECT COUNT(*) FROM items WHERE source = 'wt-replays') AS total,
+      item_state.total - ingest_state.states + ingest_state.retryable AS pending,
       ingest_state.failed,
-      ingest_state.skipped,
       battle_totals.players,
       battle_totals.kills
-    FROM ingest_state, battle_totals
+    FROM ingest_state, item_state, battle_totals
   `)
-  const row = selectIngestStatsStatement.get() as {
+  const row = selectIngestStatsStatement.get(BATTLE_INGEST_MAX_ATTEMPTS) as {
     ingested: number
-    total: number
+    pending: number
     failed: number
-    skipped: number
     players: number
     kills: number
   }
   const value = {
     ingested: row.ingested,
-    pending: Math.max(0, row.total - row.ingested - row.skipped),
+    pending: Math.max(0, row.pending),
     failed: row.failed,
     players: row.players,
     kills: row.kills,

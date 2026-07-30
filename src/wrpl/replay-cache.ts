@@ -3,6 +3,10 @@ import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { writeFileAtomic } from '../atomic-file.js'
 import { readResponseBuffer } from '../http-response.js'
+import {
+  ReplayFetchAdmission,
+  type ReplayFetchAdmissionSnapshot,
+} from './replay-fetch-admission.js'
 
 /** Асинхронный дисковый cache частей replay и вежливое скачивание с CDN. */
 
@@ -43,7 +47,22 @@ export interface ReplayPartFetchOptions {
   signal?: AbortSignal
   /** Только для изолированных benchmark/smoke; undefined использует production cache. */
   cacheDirectory?: string | null
+  memoryReservation?: ReplayPartMemoryReservation
   onTiming?: (timing: ReplayPartTiming) => void
+}
+
+export interface ReplayPartMemoryReservation {
+  reserve(bytes: number): Promise<void>
+  commit(bytes: number): void
+  release(): void
+}
+
+export function replayFetchAdmissionSnapshot(): ReplayFetchAdmissionSnapshot {
+  return replayFetchAdmission.snapshot()
+}
+
+export function configureReplayFetchAdmission(enabled: boolean): void {
+  replayFetchAdmission.setEnabled(enabled)
 }
 
 interface PartLockWaiter {
@@ -72,7 +91,9 @@ interface SessionGate {
 
 let cleanupStarted = false
 let lastFetchAt = 0
+let fetchNotBeforeAt = 0
 let throttleTail: Promise<void> = Promise.resolve()
+const replayFetchAdmission = new ReplayFetchAdmission(REPLAY_FETCH_PAUSE_MS)
 const partLocks = new Map<string, PartLockState>()
 const sessionGates = new Map<string, SessionGate>()
 
@@ -105,7 +126,7 @@ export function fetchReplayPart(url: string, options: ReplayPartFetchOptions = {
   const lockStarted = performance.now()
   const run = async (): Promise<Buffer> => {
     timing.lockWaitMs = performance.now() - lockStarted
-    return doFetchReplayPart(url, file, options.signal, timing)
+    return doFetchReplayPart(url, file, options.signal, timing, options.memoryReservation)
   }
   const operation = file && session && cacheDirectory
     ? withPartLock(
@@ -143,14 +164,25 @@ async function doFetchReplayPart(
   file: string | null,
   signal: AbortSignal | undefined,
   timing: ReplayPartTiming,
+  memoryReservation: ReplayPartMemoryReservation | undefined,
 ): Promise<Buffer> {
   throwIfAborted(signal)
   if (file) {
     let cached: Buffer | null = null
+    let cacheReserved = false
     const readStarted = performance.now()
     try {
-      cached = await readFile(file)
+      const cachedSize = (await stat(file)).size
+      if (cachedSize < WRPL_HEADER_BYTES || cachedSize > REPLAY_PART_MAX_BYTES) {
+        timing.cacheInvalid = true
+        await rm(file, { force: true }).catch(() => undefined)
+      } else {
+        await memoryReservation?.reserve(cachedSize)
+        cacheReserved = true
+        cached = await readFile(file)
+      }
     } catch (error) {
+      if (cacheReserved) memoryReservation?.release()
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     } finally {
       timing.cacheReadMs += performance.now() - readStarted
@@ -159,10 +191,16 @@ async function doFetchReplayPart(
     if (cached) {
       try {
         validateReplayPart(cached, `cache ${path.basename(file)}`)
+        memoryReservation?.commit(cached.byteLength)
+        cacheReserved = false
         timing.cacheHit = true
         timing.bytes = cached.byteLength
         return cached
       } catch {
+        if (cacheReserved) {
+          memoryReservation?.release()
+          cacheReserved = false
+        }
         timing.cacheInvalid = true
         // Битый cache удаляем и один раз восстанавливаем с CDN.
         await rm(file, { force: true }).catch(() => undefined)
@@ -197,16 +235,33 @@ async function doFetchReplayPart(
       attemptTiming.ttfbMs = performance.now() - fetchStarted
       attemptTiming.status = response.status
       if (response.ok) {
+        const sizeHint = replayPartSizeHint(response)
+        try {
+          await memoryReservation?.reserve(sizeHint.peakReservationBytes)
+        } catch (error) {
+          await response.body?.cancel().catch(() => undefined)
+          throw error
+        }
+        let responseReserved = memoryReservation !== undefined
         const downloadStarted = performance.now()
         let data: Buffer
         try {
-          data = await readResponseBuffer(response, REPLAY_PART_MAX_BYTES, 'часть WRPL')
+          data = await readResponseBuffer(response, sizeHint.bodyLimitBytes, 'часть WRPL')
+          if (data.byteLength > sizeHint.bodyLimitBytes) {
+            throw new Error(
+              `часть WRPL: тело ${data.byteLength} байт больше заявленного размера ` +
+              `${sizeHint.bodyLimitBytes}`,
+            )
+          }
+          validateReplayPart(data, safeUrlLabel(url))
+          memoryReservation?.commit(data.byteLength)
+          responseReserved = false
         } finally {
+          if (responseReserved) memoryReservation?.release()
           attemptTiming.downloadMs = performance.now() - downloadStarted
         }
         attemptTiming.bytes = data.byteLength
         timing.bytes = data.byteLength
-        validateReplayPart(data, safeUrlLabel(url))
         throwIfAborted(signal)
         if (file) {
           const writeStarted = performance.now()
@@ -216,23 +271,57 @@ async function doFetchReplayPart(
             timing.cacheWriteMs += performance.now() - writeStarted
           }
         }
+        replayFetchAdmission.recordSuccess()
         return data
       }
       await response.body?.cancel().catch(() => undefined)
-      if (response.status === 429 && attempt <= 5) {
+      if (response.status === 429) {
         const delay = retryDelay(response, attempt - 1)
-        const retryStarted = performance.now()
-        try {
-          await sleep(delay, signal)
-        } finally {
-          attemptTiming.retryDelayMs = performance.now() - retryStarted
+        replayFetchAdmission.recordRateLimit()
+        fetchNotBeforeAt = Math.max(fetchNotBeforeAt, Date.now() + delay)
+        if (attempt <= 5) {
+          const retryStarted = performance.now()
+          try {
+            await sleep(delay, signal)
+          } finally {
+            attemptTiming.retryDelayMs = performance.now() - retryStarted
+          }
+          continue
         }
-        continue
       }
       throw new Error(`HTTP ${response.status} при скачивании ${safeUrlLabel(url)}`)
     } finally {
       timing.attempts.push(attemptTiming)
     }
+  }
+}
+
+function replayPartSizeHint(response: Response): {
+  bodyLimitBytes: number
+  peakReservationBytes: number
+} {
+  const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase()
+  if (contentEncoding && contentEncoding !== 'identity') {
+    return {
+      bodyLimitBytes: REPLAY_PART_MAX_BYTES,
+      peakReservationBytes: REPLAY_PART_MAX_BYTES,
+    }
+  }
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isSafeInteger(declared)
+    && declared >= WRPL_HEADER_BYTES
+    && declared <= REPLAY_PART_MAX_BYTES) {
+    return {
+      bodyLimitBytes: declared,
+      // readResponseBuffer кратковременно удерживает stream chunks и итоговый
+      // Buffer одновременно. Exact-режим учитывает этот peak, но никогда не
+      // резервирует больше прежнего conservative worst-case на часть.
+      peakReservationBytes: Math.min(REPLAY_PART_MAX_BYTES, declared * 2),
+    }
+  }
+  return {
+    bodyLimitBytes: REPLAY_PART_MAX_BYTES,
+    peakReservationBytes: REPLAY_PART_MAX_BYTES,
   }
 }
 
@@ -247,12 +336,22 @@ function validateReplayPart(data: Buffer, source: string): void {
 function reserveFetchSlot(signal?: AbortSignal): Promise<number> {
   const requestedAt = performance.now()
   const reservation = throttleTail.then(async () => {
-    throwIfAborted(signal)
-    const waitMs = lastFetchAt + REPLAY_FETCH_PAUSE_MS - Date.now()
-    if (waitMs > 0) await sleep(waitMs, signal)
-    throwIfAborted(signal)
-    lastFetchAt = Date.now()
-    return performance.now() - requestedAt
+    for (;;) {
+      throwIfAborted(signal)
+      const now = Date.now()
+      const deadline = Math.max(
+        lastFetchAt + replayFetchAdmission.intervalMs(),
+        fetchNotBeforeAt,
+      )
+      const waitMs = deadline - now
+      if (waitMs > 0) {
+        await sleep(waitMs, signal)
+        continue
+      }
+      throwIfAborted(signal)
+      lastFetchAt = Date.now()
+      return performance.now() - requestedAt
+    }
   })
   throttleTail = reservation.then(() => undefined, () => undefined)
   return reservation
