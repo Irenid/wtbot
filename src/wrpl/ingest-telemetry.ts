@@ -96,6 +96,8 @@ export interface IngestSqliteSnapshot {
 }
 
 export interface IngestBacklogSnapshot {
+  /** Exact eligible row count when supplied by the indexed DB snapshot. */
+  pendingCount: number | null
   selectedCount: number
   selectionLimit: number
   saturated: boolean
@@ -104,6 +106,10 @@ export interface IngestBacklogSnapshot {
   /** Always valid for a non-empty selection; a lower bound when saturated. */
   oldestAgeLowerBoundMs: number
   sampledAtMs: number
+}
+
+export interface IngestBacklogObservation {
+  pendingCount: number
 }
 
 export interface IngestTelemetrySnapshot {
@@ -283,6 +289,7 @@ export class IngestTelemetryAccumulator {
       persist: createStage(),
     }
     this.backlog = {
+      pendingCount: null,
       selectedCount: 0,
       selectionLimit: 0,
       saturated: false,
@@ -300,13 +307,23 @@ export class IngestTelemetryAccumulator {
     firstSeenAtSeconds: number[],
     selectionLimit: number,
     nowMs = this.now(),
+    exact?: IngestBacklogObservation,
   ): void {
     const oldestFirstSeenAtMs = firstSeenAtSeconds.length > 0
       ? Math.min(...firstSeenAtSeconds) * 1_000
       : nowMs
     const oldestAgeLowerBoundMs = Math.max(0, nowMs - oldestFirstSeenAtMs)
-    const saturated = selectionLimit > 0 && firstSeenAtSeconds.length >= selectionLimit
+    const observedPendingCount = exact?.pendingCount
+    const pendingCount = typeof observedPendingCount === 'number'
+      && Number.isSafeInteger(observedPendingCount)
+      && observedPendingCount >= 0
+      ? observedPendingCount
+      : null
+    const saturated = pendingCount === null
+      ? selectionLimit > 0 && firstSeenAtSeconds.length >= selectionLimit
+      : pendingCount > firstSeenAtSeconds.length
     this.backlog = {
+      pendingCount,
       selectedCount: firstSeenAtSeconds.length,
       selectionLimit,
       saturated,

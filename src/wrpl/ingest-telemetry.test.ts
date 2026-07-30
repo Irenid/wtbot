@@ -142,6 +142,7 @@ test('ingest telemetry tracks the full bounded stage lifecycle', () => {
   assert.equal(snapshot.battlesPerMinute, 1)
   assert.equal(snapshot.outcomes.ok, 1)
   assert.equal(snapshot.discoveredToTerminalMs.count, 1)
+  assert.equal(snapshot.backlog.pendingCount, null)
   assert.equal(snapshot.backlog.saturated, false)
   assert.equal(snapshot.backlog.oldestAgeMs, 1_000)
   assert.equal(snapshot.stages.eligible.waitMs.count, 1)
@@ -227,6 +228,22 @@ test('saturated newest-first selection exposes an oldest-age lower bound', () =>
   const telemetry = new IngestTelemetryAccumulator(() => now)
   telemetry.recordSelection([95, 90], 2, now)
   const backlog = telemetry.snapshot(now).backlog
+  assert.equal(backlog.saturated, true)
+  assert.equal(backlog.oldestAgeMs, null)
+  assert.equal(backlog.oldestAgeLowerBoundMs, 10_000)
+})
+
+test('indexed backlog observation exposes exact queue count and bounded oldest age', () => {
+  const now = 100_000
+  const telemetry = new IngestTelemetryAccumulator(() => now)
+  telemetry.recordSelection(
+    [95, 90],
+    2,
+    now,
+    { pendingCount: 473 },
+  )
+  const backlog = telemetry.snapshot(now).backlog
+  assert.equal(backlog.pendingCount, 473)
   assert.equal(backlog.saturated, true)
   assert.equal(backlog.oldestAgeMs, null)
   assert.equal(backlog.oldestAgeLowerBoundMs, 10_000)

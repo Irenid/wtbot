@@ -149,11 +149,21 @@ warthunder.com / CDN -> parsers -> items -> WRPL ingest
   ingest равен числу фоновых workers; явное значение до 32 может быть выше
   размера пула, чтобы перекрыть CDN I/O, но одновременно удерживает больше
   replay-буферов в RAM и требует отдельного измерения RSS/error rate.
+- `WT_INGEST_ADAPTIVE_ENABLED` — rollback-switch AIMD admission для ingest:
+  при новых 429/retry/5xx, давлении replay budget или очереди SQLite
+  concurrency уменьшается, а после стабильного периода медленно
+  восстанавливается до настроенного лимита; по умолчанию `false`.
 - `WT_REPLAY_PROCESS_BUDGET_MB` — общий hard limit удерживаемых replay-буферов
   процесса (активные CDN-части, ready input и parse). Auto сначала резервирует
   до 384 МиБ (четыре worst-case WRPL-части) перед расчётом worker count, затем
   получает оставшуюся RAM с cap 2048 МиБ; явный диапазон 128–8192 МиБ.
   Ожидание budget timeout откладывает ingest без расхода attempts.
+- `WT_REPLAY_EXACT_RESERVATION_ENABLED` — экспериментальный rollback-switch
+  reservation по проверенному `Content-Length`/размеру cache вместо worst-case
+  96 МиБ; для network-body учитывается кратковременный peak до 2× Content-Length
+  (с cap 96 МиБ), затем reservation уменьшается до фактического размера. По
+  умолчанию `false`: live canary подтвердил throughput, но без
+  дополнительного CDN admission резко выросли 429.
 - `ANTHROPIC_API_KEY` — только для `npm run analyze`; вызовы платные.
 
 При добавлении новой переменной одновременно обновляй `src/config.ts`,
@@ -192,6 +202,7 @@ npm run verify:benchmark-corpus # SHA-256/outcome/data-contract фиксиров
 npm run restore:benchmark-corpus # восстановить отсутствующие fixtures из CDN с byte/SHA-256 проверкой
 npm run benchmark:ingest-telemetry # bounded aggregate overhead на 100k lifecycle
 npm run benchmark:sqlite-ingest # сравнение checkpoint cadence на временной SQLite
+npm run benchmark:performance-soak # bounded live canary (по умолчанию 5 минут; WT_BATTLES_CHANNEL пуст)
 npm run benchmark:workers -- benchmarks/fixtures/replays/<sid> [--render] [--kind=heatmap-air] [--warm=10] [--jobs=2] [--duration=30] [--arrival-rate=2] [--json=data/benchmarks/result.json] # локальный WRPL/PNG без сети/БД
 npm run build:web         # сборка SPA сайта (frontend/ → frontend/dist, раздаётся на /app)
 npm run dev:web           # Vite dev-сервер SPA с proxy /api на :3000
@@ -216,7 +227,7 @@ check, process lock и rotation. Восстановление выполняй �
 backup во временный файл, повтори `quick_check` и только затем замени `DB_PATH`.
 
 Линтера и CI нет, а юнит-тесты есть: `npm test` — `tsx --test "src/**/*.test.ts"`.
-Зафиксированный baseline на **2026-07-29** — 106 pass, 0 fail. Сверяй список
+Зафиксированный baseline на **2026-07-30** — 120 pass, 0 fail. Сверяй список
 упавших тестов до и после изменения; если состав тестов изменился, обновляй
 baseline, а любое новое падение считай регрессией.
 `src/wrpl/render-heatmap.spec.ts` не запускается автоматически (`package.json`
@@ -283,6 +294,11 @@ voice-трекером и Fastify. Исключение — успешная ing
 `idx_battles_session_hex`, но план
 обязательно проверяй через `EXPLAIN QUERY PLAN`, чтобы SQLite использовал
 multi-index OR, а не полный проход.
+
+`getIngestStats().pending` считает именно записи, которые удовлетворяют тому
+же retryable predicate, что и `getPendingBattleItems()`; ошибки с исчерпанными
+попытками не выдаются за очередь. Его агрегат использует covering-индексы и не
+читает `battles.events_blob`.
 
 Схема пока гибридная. `initDb()` сначала выполняет большой idempotent bootstrap
 через `CREATE TABLE/INDEX IF NOT EXISTS`, а `runDbMigrations()` отдельно
@@ -614,6 +630,6 @@ AGPL не будут согласованы владельцем проекта.
   `git diff`, убедись, что секреты не попали в tracked-файлы, и перечисли
   непройденные runtime-проверки. Живой запуск не является обязательным, если он
   имеет внешние побочные эффекты.
-- Baseline рабочей копии на 2026-07-29: `npm run build` зелёный, `npm test`
-  даёт 106 pass, 0 fail. Любое новое падение `npm test` считай регрессией
+- Baseline рабочей копии на 2026-07-30: `npm run build` зелёный, `npm test`
+  даёт 120 pass, 0 fail. Любое новое падение `npm test` считай регрессией
   своего изменения и чини до сдачи.

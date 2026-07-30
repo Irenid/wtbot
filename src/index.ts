@@ -11,6 +11,8 @@ import { requestPlayerBoardRefresh, startPlayerBoardPublisher } from './bot/play
 import { buildServer } from './web/index.js'
 import { startParsers, stopParsers } from './parsers/index.js'
 import { startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
+import { configureReplayFetchAdmission } from './wrpl/replay-cache.js'
+import { configureReplayProcessBudget } from './wrpl/replay-events.js'
 import { closeWorkerPool, runWorkerTask } from './workers/pool.js'
 import {
   OFFICIAL_PROFILE_PARSER_VERSION,
@@ -41,6 +43,11 @@ let playerStats: PlayerStatsCoordinator | null = null
 let shuttingDown = false
 let requestedExitCode = 0
 const PRODUCER_DRAIN_MS = 10_000
+
+configureReplayProcessBudget({
+  exactReservations: config.replayExactReservationEnabled,
+})
+configureReplayFetchAdmission(config.ingestAdaptiveAdmissionEnabled)
 
 process.once('SIGINT', () => requestShutdown('SIGINT'))
 process.once('SIGTERM', () => requestShutdown('SIGTERM'))
@@ -168,7 +175,11 @@ startParsers()
 // 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
 // фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)
 if (config.battleBackgroundEnabled) {
-  startIngestWorker(config.workerResources.ingestConcurrency, config.dbPath)
+  startIngestWorker(
+    config.workerResources.ingestConcurrency,
+    config.dbPath,
+    config.ingestAdaptiveAdmissionEnabled,
+  )
 } else {
   console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
 }
@@ -177,6 +188,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   requestedExitCode = Math.max(requestedExitCode, exitCode)
   if (shuttingDown) return
   shuttingDown = true
+  const shutdownStarted = performance.now()
   console.log(`\n[core] Получен ${signal} — останавливаюсь...`)
   stopWtCookieRefresh()
   stopParsers()
@@ -206,14 +218,29 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   ])
   if (drainTimer) clearTimeout(drainTimer)
   if (!drained) console.warn(`[core] producers не завершились за ${PRODUCER_DRAIN_MS} мс — продолжаю shutdown`)
+  console.log(
+    `[core:shutdown] producers ${drained ? 'drained' : 'deadline'} за ` +
+      `${Math.round(performance.now() - shutdownStarted)} мс`,
+  )
+  const browserStarted = performance.now()
   await closeWtBrowser()
+  console.log(`[core:shutdown] browser закрыт за ${Math.round(performance.now() - browserStarted)} мс`)
+  const discordStarted = performance.now()
   if (client) await client.destroy()
+  console.log(`[core:shutdown] Discord закрыт за ${Math.round(performance.now() - discordStarted)} мс`)
+  const poolStarted = performance.now()
   await closeWorkerPool(10_000)
+  console.log(`[core:shutdown] CPU pool закрыт за ${Math.round(performance.now() - poolStarted)} мс`)
+  const dbStarted = performance.now()
   closeDb()
+  console.log(
+    `[core:shutdown] SQLite закрыта за ${Math.round(performance.now() - dbStarted)} мс; ` +
+      `весь shutdown ${Math.round(performance.now() - shutdownStarted)} мс`,
+  )
   process.exit(requestedExitCode)
 }
 
-function requestShutdown(signal: string, exitCode = 0): void {
+export function requestShutdown(signal: string, exitCode = 0): void {
   void shutdown(signal, exitCode).catch((error: unknown) => {
     console.error(`[core] shutdown после ${signal} завершился ошибкой:`, error)
     process.exit(1)

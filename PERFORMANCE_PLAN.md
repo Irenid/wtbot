@@ -4,9 +4,11 @@
 
 Статус: измерительный контур и no-regret оптимизации закрыты; process-wide
 replay budget, memory-aware worker sizing и controlled WAL checkpoint
-реализованы. Следующий обязательный шаг — 30-минутный live soak текущего
-профиля. Только его telemetry определяет, что делать первым: staged ingest,
-SQLite writer, AIMD либо weighted memory admission.
+реализованы. Текущий пакет P4-A добавил точный eligible backlog, rollback-safe
+AIMD для CDN/ingest и экспериментальный exact replay reservation. По прямому
+указанию владельца 30.07.2026 30-минутный live soak не выполняется и больше не
+является обязательным gate; staged ingest и SQLite writer остаются условными,
+пока короткая bounded telemetry либо controlled fixture не покажет их пользу.
 
 Этот документ содержит только актуальные решения, подтверждённые baseline,
 открытые bottleneck, порядок исполнения и regression gates. Источники истины:
@@ -77,9 +79,11 @@ Discord-команд, платные AI-запросы, destructive restore/dele
 | --- | --- |
 | CPU pool | До 8 workers; interactive/normal/background priority, reserve, queue count и transferable bytes, queue/execution timeout, worker replacement, bounded current/high-water/cumulative telemetry |
 | Auto resources | Default estimate 320 МиБ; CPU, free RAM, OS reserve, workers и replay buffers планируются совместно |
-| Replay download | Любое число replay parts, но не более двух одновременных CDN download на бой; retry/dedup/abort, 96 МиБ на часть, 512 МиБ на бой |
-| Process replay budget | FIFO byte semaphore; worst-case reservation уменьшается до actual bytes, удерживается через ready/transfer/parse и освобождается в `finally` |
-| Ingest telemetry | Bounded stages eligible/download/ready/parse/persist, count/bytes/wait, battles/min, backlog age, TTFB/download/retry/status и process-budget wait/high-water |
+| Replay download | Любое число replay parts, но не более двух одновременных CDN download на бой; retry/dedup/abort, общий `Retry-After`, adaptive fetch interval 150–2000 мс за default-off rollback-switch, 96 МиБ на часть, 512 МиБ на бой |
+| Process replay budget | FIFO byte semaphore; default worst-case reservation выдаётся до I/O и уменьшается до actual bytes; экспериментальный exact-режим резервирует проверенный cache size либо network peak до `min(2 × Content-Length, 96 МиБ)`; timeout/abort wait входит в telemetry |
+| Ingest telemetry | Bounded stages eligible/download/ready/parse/persist, count/bytes/wait, battles/min, точный eligible backlog, bounded oldest-age, TTFB/download/retry/status и process-budget wait/high-water |
+| Adaptive admission | Default-off AIMD уменьшает ingest concurrency по новым 429/5xx/retry, replay-budget и persist pressure; recovery идёт по stable window/cooldown, состояние и reason публикуются в telemetry |
+| Backlog read model | `getIngestStats().pending` эквивалентен retryable predicate выборки; exhausted errors исключены, `events_blob` не читается, production p95 8,03 мс |
 | Benchmark corpus | Четыре постоянных сценария в `benchmarks/fixtures/replays`; byte/SHA-256, success/error и normalized output contract; runtime LRU-cache запрещён verifier-ом |
 | Media | Air variants не строятся без air events; неизвестный winner не запускает background full bundle; winner update bounded/coalesced |
 | Read model боя | Nullable `air_unit_count`/`chat_count`, migration v3, индексированный `getBattlePostSummary()` без чтения `events_blob` |
@@ -98,10 +102,13 @@ Windows x64, AMD Ryzen Balanced, Node.js 24.11.0.
 
 ### Корректность и измерения
 
-- полный offline baseline: **106 pass, 0 fail**;
+- исторический baseline до текущего пакета: **106 pass, 0 fail**; текущий
+  baseline после 14 новых regression tests: **120 pass, 0 fail**;
+- `npm run build`, `verify:workers`, `verify:workers:dist`, `verify:site-db` и
+  `verify:benchmark-corpus` проходят;
 - ingest telemetry overhead: p50/p95 около 0,0008 мс на lifecycle, то есть
   примерно 0,0008% консервативного бюджета 100 мс;
-- snapshot после 100 000 lifecycle — 3515 bytes: cardinality bounded;
+- snapshot после 100 000 lifecycle — 3855 bytes: cardinality bounded;
 - corpus:
   - small mixed — 2,59 МиБ, 36 trajectories;
   - large ground-only — 5,21 МиБ, 220 trajectories;
@@ -121,8 +128,29 @@ Windows x64, AMD Ryzen Balanced, Node.js 24.11.0.
 
 Во втором tuned canary `/health`, `/api/stats`, `/api/items` и `/api/voice`
 остались ≤36,4 мс, process-budget wait был равен нулю, shutdown прошёл
-штатно. Это положительный короткий сигнал, но не замена 30-минутному soak:
-RSS plateau, oldest backlog age и долгий error/retry rate ещё не доказаны.
+штатно. Это положительный короткий сигнал; долговременные RSS plateau и
+error/retry rate не доказаны. 30-минутный soak не запускается по решению
+владельца, поэтому это ограничение явно сохраняется в decision gate.
+
+### Точный snapshot очереди
+
+Read-only snapshot production SQLite от 30.07.2026:
+
+| Метрика | Значение |
+| --- | ---: |
+| Всего `wt-replays` items | 23 399 |
+| Eligible backlog по тому же predicate, что ingest | **473** |
+| Exhausted `error`, attempts = 3 | 17 |
+| `expired` | 23 |
+| `ok` | 22 886 |
+| `battle_ingest` без соответствующего replay item | 0 |
+
+Старая формула показывала 490, потому что считала 17 exhausted errors частью
+очереди, хотя `getPendingBattleItems()` их уже никогда не выбирал. Новый
+агрегат считает 473 и использует только `battle_ingest`, covering index
+`idx_items_source_updated` и covering index `idx_battles_metrics`; production
+замер 100 read-only вызовов: p50 6,71 мс, p95 8,03 мс, p99 8,71 мс,
+max 8,90 мс. `EXPLAIN QUERY PLAN` не читает `battles.events_blob`.
 
 ### Authoritative worker baseline
 
@@ -202,11 +230,11 @@ bottleneck, но его приоритет должен подтвердить s
 
 | Приоритет | Проблема | Риск/следствие |
 | --- | --- | --- |
-| Gate | Нет 30-minute live soak профиля 5/8/384 | Нельзя доказательно выбрать staged queues, writer или AIMD первым |
+| Gate | Долгий live soak снят по прямому указанию владельца | Нет доказательства долговременного RSS plateau; крупные архитектурные пакеты требуют bounded canary либо controlled fixture |
 | P0 | Один ingest slot охватывает download, parse и persist | Медленная стадия удерживает admission другой стадии |
 | P0 | Нет одного SQLite writer/microbatch | Однобоевые транзакции не амортизируются, connections распределены по CPU workers |
 | P1 | Persist output, PNG и native Resvg memory не входят в weighted budget | Replay cap не гарантирует общий RSS plateau |
-| P1 | Нет AIMD и high/low watermarks | Статический admission не реагирует на 429, TTFB, RSS и persist pressure |
+| P1 | P4-A AIMD default-off и ещё не использует TTFB/RSS/output/native memory | Без отдельной калибровки нельзя включать его по умолчанию или считать weighted admission завершённым |
 | P2 | Newest-first без полноценного aging | Старый backlog может ждать при постоянном потоке новых items |
 | P2 | Синхронные SQLite read models | SELECT >10 мс может остановить Discord heartbeat/Fastify |
 | P3 | Нет полного CPU profile WRPL phases | Оптимизация parser/Rust пока не имеет доказанного hot phase |
@@ -217,26 +245,29 @@ bottleneck, но его приоритет должен подтвердить s
 превышающий 10 мс, переносится в snapshot/read-only worker либо получает
 индекс — не маскируется увеличением workers.
 
-## Следующий обязательный шаг: live soak
+## Текущий decision gate без 30-минутного soak
 
-До новой архитектурной правки выполнить один воспроизводимый soak:
+В этой итерации обязательный gate закрывается точным read-only snapshot
+очереди, offline regression suite и bounded instrumentation. Долгий live run
+не выполнялся. Если для следующего решения всё же понадобится короткая живая
+проверка, используется `npm run benchmark:performance-soak` с текущим профилем
+5 workers / reserve 1 / ingest 8 / replay 384 МиБ. Harness по умолчанию
+ограничен 5 минутами, принимает `--duration-minutes`, принудительно очищает
+`WT_BATTLES_CHANNEL` и сохраняет raw/summary/shutdown JSON.
 
-1. `npm run build`, затем production build с текущими performance-параметрами
-   5 workers / reserve 1 / ingest 8 / replay 384 МиБ.
-2. Передать процессу пустой `WT_BATTLES_CHANNEL`; не регистрировать команды и
-   не запускать платный analysis.
-3. Длительность — не менее 30 минут. Зафиксировать размер backlog и sample
-   count; пустой backlog не считается throughput-доказательством.
-4. Каждые 30 секунд снимать:
+Во время bounded canary снимать:
+
+1. Каждые 30 секунд:
    - process RSS/heap/external/arrayBuffers;
    - worker active/queued/high-water по priority и kind;
-   - ingest stage count/bytes/wait/oldest age и battles/min;
+   - ingest stage count/bytes/wait, exact backlog, bounded oldest age и
+     battles/min;
    - replay budget used/queued/high-water/wait;
    - CDN TTFB/download/retry/status/429/5xx;
    - SQLite queue/transaction/checkpoint;
    - event-loop lag и latency `/health`, `/api/stats`, `/api/items`,
      `/api/voice`.
-5. Остановить процесс graceful shutdown и проверить producer drain,
+2. Остановить процесс graceful shutdown и проверить producer drain,
    worker-side checkpoint, отсутствие watchdog/fatal и оставшегося Node на
    порту 3000.
 
@@ -255,17 +286,23 @@ backpressure, создающий самый большой вклад в `discov
 
 ## Roadmap исполнения
 
-### G1 — representative soak: следующий
+### G1 — representative evidence: долгий soak отменён
 
-- [ ] 30 минут на текущем профиле с непустым backlog.
-- [ ] Сохранить raw telemetry и краткий JSON summary.
-- [ ] Зафиксировать RSS slope/plateau, stage utilization, oldest age,
-  throughput, retry/status и API SLO.
-- [ ] Выбрать следующий пакет по decision gate выше.
+- [x] 30-минутный run снят владельцем 30.07.2026; не запускать его как
+  обязательную проверку.
+- [x] Зафиксирован точный непустой backlog: 473 eligible боя; 17 exhausted
+  errors исключены.
+- [x] Добавлен bounded harness с raw telemetry, JSON summary, shutdown
+  telemetry и default duration 5 минут.
+- [ ] Короткий canary запускать только когда он нужен для конкретного решения;
+  в текущей итерации live run не выполнялся.
+- [ ] Долговременные RSS slope/plateau и error/retry rate остаются неизвестны и
+  не должны подменяться коротким результатом.
 
 ### P2A — staged download/ready/parse: условный P0
 
-Выполнять первым только если G1 подтверждает lifecycle coupling.
+Выполнять первым только если bounded live telemetry либо controlled fixture
+подтверждает lifecycle coupling.
 
 1. Добавить rollback-switch `WT_INGEST_PIPELINE_ENABLED`; одновременно
    обновить `src/config.ts`, `.env.example` и `AGENTS.md`.
@@ -287,7 +324,8 @@ helper. Перед общей функцией повторно проверит
 
 ### P2B/P3 — persist queue и dedicated SQLite writer: условный P0
 
-Выполнять после P2A либо первым, если G1 показывает доминирующий persist wait.
+Выполнять после P2A либо первым, если bounded telemetry показывает
+доминирующий persist wait.
 
 1. Bounded persist queue по count и serialized `events_blob` bytes.
 2. Один dedicated writer actor, одно соединение, cached statements.
@@ -299,10 +337,21 @@ helper. Перед общей функцией повторно проверит
 6. Не менять `synchronous=FULL/NORMAL` без отдельного durability-решения и
    controlled temporary-DB benchmark.
 
-### P4 — adaptive и weighted admission
+### P4 — adaptive и weighted admission: P4-A реализован
 
-- [ ] AIMD по 429/5xx/TTFB, replay-budget wait, RSS и persist pressure.
-- [ ] High/low watermarks без oscillation.
+- [x] AIMD ingest concurrency по новым 429/5xx/retry, replay-budget wait/queue
+  и persist pressure за `WT_INGEST_ADAPTIVE_ENABLED=false`.
+- [x] Adaptive CDN interval 150–2000 мс и process-wide `Retry-After`; общий
+  limiter не ослаблен.
+- [x] Recovery по stable samples и cooldown без oscillation; pressure reason
+  сохраняется в snapshot.
+- [x] Timeout/abort replay-budget wait учитывается в cumulative telemetry и не
+  расходует ingest attempts.
+- [x] Экспериментальный exact cache/Content-Length reservation за
+  `WT_REPLAY_EXACT_RESERVATION_ENABLED=false`; default сохраняет pre-I/O
+  worst-case admission.
+- [ ] Добавить TTFB/RSS/output/native-memory signals только после отдельной
+  калибровки, не по одному короткому run.
 - [ ] Aging backlog при сохранении newest-first для CDN expiry.
 - [ ] Weight по task kind/input/pixels/output/native peak.
 - [ ] Удерживать output buffers в budget до фактического освобождения.
@@ -335,7 +384,7 @@ Bounds-check недоверенного WRPL, output limits и worker execution 
 Не смешивать разные baseline:
 
 - worker/pool change сравнивается с 30-second `5/4` parse+heatmap baseline;
-- staged ingest сравнивается с G1 live soak и одинаковым controlled
+- staged ingest сравнивается с одинаковым bounded canary и controlled
   CDN/SQLite fixture;
 - writer change сравнивается на временной SQLite и затем live canary;
 - media change сравнивается на одинаковом corpus и variant;
@@ -377,7 +426,7 @@ Bounds-check недоверенного WRPL, output limits и worker execution 
 Для каждого пакета:
 
 1. Targeted tests изменённого модуля.
-2. `npm test` против baseline 106/106.
+2. `npm test` против текущего baseline 120/120.
 3. `npm run build`.
 4. Worker/WRPL/render: `verify:workers` и `verify:workers:dist`.
 5. SQL: targeted DB test, `EXPLAIN QUERY PLAN`, `verify:site-db`.
