@@ -838,6 +838,11 @@ const PROCESS_BUDGET_WAIT_TIMEOUT_MS = 30_000
 const replayProcessByteBudget = new AsyncByteBudget(
   workerResourcePlan().replayProcessByteBudgetMb * 1024 * 1024,
 )
+let exactReplayReservationsEnabled = false
+
+export function configureReplayProcessBudget(options: { exactReservations: boolean }): void {
+  exactReplayReservationsEnabled = options.exactReservations
+}
 
 export function replayProcessByteBudgetSnapshot(): ByteBudgetSnapshot {
   return replayProcessByteBudget.snapshot()
@@ -882,6 +887,7 @@ export interface ReplayPartsFetchOptions {
   /** null отключает process budget только в изолированном benchmark/test. */
   processByteBudget?: AsyncByteBudget | null
   processBudgetTimeoutMs?: number
+  exactProcessReservation?: boolean
   onTiming?: (timing: ReplayPartsTiming) => void
 }
 
@@ -935,6 +941,8 @@ export async function fetchReplayPartsRetained(
   const processBudget = options.processByteBudget === undefined
     ? replayProcessByteBudget
     : options.processByteBudget
+  const exactProcessReservation =
+    options.exactProcessReservation ?? exactReplayReservationsEnabled
   const requestedProcessBudgetTimeoutMs =
     options.processBudgetTimeoutMs ?? PROCESS_BUDGET_WAIT_TIMEOUT_MS
   const processBudgetTimeoutMs =
@@ -972,8 +980,8 @@ export async function fetchReplayPartsRetained(
     processReservations.clear()
   }
 
-  const reservePartBytes = (index: number): void => {
-    const nextBudget = loadedBytes + reservedBytes + REPLAY_PART_MAX_BYTES
+  const reservePartBytes = (index: number, bytes: number): void => {
+    const nextBudget = loadedBytes + reservedBytes + bytes
     if (nextBudget > maxTotalBytes) {
       throw new Error(
         `replay ${index + 1}/${partUrls.length}: loaded/in-flight budget ` +
@@ -981,14 +989,14 @@ export async function fetchReplayPartsRetained(
         `${Math.ceil(maxTotalBytes / 1024 / 1024)} МиБ`,
       )
     }
-    reservedBytes += REPLAY_PART_MAX_BYTES
+    reservedBytes += bytes
     peakBudgetBytes = Math.max(peakBudgetBytes, loadedBytes + reservedBytes)
   }
-  const releaseReservation = (): void => {
-    reservedBytes -= REPLAY_PART_MAX_BYTES
+  const releaseReservation = (bytes: number): void => {
+    reservedBytes = Math.max(0, reservedBytes - bytes)
   }
-  const commitReservation = (bytes: number): void => {
-    releaseReservation()
+  const commitReservation = (reserved: number, bytes: number): void => {
+    releaseReservation(reserved)
     loadedBytes += bytes
     peakBudgetBytes = Math.max(peakBudgetBytes, loadedBytes + reservedBytes)
   }
@@ -1011,16 +1019,46 @@ export async function fetchReplayPartsRetained(
       nextIndex += 1
       if (index >= partUrls.length) return
 
-      let reserved = false
+      let reserved = 0
       let activeStarted = false
       let processReservation: ByteBudgetReservation | null = null
       let retainProcessReservation = false
-      try {
-        reservePartBytes(index)
-        reserved = true
-        if (processBudget) {
+      const releasePartReservation = (): void => {
+        if (processReservation) {
+          processReservations.delete(processReservation)
+          processReservation.release()
+          processReservation = null
+        }
+        if (reserved > 0) {
+          releaseReservation(reserved)
+          reserved = 0
+        }
+      }
+      const reservePartMemory = async (requestedBytes: number): Promise<void> => {
+        const reservationBytes = exactProcessReservation
+          ? requestedBytes
+          : REPLAY_PART_MAX_BYTES
+        if (!Number.isSafeInteger(reservationBytes) || reservationBytes <= 0) {
+          throw new Error(
+            `replay ${index + 1}/${partUrls.length}: некорректный reservation ` +
+            `${reservationBytes}`,
+          )
+        }
+        if (reserved > 0) {
+          if (reservationBytes > reserved) {
+            throw new Error(
+              `replay ${index + 1}/${partUrls.length}: повторный reservation ` +
+              `${reservationBytes} больше уже удерживаемого ${reserved}`,
+            )
+          }
+          return
+        }
+        reservePartBytes(index, reservationBytes)
+        reserved = reservationBytes
+        if (!processBudget) return
+        try {
           const budgetWaitStarted = performance.now()
-          processReservation = await processBudget.acquire(REPLAY_PART_MAX_BYTES, {
+          processReservation = await processBudget.acquire(reservationBytes, {
             signal: combinedSignal,
             timeoutMs: processBudgetTimeoutMs,
           })
@@ -1030,7 +1068,34 @@ export async function fetchReplayPartsRetained(
             processBudgetPeakBytes,
             processBudget.snapshot().usedBytes,
           )
+        } catch (error) {
+          releaseReservation(reserved)
+          reserved = 0
+          throw error
         }
+      }
+      const commitPartMemory = (bytes: number): void => {
+        if (bytes > reserved) {
+          throw new Error(
+            `replay ${index + 1}/${partUrls.length}: фактический размер ` +
+            `${bytes} больше reservation ${reserved}`,
+          )
+        }
+        processReservation?.shrinkTo(bytes)
+        commitReservation(reserved, bytes)
+        reserved = 0
+        retainProcessReservation = true
+        if (processBudget) {
+          processBudgetPeakBytes = Math.max(
+            processBudgetPeakBytes,
+            processBudget.snapshot().usedBytes,
+          )
+        }
+      }
+      try {
+        // Rollback-off обязан сохранять прежнюю семантику: worst-case budget
+        // выдаётся до cache/network I/O, а не после получения HTTP headers.
+        if (!exactProcessReservation) await reservePartMemory(REPLAY_PART_MAX_BYTES)
         active += 1
         activeStarted = true
         peakActive = Math.max(peakActive, active)
@@ -1039,30 +1104,21 @@ export async function fetchReplayPartsRetained(
           ...(options.cacheDirectory === undefined
             ? {}
             : { cacheDirectory: options.cacheDirectory }),
+          memoryReservation: {
+            reserve: reservePartMemory,
+            commit: commitPartMemory,
+            release: releasePartReservation,
+          },
           onTiming: (timing) => {
             partTimings[index] = { ...timing, index }
           },
         })
         parts[index] = part
-        processReservation?.shrinkTo(part.byteLength)
-        if (processBudget) {
-          processBudgetPeakBytes = Math.max(
-            processBudgetPeakBytes,
-            processBudget.snapshot().usedBytes,
-          )
-        }
-        commitReservation(part.byteLength)
-        reserved = false
-        retainProcessReservation = true
       } catch (error) {
         fail(error)
         throw error
       } finally {
-        if (processReservation && !retainProcessReservation) {
-          processReservations.delete(processReservation)
-          processReservation.release()
-        }
-        if (reserved) releaseReservation()
+        if (!retainProcessReservation) releasePartReservation()
         if (activeStarted) active -= 1
       }
     }

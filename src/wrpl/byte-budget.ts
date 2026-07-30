@@ -140,6 +140,7 @@ export class AsyncByteBudget {
         waiter.abortListener = () => {
           if (!this.removeWaiter(waiter)) return
           this.aborted += 1
+          this.recordWait(performance.now() - waiter.queuedAt)
           reject(abortError())
           this.drain()
         }
@@ -150,6 +151,7 @@ export class AsyncByteBudget {
         waiter.timer = setTimeout(() => {
           if (!this.removeWaiter(waiter)) return
           this.timedOut += 1
+          this.recordWait(performance.now() - waiter.queuedAt)
           reject(new ByteBudgetTimeoutError(normalized, this.limitBytes))
           this.drain()
         }, timeoutMs)
@@ -208,10 +210,15 @@ export class AsyncByteBudget {
     this.usedBytes += bytes
     this.highWaterUsedBytes = Math.max(this.highWaterUsedBytes, this.usedBytes)
     this.granted += 1
-    this.waitCount += 1
-    this.waitTotalMs += Math.max(0, waitMs)
-    this.waitMaxMs = Math.max(this.waitMaxMs, waitMs)
+    this.recordWait(waitMs)
     return new ByteBudgetReservation(this, bytes)
+  }
+
+  private recordWait(waitMs: number): void {
+    const normalized = Math.max(0, waitMs)
+    this.waitCount += 1
+    this.waitTotalMs += normalized
+    this.waitMaxMs = Math.max(this.waitMaxMs, normalized)
   }
 
   private removeWaiter(waiter: Waiter): boolean {
