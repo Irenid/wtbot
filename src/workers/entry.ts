@@ -6,7 +6,7 @@ import { decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarize
 import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 import { applyRealNames, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
 import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
-import { buildBattleSvg } from '../wrpl/render-battle.js'
+import { buildBattleSvg, plainClanTag } from '../wrpl/render-battle.js'
 import {
   buildHeatmapSvg,
   prepareHeatmapScene,
@@ -31,6 +31,7 @@ import type {
   WorkerRenderProfile,
   WorkerRequest,
   WorkerResponse,
+  WorkerTaskResult,
 } from './protocol.js'
 import { resolveRenderFonts } from './render-fonts.js'
 import { SqliteCheckpointSchedule } from './sqlite-checkpoint.js'
@@ -372,6 +373,72 @@ async function warmSqlite(
   }
 }
 
+async function readSiteDashboardStats(
+  input: Extract<AnyWorkerTask, { kind: 'read-site-dashboard-stats' }>['input'],
+): Promise<{
+  value: WorkerTaskResult<'read-site-dashboard-stats'>
+  transfer: []
+}> {
+  if (!existsSync(input.dbPath)) throw new Error(`SQLite сайта не найден: ${input.dbPath}`)
+  if (!Number.isSafeInteger(input.sinceTs) || input.sinceTs < 0) {
+    throw new RangeError('sinceTs сайта должен быть неотрицательным Unix-временем')
+  }
+  if (!Number.isSafeInteger(input.seasonStart) || input.seasonStart < 0) {
+    throw new RangeError('seasonStart сайта должен быть неотрицательным Unix-временем')
+  }
+  const { DatabaseSync } = await import('node:sqlite')
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 268435456;')
+    database.exec('PRAGMA cache_size = -65536;')
+    const counts = database.prepare(`
+      SELECT COUNT(*) AS total,
+             COALESCE(SUM(CASE WHEN start_time >= ? THEN 1 ELSE 0 END), 0) AS recent,
+             MAX(start_time) AS last_start
+      FROM battles
+      WHERE start_time >= 0
+    `).get(input.sinceTs) as { total: number; recent: number; last_start: number | null }
+    const players = database.prepare(`
+      SELECT COUNT(*) AS players FROM (
+        SELECT DISTINCT user_id FROM battle_players WHERE user_id <> ''
+      )
+    `).get() as { players: number }
+    const byDay = database.prepare(`
+      SELECT date(start_time, 'unixepoch') AS day, COUNT(*) AS battles
+      FROM battles
+      WHERE start_time >= ?
+      GROUP BY day
+      ORDER BY day
+    `).all(input.sinceTs) as unknown as { day: string; battles: number }[]
+    const clanRows = database.prepare(`
+      SELECT DISTINCT clan_tag
+      FROM clan_rating_snapshots
+      WHERE seen_at >= ?
+    `).all(input.seasonStart) as unknown as { clan_tag: string }[]
+    const clans = new Set(
+      clanRows
+        .map((row) => plainClanTag(row.clan_tag))
+        .filter((tag) => tag !== ''),
+    ).size
+    return {
+      value: {
+        players: players.players,
+        clans,
+        battlesTotal: counts.total,
+        battlesRecent: counts.recent,
+        lastBattleAt: counts.last_start,
+        byDay,
+        elapsedMs: performance.now() - started,
+      },
+      transfer: [],
+    }
+  } finally {
+    database.close()
+  }
+}
+
 async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-scoreboard' }>['input']) {
   const svg = buildBattleSvg(input.input, {
     unitIcons: new Map(input.assets.unitIcons.map(([id, data]) => [id, dataUri('image/png', data)])),
@@ -627,6 +694,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return updatePlayerStatBoardPublication(task.input)
     case 'warm-sqlite':
       return warmSqlite(task.input)
+    case 'read-site-dashboard-stats':
+      return readSiteDashboardStats(task.input)
     case 'render-scoreboard':
       return await renderScoreboard(task.input)
     case 'render-media':

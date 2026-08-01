@@ -3,7 +3,10 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { withRecoverableFileLock } from './recoverable-file-lock.js'
+import {
+  acquireRecoverableFileLock,
+  withRecoverableFileLock,
+} from './recoverable-file-lock.js'
 
 test('recoverable lock освобождает owned lock после задачи', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'wtbot-file-lock-'))
@@ -14,6 +17,28 @@ test('recoverable lock освобождает owned lock после задачи
       return 'ok'
     })
     assert.equal(result, 'ok')
+    assert.equal(existsSync(lockFile), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('recoverable lock можно удерживать до явного release', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-file-lock-'))
+  try {
+    const lockFile = path.join(root, 'resource.lock')
+    const lock = await acquireRecoverableFileLock({ lockFile })
+    assert.equal(existsSync(lockFile), true)
+    await assert.rejects(
+      acquireRecoverableFileLock({
+        lockFile,
+        timeoutMs: 30,
+        retryMinMs: 5,
+        retryMaxMs: 5,
+      }),
+      /таймаут блокировки файла/,
+    )
+    await lock.release()
     assert.equal(existsSync(lockFile), false)
   } finally {
     rmSync(root, { recursive: true, force: true })

@@ -183,6 +183,18 @@ export interface WorkerTaskMap {
     input: { dbPath: string; statements: string[] }
     output: { elapsedMs: number; statements: number }
   }
+  'read-site-dashboard-stats': {
+    input: { dbPath: string; sinceTs: number; seasonStart: number }
+    output: {
+      players: number
+      clans: number
+      battlesTotal: number
+      battlesRecent: number
+      lastBattleAt: number | null
+      byDay: { day: string; battles: number }[]
+      elapsedMs: number
+    }
+  }
   'render-scoreboard': {
     input: { input: BattleImageInput; assets: ScoreboardAssets }
     output: ArrayBuffer

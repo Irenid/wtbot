@@ -1,11 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify'
 
-// Дашборд без сборщика и фреймворка: одна страница на vanilla JS, которая
-// раз в 10 секунд забирает /api/stats, /api/items и /api/voice, а статистику
-// игрока строит из POST /api/player-stats. Пользовательские данные вставляются
-// только через DOM textContent. Когда захочешь дашборд «как у juniper» (логин
-// через Discord, настройки серверов) — сюда встанет полноценный фронтенд,
-// а JSON API уже готов.
+// Дашборд без сборщика и фреймворка: одна страница на vanilla JS. Компактный
+// /api/dashboard обновляется раз в 15 секунд, тяжёлые site-агрегаты — раз в
+// минуту, а скрытая вкладка polling не выполняет. Статистика игрока строится
+// из POST /api/player-stats. Пользовательские данные вставляются только через
+// DOM textContent.
 //
 // Цвета серий графиков (воздух/земля/флот) проверены валидатором палитры на
 // тёмной поверхности карточек: контраст >= 3:1, разделимость при дальтонизме.
@@ -15,9 +14,6 @@ const dashboardHtml = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wtbot — панель</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
 <style>
   /* Единая тема с сайтом /app: тёплый чёрный + золотой акцент. */
   :root {
@@ -37,7 +33,7 @@ const dashboardHtml = `<!doctype html>
   .wrap { max-width: 1100px; margin: 0 auto; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { color: #f0d9a0; }
-  h1 { font-family: 'Space Grotesk', 'Segoe UI', sans-serif; font-size: 24px; margin-bottom: 4px; }
+  h1 { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 24px; margin-bottom: 4px; }
   h1 span { color: var(--accent); }
   .sub { color: var(--muted); margin-bottom: 24px; font-size: 14px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
@@ -47,7 +43,7 @@ const dashboardHtml = `<!doctype html>
     box-shadow: 0 24px 50px -34px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
   .card h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink2); font-weight: 600; margin-bottom: 12px; }
-  .big { font-family: 'Space Grotesk', 'Segoe UI', sans-serif; font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .big { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   .row:last-child { border-bottom: none; }
   .row span:last-child { text-align: right; flex-shrink: 0; }
@@ -111,17 +107,85 @@ const dashboardHtml = `<!doctype html>
   .src-card .row { font-size: 13px; padding: 4px 0; }
   .src-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
   .src-name { font-weight: 600; font-size: 13px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .metric-box { background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .metric-box .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .metric-box .value { font-size: 22px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .metric-box .hint { color: var(--ink2); font-size: 11px; margin-top: 2px; }
+  .progress { height: 7px; background: var(--bg); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+  .progress > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+  .split-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .section-title { color: var(--accent); font-size: 13px; font-weight: 600; margin: 14px 0 7px; }
+  .section-title:first-child { margin-top: 0; }
+  .activity { display: flex; align-items: end; gap: 7px; min-height: 92px; padding-top: 12px; }
+  .activity-col { flex: 1; min-width: 0; text-align: center; color: var(--muted); font-size: 10px; }
+  .activity-bar { min-height: 2px; background: linear-gradient(180deg, #ffd979, #d89322); border-radius: 5px 5px 2px 2px; margin-bottom: 5px; }
+  .status-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .status-line .small { margin: 0; }
   @media (max-width: 620px) {
     .player-form { grid-template-columns: 1fr; }
     .bar-row { grid-template-columns: 90px 1fr 78px; }
+    .split-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>wt<span>bot</span></h1>
-  <div class="sub">Панель управления — обновляется каждые 10 секунд · <a href="/app">сайт статистики →</a></div>
+  <div class="sub">Полная телеметрия проекта · адаптивное обновление без тяжёлого polling · <a href="/app">сайт статистики →</a></div>
   <div class="grid">
+    <div class="card full">
+      <div class="status-line">
+        <div>
+          <h2>Состояние системы</h2>
+          <div class="big"><span id="bot-dot" class="dot off"></span><span id="bot-tag">загрузка…</span></div>
+        </div>
+        <div id="dashboard-freshness" class="muted small">Первый снимок…</div>
+      </div>
+      <div id="overview-metrics" class="metric-grid" style="margin-top:14px"></div>
+    </div>
+    <div class="card full">
+      <h2>Процесс и ресурсы</h2>
+      <div id="runtime-metrics" class="metric-grid"></div>
+      <div class="split-grid">
+        <div>
+          <div class="section-title">CPU worker pool</div>
+          <div id="worker-detail"></div>
+        </div>
+        <div>
+          <div class="section-title">WRPL ingest</div>
+          <div id="ingest-detail"></div>
+        </div>
+      </div>
+      <div class="section-title">Нагрузки worker pool</div>
+      <div id="worker-workloads" class="muted small">Загрузка…</div>
+      <div class="section-title">Очереди статистики игроков</div>
+      <div id="player-stats-services" class="muted small">Загрузка…</div>
+    </div>
+    <div class="card">
+      <h2>Команды Discord</h2>
+      <div class="big" id="cmd-total">—</div>
+      <div id="cmd-list"></div>
+    </div>
+    <div class="card">
+      <h2>Источники данных</h2>
+      <div class="big" id="items-total">—</div>
+      <div id="items-by-source"></div>
+    </div>
+    <div class="card">
+      <h2>WT transport</h2>
+      <div class="big" id="transport-mode">—</div>
+      <div id="transport-detail"></div>
+    </div>
+    <div class="card">
+      <h2>Данные сайта</h2>
+      <div class="big" id="site-battles">—</div>
+      <div id="site-detail"></div>
+    </div>
+    <div class="card full">
+      <h2>Активность боёв за 7 дней</h2>
+      <div id="site-activity" class="activity muted">Загрузка…</div>
+    </div>
     <div class="card full" id="player-stats-card">
       <h2>Статистика игрока War Thunder</h2>
       <form id="player-stats-form" class="player-form">
@@ -138,27 +202,6 @@ const dashboardHtml = `<!doctype html>
       <div id="player-stats-status" class="muted small">Игрок должен уже встречаться в реплеях, voice-снимке или рейтингах.</div>
       <div id="player-stats-result"></div>
     </div>
-    <div class="card">
-      <h2>Бот</h2>
-      <div class="big"><span id="bot-dot" class="dot off"></span><span id="bot-tag">загрузка…</span></div>
-      <div class="row"><span class="muted">Серверов</span><span id="bot-guilds">—</span></div>
-      <div class="row"><span class="muted">Аптайм</span><span id="bot-uptime">—</span></div>
-    </div>
-    <div class="card">
-      <h2>Команды</h2>
-      <div class="big" id="cmd-total">—</div>
-      <div id="cmd-list"></div>
-    </div>
-    <div class="card">
-      <h2>Собрано данных</h2>
-      <div class="big" id="items-total">—</div>
-      <div id="items-by-source"></div>
-    </div>
-    <div class="card">
-      <h2>Разбор боёв</h2>
-      <div class="big" id="ingest-done">—</div>
-      <div id="ingest-detail"></div>
-    </div>
     <div class="card full">
       <h2 class="head-row">В голосовых каналах <button id="voice-refresh" class="btn">Обновить</button></h2>
       <div id="season-status" class="muted small">Сезон: загрузка…</div>
@@ -169,7 +212,7 @@ const dashboardHtml = `<!doctype html>
       <div id="parser-list" class="muted">Загрузка…</div>
     </div>
     <div class="card full">
-      <h2>Последние записи</h2>
+      <h2>Последние записи источников</h2>
       <div id="item-list" class="muted">Загрузка…</div>
     </div>
   </div>
@@ -227,10 +270,10 @@ function itemRow(it) {
   div.className = 'row';
   const left = document.createElement('span');
   left.textContent = it.title;
-  if (it.analysis) {
+  if (it.analysis || it.analyzed) {
     const a = document.createElement('div');
     a.className = 'muted small';
-    a.textContent = '🧠 ' + it.analysis;
+    a.textContent = it.analysis ? 'AI: ' + it.analysis : 'AI-анализ сохранён';
     left.appendChild(a);
   }
   const right = document.createElement('span');
@@ -247,6 +290,19 @@ function fmtPercent(value) {
 }
 function fmtMetric(value) {
   return value === null || value === undefined ? '—' : Number(value).toLocaleString('ru');
+}
+function fmtBytes(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  const bytes = Math.max(0, Number(value));
+  if (bytes < 1024) return Math.round(bytes) + ' Б';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КиБ';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' МиБ';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' ГиБ';
+}
+function fmtMs(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  const ms = Math.max(0, Number(value));
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + ' с' : ms.toFixed(ms < 10 ? 1 : 0) + ' мс';
 }
 function fmtHours(value) {
   return value === null || value === undefined ? '—' : Math.round(value / 3600).toLocaleString('ru') + ' ч';
@@ -287,6 +343,21 @@ function kpiTile(label, value, sub) {
   tile.appendChild(el('div', 'v', value));
   if (sub) tile.appendChild(el('div', 's', sub));
   return tile;
+}
+function metricBox(label, value, hint, fraction, color) {
+  const box = el('div', 'metric-box');
+  box.appendChild(el('div', 'label', label));
+  box.appendChild(el('div', 'value', value));
+  if (hint) box.appendChild(el('div', 'hint', hint));
+  if (fraction !== undefined && fraction !== null) {
+    const progress = el('div', 'progress');
+    const fill = el('span');
+    fill.style.width = Math.max(0, Math.min(1, fraction)) * 100 + '%';
+    if (color) fill.style.background = color;
+    progress.appendChild(fill);
+    box.appendChild(progress);
+  }
+  return box;
 }
 function barTrack(fraction, color, title) {
   const track = el('div', 'bar-track');
@@ -789,88 +860,327 @@ async function beginPlayerLookup(player) {
   if (token === playerLookupToken) button.disabled = false;
 }
 
-async function refresh() {
-  try {
-    const responses = await Promise.all([fetch('/api/stats'), fetch('/api/items?limit=8'), fetch('/api/voice')]);
-    const data = await responses[0].json();
-    const itemsData = await responses[1].json();
-    const voiceData = await responses[2].json();
-
-    const seasonStatus = document.getElementById('season-status');
-    const season = data.season || voiceData.season;
-    if (!season || !season.season) {
-      seasonStatus.textContent = 'Сезон: расписание не задано';
-    } else if (season.currentStage) {
-      seasonStatus.textContent =
-        season.season.name + ' · ' +
-        (season.currentStage.endsAt === season.season.endsAt ? 'до конца сезона' : season.currentStage.week + ' неделя') +
-        ' · макс. БР ' +
-        Number(season.currentStage.maxBr).toFixed(1) + ' · ' +
-        new Date(season.currentStage.startsAt * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) + '–' +
-        new Date((season.currentStage.endsAt - 1) * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' });
-    } else {
-      seasonStatus.textContent = season.season.name + ' · сезон завершён';
-    }
-
-    document.getElementById('bot-dot').className = 'dot ' + (data.bot.online ? 'on' : 'off');
-    document.getElementById('bot-tag').textContent = data.bot.tag || 'offline';
-    document.getElementById('bot-guilds').textContent = data.bot.guilds;
-    document.getElementById('bot-uptime').textContent = fmtUptime(data.bot.uptimeSec);
-
-    document.getElementById('cmd-total').textContent = data.commands.total;
-    const cmdList = document.getElementById('cmd-list');
-    cmdList.replaceChildren.apply(cmdList, data.commands.byCommand.slice(0, 5).map(function (c) {
-      return row('/' + c.command, String(c.count));
-    }));
-
-    document.getElementById('items-total').textContent = data.items.total;
-    const bySource = document.getElementById('items-by-source');
-    bySource.replaceChildren.apply(bySource, data.items.bySource.slice(0, 5).map(function (s) {
-      return row(s.source, String(s.count));
-    }));
-
-    if (data.ingest) {
-      document.getElementById('ingest-done').textContent = data.ingest.ingested;
-      const det = document.getElementById('ingest-detail');
-      det.replaceChildren(
-        row('в очереди', String(data.ingest.pending), data.ingest.pending ? '' : 'ok'),
-        row('не удалось', String(data.ingest.failed), data.ingest.failed ? 'fail' : 'muted'),
-        row('игроков', data.ingest.players.toLocaleString('ru')),
-        row('убийств', data.ingest.kills.toLocaleString('ru'))
-      );
-    }
-
-    const voiceList = document.getElementById('voice-list');
-    if (voiceData.channels.length === 0) {
-      voiceList.classList.add('muted');
-      voiceList.textContent = 'В отслеживаемых голосовых каналах никого нет';
-    } else {
-      voiceList.classList.remove('muted');
-      voiceList.replaceChildren.apply(voiceList, voiceData.channels.map(voiceChannelBlock));
-    }
-
-    const parserList = document.getElementById('parser-list');
-    if (data.parsers.length === 0) {
-      parserList.textContent = 'Парсеры ещё не запускались';
-    } else {
-      parserList.classList.remove('muted');
-      parserList.replaceChildren.apply(parserList, data.parsers.map(function (p) {
-        const text = (p.summary || p.error || '?') + ' · ' + new Date(p.parsedAt * 1000).toLocaleTimeString();
-        return row(p.source, text, p.ok ? 'ok' : 'fail');
-      }));
-    }
-
-    const itemList = document.getElementById('item-list');
-    if (itemsData.items.length === 0) {
-      itemList.textContent = 'Записей пока нет — парсеры ещё не принесли данные';
-    } else {
-      itemList.classList.remove('muted');
-      itemList.replaceChildren.apply(itemList, itemsData.items.map(itemRow));
-    }
-  } catch (e) { console.error(e); }
+function renderSeason(season) {
+  const status = document.getElementById('season-status');
+  if (!season || !season.season) {
+    status.textContent = 'Сезон: расписание не задано';
+  } else if (season.currentStage) {
+    status.textContent =
+      season.season.name + ' · ' +
+      (season.currentStage.endsAt === season.season.endsAt ? 'до конца сезона' : season.currentStage.week + ' неделя') +
+      ' · макс. БР ' + Number(season.currentStage.maxBr).toFixed(1) + ' · ' +
+      new Date(season.currentStage.startsAt * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) + '–' +
+      new Date((season.currentStage.endsAt - 1) * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' });
+  } else {
+    status.textContent = season.season.name + ' · сезон завершён';
+  }
 }
-refresh();
-setInterval(refresh, 10000);
+
+function renderRuntime(runtime) {
+  const metrics = document.getElementById('runtime-metrics');
+  const workerDetail = document.getElementById('worker-detail');
+  const ingestDetail = document.getElementById('ingest-detail');
+  const workloadsRoot = document.getElementById('worker-workloads');
+  const playerServicesRoot = document.getElementById('player-stats-services');
+  if (!runtime) {
+    metrics.replaceChildren(el('div', 'muted small', 'Runtime-телеметрия недоступна в этом режиме запуска.'));
+    workerDetail.replaceChildren();
+    ingestDetail.replaceChildren();
+    workloadsRoot.replaceChildren();
+    playerServicesRoot.replaceChildren();
+    return;
+  }
+
+  const process = runtime.process;
+  const workers = runtime.workers;
+  const liveIngest = runtime.ingest;
+  metrics.replaceChildren(
+    metricBox('RSS процесса', fmtBytes(process.rssBytes),
+      'heap ' + fmtBytes(process.heapUsedBytes) + ' / ' + fmtBytes(process.heapTotalBytes),
+      runtime.resources.totalMemoryMb > 0 ? process.rssBytes / (runtime.resources.totalMemoryMb * 1024 * 1024) : null),
+    metricBox('CPU процесса', process.cpuPercent.toFixed(1) + '%',
+      'Node ' + process.node + ' · PID ' + process.pid, Math.min(1, process.cpuPercent / 100)),
+    metricBox('Event loop', fmtMs(runtime.eventLoop.currentLagMs),
+      'максимум ' + fmtMs(runtime.eventLoop.maxLagMs),
+      Math.min(1, runtime.eventLoop.currentLagMs / 500),
+      runtime.eventLoop.currentLagMs > 100 ? 'var(--fail)' : 'var(--ok)'),
+    metricBox('CPU workers', workers.busy + ' / ' + workers.configured,
+      workers.ready + ' ready · ' + workers.queued + ' в очереди',
+      workers.configured ? workers.busy / workers.configured : 0),
+    metricBox('Ingest', liveIngest.battlesPerMinute.toFixed(1) + ' боёв/мин',
+      'concurrency ' + (liveIngest.admission ? liveIngest.admission.currentConcurrency : runtime.resources.ingestConcurrency)),
+    metricBox('Replay budget', fmtBytes(liveIngest.processBudget.usedBytes),
+      'из ' + fmtBytes(liveIngest.processBudget.limitBytes) + ' · waiters ' + liveIngest.processBudget.queuedCount,
+      liveIngest.processBudget.limitBytes ? liveIngest.processBudget.usedBytes / liveIngest.processBudget.limitBytes : 0)
+  );
+
+  const workerSuccessRate = workers.completed > 0 ? workers.succeeded / workers.completed : null;
+  workerDetail.replaceChildren(
+    row('слоты live / ready', workers.live + ' / ' + workers.ready),
+    row('busy / queued', workers.busy + ' / ' + workers.queued, workers.queued ? 'fail' : 'ok'),
+    row('задачи завершены', fmtMetric(workers.completed)),
+    row('успех', workerSuccessRate === null ? '—' : fmtPercent(workerSuccessRate)),
+    row('ошибки / отклонено', fmtMetric(workers.failed) + ' / ' + fmtMetric(workers.rejected),
+      workers.failed || workers.rejected ? 'fail' : 'muted'),
+    row('queue avg / max', fmtMs(workers.queueMsAvg) + ' / ' + fmtMs(workers.queueMsMax)),
+    row('execution avg / max', fmtMs(workers.executionMsAvg) + ' / ' + fmtMs(workers.executionMsMax)),
+    row('буферы queued / running', fmtBytes(workers.queuedBytes) + ' / ' + fmtBytes(workers.runningBytes))
+  );
+
+  const stages = liveIngest.stages;
+  const stageText = ['download', 'ready', 'parse', 'persist'].map(function (name) {
+    const stage = stages[name];
+    return name + ' ' + stage.active + '/' + stage.queued;
+  }).join(' · ');
+  const oldest = liveIngest.backlog.oldestAgeMs === null ? '—' : fmtMs(liveIngest.backlog.oldestAgeMs);
+  ingestDetail.replaceChildren(
+    row('очередь DB / oldest', fmtMetric(liveIngest.backlog.pending) + ' / ' + oldest,
+      liveIngest.backlog.pending ? 'fail' : 'ok'),
+    row('active / queued по этапам', stageText),
+    row('parse p95', fmtMs(stages.parse.activeP95Ms)),
+    row('replay ok / fail', fmtMetric(liveIngest.replay.succeeded) + ' / ' + fmtMetric(liveIngest.replay.failed),
+      liveIngest.replay.failed ? 'fail' : 'muted'),
+    row('CDN данные / retry', fmtBytes(liveIngest.replay.bytes) + ' / ' + fmtMetric(liveIngest.replay.retries)),
+    row('429 / 5xx', fmtMetric(liveIngest.replay.rateLimited429) + ' / ' + fmtMetric(liveIngest.replay.server5xx),
+      liveIngest.replay.rateLimited429 || liveIngest.replay.server5xx ? 'fail' : 'muted'),
+    row('SQLite commits / p95', fmtMetric(liveIngest.sqlite.commits) + ' / ' + fmtMs(liveIngest.sqlite.transactionP95Ms)),
+    row('budget timeout / wait max', fmtMetric(liveIngest.processBudget.timedOut) + ' / ' +
+      fmtMs(liveIngest.processBudget.waitMsMax), liveIngest.processBudget.timedOut ? 'fail' : 'muted'),
+    row('fetch admission', liveIngest.fetchAdmission.currentIntervalMs + ' мс · rate limit ' +
+      fmtMetric(liveIngest.fetchAdmission.rateLimitEvents)),
+    row('AIMD', liveIngest.admission
+      ? liveIngest.admission.currentConcurrency + '/' + liveIngest.admission.maxConcurrency + ' · ' + liveIngest.admission.reason
+      : 'не запущен')
+  );
+
+  if (!workers.workloads.length) {
+    workloadsRoot.className = 'muted small';
+    workloadsRoot.textContent = 'CPU-задачи ещё не выполнялись';
+  } else {
+    workloadsRoot.className = '';
+    const table = tableEl([
+      { label: 'Задача' }, { label: 'Приоритет' }, { label: 'Active', num: true },
+      { label: 'Queue', num: true }, { label: 'Готово', num: true },
+      { label: 'Ошибки', num: true }, { label: 'Queue max', num: true },
+      { label: 'Exec max', num: true }
+    ]);
+    workers.workloads.forEach(function (workload) {
+      const tr = el('tr');
+      tr.appendChild(el('td', null, workload.kind));
+      tr.appendChild(el('td', 'muted', workload.priority));
+      tr.appendChild(el('td', 'num', fmtMetric(workload.running)));
+      tr.appendChild(el('td', 'num', fmtMetric(workload.queued)));
+      tr.appendChild(el('td', 'num', fmtMetric(workload.completed)));
+      tr.appendChild(el('td', 'num', fmtMetric(workload.failed + workload.rejected)));
+      tr.appendChild(el('td', 'num', fmtMs(workload.queueMsMax)));
+      tr.appendChild(el('td', 'num', fmtMs(workload.executionMsMax)));
+      table.tbody.appendChild(tr);
+    });
+    workloadsRoot.replaceChildren(table.root);
+  }
+
+  if (!runtime.playerStats.length) {
+    playerServicesRoot.className = 'muted small';
+    playerServicesRoot.textContent = 'Внешние provider-ы отключены';
+  } else {
+    playerServicesRoot.className = '';
+    const table = tableEl([
+      { label: 'Источник' }, { label: 'Запросы', num: true }, { label: 'Поставлено', num: true },
+      { label: 'Запущено', num: true }, { label: 'Успешно', num: true },
+      { label: 'Ошибки', num: true }, { label: 'Fresh cache', num: true },
+      { label: 'Backoff', num: true }
+    ]);
+    runtime.playerStats.forEach(function (service) {
+      const tr = el('tr');
+      tr.appendChild(el('td', null, service.source));
+      tr.appendChild(el('td', 'num', fmtMetric(service.requests)));
+      tr.appendChild(el('td', 'num', fmtMetric(service.queued)));
+      tr.appendChild(el('td', 'num', fmtMetric(service.started)));
+      tr.appendChild(el('td', 'num', fmtMetric(service.succeeded)));
+      tr.appendChild(el('td', 'num', fmtMetric(service.failed)));
+      tr.appendChild(el('td', 'num', fmtMetric(service.skippedFresh)));
+      tr.appendChild(el('td', 'num', fmtMetric(service.skippedBackoff)));
+      table.tbody.appendChild(tr);
+    });
+    playerServicesRoot.replaceChildren(table.root);
+  }
+}
+
+function renderDashboard(data) {
+  document.getElementById('bot-dot').className = 'dot ' + (data.bot.online ? 'on' : 'off');
+  document.getElementById('bot-tag').textContent = data.bot.tag || 'offline';
+  const snapshotAge = Math.max(0, data.generatedAt - data.snapshotAt);
+  const freshness = document.getElementById('dashboard-freshness');
+  freshness.className = 'muted small';
+  freshness.textContent =
+    'Снимок ' + new Date(data.snapshotAt).toLocaleTimeString('ru') +
+    (snapshotAge > 1000 ? ' · возраст ' + Math.round(snapshotAge / 1000) + ' с' : '') +
+    ' · автообновление 15 с';
+
+  const overview = document.getElementById('overview-metrics');
+  overview.replaceChildren(
+    metricBox('Discord', data.bot.online ? 'online' : 'offline',
+      fmtMetric(data.bot.guilds) + ' серверов · uptime ' + fmtUptime(data.bot.uptimeSec),
+      data.bot.online ? 1 : 0, data.bot.online ? 'var(--ok)' : 'var(--fail)'),
+    metricBox('Разобрано боёв', fmtMetric(data.ingest.ingested),
+      fmtMetric(data.ingest.pending) + ' в очереди · ' + fmtMetric(data.ingest.failed) + ' failed'),
+    metricBox('Участники', fmtMetric(data.ingest.players),
+      fmtMetric(data.ingest.kills) + ' убийств в датасете'),
+    metricBox('Записи источников', fmtMetric(data.items.total),
+      fmtMetric(data.items.bySource.length) + ' источников · ' + fmtMetric(data.parsers.length) + ' парсеров')
+  );
+
+  document.getElementById('cmd-total').textContent = fmtMetric(data.commands.total);
+  const cmdList = document.getElementById('cmd-list');
+  cmdList.replaceChildren.apply(cmdList, data.commands.byCommand.slice(0, 8).map(function (command) {
+    return row('/' + command.command, fmtMetric(command.count));
+  }));
+
+  document.getElementById('items-total').textContent = fmtMetric(data.items.total);
+  const bySource = document.getElementById('items-by-source');
+  bySource.replaceChildren.apply(bySource, data.items.bySource.slice(0, 8).map(function (source) {
+    return row(source.source, fmtMetric(source.count));
+  }));
+
+  const transport = data.wtTransport;
+  document.getElementById('transport-mode').textContent = transport.mode;
+  document.getElementById('transport-detail').replaceChildren(
+    row('browser pool', fmtMetric(transport.poolSize)),
+    row('запросы', fmtMetric(transport.requests)),
+    row('challenge', fmtMetric(transport.challenged), transport.challenged ? 'fail' : 'muted'),
+    row('transport errors', fmtMetric(transport.transportErrors), transport.transportErrors ? 'fail' : 'muted'),
+    row('clearance ok / fail', fmtMetric(transport.clearances) + ' / ' + fmtMetric(transport.clearanceFailures)),
+    row('последний clearance', transport.lastClearanceAt ? fmtTimestamp(Math.floor(transport.lastClearanceAt / 1000)) : '—')
+  );
+
+  renderSeason(data.season);
+  const voiceList = document.getElementById('voice-list');
+  if (data.voice.channels.length === 0) {
+    voiceList.classList.add('muted');
+    voiceList.textContent = 'В отслеживаемых голосовых каналах никого нет';
+  } else {
+    voiceList.classList.remove('muted');
+    voiceList.replaceChildren.apply(voiceList, data.voice.channels.map(voiceChannelBlock));
+  }
+
+  const parserList = document.getElementById('parser-list');
+  if (data.parsers.length === 0) {
+    parserList.className = 'muted';
+    parserList.textContent = 'Парсеры ещё не запускались';
+  } else {
+    parserList.className = '';
+    parserList.replaceChildren.apply(parserList, data.parsers.map(function (parser) {
+      const text = (parser.summary || parser.error || '?') + ' · ' + fmtTimestamp(parser.parsedAt);
+      return row(parser.source, text, parser.ok ? 'ok' : 'fail');
+    }));
+  }
+
+  const itemList = document.getElementById('item-list');
+  if (data.recentItems.length === 0) {
+    itemList.className = 'muted';
+    itemList.textContent = 'Записей пока нет — парсеры ещё не принесли данные';
+  } else {
+    itemList.className = '';
+    itemList.replaceChildren.apply(itemList, data.recentItems.map(itemRow));
+  }
+  renderRuntime(data.runtime);
+}
+
+function renderSiteStats(data) {
+  document.getElementById('site-battles').textContent = fmtMetric(data.battlesTotal);
+  document.getElementById('site-detail').replaceChildren(
+    row('боёв за неделю', fmtMetric(data.battlesWeek)),
+    row('уникальных игроков', fmtMetric(data.players)),
+    row('кланов', fmtMetric(data.clans)),
+    row('последний бой', fmtTimestamp(data.lastBattleAt))
+  );
+  const activity = document.getElementById('site-activity');
+  const byDay = new Map(data.byDay.map(function (point) { return [point.day, point.battles]; }));
+  const days = [];
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const day = new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
+    days.push({ day: day, battles: byDay.get(day) || 0 });
+  }
+  const max = Math.max.apply(Math, [1].concat(days.map(function (point) { return point.battles; })));
+  activity.className = 'activity';
+  activity.replaceChildren.apply(activity, days.map(function (point) {
+    const col = el('div', 'activity-col');
+    const value = el('div', 'small', fmtMetric(point.battles));
+    const bar = el('div', 'activity-bar');
+    bar.style.height = Math.max(2, Math.round(point.battles / max * 62)) + 'px';
+    bar.title = point.day + ': ' + point.battles;
+    const label = el('div', null, new Date(point.day + 'T00:00:00Z').toLocaleDateString('ru', {
+      weekday: 'short', timeZone: 'UTC'
+    }));
+    col.append(value, bar, label);
+    return col;
+  }));
+}
+
+let dashboardTimer = null;
+let siteTimer = null;
+let dashboardBusy = false;
+let siteBusy = false;
+
+async function refreshDashboard(force) {
+  if (dashboardBusy) return;
+  dashboardBusy = true;
+  let nextDelay = 15000;
+  try {
+    const response = await fetch('/api/dashboard', {
+      headers: { accept: 'application/json' },
+      cache: force ? 'reload' : 'default'
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    renderDashboard(data);
+    nextDelay = Math.max(10000, Number(data.refreshAfterMs) || 15000);
+  } catch (error) {
+    console.error(error);
+    document.getElementById('dashboard-freshness').className = 'fail small';
+    document.getElementById('dashboard-freshness').textContent = 'Не удалось обновить дэшборд';
+    nextDelay = 30000;
+  } finally {
+    dashboardBusy = false;
+    if (document.visibilityState === 'visible') {
+      window.clearTimeout(dashboardTimer);
+      dashboardTimer = window.setTimeout(function () { refreshDashboard(false); }, nextDelay);
+    }
+  }
+}
+
+async function refreshSiteStats() {
+  if (siteBusy) return;
+  siteBusy = true;
+  let nextDelay = 60000;
+  try {
+    const response = await fetch('/api/site-stats', { headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    renderSiteStats(await response.json());
+  } catch (error) {
+    console.error(error);
+    nextDelay = 120000;
+  } finally {
+    siteBusy = false;
+    if (document.visibilityState === 'visible') {
+      window.clearTimeout(siteTimer);
+      siteTimer = window.setTimeout(refreshSiteStats, nextDelay);
+    }
+  }
+}
+
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') {
+    window.clearTimeout(dashboardTimer);
+    window.clearTimeout(siteTimer);
+    return;
+  }
+  refreshDashboard(false);
+  refreshSiteStats();
+});
+
+refreshDashboard(false);
+refreshSiteStats();
 
 document.getElementById('player-stats-form').addEventListener('submit', function (event) {
   event.preventDefault();
@@ -885,7 +1195,7 @@ document.getElementById('voice-refresh').addEventListener('click', async functio
   btn.textContent = 'Обновляю…';
   try {
     await fetch('/api/voice/refresh', { method: 'POST' });
-    await refresh();
+    await refreshDashboard(true);
   } catch (e) { console.error(e); }
   btn.disabled = false;
   btn.textContent = 'Обновить';

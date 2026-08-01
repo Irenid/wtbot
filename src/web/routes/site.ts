@@ -4,6 +4,7 @@ import {
   getClanSeasonContext,
   getClanNameByTag,
   getClanRatingsWithDelta,
+  getDbWorkerPath,
   getLatestPlayerExternalCheck,
   getLatestPlayerExternalStats,
   getPlayerIdentityAliases,
@@ -36,6 +37,7 @@ import {
   type SiteClanMemberLatest,
 } from '../../db/index.js'
 import type { PlayerIdentity } from '../../player-stats/types.js'
+import { runWorkerTask } from '../../workers/pool.js'
 import { buildBattleSceneGzip, loadBattleSceneMap } from '../../wrpl/battle-scene.js'
 import { clanDisplayName, plainClanTag } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict, type VehicleDict } from '../../wrpl/vehicles.js'
@@ -361,6 +363,18 @@ function parseVehiclesJson(raw: string): string[] {
 export interface SiteRoutesOptions {
   /** Подменяется в smoke: боевой загрузчик качает датамайн при холодном data/. */
   loadVehicleDict?: () => Promise<VehicleDict>
+  /** Подменяется в smoke/benchmark; file-backed DB читает тяжёлые агрегаты в worker. */
+  loadDashboardStats?: (
+    sinceTs: number,
+    seasonStart: number,
+  ) => Promise<{
+    players: number
+    clans: number
+    battlesTotal: number
+    battlesRecent: number
+    lastBattleAt: number | null
+    byDay: { day: string; battles: number }[]
+  }>
 }
 
 export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = async (app, opts) => {
@@ -557,30 +571,62 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
 
   // Плитки главной пересчитывают агрегаты всей БД — кэшируем как кланы.
   let statsSnapshot: { builtAt: number; payload: unknown } | null = null
+  let statsSnapshotInFlight: Promise<unknown> | null = null
+
+  async function loadDashboardStats(sinceTs: number, seasonStart: number) {
+    if (opts.site?.loadDashboardStats) {
+      return opts.site.loadDashboardStats(sinceTs, seasonStart)
+    }
+    const dbPath = getDbWorkerPath()
+    if (dbPath !== null) {
+      return runWorkerTask(
+        {
+          kind: 'read-site-dashboard-stats',
+          input: { dbPath, sinceTs, seasonStart },
+        },
+        { priority: 'background', timeoutMs: 60_000 },
+      )
+    }
+    const counts = getSiteBattleCounts(sinceTs)
+    return {
+      players: getSiteReplayPlayerCount(),
+      clans: clanGroups().size,
+      battlesTotal: counts.total,
+      battlesRecent: counts.recent,
+      lastBattleAt: counts.lastStartAt,
+      byDay: getSiteBattlesByDay(sinceTs),
+    }
+  }
 
   app.get('/api/site-stats', async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
+    void reply.header('Cache-Control', 'public, max-age=60')
     const now = Date.now()
     if (!statsSnapshot || now - statsSnapshot.builtAt >= CLAN_CACHE_TTL_MS) {
-      const season = getClanSeasonContext(Math.floor(now / 1_000))
-      const seasonStart = season.season?.startsAt ?? 0
-      const weekAgo = Math.max(Math.floor(now / 1_000) - 7 * DAY_SEC, seasonStart)
-      const counts = getSiteBattleCounts(weekAgo)
-      statsSnapshot = {
-        builtAt: now,
-        payload: {
+      statsSnapshotInFlight ??= (async () => {
+        const season = getClanSeasonContext(Math.floor(now / 1_000))
+        const seasonStart = season.season?.startsAt ?? 0
+        const weekAgo = Math.max(Math.floor(now / 1_000) - 7 * DAY_SEC, seasonStart)
+        const stats = await loadDashboardStats(weekAgo, seasonStart)
+        const payload = {
           ok: true,
           season,
-          players: getSiteReplayPlayerCount(),
-          clans: clanGroups().size,
-          battlesTotal: counts.total,
-          battlesWeek: counts.recent,
-          lastBattleAt: counts.lastStartAt,
-          byDay: getSiteBattlesByDay(weekAgo),
-        },
+          players: stats.players,
+          clans: stats.clans,
+          battlesTotal: stats.battlesTotal,
+          battlesWeek: stats.battlesRecent,
+          lastBattleAt: stats.lastBattleAt,
+          byDay: stats.byDay,
+        }
+        statsSnapshot = { builtAt: Date.now(), payload }
+        return payload
+      })()
+      try {
+        return await statsSnapshotInFlight
+      } finally {
+        statsSnapshotInFlight = null
       }
     }
-    void reply.header('Cache-Control', 'public, max-age=60')
     return statsSnapshot.payload
   })
 
