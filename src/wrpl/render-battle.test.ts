@@ -45,15 +45,34 @@ const player: ReplayPlayerResult = {
   vehicles: [],
 }
 
-test('метка победы не изменяет SVG-узел кланового тега', () => {
+test('метка победы следует за клановым тегом в одной SVG-строке', () => {
   const results: ReplayResults = { status: 'success', timePlayed: 60, players: [player] }
   const svg = buildBattleSvg(
     { missionName: '[Domination] Test', header, results, dict: {}, winnerTeam: 1 },
     { unitIcons: new Map(), mapImage: null, gameFont: false },
   )
 
-  assert.ok(svg.includes('>»xGAFx«</text>'))
-  assert.ok(svg.includes('>Победа</text>'))
+  const clanMatch = /<text x="70" y="262"[^>]*>»xGAFx«<\/text>/.exec(svg)
+  const victoryMatch =
+    /<text x="70" y="262"[^>]*><tspan fill-opacity="0">»xGAFx«<\/tspan><tspan dx="18"[^>]*>Победа<\/tspan><\/text>/.exec(svg)
+  assert.ok(clanMatch)
+  assert.ok(victoryMatch)
+  assert.match(svg, /<text x="70" y="304"[^>]*>\(/)
+  assert.doesNotMatch(svg, /<text x="70" y="304"[^>]*>Победа<\/text>/)
+})
+
+test('метка победы не накладывается на длинный клановый тег', () => {
+  const longClanPlayer = { ...player, clanTag: '╔VeryLongClanName╕' }
+  const results: ReplayResults = { status: 'success', timePlayed: 60, players: [longClanPlayer] }
+  const svg = buildBattleSvg(
+    { missionName: '[Domination] Test', header, results, dict: {}, winnerTeam: 1 },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+
+  assert.match(
+    svg,
+    /<text x="70" y="262"[^>]*><tspan fill-opacity="0">»VeryLongClanName«<\/tspan><tspan dx="18"[^>]*>Победа<\/tspan><\/text>/,
+  )
 })
 
 test('SVG сохраняет оригинальные Unicode-символы в никах игроков', () => {

@@ -3,6 +3,7 @@ import type { WebDeps } from '../types.js'
 import {
   getCommandStats,
   getClanSeasonContext,
+  getAnnounceStats,
   getIngestStats,
   getItemStats,
   getLatestItemSummaries,
@@ -72,6 +73,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
       parsers: ReturnType<typeof getLatestParsePerSource>
       items: ReturnType<typeof getItemStats>
       ingest: ReturnType<typeof getIngestStats>
+      announce: ReturnType<typeof getAnnounceStats>
       season: ReturnType<typeof getClanSeasonContext>
       voice: ReturnType<typeof voiceDashboardPayload>
       recentItems: ReturnType<typeof getLatestItemSummaries>
@@ -87,6 +89,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
           parsers: getLatestParsePerSource(),
           items: getItemStats(),
           ingest: getIngestStats(),
+          announce: getAnnounceStats(),
           season: getClanSeasonContext(Math.floor(now / 1_000)),
           voice: voiceDashboardPayload(),
           recentItems: getLatestItemSummaries(8),
@@ -107,6 +110,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
       parsers: snapshot.data.parsers,
       items: snapshot.data.items,
       ingest: snapshot.data.ingest,
+      announce: snapshot.data.announce,
       season: snapshot.data.season,
       wtTransport: { mode: wtTransportMode(), ...wtBrowserMetrics() },
     }
