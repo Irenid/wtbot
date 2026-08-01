@@ -133,14 +133,14 @@ async function edgeExecutable(): Promise<string> {
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
     'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
   ].filter((candidate): candidate is string => candidate.trim() !== '')
-  for (const candidate of candidates) {
-    try {
-      await access(candidate)
-      return candidate
-    } catch {
-      // Пробуем следующий стандартный путь.
-    }
-  }
+  const available = await Promise.all(
+    candidates.map((candidate) => access(candidate).then(
+      () => true,
+      () => false,
+    )),
+  )
+  const executable = candidates.find((_, index) => available[index])
+  if (executable !== undefined) return executable
   throw new WtBrowserError('исполняемый файл Microsoft Edge не найден; задайте WT_BROWSER_EXECUTABLE')
 }
 
@@ -343,7 +343,7 @@ async function ensureBrowser(): Promise<BrowserState> {
       const stale = state
       state = null
       rejectPageWaiters(new WtBrowserError('Соединение с Edge потеряно'))
-      for (const entry of stale.pool) await entry.page.close().catch(() => undefined)
+      await Promise.all(stale.pool.map((entry) => entry.page.close().catch(() => undefined)))
       await stale.browser.close().catch(() => undefined)
       if (stale.child !== null && !stale.child.killed) stale.child.kill()
       await killStaleProfileBrowsers()
@@ -359,7 +359,7 @@ async function ensureBrowser(): Promise<BrowserState> {
     } catch (error) {
       state = null
       rejectPageWaiters(new WtBrowserError('Browser pool не запустился'))
-      for (const entry of started.pool) await entry.page.close().catch(() => undefined)
+      await Promise.all(started.pool.map((entry) => entry.page.close().catch(() => undefined)))
       await started.browser.close().catch(() => undefined)
       if (started.child !== null && !started.child.killed) started.child.kill()
       await killStaleProfileBrowsers()
@@ -401,12 +401,15 @@ async function ensurePool(current: BrowserState): Promise<void> {
     if (current.pool.some((entry) => entry.page === page)) continue
     current.pool.push({ page, busy: false })
   }
-  while (current.pool.length < config.wtBrowserPoolSize) {
-    current.pool.push({ page: await current.context.newPage(), busy: false })
-  }
-  for (const extra of current.pool.splice(config.wtBrowserPoolSize)) {
-    await extra.page.close().catch(() => undefined)
-  }
+  const missing = Math.max(0, config.wtBrowserPoolSize - current.pool.length)
+  const created = await Promise.all(
+    Array.from({ length: missing }, () => current.context.newPage()),
+  )
+  current.pool.push(...created.map((page) => ({ page, busy: false })))
+  const extras = current.pool.splice(config.wtBrowserPoolSize)
+  await Promise.all(extras.map((entry) => entry.page.close().catch(() => undefined)))
+  // Навигации идут последовательно: это внешний warthunder.com, где
+  // одновременный burst повышает риск Cloudflare challenge.
   for (const entry of current.pool) {
     if (!entry.busy) await parkPage(entry.page)
   }
@@ -824,9 +827,7 @@ export async function closeWtBrowser(): Promise<void> {
   rejectPageWaiters(new WtBrowserError('Browser pool остановлен'))
   if (current === null) return
 
-  for (const entry of current.pool) {
-    await entry.page.close().catch(() => undefined)
-  }
+  await Promise.all(current.pool.map((entry) => entry.page.close().catch(() => undefined)))
   await current.browser.close().catch(() => undefined)
   if (current.child !== null && !current.child.killed) current.child.kill()
   // connectOverCDP закрывает соединение, но не сам Edge, а kill() по pid

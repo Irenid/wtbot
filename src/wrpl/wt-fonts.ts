@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { writeFileAtomic as writeAtomic } from '../atomic-file.js'
+import { mapConcurrent } from '../concurrency.js'
 import {
   runWorkerTask,
   transferableBuffer,
@@ -13,6 +14,7 @@ import {
 export const GAME_SYMBOLS_FAMILY = 'symbols_skyquake'
 
 const CACHE_FILE = './data/fonts/symbols_skyquake.ttf'
+const GAME_DIR_PROBE_CONCURRENCY = 8
 let cachedPaths: string[] | null = null
 let fontPromise: Promise<string[]> | null = null
 let retryAfter = 0
@@ -91,16 +93,21 @@ async function findGameDir(): Promise<string | null> {
   if (fromEnv && await exists(path.join(fromEnv, 'ui', 'fonts.vromfs.bin'))) return fromEnv
 
   const candidates: string[] = []
-  for (const steam of ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']) {
-    const vdf = path.join(steam, 'steamapps', 'libraryfolders.vdf')
-    try {
-      const text = await readFile(vdf, 'utf8')
+  const steamRoots = ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']
+  const steamLibraries = await Promise.all(
+    steamRoots.map(async (steam): Promise<string | null> => {
+      const vdf = path.join(steam, 'steamapps', 'libraryfolders.vdf')
+      try {
+        return await readFile(vdf, 'utf8')
+      } catch {
+        return null
+      }
+    }),
+  )
+  for (const text of steamLibraries) {
+    if (text !== null) {
       for (const match of text.matchAll(/"path"\s+"([^"]+)"/g)) {
         candidates.push(path.join(match[1]!.replace(/\\\\/g, '\\'), 'steamapps', 'common', 'War Thunder'))
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        // Повреждённый/недоступный VDF просто не участвует в поиске.
       }
     }
   }
@@ -110,10 +117,13 @@ async function findGameDir(): Promise<string | null> {
     'D:\\Games\\WarThunder',
     'D:\\WarThunder',
   )
-  for (const candidate of candidates) {
-    if (await exists(path.join(candidate, 'ui', 'fonts.vromfs.bin'))) return candidate
-  }
-  return null
+  const uniqueCandidates = [...new Set(candidates)]
+  const available = await mapConcurrent(
+    uniqueCandidates,
+    GAME_DIR_PROBE_CONCURRENCY,
+    (candidate) => exists(path.join(candidate, 'ui', 'fonts.vromfs.bin')),
+  )
+  return uniqueCandidates.find((_, index) => available[index]) ?? null
 }
 
 async function exists(file: string): Promise<boolean> {

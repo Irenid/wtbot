@@ -60,6 +60,29 @@ transport/cookie refresh, parsers, ingest. Shutdown сначала запрещ�
 работу и даёт producers до 10 секунд на drain, затем закрывает browser, Discord,
 CPU pool и последней SQLite. Не закрывай pool до остановки producers worker-задач.
 
+### Параллелизм и максимальная производительность
+
+- Все независимые I/O-операции запускай параллельно. Если размер входа
+  ограничен конфигурацией или малой константой, используй `Promise.all`;
+  для динамических или недоверенных списков используй worker-loop с явным
+  concurrency cap, byte budget, timeout и отменой.
+- Не пиши последовательный `await` в цикле по умолчанию. Последовательность
+  допустима только при зависимости результатов, обязательном порядке,
+  rate limit, lock, retry/backoff, short-circuit поиске или общем resource
+  budget; причину сохраняй рядом с циклом в коде.
+- CPU-heavy работу выполняй параллельно только через текущий bounded
+  `worker_threads` pool. `Promise.all` не делает CPU-код многопоточным и не
+  должен переносить тяжёлую синхронную работу на main thread.
+- Не создавай неограниченный fan-out. Параллелизм обязан учитывать caps
+  `WT_WORKER_THREADS`, `WT_INGEST_CONCURRENCY`, browser pool, Discord/API rate
+  limits, SQLite write pressure и replay process byte budget.
+- Сохраняй явную сериализацию для SQLite-транзакций и write queue, общей
+  очереди запросов warthunder.com, пагинации со stop conditions, retry-циклов,
+  commit-marker публикации и ordered Discord flows.
+- Для нового параллельного пути добавляй тест, подтверждающий одновременный
+  старт независимых операций, ограничение concurrency и корректный partial
+  failure/fallback.
+
 ## 3. Среда, секреты и конфигурация
 
 - Требуется Node.js **>= 22.15.0** из-за `zstdDecompressSync`.

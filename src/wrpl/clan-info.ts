@@ -5,6 +5,7 @@ import {
   saveClanRatingSnapshots,
   type ClanRating,
 } from '../db/index.js'
+import { mapConcurrent } from '../concurrency.js'
 import { readResponseText } from '../http-response.js'
 
 /**
@@ -22,6 +23,7 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0'
 /** Не дёргать страницу клана чаще, чем раз в 2 минуты (спам-рендеры одного боя) */
 const COOLDOWN_MS = 2 * 60_000
+const CLAN_FETCH_CONCURRENCY = 4
 
 const lastFetch = new Map<string, { at: number; seasonId: string | null }>()
 
@@ -61,36 +63,58 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
   return members
 }
 
+/** Сохранённые ПКР по тегам без сетевого обновления. */
+function getStoredRatingsForTags(tags: string[]): Map<string, ClanRating> {
+  const result = new Map<string, ClanRating>()
+  for (const tag of tags) {
+    if (!tag) continue
+    for (const [nick, rating] of getClanRatingsWithDelta(tag)) {
+      result.set(nick, rating)
+    }
+  }
+  return result
+}
+
 /**
  * ПКР и дельты для игроков боя по тегам обеих команд.
  * Возвращает карту «ник → {rating, delta}»; недоступные кланы молча
  * пропускаются (нет в словаре, сайт не ответил) — картинка выйдет без ПКР.
- * `force` игнорирует кулдаун (кнопка принудительного обновления).
+ * `force` игнорирует кулдаун (кнопка принудительного обновления),
+ * `cachedOnly` возвращает только сохранённые снимки без обращения к сети.
  */
 export async function fetchRatingsForTags(
   tags: string[],
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; cachedOnly?: boolean } = {},
 ): Promise<Map<string, ClanRating>> {
-  const result = new Map<string, ClanRating>()
-  const seasonId = getClanSeasonContext().season?.id ?? null
-  for (const tag of tags) {
-    if (!tag) continue
-    try {
-      const name = getClanNameByTag(tag)
-      if (!name) continue // клана нет в словаре — источник wt-clans ещё не прошёлся
+  if (opts.cachedOnly) return getStoredRatingsForTags(tags)
 
-      const last = lastFetch.get(tag)
-      if (opts.force || last?.seasonId !== seasonId || Date.now() - (last?.at ?? 0) > COOLDOWN_MS) {
-        const members = await fetchClanMembers(name)
-        saveClanRatingSnapshots(tag, members)
-        lastFetch.set(tag, { at: Date.now(), seasonId })
+  const result = getStoredRatingsForTags(tags)
+  const seasonId = getClanSeasonContext().season?.id ?? null
+  const uniqueTags = [...new Set(tags.filter((tag) => tag !== ''))]
+  const refreshed = await mapConcurrent(
+    uniqueTags,
+    CLAN_FETCH_CONCURRENCY,
+    async (tag): Promise<Map<string, ClanRating> | null> => {
+      try {
+        const name = getClanNameByTag(tag)
+        if (!name) return null // клана нет в словаре — источник wt-clans ещё не прошёлся
+
+        const last = lastFetch.get(tag)
+        if (opts.force || last?.seasonId !== seasonId || Date.now() - (last?.at ?? 0) > COOLDOWN_MS) {
+          const members = await fetchClanMembers(name)
+          saveClanRatingSnapshots(tag, members)
+          lastFetch.set(tag, { at: Date.now(), seasonId })
+        }
+        return getClanRatingsWithDelta(tag)
+      } catch (err) {
+        console.warn(`[clan-info] ПКР клана ${tag} не получен: ${err instanceof Error ? err.message : String(err)}`)
+        return null
       }
-      for (const [nick, rating] of getClanRatingsWithDelta(tag)) {
-        result.set(nick, rating)
-      }
-    } catch (err) {
-      console.warn(`[clan-info] ПКР клана ${tag} не получен: ${err instanceof Error ? err.message : String(err)}`)
-    }
+    },
+  )
+  for (const ratings of refreshed) {
+    if (!ratings) continue
+    for (const [nick, rating] of ratings) result.set(nick, rating)
   }
   return result
 }

@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, stat, utimes } from 'node:fs/promises'
 import path from 'node:path'
 import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
+import { mapConcurrent } from '../concurrency.js'
 import { getBattleWeaponIds, markBattleIngest, saveBattle } from '../db/index.js'
 import {
   runWorkerTask,
@@ -59,6 +60,7 @@ const MAX_TRACKED_CACHE_TOUCHES = 4096
 const cacheLastTouchedAt = new Map<string, number>()
 const CACHE_CATALOG_RECONCILE_MS = 5 * 60_000
 const CACHE_SCAN_THRESHOLD = 0.9
+const CACHE_SCAN_CONCURRENCY = 16
 
 export interface BattleMedia {
   log: Buffer
@@ -736,8 +738,8 @@ async function doEnforceCacheCap(): Promise<number | null> {
       mtime: number
     }
     const bundles = new Map<string, CacheBundle>()
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.name.endsWith('.tmp')) continue
+    await mapConcurrent(entries, CACHE_SCAN_CONCURRENCY, async (entry) => {
+      if (!entry.isFile() || entry.name.endsWith('.tmp')) return
       const session = /^([0-9a-f]{12,20})(?:-|\.png$)/i.exec(entry.name)?.[1]?.toLowerCase() ?? null
       const file = path.join(CACHE_DIR, entry.name)
       try {
@@ -751,7 +753,7 @@ async function doEnforceCacheCap(): Promise<number | null> {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
-    }
+    })
     const candidates = [...bundles.values()]
     let total = candidates.reduce((sum, bundle) => sum + bundle.size, 0)
     if (total <= CACHE_CAP_BYTES) {
@@ -762,18 +764,18 @@ async function doEnforceCacheCap(): Promise<number | null> {
     candidates.sort((left, right) => left.mtime - right.mtime)
     let removedFiles = 0
     let removedBundles = 0
+    // Bundle-ы вытесняются строго по LRU до достижения target; параллельное
+    // удаление нарушило бы byte accounting и могло бы удалить лишние данные.
     for (const bundle of candidates) {
       if (total <= target) break
       if (bundle.session && activeCacheSessions.has(bundle.session)) continue
       try {
-        let unchanged = true
-        for (const file of bundle.files) {
-          const current = await stat(file.path)
-          if (current.size !== file.size || current.mtimeMs !== file.mtime) {
-            unchanged = false
-            break
-          }
-        }
+        const currentFiles = await Promise.all(
+          bundle.files.map(async (file) => ({ file, current: await stat(file.path) })),
+        )
+        const unchanged = currentFiles.every(
+          ({ file, current }) => current.size === file.size && current.mtimeMs === file.mtime,
+        )
         if (!unchanged || (bundle.session && activeCacheSessions.has(bundle.session))) continue
         // Commit marker удаляется первым: читатель увидит cache miss, а не
         // частично вытесненное поколение PNG/TXT.
