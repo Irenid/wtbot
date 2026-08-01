@@ -162,7 +162,7 @@ try {
         kind: 'render-scoreboard',
         input: {
           input: { missionName: '[Domination] Timeout check', header, results, dict: {} },
-          assets: { unitIcons: [], mapImage: null, gameFont: false, fontFiles: [] },
+          assets: { unitIcons: [], mapImage: null, gameFont: false, gameFlags: [], fontFiles: [] },
         },
       },
       { timeoutMs: 1 },
@@ -203,7 +203,7 @@ try {
       kind: 'render-scoreboard',
       input: {
         input: { missionName: renderMissionName, header, results, dict: {} },
-        assets: { unitIcons: [], mapImage: null, gameFont: false, fontFiles: [] },
+        assets: { unitIcons: [], mapImage: null, gameFont: false, gameFlags: [], fontFiles: [] },
       },
     }),
     runWorkerTask(

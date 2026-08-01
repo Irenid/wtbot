@@ -2,6 +2,7 @@ import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { buildRosters, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
+import { GAME_SYMBOLS_FAMILY } from './wt-fonts.js'
 
 /**
  * Battle Log — картинка с хронологией боя:
@@ -189,12 +190,12 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
     if (row.left) {
       // убийца ← центр → жертва; блоки прижаты якорями, съехать нечему
       parts.push(sideText(row.left, CX - MID_GAP, y, 'end'))
-      parts.push(centerBlock(row.kind, verb, y))
+      parts.push(centerBlock(row.kind, verb, y, gameFont))
       parts.push(sideText(row.right, CX + MID_GAP, y, 'start', row.distanceM))
     } else {
       // без виновника: жертва — действующее лицо в левой колонке
       parts.push(sideText(row.right, CX - MID_GAP, y, 'end'))
-      parts.push(centerBlock(row.kind, verb, y))
+      parts.push(centerBlock(row.kind, verb, y, gameFont))
     }
   })
 
@@ -205,7 +206,7 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
   // Легенда значков и Match ID
   const legendY = H - 66
   const legendItems: [string, string][] = [
-    [skull(0, -21), 'уничтожение'],
+    [skull(0, -21, gameFont), 'уничтожение'],
     [flame(0, -22), 'поджог'],
     [wrench(0, -21), 'тяжёлое повреждение'],
   ]
@@ -242,10 +243,10 @@ function sideText(s: LogSide, x: number, y: number, anchor: 'start' | 'end', dis
 }
 
 /** Иконка с глаголом, отцентрованные в средней колонке */
-function centerBlock(kind: LogRow['kind'], verb: string, y: number): string {
+function centerBlock(kind: LogRow['kind'], verb: string, y: number, gameFont: boolean): string {
   const total = 34 + width(verb, 24)
   const x = CX - total / 2
-  const icon = kind === 'kill' ? skull(x, y - 21) : kind === 'fire' ? flame(x, y - 22) : wrench(x, y - 21)
+  const icon = kind === 'kill' ? skull(x, y - 21, gameFont) : kind === 'fire' ? flame(x, y - 22) : wrench(x, y - 21)
   return icon + text(x + 34, y, verb, 24, KIND_COLOR[kind])
 }
 
@@ -286,7 +287,14 @@ function trimU(s: string, units: number): string {
   return s
 }
 
-function skull(x: number, y: number): string {
+function skull(x: number, y: number, gameFont = false): string {
+  if (gameFont) {
+    return (
+      `<g transform="translate(${x} ${y}) scale(0.95)">` +
+      `<text x="12" y="20" font-family="${GAME_SYMBOLS_FAMILY}" font-size="23" fill="#e8ebee" text-anchor="middle">\u258a</text>` +
+      `</g>`
+    )
+  }
   return (
     `<g transform="translate(${x} ${y}) scale(0.95)">` +
     `<circle cx="12" cy="10" r="8" fill="#e8ebee"/>` +
