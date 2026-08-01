@@ -103,6 +103,7 @@ export function sourceLabel(source: string): string {
   switch (source) {
     case 'statshark': return t('source.statshark')
     case 'official-profile': return t('source.official-profile')
+    case 'companion-profile': return t('source.companion-profile')
     default: return source
   }
 }

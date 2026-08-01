@@ -230,6 +230,7 @@ async function parseBattle(input: Extract<AnyWorkerTask, { kind: 'parse-battle' 
       results: parsed.results,
       battle: { ...parsed.battle, eventsBlob },
       summary: parsed.summary,
+      profile: parsed.profile,
     },
     transfer: [eventsBlob],
   }
@@ -302,6 +303,47 @@ async function checkpointIngestDatabase(
   checkpointSchedule.markCheckpoint()
   return {
     value: { checkpointMs: performance.now() - started },
+    transfer: [],
+  }
+}
+
+async function recordParseResult(
+  input: Extract<AnyWorkerTask, { kind: 'record-parse-result' }>['input'],
+) {
+  const [databaseState, { recordParseResultInDatabase }] = await Promise.all([
+    ingestDatabase(input.dbPath),
+    import('../db/index.js'),
+  ])
+  const started = performance.now()
+  recordParseResultInDatabase(
+    databaseState.database,
+    input.source,
+    input.ok,
+    input.summary,
+    input.error,
+  )
+  return {
+    value: { sqliteMs: performance.now() - started },
+    transfer: [],
+  }
+}
+
+async function updatePlayerStatBoardPublication(
+  input: Extract<AnyWorkerTask, { kind: 'update-player-stat-board-publication' }>['input'],
+) {
+  const [databaseState, { updatePlayerStatBoardPublicationInDatabase }] = await Promise.all([
+    ingestDatabase(input.dbPath),
+    import('../db/index.js'),
+  ])
+  const started = performance.now()
+  updatePlayerStatBoardPublicationInDatabase(
+    databaseState.database,
+    input.guildId,
+    input.messageId,
+    input.contentHash,
+  )
+  return {
+    value: { sqliteMs: performance.now() - started },
     transfer: [],
   }
 }
@@ -579,6 +621,10 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return persistIngestedBattle(task.input)
     case 'checkpoint-ingest-database':
       return checkpointIngestDatabase(task.input)
+    case 'record-parse-result':
+      return recordParseResult(task.input)
+    case 'update-player-stat-board-publication':
+      return updatePlayerStatBoardPublication(task.input)
     case 'warm-sqlite':
       return warmSqlite(task.input)
     case 'render-scoreboard':

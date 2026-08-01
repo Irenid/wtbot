@@ -15,6 +15,7 @@ import type {
   WorkerRenderProfile,
 } from '../workers/protocol.js'
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
+import type { BattleParseProfile } from '../wrpl/battle-transform.js'
 import { readCachedEcsHashesJson } from '../wrpl/ecs.js'
 import { runBenchmarkLoad, type BenchmarkLoadMode } from './benchmark-load.js'
 
@@ -77,6 +78,7 @@ interface RunMeasurement {
   parse: {
     elapsedMs: number
     timing: WorkerTaskTiming
+    profile: BattleParseProfile
   }
   render: RenderMeasurement | null
   eventLoopLagMs: number
@@ -244,7 +246,7 @@ for (const directory of directories) {
 
 const allWarmRuns = scenarios.flatMap((scenario) => scenario.warm?.runs ?? [])
 const benchmark = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   timestamp: new Date().toISOString(),
   environment: {
     hostname: hostname(),
@@ -325,7 +327,11 @@ async function executeRun(
     return {
       replay,
       inputPrepareMs,
-      parse: { elapsedMs: parseMs, timing: requireTiming(parseTiming, 'parse-battle') },
+      parse: {
+        elapsedMs: parseMs,
+        timing: requireTiming(parseTiming, 'parse-battle'),
+        profile: parsed.profile,
+      },
       render: renderMeasurement,
     }
   })
@@ -512,6 +518,7 @@ function summarizeRuns(runs: RunMeasurement[]) {
     parse: {
       elapsedMs: summarize(runs.map((run) => run.parse.elapsedMs)),
       scheduler: summarizeTimings(runs.map((run) => run.parse.timing)),
+      workerProfileMs: summarizeParseProfiles(runs.map((run) => run.parse.profile)),
     },
     render: renderRuns.length > 0
       ? {
@@ -532,6 +539,23 @@ function summarizeRuns(runs: RunMeasurement[]) {
       peakObserved: summarizeMemory(runs.map((run) => run.mainMemory.peakObserved)),
       end: summarizeMemory(runs.map((run) => run.mainMemory.end)),
     },
+  }
+}
+
+function summarizeParseProfiles(profiles: BattleParseProfile[]) {
+  return {
+    total: summarize(profiles.map((profile) => profile.totalMs)),
+    headerResults: summarize(profiles.map((profile) => profile.headerResultsMs)),
+    ecsHashes: summarize(profiles.map((profile) => profile.ecsHashesMs)),
+    events: summarize(profiles.map((profile) => profile.eventsMs)),
+    eventPhases: {
+      headerOrder: summarize(profiles.map((profile) => profile.eventPhases.headerOrderMs)),
+      inflate: summarize(profiles.map((profile) => profile.eventPhases.inflateMs)),
+      packetDecode: summarize(profiles.map((profile) => profile.eventPhases.packetDecodeMs)),
+      finalize: summarize(profiles.map((profile) => profile.eventPhases.finalizeMs)),
+    },
+    normalize: summarize(profiles.map((profile) => profile.normalizeMs)),
+    transformAndGzip: summarize(profiles.map((profile) => profile.transformAndGzipMs)),
   }
 }
 

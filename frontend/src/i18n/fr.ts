@@ -207,6 +207,7 @@ export const fr: Partial<Record<MessageKey, string>> = {
   "player.updatedChip": "mis à jour {when}",
   "source.statshark": "StatShark",
   "source.official-profile": "Profil WT",
+  "source.companion-profile": "API companion officiel",
   "state.ok": "données reçues",
   "state.private": "profil privé",
   "state.not_found": "introuvable",

@@ -8,7 +8,12 @@ import type {
 import type { BattleEventSummary } from '../workers/protocol.js'
 import { MAX_EVENTS_BLOB_BYTES } from './decompression-limits.js'
 import { parseComponentHashMaps } from './ecs.js'
-import { extractReplayEvents, isValidReplayChatChannel, type ReplayEvents } from './replay-events.js'
+import {
+  extractReplayEventsProfiled,
+  isValidReplayChatChannel,
+  type ReplayEvents,
+  type ReplayEventsProfile,
+} from './replay-events.js'
 import {
   applyRealNames,
   parseReplayResults,
@@ -29,6 +34,17 @@ export interface ParsedBattle {
   results: ReplayResults
   battle: BattleInput
   summary: BattleEventSummary
+  profile: BattleParseProfile
+}
+
+export interface BattleParseProfile {
+  headerResultsMs: number
+  ecsHashesMs: number
+  eventsMs: number
+  eventPhases: ReplayEventsProfile
+  normalizeMs: number
+  transformAndGzipMs: number
+  totalMs: number
 }
 
 /** CPU-часть полного разбора. Вызывать только внутри worker thread. */
@@ -39,6 +55,8 @@ export async function parseBattleParts(
   ecsHashesJson: string,
 ): Promise<ParsedBattle> {
   if (parts.length === 0) throw new Error('пустой список частей реплея')
+  const totalStarted = performance.now()
+  let phaseStarted = totalStarted
   const header = parseWrplHeader(parts[0]!)
   if (meta.gameVersion) header.gameVersion = meta.gameVersion
   let results: ReplayResults | null = null
@@ -52,8 +70,15 @@ export async function parseBattleParts(
   }
   if (!results) throw new Error('ни одна часть реплея не содержит results-BLK')
   applyRealNames(results, realNames)
+  const headerResultsMs = performance.now() - phaseStarted
 
-  const events = extractReplayEvents(parts, parseComponentHashMaps(ecsHashesJson))
+  phaseStarted = performance.now()
+  const componentHashes = parseComponentHashMaps(ecsHashesJson)
+  const ecsHashesMs = performance.now() - phaseStarted
+  const extracted = extractReplayEventsProfiled(parts, componentHashes)
+  const events = extracted.events
+  const eventsMs = extracted.profile.totalMs
+  phaseStarted = performance.now()
   roundEventsInPlace(events)
   const slotByUserId = new Map(events.players.map((slot) => [slot.userId, slot]))
   for (const player of results.players) {
@@ -63,8 +88,25 @@ export async function parseBattleParts(
     player.title = slot.title
   }
   const summary = summarizeEvents(events)
+  const normalizeMs = performance.now() - phaseStarted
+  phaseStarted = performance.now()
   const battle = buildBattleInput(meta, header, results, events, levelSettingsOf(parts[0]!), summary)
-  return { header, results, battle, summary }
+  const transformAndGzipMs = performance.now() - phaseStarted
+  return {
+    header,
+    results,
+    battle,
+    summary,
+    profile: {
+      headerResultsMs,
+      ecsHashesMs,
+      eventsMs,
+      eventPhases: extracted.profile,
+      normalizeMs,
+      transformAndGzipMs,
+      totalMs: performance.now() - totalStarted,
+    },
+  }
 }
 
 /** Путь к файлу миссии из заголовка (поле levelSettings, 260 байт с 136). */

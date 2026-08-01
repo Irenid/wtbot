@@ -225,6 +225,7 @@ export const ru = {
   // --- Источники и статусы снимков ---
   'source.statshark': 'StatShark',
   'source.official-profile': 'Профиль WT',
+  'source.companion-profile': 'Официальный companion API',
   'state.ok': 'данные получены',
   'state.private': 'профиль закрыт',
   'state.not_found': 'не найден',

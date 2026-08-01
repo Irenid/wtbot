@@ -19,6 +19,11 @@ import {
   OFFICIAL_PROFILE_SOURCE,
 } from './player-stats/normalizer.js'
 import { OfficialProfileProvider } from './player-stats/providers/official-profile.js'
+import {
+  COMPANION_PROFILE_PARSER_VERSION,
+  COMPANION_PROFILE_SOURCE,
+  CompanionProfileProvider,
+} from './player-stats/providers/companion-profile.js'
 import { StatSharkProvider } from './player-stats/providers/statshark.js'
 import {
   STATSHARK_PARSER_VERSION,
@@ -89,6 +94,12 @@ const officialPlayerStatsService = config.playerStatsEnabled
       parserVersion: OFFICIAL_PROFILE_PARSER_VERSION,
     })
   : null
+const companionProfilePlayerStatsService = config.companionProfilePlayerStatsEnabled
+  ? new PlayerStatsService({
+      provider: new CompanionProfileProvider(),
+      parserVersion: COMPANION_PROFILE_PARSER_VERSION,
+    })
+  : null
 const statSharkPlayerStatsService = config.statSharkPlayerStatsEnabled
   ? new PlayerStatsService({
       provider: new StatSharkProvider(),
@@ -97,16 +108,22 @@ const statSharkPlayerStatsService = config.statSharkPlayerStatsEnabled
   : null
 const playerStatsServices = [
   officialPlayerStatsService,
+  companionProfilePlayerStatsService,
   statSharkPlayerStatsService,
 ].filter((service): service is PlayerStatsService => service !== null)
 playerStats = new PlayerStatsCoordinator({
   externalServices: playerStatsServices,
   externalSource: officialPlayerStatsService?.source
+    ?? companionProfilePlayerStatsService?.source
     ?? statSharkPlayerStatsService?.source
     ?? OFFICIAL_PROFILE_SOURCE,
 })
 console.log(
   `[player-stats] Профиль warthunder.com: ${officialPlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
+)
+console.log(
+  `[player-stats] ${COMPANION_PROFILE_SOURCE}: ` +
+    `${companionProfilePlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
 )
 console.log(
   `[player-stats] ${STATSHARK_SOURCE}: ${statSharkPlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
@@ -179,6 +196,7 @@ if (config.battleBackgroundEnabled) {
     config.workerResources.ingestConcurrency,
     config.dbPath,
     config.ingestAdaptiveAdmissionEnabled,
+    config.ingestPipelineEnabled,
   )
 } else {
   console.log('[ingest] Фоновая загрузка и разбор боёв отключены')

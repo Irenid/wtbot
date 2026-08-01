@@ -277,7 +277,9 @@ export async function fetchReplayResults(
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
   for (let i = partUrls.length - 1; i >= 0; i--) {
     const url = partUrls[i]!
-    const buf = await fetchReplayPart(url)
+    const buf = await fetchReplayPart(url, {
+      priority: priority === 'background' ? 'background' : 'live',
+    })
     const part = transferableBuffer(buf)
     const parsed = await runWorkerTask(
       { kind: 'parse-results', input: { part, realNames: [] } },

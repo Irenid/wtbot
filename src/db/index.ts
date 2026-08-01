@@ -31,6 +31,7 @@ import { CLAN_SEASON_SCHEDULES, stageAt } from '../clan-season.js'
 // не трогая остальной код.
 
 let db: DatabaseSync | null = null
+let dbWorkerPath: string | null = null
 let insertVoicePresenceStatement: StatementSync | null = null
 let deleteVoicePresenceStatement: StatementSync | null = null
 let selectVoicePresenceStatement: StatementSync | null = null
@@ -53,6 +54,7 @@ let ingestStatsCache: VersionedCache<IngestStats> | null = null
 let lastDataVersion = 0
 let lastDataVersionAt = 0
 let lastWtPlayerSnapshotCleanupAt = 0
+const knownItemExternalIds = new Map<string, Set<string>>()
 
 interface VersionedCache<T> {
   dataVersion: number
@@ -83,6 +85,7 @@ function resetPreparedStatements(): void {
   lastDataVersion = 0
   lastDataVersionAt = 0
   lastWtPlayerSnapshotCleanupAt = 0
+  knownItemExternalIds.clear()
 }
 
 function getDb(): DatabaseSync {
@@ -370,12 +373,19 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       addColumnIfMissing(database, 'battles', 'chat_count', 'INTEGER')
     },
   },
+  {
+    version: 4,
+    apply(database) {
+      addColumnIfMissing(database, 'announce_state', 'message_id', 'TEXT')
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
 
 export function initDb(dbPath: string, options: InitDbOptions = {}): void {
   resetPreparedStatements()
+  dbWorkerPath = null
   const isMemoryDatabase = dbPath === ':memory:'
   const resolvedPath = path.resolve(dbPath)
   if (!isMemoryDatabase && !existsSync(resolvedPath) && options.allowCreate !== true) {
@@ -862,6 +872,7 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       status     TEXT    NOT NULL,
       attempts   INTEGER NOT NULL DEFAULT 0,
       error      TEXT,
+      message_id TEXT,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
   `)
@@ -877,6 +888,7 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
   `)
   seedClanSeasons(db)
   seedWtPlayerSnapshots(db)
+  dbWorkerPath = isMemoryDatabase ? null : resolvedPath
   } catch (error) {
     resetPreparedStatements()
     try {
@@ -893,6 +905,11 @@ export function closeDb(): void {
   resetPreparedStatements()
   db?.close()
   db = null
+  dbWorkerPath = null
+}
+
+export function getDbWorkerPath(): string | null {
+  return dbWorkerPath
 }
 
 // ---------- Статистика команд ----------
@@ -962,7 +979,17 @@ export function recordParseResult(
   summary: string | null,
   error: string | null,
 ): void {
-  getDb()
+  recordParseResultInDatabase(getDb(), source, ok, summary, error)
+}
+
+export function recordParseResultInDatabase(
+  database: DatabaseSync,
+  source: string,
+  ok: boolean,
+  summary: string | null,
+  error: string | null,
+): void {
+  database
     .prepare('INSERT INTO parse_results (source, ok, summary, error) VALUES (?, ?, ?, ?)')
     .run(source, ok ? 1 : 0, summary, error)
 
@@ -972,7 +999,7 @@ export function recordParseResult(
   const now = Date.now()
   if (now - (lastParseCleanup.get(source) ?? 0) < PARSE_CLEANUP_INTERVAL_MS) return
   lastParseCleanup.set(source, now)
-  getDb()
+  database
     .prepare(`
       DELETE FROM parse_results
       WHERE source = ? AND id NOT IN (
@@ -1247,14 +1274,29 @@ export function saveItems(source: string, items: ParsedItem[]): SaveItemsResult 
     itemStatsCache = null
     ingestStatsCache = null
   }
+  const knownIds = knownItemExternalIds.get(source)
+  if (knownIds) {
+    for (const item of items) knownIds.add(item.externalId)
+  }
   return { changed, unchanged: items.length - changed }
+}
+
+export function primeKnownItemExternalIds(source: string): number {
+  const rows = getDb()
+    .prepare('SELECT external_id FROM items WHERE source = ?')
+    .all(source) as unknown as Array<{ external_id: string }>
+  knownItemExternalIds.set(source, new Set(rows.map((row) => row.external_id)))
+  return rows.length
 }
 
 /** Есть ли уже запись этого источника с таким externalId (для инкрементального парсинга) */
 export function hasItem(source: string, externalId: string): boolean {
+  const knownIds = knownItemExternalIds.get(source)
+  if (knownIds?.has(externalId)) return true
   const row = getDb()
     .prepare('SELECT 1 AS one FROM items WHERE source = ? AND external_id = ?')
     .get(source, externalId)
+  if (row !== undefined) knownIds?.add(externalId)
   return row !== undefined
 }
 
@@ -1345,7 +1387,31 @@ export function getMaxItemId(source: string): number {
 
 // ---------- Очередь автоанонса боёв (announce_state) ----------
 
-export type AnnounceStatus = 'ok' | 'failed'
+export type AnnounceStatus = 'pending' | 'ok' | 'failed'
+
+export interface PendingAnnounceItem extends StoredItem {
+  announceStatus: AnnounceStatus | null
+  announceAttempts: number
+  announceMessageId: string | null
+}
+
+export type AnnounceQueueOrder = 'newest' | 'oldest'
+
+/** Предварительное сообщение отправлено; после ingest оно будет заменено PNG. */
+export function markAnnouncePending(itemId: number, messageId: string): void {
+  getDb()
+    .prepare(`
+      INSERT INTO announce_state (item_id, status, attempts, error, message_id, updated_at)
+      VALUES (?, 'pending', 0, NULL, ?, unixepoch())
+      ON CONFLICT (item_id) DO UPDATE SET
+        status = 'pending',
+        attempts = 0,
+        error = NULL,
+        message_id = excluded.message_id,
+        updated_at = unixepoch()
+    `)
+    .run(itemId, messageId)
+}
 
 /** Записывает исход анонса боя; при повторе увеличивает счётчик попыток */
 export function markAnnounce(itemId: number, status: AnnounceStatus, error: string | null = null): void {
@@ -1365,21 +1431,43 @@ export function markAnnounce(itemId: number, status: AnnounceStatus, error: stri
 /**
  * Бои для автоанонса: новее baseline (первый запуск ставит его на текущий
  * максимум — историю не постим), ещё не отправленные и не исчерпавшие
- * попытки. Старые первыми — постим в хронологическом порядке.
+ * попытки. Новые первыми — live-бой не ждёт завершения большого catch-up.
  */
-export function getPendingAnnounce(baselineId: number, maxAttempts: number, limit: number): StoredItem[] {
+export function getPendingAnnounce(
+  baselineId: number,
+  maxAttempts: number,
+  limit: number,
+  order: AnnounceQueueOrder = 'newest',
+): PendingAnnounceItem[] {
   const rows = getDb()
     .prepare(`
-      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at, NULL AS analysis
+      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at,
+             NULL AS analysis, a.status AS announce_status,
+             COALESCE(a.attempts, 0) AS announce_attempts,
+             a.message_id AS announce_message_id
       FROM items i
       LEFT JOIN announce_state a ON a.item_id = i.id
       WHERE i.source = 'wt-replays' AND i.id > ?
-        AND (a.item_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
-      ORDER BY i.id ASC
+        AND (
+          a.item_id IS NULL
+          OR (a.status IN ('pending', 'failed') AND a.attempts < ?)
+        )
+      ORDER BY i.id ${order === 'oldest' ? 'ASC' : 'DESC'}
       LIMIT ?
     `)
-    .all(baselineId, maxAttempts, limit) as unknown as ItemRow[]
-  return rows.map(toStoredItem)
+    .all(baselineId, maxAttempts, limit) as unknown as Array<
+      ItemRow & {
+        announce_status: AnnounceStatus | null
+        announce_attempts: number
+        announce_message_id: string | null
+      }
+    >
+  return rows.map((row) => ({
+    ...toStoredItem(row),
+    announceStatus: row.announce_status,
+    announceAttempts: row.announce_attempts,
+    announceMessageId: row.announce_message_id,
+  }))
 }
 
 /**
@@ -1395,7 +1483,10 @@ export function nextAnnounceBaseline(currentBaseline: number, maxAttempts: numbe
       FROM items i
       LEFT JOIN announce_state a ON a.item_id = i.id
       WHERE i.source = 'wt-replays' AND i.id > ?
-        AND (a.item_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
+        AND (
+          a.item_id IS NULL
+          OR (a.status IN ('pending', 'failed') AND a.attempts < ?)
+        )
     `)
     .get(currentBaseline, maxAttempts) as { oldest: number | null } | undefined
   return row?.oldest != null ? row.oldest - 1 : getMaxItemId('wt-replays')
@@ -1603,7 +1694,16 @@ export function updatePlayerStatBoardPublication(
   messageId: string,
   contentHash: string,
 ): void {
-  getDb()
+  updatePlayerStatBoardPublicationInDatabase(getDb(), guildId, messageId, contentHash)
+}
+
+export function updatePlayerStatBoardPublicationInDatabase(
+  database: DatabaseSync,
+  guildId: string,
+  messageId: string,
+  contentHash: string,
+): void {
+  database
     .prepare(`
       UPDATE player_stat_boards
       SET message_id = ?, last_content_hash = ?, updated_at = unixepoch()
@@ -3728,7 +3828,13 @@ export function getBattleIngestState(sessionId: string): { status: BattleIngestS
  * исчерпавшие лимит попыток. Новые (большой id) первыми — их части ещё
  * живы на CDN.
  */
-export function getPendingBattleItems(maxAttempts: number, limit: number): PendingBattleItem[] {
+export type PendingBattleOrder = 'newest' | 'oldest'
+
+export function getPendingBattleItems(
+  maxAttempts: number,
+  limit: number,
+  order: PendingBattleOrder = 'newest',
+): PendingBattleItem[] {
   const rows = getDb()
     .prepare(`
       SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at,
@@ -3740,7 +3846,7 @@ export function getPendingBattleItems(maxAttempts: number, limit: number): Pendi
           bi.session_id IS NULL
           OR (bi.status = 'error' AND bi.attempts < ?)
         )
-      ORDER BY i.id DESC
+      ORDER BY i.id ${order === 'oldest' ? 'ASC' : 'DESC'}
       LIMIT ?
     `)
     .all(maxAttempts, limit) as unknown as Array<ItemRow & { first_seen_at: number }>

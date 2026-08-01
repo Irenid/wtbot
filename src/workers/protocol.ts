@@ -4,7 +4,7 @@ import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
 import type { MapImageViewport, MissileSeeker } from '../wrpl/battle-assets.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
-import type { BattleItemMeta } from '../wrpl/battle-transform.js'
+import type { BattleItemMeta, BattleParseProfile } from '../wrpl/battle-transform.js'
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
 
@@ -38,6 +38,7 @@ export interface ParsedBattleResult {
   results: ReplayResults
   battle: WireBattleInput
   summary: BattleEventSummary
+  profile: BattleParseProfile
 }
 
 export interface ScoreboardAssets {
@@ -158,6 +159,25 @@ export interface WorkerTaskMap {
   'checkpoint-ingest-database': {
     input: { dbPath: string }
     output: { checkpointMs: number }
+  }
+  'record-parse-result': {
+    input: {
+      dbPath: string
+      source: string
+      ok: boolean
+      summary: string | null
+      error: string | null
+    }
+    output: { sqliteMs: number }
+  }
+  'update-player-stat-board-publication': {
+    input: {
+      dbPath: string
+      guildId: string
+      messageId: string
+      contentHash: string
+    }
+    output: { sqliteMs: number }
   }
   'warm-sqlite': {
     input: { dbPath: string; statements: string[] }
