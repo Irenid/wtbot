@@ -4,16 +4,43 @@ import {
   closeDb,
   DASHBOARD_LATEST_ITEMS_SQL,
   explainSiteQueryPlan,
+  getAnnounceStats,
+  getItemByExternalId,
   getLatestItemSummaries,
   initDb,
+  markAnnounce,
+  markAnnouncePending,
   recordCommandUse,
   saveItems,
+  setBotState,
 } from '../db/index.js'
 import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { buildServer } from './index.js'
 
 test('dashboard отдаёт лёгкий кэшируемый снимок и инвалидируется после voice refresh', async () => {
   initDb(':memory:')
+  saveItems('wt-replays', [
+    { externalId: 'announce-first', title: 'Анонс 1', data: {} },
+    { externalId: 'announce-pending', title: 'Анонс 2', data: {} },
+    { externalId: 'announce-failed', title: 'Анонс 3', data: {} },
+  ])
+  setBotState('battles:lastAnnouncedId', '0')
+  const pendingAnnounce = getItemByExternalId('wt-replays', 'announce-pending')
+  const failedAnnounce = getItemByExternalId('wt-replays', 'announce-failed')
+  assert.ok(pendingAnnounce)
+  assert.ok(failedAnnounce)
+  markAnnouncePending(pendingAnnounce.id, 'message-1')
+  markAnnounce(failedAnnounce.id, 'failed', 'test-1')
+  markAnnounce(failedAnnounce.id, 'failed', 'test-2')
+  markAnnounce(failedAnnounce.id, 'failed', 'test-3')
+  assert.deepEqual(getAnnounceStats(), {
+    baselineId: 0,
+    pending: 2,
+    unattempted: 1,
+    retrying: 1,
+    sent: 0,
+    failed: 1,
+  })
   saveItems('demo', [{
     externalId: 'first',
     title: 'Первая запись',
@@ -61,6 +88,7 @@ test('dashboard отдаёт лёгкий кэшируемый снимок и �
     assert.equal(firstBody.ok, true)
     assert.equal(firstBody.runtime, null)
     assert.equal(firstBody.commands.total, 1)
+    assert.equal(firstBody.announce.pending, 2)
     assert.equal(firstBody.recentItems[0].title, 'Первая запись')
     assert.equal('data' in firstBody.recentItems[0], false)
 

@@ -3976,6 +3976,59 @@ export function getIngestStats(): IngestStats {
   return value
 }
 
+export interface AnnounceStats {
+  baselineId: number
+  pending: number
+  unattempted: number
+  retrying: number
+  sent: number
+  failed: number
+}
+
+/** Сводка отдельной очереди Discord-анонсов, не смешивать с ingest.pending. */
+export function getAnnounceStats(maxAttempts = 3): AnnounceStats {
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
+    throw new RangeError('Лимит попыток автоанонса должен быть целым от 1 до 100')
+  }
+  const row = getDb().prepare(`
+    WITH baseline AS (
+      SELECT CAST(COALESCE((SELECT value FROM bot_state WHERE key = 'battles:lastAnnouncedId'), '0') AS INTEGER) AS id
+    )
+    SELECT
+      baseline.id AS baseline_id,
+      COALESCE(SUM(CASE WHEN i.id > baseline.id
+        AND (a.item_id IS NULL OR (a.status IN ('pending', 'failed') AND a.attempts < ?))
+        THEN 1 ELSE 0 END), 0) AS pending,
+      COALESCE(SUM(CASE WHEN i.id > baseline.id AND a.item_id IS NULL THEN 1 ELSE 0 END), 0) AS unattempted,
+      COALESCE(SUM(CASE WHEN i.id > baseline.id
+        AND a.status IN ('pending', 'failed') AND a.attempts < ?
+        THEN 1 ELSE 0 END), 0) AS retrying,
+      COALESCE(SUM(CASE WHEN i.id > baseline.id AND a.status = 'ok' THEN 1 ELSE 0 END), 0) AS sent,
+      COALESCE(SUM(CASE WHEN i.id > baseline.id
+        AND a.status = 'failed' AND a.attempts >= ?
+        THEN 1 ELSE 0 END), 0) AS failed
+    FROM items i
+    CROSS JOIN baseline
+    LEFT JOIN announce_state a ON a.item_id = i.id
+    WHERE i.source = 'wt-replays'
+  `).get(maxAttempts, maxAttempts, maxAttempts) as {
+    baseline_id: number
+    pending: number
+    unattempted: number
+    retrying: number
+    sent: number
+    failed: number
+  }
+  return {
+    baselineId: row.baseline_id,
+    pending: row.pending,
+    unattempted: row.unattempted,
+    retrying: row.retrying,
+    sent: row.sent,
+    failed: row.failed,
+  }
+}
+
 // ---------- Read-модель сайта (страницы игроков, кланов и боёв) ----------
 //
 // Все запросы ниже строго read-only и рассчитаны на синхронный SQLite в main

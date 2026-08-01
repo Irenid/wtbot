@@ -321,12 +321,17 @@ function renderTeam(
   const statX = [584, 656, 728, 800, 872].map((v) => ox + v)
 
   // Клан-тег: украшения рисует шрифт игры (или юникод-замены без него).
-  // Метку победы держим в отдельном SVG text: добавленный tspan не должен
-  // менять раскладку декоративных символов при повторном рендере сообщения.
   const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
   const teamNo = roster[0]?.team ?? teamIndex + 1
-  const clanLabel = clan !== undefined ? tagMarkup(clan, assets.gameFont) : esc(`Команда ${teamNo}`)
+  const clanText = clan !== undefined ? clan : `Команда ${teamNo}`
+  const clanLabel = tagMarkup(clanText, assets.gameFont)
   parts.push(text(ox + 10, contentTop + 52, clanLabel, 46, theme.clan, 'start', 600))
+  if (won) {
+    const victoryLabel =
+      `<tspan fill-opacity="0">${clanLabel}</tspan>` +
+      `<tspan dx="18" fill="#f2cc60" font-size="28" font-weight="700">Победа</tspan>`
+    parts.push(text(ox + 10, contentTop + 52, victoryLabel, 46, theme.clan, 'start', 600))
+  }
 
   // Состав: (4F/3T/1AA) — по первой машине каждого игрока
   const counts = classCounts(roster, dict)
@@ -335,13 +340,11 @@ function renderTeam(
     const n = counts.get(cls)
     if (n) compo.push(`<tspan fill="${CLASS_COLOR[cls]}">${n}${cls}</tspan>`)
   }
-  const compositionX = ox + (won ? 155 : 10)
   parts.push(
-    `<text x="${compositionX}" y="${contentTop + 94}" font-family="${FONTS}" font-size="30" fill="#c6cfda">(${compo.join(
+    `<text x="${ox + 10}" y="${contentTop + 94}" font-family="${FONTS}" font-size="30" fill="#c6cfda">(${compo.join(
       '<tspan fill="#c6cfda">/</tspan>',
     )})</text>`,
   )
-  if (won) parts.push(text(ox + 10, contentTop + 94, 'Победа', 28, '#f2cc60', 'start', 700))
 
   // Флаги наций команды — по машинам игроков, в игровом порядке
   const nations = [...new Set(roster.map((p) => vehicleInfo(dict, p.vehicles[0] ?? '').country))]
