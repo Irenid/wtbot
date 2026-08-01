@@ -51,6 +51,10 @@ const TEAM_THEME = [
 const STAT_COLORS = ['#7ee787', '#7ee787', '#f2cc60', '#6cb6ff', '#ff7b72'] // возд, назем, ассист, захв, смерти
 const ZERO_COLOR = '#d7dee8'
 const FONTS = `Segoe UI, Segoe UI Symbol, Microsoft YaHei, Malgun Gothic, Yu Gothic UI, Arial, sans-serif`
+// Резервируем место под самый широкий обычный ПКР, чтобы длинный ник не
+// пересекался с числом в соседней колонке. Единица trimToWidth — примерно 24 px.
+const NAME_RATING_GAP_PX = 56
+const NAME_UNIT_PX = 24
 
 /** Порядок наций как в игре — в нём же рисуем флаги */
 const NATION_ORDER = ['usa', 'germany', 'ussr', 'britain', 'japan', 'china', 'italy', 'france', 'sweden', 'israel']
@@ -428,8 +432,23 @@ function renderTeam(
       parts.push(iconPs(nameX, y + 12, 27, '#dfe6ee'))
       nameX += 36
     }
-    const nameWidth = platform ? 18 : 20
-    parts.push(text(nameX, y + 36, esc(trimToWidth(name || 'Unknown Player', nameWidth)), 34, theme.player))
+    const defaultNameWidth = platform ? 18 : 20
+    const nameWidth = ratings
+      ? Math.max(
+          1,
+          Math.min(defaultNameWidth, Math.floor(Math.max(0, ratingX - nameX - NAME_RATING_GAP_PX) / NAME_UNIT_PX)),
+        )
+      : defaultNameWidth
+    const displayName = esc(trimToWidth(name || 'Unknown Player', nameWidth))
+    if (ratings) {
+      const clipId = `player-name-${teamIndex}-${row}`
+      parts.push(
+        `<clipPath id="${clipId}"><rect x="${nameX}" y="${y + 2}" width="${Math.max(0, ratingX - NAME_RATING_GAP_PX - nameX)}" height="44"/></clipPath>`,
+        text(nameX, y + 36, displayName, 34, theme.player, 'start', 400, ` clip-path="url(#${clipId})"`),
+      )
+    } else {
+      parts.push(text(nameX, y + 36, displayName, 34, theme.player))
+    }
 
     // Под ником: техника или пометка отключения
     if (disconnected) {
@@ -520,8 +539,9 @@ function text(
   fill: string,
   anchor: 'start' | 'middle' = 'start',
   weight = 400,
+  attributes = '',
 ): string {
-  return `<text x="${x}" y="${y}" font-family="${FONTS}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}">${content}</text>`
+  return `<text x="${x}" y="${y}" font-family="${FONTS}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}"${attributes}>${content}</text>`
 }
 
 function esc(s: string): string {
