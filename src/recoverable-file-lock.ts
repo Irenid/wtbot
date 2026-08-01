@@ -8,7 +8,7 @@ interface LockOwner {
   createdAt: number
 }
 
-interface OwnedLock {
+export interface OwnedFileLock {
   release(): Promise<void>
 }
 
@@ -76,7 +76,7 @@ async function readOwner(filePath: string): Promise<{ owner: LockOwner | null; m
   }
 }
 
-async function createOwnedLock(filePath: string, now: () => number): Promise<OwnedLock> {
+async function createOwnedLock(filePath: string, now: () => number): Promise<OwnedFileLock> {
   const handle = await open(filePath, 'wx', 0o600)
   const owner: LockOwner = { ownerToken: randomUUID(), pid: process.pid, createdAt: now() }
   try {
@@ -122,7 +122,7 @@ async function tryReclaim(
   onRecovered: ((lockFile: string, owner: LockOwner | null) => void) | undefined,
 ): Promise<boolean> {
   const recoverFile = `${lockFile}.recover`
-  let recoverLock: OwnedLock
+  let recoverLock: OwnedFileLock
   try {
     recoverLock = await createOwnedLock(recoverFile, now)
   } catch (error) {
@@ -141,10 +141,9 @@ async function tryReclaim(
   }
 }
 
-export async function withRecoverableFileLock<T>(
+export async function acquireRecoverableFileLock(
   options: RecoverableFileLockOptions,
-  task: () => Promise<T>,
-): Promise<T> {
+): Promise<OwnedFileLock> {
   const lockFile = path.resolve(options.lockFile)
   const timeoutMs = options.timeoutMs ?? 5_000
   const staleMs = options.staleMs ?? 60_000
@@ -165,7 +164,7 @@ export async function withRecoverableFileLock<T>(
 
   await mkdir(path.dirname(lockFile), { recursive: true, mode: 0o700 })
   const deadline = now() + timeoutMs
-  let ownedLock: OwnedLock | null = null
+  let ownedLock: OwnedFileLock | null = null
   for (;;) {
     if (!(await fileExists(`${lockFile}.recover`))) {
       try {
@@ -181,6 +180,14 @@ export async function withRecoverableFileLock<T>(
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, waitMs))
   }
 
+  return ownedLock
+}
+
+export async function withRecoverableFileLock<T>(
+  options: RecoverableFileLockOptions,
+  task: () => Promise<T>,
+): Promise<T> {
+  const ownedLock = await acquireRecoverableFileLock(options)
   try {
     return await task()
   } finally {
