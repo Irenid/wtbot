@@ -1,4 +1,11 @@
-import { recordParseResult, saveItems } from '../db/index.js'
+import {
+  getDbWorkerPath,
+  primeKnownItemExternalIds,
+  recordParseResult,
+  saveItems,
+} from '../db/index.js'
+import { emitBattleLifecycle } from '../battle-lifecycle.js'
+import { runWorkerTask } from '../workers/pool.js'
 import { sources } from './sources/index.js'
 import type { ParserSource } from './types.js'
 
@@ -14,6 +21,26 @@ let parsersRunning = false
  *  (может листать десятки страниц) не наложился на следующий тик */
 const running = new Set<string>()
 
+async function persistParseResult(
+  source: string,
+  ok: boolean,
+  summary: string | null,
+  error: string | null,
+): Promise<void> {
+  const dbPath = getDbWorkerPath()
+  if (dbPath === null) {
+    recordParseResult(source, ok, summary, error)
+    return
+  }
+  await runWorkerTask(
+    {
+      kind: 'record-parse-result',
+      input: { dbPath, source, ok, summary, error },
+    },
+    { priority: 'normal', timeoutMs: 30_000 },
+  )
+}
+
 async function runOnce(source: ParserSource): Promise<boolean> {
   if (running.has(source.name)) return true
   running.add(source.name)
@@ -24,16 +51,23 @@ async function runOnce(source: ParserSource): Promise<boolean> {
     if (gotItems) {
       const saved = saveItems(source.name, output.items!)
       summary += ` · сохранено: ${saved.changed}, без изменений: ${saved.unchanged}`
+      if (source.name === 'wt-replays' && saved.changed > 0) {
+        emitBattleLifecycle({
+          kind: 'discovered',
+          sessionIds: output.items!.map((item) => item.externalId),
+          bulk: output.items!.length > 20,
+        })
+      }
     } else if (source.name === 'wt-replays') {
       summary += ' · сохранено: 0'
     }
-    recordParseResult(source.name, true, summary, null)
+    await persistParseResult(source.name, true, summary, null)
     // Для replay показываем и нулевой результат: так видна исправность частого опроса.
     if (gotItems || source.name === 'wt-replays') console.log(`[parser:${source.name}] OK — ${summary}`)
     return true
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    recordParseResult(source.name, false, null, message)
+    await persistParseResult(source.name, false, null, message)
     console.error(`[parser:${source.name}] Ошибка — ${message}`)
     return false
   } finally {
@@ -87,6 +121,9 @@ export function startParsers(sourceList: readonly ParserSource[] = sources): voi
   }
   if (parsersRunning) stopParsers()
   parsersRunning = true
+  if (sourceList.some((source) => source.name === 'wt-replays')) {
+    primeKnownItemExternalIds('wt-replays')
+  }
   for (const source of sourceList) {
     runtimes.set(source.name, { failures: 0, timer: null })
     schedule(source, 0)

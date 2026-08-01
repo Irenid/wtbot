@@ -16,6 +16,7 @@ export class EofError extends Error {
 export class BitReader {
   data: Buffer
   bitOffset = 0
+  private scratch: Buffer | null = null
 
   constructor(data: Buffer) {
     this.data = data
@@ -61,29 +62,12 @@ export class BitReader {
     }
 
     const out = Buffer.alloc(Math.ceil(bits / 8))
-    let offs = 0
-    let left = bits
-    while (left > 0) {
-      const byteIndex = Math.floor(this.bitOffset / 8)
-      const current = this.data[byteIndex]
-      if (current === undefined) throw new EofError()
-      let b = (current << offset) & 0xff
-      if (offset > 0 && left > 8 - offset) {
-        const next = this.data[byteIndex + 1]
-        if (next === undefined) throw new EofError()
-        b |= next >> (8 - offset)
-      }
-      if (left >= 8) {
-        out[offs] = b
-        left -= 8
-        this.bitOffset += 8
-        offs += 1
-      } else {
-        out[offs] = b >> (8 - left)
-        this.bitOffset += left
-        break
-      }
+    const wholeBytes = Math.floor(bits / 8)
+    for (let index = 0; index < wholeBytes; index += 1) {
+      out[index] = this.readByte()
     }
+    const remaining = bits - wholeBytes * 8
+    if (remaining > 0) out[wholeBytes] = this.readUnsignedBits(remaining)
     return out
   }
 
@@ -91,15 +75,60 @@ export class BitReader {
     if (!Number.isSafeInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER / 8) {
       throw new RangeError('число байт должно быть неотрицательным целым')
     }
-    return this.readBits(n * 8)
+    const bits = n * 8
+    if (bits > this.remainingBits) throw new EofError()
+    if ((this.bitOffset & 7) === 0) {
+      const start = this.bitOffset / 8
+      this.bitOffset += bits
+      return this.data.subarray(start, start + n)
+    }
+    const out = Buffer.allocUnsafe(n)
+    for (let index = 0; index < n; index += 1) out[index] = this.readByte()
+    return out
   }
 
   readByte(): number {
-    return this.readBits(8)[0]!
+    if (this.remainingBits < 8) throw new EofError()
+    const byteIndex = Math.floor(this.bitOffset / 8)
+    const offset = this.bitOffset & 7
+    const current = this.data[byteIndex]!
+    this.bitOffset += 8
+    if (offset === 0) return current
+    return ((current << offset) & 0xff) | (this.data[byteIndex + 1]! >>> (8 - offset))
   }
 
   readBit(): boolean {
-    return this.readBits(1)[0] === 1
+    if (this.remainingBits < 1) throw new EofError()
+    const value = this.data[Math.floor(this.bitOffset / 8)]!
+    const offset = this.bitOffset & 7
+    this.bitOffset += 1
+    return ((value >>> (7 - offset)) & 1) === 1
+  }
+
+  readUnsignedBits(bits: number): number {
+    if (!Number.isSafeInteger(bits) || bits < 0 || bits > 32) {
+      throw new RangeError('число битов должно быть целым от 0 до 32')
+    }
+    if (bits > this.remainingBits) throw new EofError()
+    let value = 0
+    let shift = 0
+    let left = bits
+    while (left >= 8) {
+      value += this.readByte() * 2 ** shift
+      shift += 8
+      left -= 8
+    }
+    if (left > 0) {
+      const byteIndex = Math.floor(this.bitOffset / 8)
+      const offset = this.bitOffset & 7
+      let chunk = (this.data[byteIndex]! << offset) & 0xff
+      if (offset > 0 && left > 8 - offset) {
+        chunk |= this.data[byteIndex + 1]! >>> (8 - offset)
+      }
+      value += (chunk >>> (8 - left)) * 2 ** shift
+      this.bitOffset += left
+    }
+    return value
   }
 
   readLenStr(): string {
@@ -128,32 +157,73 @@ export class BitReader {
   }
 
   readU16(): number {
-    const b = this.readBytes(2)
-    return b[0]! | (b[1]! << 8)
+    if (this.remainingBits < 16) throw new EofError()
+    if ((this.bitOffset & 7) === 0) {
+      const offset = this.bitOffset / 8
+      this.bitOffset += 16
+      return this.data.readUInt16LE(offset)
+    }
+    return this.readByte() | (this.readByte() << 8)
   }
 
   readU32(): number {
-    return this.readBytes(4).readUInt32LE(0)
+    if (this.remainingBits < 32) throw new EofError()
+    if ((this.bitOffset & 7) === 0) {
+      const offset = this.bitOffset / 8
+      this.bitOffset += 32
+      return this.data.readUInt32LE(offset)
+    }
+    return (
+      this.readByte()
+      + this.readByte() * 0x100
+      + this.readByte() * 0x1_0000
+      + this.readByte() * 0x100_0000
+    ) >>> 0
   }
 
   readU64(): bigint {
-    return this.readBytes(8).readBigUInt64LE(0)
+    if (this.remainingBits < 64) throw new EofError()
+    if ((this.bitOffset & 7) === 0) {
+      const offset = this.bitOffset / 8
+      this.bitOffset += 64
+      return this.data.readBigUInt64LE(offset)
+    }
+    return this.readScratch(8).readBigUInt64LE(0)
   }
 
   readI32(): number {
-    return this.readBytes(4).readInt32LE(0)
+    return this.readU32() | 0
   }
 
   readF32(): number {
-    return this.readBytes(4).readFloatLE(0)
+    if (this.remainingBits < 32) throw new EofError()
+    if ((this.bitOffset & 7) === 0) {
+      const offset = this.bitOffset / 8
+      this.bitOffset += 32
+      return this.data.readFloatLE(offset)
+    }
+    return this.readScratch(4).readFloatLE(0)
   }
 
   readF64(): number {
-    return this.readBytes(8).readDoubleLE(0)
+    if (this.remainingBits < 64) throw new EofError()
+    if ((this.bitOffset & 7) === 0) {
+      const offset = this.bitOffset / 8
+      this.bitOffset += 64
+      return this.data.readDoubleLE(offset)
+    }
+    return this.readScratch(8).readDoubleLE(0)
   }
 
   /** Строка до NUL-байта (ECS) */
   readCstr(): string {
+    if ((this.bitOffset & 7) === 0) {
+      const start = this.bitOffset / 8
+      const end = this.data.indexOf(0, start)
+      if (end < 0) throw new EofError()
+      this.bitOffset = (end + 1) * 8
+      return this.data.subarray(start, end).toString('utf8')
+    }
     const bytes: number[] = []
     for (;;) {
       const b = this.readByte()
@@ -165,5 +235,11 @@ export class BitReader {
 
   alignToByteBoundary(): void {
     this.bitOffset += 8 - (((this.bitOffset - 1) & 7) + 1)
+  }
+
+  private readScratch(bytes: number): Buffer {
+    const scratch = this.scratch ??= Buffer.allocUnsafe(8)
+    for (let index = 0; index < bytes; index += 1) scratch[index] = this.readByte()
+    return scratch
   }
 }

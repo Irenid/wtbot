@@ -271,8 +271,7 @@ function readString(r: BitReader): string {
 /** Интернированная строка: сырое значение или 10-битный индекс словаря */
 function readIString(r: BitReader, ctx: EcsParser): string {
   if (r.readBit()) return readString(r)
-  const b = r.readBits(10)
-  const idx = b[0]! | ((b[1] ?? 0) << 8)
+  const idx = r.readUnsignedBits(10)
   const known = ctx.internedStrings.get(idx)
   if (known !== undefined) return known
   const str = readString(r)
@@ -338,13 +337,13 @@ const rocketParser: ComponentParser = (r) => {
   for (let i = 0; i < 3; i++) {
     const n = r.readBytes(2)
     const bits = ((n[0]! | (n[1]! << 8)) + 7) & 0xfffffff8
-    r.readBits(bits)
+    r.ignoreBits(bits)
   }
   r.ignoreBits(112)
   return null
 }
 
-const partIdParser: ComponentParser = (r) => r.readBits(6)[0]!
+const partIdParser: ComponentParser = (r) => r.readUnsignedBits(6)
 
 const COMPONENT_PARSERS: Record<string, ComponentParser> = {
   FlightModelWrapStorageComponent: storageParser,
@@ -431,7 +430,7 @@ const COMPONENT_PARSERS: Record<string, ComponentParser> = {
     }
     const count = rawCount * 8
     const out: number[] = []
-    for (let i = 0; i < count; i++) out.push(r.readBits(6)[0]!)
+    for (let i = 0; i < count; i++) out.push(r.readUnsignedBits(6))
     return out
   },
   uint8_t: (r) => r.readByte(),

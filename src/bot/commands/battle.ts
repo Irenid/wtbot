@@ -145,9 +145,11 @@ export async function renderBattlePost(
   // доступную технику, а не только реально появившиеся в бою юниты.
   let hasAir = true
 
-  // Личный клановый рейтинг обеих команд — с сайта; сбой сети не должен
-  // ломать команду, тогда картинка выходит без колонки ПКР
-  const ratings = await fetchRatingsForTags(teams.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+  // Для интерактивного /battle сохраняем актуальный ПКР. Background-анонс
+  // не ждёт внешний сайт: необязательная колонка не должна задерживать PNG.
+  const ratings: Awaited<ReturnType<typeof fetchRatingsForTags>> = priority === 'background'
+    ? new Map()
+    : await fetchRatingsForTags(teams.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
 
   // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
   let content =
@@ -310,7 +312,7 @@ interface WinnerUpdateEntry {
   estimatedBytes: number
 }
 
-const WINNER_UPDATE_WAIT_MS = 120_000
+const WINNER_UPDATE_WAIT_MS = 14 * 60_000
 const WINNER_UPDATE_POLL_MS = 1_000
 /** Сессии, ожидающие durable ingest summary; full media здесь не строится. */
 const winnerUpdates = new Map<string, WinnerUpdateEntry>()

@@ -559,7 +559,6 @@ export class IngestBattleTelemetry {
     this.finishCurrent({ nowMs, bytes: timing.bytes, activeMs: timing.totalMs })
     this.owner.recordReplay(timing)
     this.current = this.owner.queueStage('ready', timing.bytes, nowMs)
-    this.owner.startStage(this.current, nowMs)
   }
 
   replayFailed(timing: ReplayPartsTiming, nowMs = timing.completedAtMs): void {

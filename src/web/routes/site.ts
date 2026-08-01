@@ -45,7 +45,7 @@ import { ensureVehicleDict, type VehicleDict } from '../../wrpl/vehicles.js'
 // внешних снимков остаётся за POST /api/player-stats и фоновыми задачами.
 
 /** Источники внешних снимков, которые показывает сайт. */
-const SITE_ACCOUNT_SOURCES = ['official-profile', 'statshark'] as const
+const SITE_ACCOUNT_SOURCES = ['official-profile', 'companion-profile', 'statshark'] as const
 
 const RATE_WINDOW_MS = 60_000
 const PER_IP_LIMIT = 60

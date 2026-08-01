@@ -33,65 +33,94 @@ const RLE0_PARITY_YES = 222
 
 /** Распаковка rle0ki; вход и выход — последовательности 2-битных юнитов */
 export function rle0kiDecompress(src: Buffer, maxOut: number): Buffer {
+  if (!Number.isSafeInteger(maxOut) || maxOut < 0) throw new RangeError('rle0ki: некорректный maxOut')
+  if (src.length === 0) return Buffer.alloc(0)
+  const parity = src[src.length - 1]!
+  if (parity !== RLE0_PARITY_NO && parity !== RLE0_PARITY_YES) return Buffer.alloc(0)
+  return rle0kiDecompressInto(src, Buffer.allocUnsafe(maxOut))
+}
+
+function rle0kiDecompressInto(src: Buffer, out: Buffer): Buffer {
   if (src.length === 0) return Buffer.alloc(0)
   const limit = src.length - 1
   const parity = src[limit]!
   if (parity !== RLE0_PARITY_NO && parity !== RLE0_PARITY_YES) return Buffer.alloc(0)
 
-  const out = Buffer.alloc(maxOut)
-  const val = [0, 0]
   let code = -1
   let offset = 0
+  let outputByte = 0
   let d = 0
   let super_ = -1
 
   for (let i = 0; i < limit; i++) {
     const klim = i !== limit - 1 || parity === RLE0_PARITY_YES ? 2 : 1
     for (let k = 0; k < klim; k++) {
-      val[0] = (src[i]! >> (k * 4)) & 3
-      val[1] = (src[i]! >> (2 + k * 4)) & 3
+      let first = (src[i]! >> (k * 4)) & 3
+      let second = (src[i]! >> (2 + k * 4)) & 3
       let num = 0
 
-      if (code !== 4) code = val[0]!
+      if (code !== 4) code = first
 
       switch (code) {
         case 0: // zr0: 3–6 нулей
-          num = val[1]! + 3
-          val[0] = val[1] = 0
+          num = second + 3
+          first = second = 0
           break
         case 3: // zr1: 7–10 нулей
-          num = val[1]! + 7
-          val[0] = val[1] = 0
+          num = second + 7
+          first = second = 0
           break
         case 1: // ki6: три юнита как есть (первый — сейчас, ещё два следом)
           code = 4
-          super_ = val[1]!
+          super_ = second
           num = 1
-          val[0] = val[1]!
+          first = second
           break
         case 2: // ki2: один юнит как есть
           num = 1
-          val[0] = val[1]!
+          first = second
           break
         case 4: // хвост ki6
           code = -1
           num = 2
-          if (super_ === 0 && super_ === val[0] && val[0] === val[1]) num = 39
+          if (super_ === 0 && first === 0 && second === 0) num = 39
           break
       }
 
-      for (let n = 0; n < num; n++) {
-        if (d >= maxOut) throw new Error('rle0ki: выход за буфер')
-        out[d >> 0] = out[d]! | (val[n & 1]! << (offset * 2))
+      if (d + Math.ceil((offset + num) / 4) > out.length) {
+        throw new Error('rle0ki: выход за буфер')
+      }
+      let n = 0
+      while (n < num && offset > 0) {
+        outputByte |= (n & 1 ? second : first) << (offset * 2)
         offset++
+        n++
         if (offset === 4) {
+          out[d] = outputByte
           offset = 0
+          outputByte = 0
           d++
         }
       }
+      if (n + 4 <= num) {
+        const pair = n & 1
+          ? second | (first << 2) | (second << 4) | (first << 6)
+          : first | (second << 2) | (first << 4) | (second << 6)
+        while (n + 4 <= num) {
+          out[d] = pair
+          d++
+          n += 4
+        }
+      }
+      while (n < num) {
+        outputByte |= (n & 1 ? second : first) << (offset * 2)
+        offset++
+        n++
+      }
     }
   }
-  return out.subarray(0, offset ? d + 1 : d)
+  if (offset > 0) out[d] = outputByte
+  return out.subarray(0, offset > 0 ? d + 1 : d)
 }
 
 // ---------- XOR-патч (delta/diff_impl.h + history.cpp) ----------
@@ -99,12 +128,10 @@ export function rle0kiDecompress(src: Buffer, maxOut: number): Buffer {
 /** result[i] = base[i]^delta[i], хвост — из более длинного; длина = длине дельты */
 function applyPatch(base: Buffer, delta: Buffer): Buffer {
   const lower = Math.min(base.length, delta.length)
-  const upper = Math.max(base.length, delta.length)
-  const out = Buffer.alloc(upper)
+  const out = Buffer.allocUnsafe(delta.length)
   for (let i = 0; i < lower; i++) out[i] = base[i]! ^ delta[i]!
-  const tail = delta.length < base.length ? base : delta
-  for (let i = lower; i < upper; i++) out[i] = tail[i]!
-  return out.subarray(0, delta.length)
+  if (delta.length > lower) delta.copy(out, lower, lower)
+  return out
 }
 
 // ---------- дельта-декомпрессия (delta/deltaCompression.cpp) ----------
@@ -127,14 +154,14 @@ function idxLess(idx1: number, idx2: number, bits: number): boolean {
 }
 
 /** Читает один дельта-блок из r, возвращает восстановленное состояние или null */
-function readDelta(r: BitReader, history: DeltaHistory): Buffer | null {
+function readDelta(r: BitReader, history: DeltaHistory, rleScratch: Buffer): Buffer | null {
   const fullDiff = r.readBit()
-  const packetNoDelta = r.readBits(HISTORY_BITS)[0]!
-  const nb = r.readBits(INDEX_BITS)
-  const nextPacketNo = nb[0]! | ((nb[1] ?? 0) << 8)
+  const packetNoDelta = r.readUnsignedBits(HISTORY_BITS)
+  const nextPacketNo = r.readUnsignedBits(INDEX_BITS)
   const compressedSize = r.readCompressed()
   r.alignToByteBoundary()
-  const block = Buffer.from(r.readBytes(compressedSize))
+  const encoded = r.readBytes(compressedSize)
+  const block = fullDiff ? Buffer.from(encoded) : encoded
 
   const basePacketNo = (nextPacketNo - packetNoDelta) >>> 0
   if (!fullDiff && !history.isValidBase(basePacketNo)) return null // базы нет — ждём fullDiff
@@ -143,7 +170,7 @@ function readDelta(r: BitReader, history: DeltaHistory): Buffer | null {
   if (fullDiff) {
     result = block
   } else {
-    const delta = rle0kiDecompress(block, 4096)
+    const delta = rle0kiDecompressInto(block, rleScratch)
     result = applyPatch(history.baseHist[basePacketNo & (HISTORY_SIZE - 1)]!, delta)
   }
 
@@ -206,9 +233,9 @@ function readSensor(r: BitReader): void {
       throw new Error(`gm: сенсор типа ${sensorType}`)
   }
   if (r.readBit()) {
-    const count = r.readBits(6)[0]!
+    const count = r.readUnsignedBits(6)
     for (let i = 0; i < count; i++) r.readU32()
-    r.readBits(6)
+    r.ignoreBits(6)
   }
 }
 
@@ -284,12 +311,12 @@ export function parseVehicleState(
       for (let i = 0; i < 7; i++) r.readBit()
       r.readByte()
       r.readByte()
-      r.readBits(5)
-      r.readBits(4)
-      r.readBits(4)
-      r.readBits(2)
-      r.readBits(3)
-      r.readBits(4)
+      r.ignoreBits(5)
+      r.ignoreBits(4)
+      r.ignoreBits(4)
+      r.ignoreBits(2)
+      r.ignoreBits(3)
+      r.ignoreBits(4)
     }
     if (r.readBit()) {
       const subCount = r.readByte()
@@ -327,7 +354,7 @@ export function parseVehicleState(
   const cm = r.readByte()
   for (let i = 0; i < cm; i++) r.ignoreBytes(2)
 
-  const targets = r.readBits(4)[0]!
+  const targets = r.readUnsignedBits(4)
   if (targets > 8) throw new Error(`gm: целей ${targets} > 8`)
   for (let i = 0; i < targets; i++) readTarget(r)
 
@@ -340,6 +367,7 @@ export class GmSyncParser {
   /** uid юнита → траектория */
   paths = new Map<number, SpaceTime[]>()
   private histories = new Map<number, DeltaHistory>()
+  private readonly rleScratch = Buffer.allocUnsafe(4096)
   errors = 0
 
   private historyOf(uid: number): DeltaHistory {
@@ -369,7 +397,7 @@ export class GmSyncParser {
     for (let uid = uidLower; uid < uidUpper; uid++) {
       if (!r.readBit()) continue
       r.readBit() // bool2
-      if (r.readBit()) r.readBits(4)
+      if (r.readBit()) r.ignoreBits(4)
       const val2 = r.readBit()
       const val3 = r.readBit()
       if (val2 && val3) continue
@@ -380,7 +408,7 @@ export class GmSyncParser {
       const isCompressed = r.readBit()
       if (!isCompressed) throw new Error('gm: несжатое состояние (не серверный реплей?)')
 
-      const state = readDelta(r, this.historyOf(uid))
+      const state = readDelta(r, this.historyOf(uid), this.rleScratch)
       if (state) {
         try {
           const pos = parseVehicleState(state, val1, turretCount)

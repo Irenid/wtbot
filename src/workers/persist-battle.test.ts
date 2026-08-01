@@ -5,7 +5,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { gzipSync } from 'node:zlib'
-import { closeDb, initDb, type BattleInput } from '../db/index.js'
+import { closeDb, initDb, savePlayerStatBoard, type BattleInput } from '../db/index.js'
 import { closeWorkerPool, runWorkerTask, transferableBuffer } from './pool.js'
 
 test('persist-ingested-battle writes battle and ingest state outside the main connection', async () => {
@@ -15,6 +15,7 @@ test('persist-ingested-battle writes battle and ingest state outside the main co
 
   try {
     initDb(dbPath, { allowCreate: true })
+    savePlayerStatBoard('worker-guild', 'worker-channel', 'worker-message-1', 'a'.repeat(64))
     closeDb()
 
     const compressed = gzipSync(Buffer.from('{"events":[]}'))
@@ -63,6 +64,35 @@ test('persist-ingested-battle writes battle and ingest state outside the main co
     )
     assert.ok(checkpoint.checkpointMs >= 0)
 
+    const parseResult = await runWorkerTask(
+      {
+        kind: 'record-parse-result',
+        input: {
+          dbPath,
+          source: 'worker-parser',
+          ok: true,
+          summary: 'worker parse result',
+          error: null,
+        },
+      },
+      { priority: 'normal' },
+    )
+    assert.ok(parseResult.sqliteMs >= 0)
+
+    const publication = await runWorkerTask(
+      {
+        kind: 'update-player-stat-board-publication',
+        input: {
+          dbPath,
+          guildId: 'worker-guild',
+          messageId: 'worker-message-2',
+          contentHash: 'b'.repeat(64),
+        },
+      },
+      { priority: 'normal' },
+    )
+    assert.ok(publication.sqliteMs >= 0)
+
     await closeWorkerPool()
     poolClosed = true
 
@@ -79,6 +109,19 @@ test('persist-ingested-battle writes battle and ingest state outside the main co
         .get(battle.sessionId) as { status: string; attempts: number } | undefined
       assert.equal(ingest?.status, 'ok')
       assert.equal(ingest?.attempts, 1)
+
+      const parser = database
+        .prepare('SELECT ok, summary, error FROM parse_results WHERE source = ?')
+        .get('worker-parser') as { ok: number; summary: string; error: string | null } | undefined
+      assert.equal(parser?.ok, 1)
+      assert.equal(parser?.summary, 'worker parse result')
+      assert.equal(parser?.error, null)
+
+      const board = database
+        .prepare('SELECT message_id, last_content_hash FROM player_stat_boards WHERE guild_id = ?')
+        .get('worker-guild') as { message_id: string; last_content_hash: string } | undefined
+      assert.equal(board?.message_id, 'worker-message-2')
+      assert.equal(board?.last_content_hash, 'b'.repeat(64))
     } finally {
       database.close()
     }

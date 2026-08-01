@@ -14,6 +14,7 @@ const CACHE_DIR = './data/replays'
 const REPLAY_CACHE_DAYS = 7
 export const REPLAY_FETCH_PAUSE_MS = 150
 const FETCH_TIMEOUT_MS = 30_000
+const FETCH_PRIORITY_AGING_MS = 30_000
 export const REPLAY_PART_MAX_BYTES = 96 * 1024 * 1024
 const WRPL_HEADER_BYTES = 1234
 
@@ -45,11 +46,15 @@ export interface ReplayPartTiming {
 
 export interface ReplayPartFetchOptions {
   signal?: AbortSignal
+  priority?: ReplayFetchPrioritySource
   /** Только для изолированных benchmark/smoke; undefined использует production cache. */
   cacheDirectory?: string | null
   memoryReservation?: ReplayPartMemoryReservation
   onTiming?: (timing: ReplayPartTiming) => void
 }
+
+export type ReplayFetchPriority = 'live' | 'normal' | 'background'
+export type ReplayFetchPrioritySource = ReplayFetchPriority | (() => ReplayFetchPriority)
 
 export interface ReplayPartMemoryReservation {
   reserve(bytes: number): Promise<void>
@@ -89,10 +94,23 @@ interface SessionGate {
   queue: SessionWaiter[]
 }
 
+interface FetchSlotWaiter {
+  resolve: (waitMs: number) => void
+  reject: (error: Error) => void
+  requestedAt: number
+  sequence: number
+  priority: ReplayFetchPrioritySource
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
 let cleanupStarted = false
 let lastFetchAt = 0
 let fetchNotBeforeAt = 0
-let throttleTail: Promise<void> = Promise.resolve()
+let fetchSlotRunning = false
+let fetchSlotSequence = 0
+let fetchSlotSleepWake: (() => void) | null = null
+const fetchSlotQueue: FetchSlotWaiter[] = []
 const replayFetchAdmission = new ReplayFetchAdmission(REPLAY_FETCH_PAUSE_MS)
 const partLocks = new Map<string, PartLockState>()
 const sessionGates = new Map<string, SessionGate>()
@@ -126,7 +144,14 @@ export function fetchReplayPart(url: string, options: ReplayPartFetchOptions = {
   const lockStarted = performance.now()
   const run = async (): Promise<Buffer> => {
     timing.lockWaitMs = performance.now() - lockStarted
-    return doFetchReplayPart(url, file, options.signal, timing, options.memoryReservation)
+    return doFetchReplayPart(
+      url,
+      file,
+      options.signal,
+      timing,
+      options.memoryReservation,
+      options.priority,
+    )
   }
   const operation = file && session && cacheDirectory
     ? withPartLock(
@@ -165,6 +190,7 @@ async function doFetchReplayPart(
   signal: AbortSignal | undefined,
   timing: ReplayPartTiming,
   memoryReservation: ReplayPartMemoryReservation | undefined,
+  priority: ReplayFetchPrioritySource | undefined,
 ): Promise<Buffer> {
   throwIfAborted(signal)
   if (file) {
@@ -219,7 +245,7 @@ async function doFetchReplayPart(
       bytes: 0,
     }
     try {
-      attemptTiming.slotWaitMs = await reserveFetchSlot(signal)
+      attemptTiming.slotWaitMs = await reserveFetchSlot(signal, priority)
       throwIfAborted(signal)
       const fetchStarted = performance.now()
       let response: Response
@@ -313,10 +339,9 @@ function replayPartSizeHint(response: Response): {
     && declared <= REPLAY_PART_MAX_BYTES) {
     return {
       bodyLimitBytes: declared,
-      // readResponseBuffer кратковременно удерживает stream chunks и итоговый
-      // Buffer одновременно. Exact-режим учитывает этот peak, но никогда не
-      // резервирует больше прежнего conservative worst-case на часть.
-      peakReservationBytes: Math.min(REPLAY_PART_MAX_BYTES, declared * 2),
+      // readResponseBuffer пишет identity-body прямо в Buffer заявленного
+      // размера, поэтому chunks и вторая полная копия одновременно не живут.
+      peakReservationBytes: declared,
     }
   }
   return {
@@ -333,28 +358,111 @@ function validateReplayPart(data: Buffer, source: string): void {
   }
 }
 
-function reserveFetchSlot(signal?: AbortSignal): Promise<number> {
-  const requestedAt = performance.now()
-  const reservation = throttleTail.then(async () => {
-    for (;;) {
-      throwIfAborted(signal)
-      const now = Date.now()
+function reserveFetchSlot(
+  signal?: AbortSignal,
+  priority: ReplayFetchPrioritySource = 'normal',
+): Promise<number> {
+  throwIfAborted(signal)
+  return new Promise((resolve, reject) => {
+    const waiter: FetchSlotWaiter = {
+      resolve,
+      reject,
+      requestedAt: performance.now(),
+      sequence: fetchSlotSequence++,
+      priority,
+      ...(signal ? { signal } : {}),
+    }
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = fetchSlotQueue.indexOf(waiter)
+        if (index >= 0) fetchSlotQueue.splice(index, 1)
+        reject(abortError())
+        fetchSlotSleepWake?.()
+      }
+      signal.addEventListener('abort', waiter.onAbort, { once: true })
+    }
+    fetchSlotQueue.push(waiter)
+    void pumpFetchSlots()
+  })
+}
+
+async function pumpFetchSlots(): Promise<void> {
+  if (fetchSlotRunning) return
+  fetchSlotRunning = true
+  try {
+    while (fetchSlotQueue.length > 0) {
       const deadline = Math.max(
         lastFetchAt + replayFetchAdmission.intervalMs(),
         fetchNotBeforeAt,
       )
-      const waitMs = deadline - now
+      const waitMs = deadline - Date.now()
       if (waitMs > 0) {
-        await sleep(waitMs, signal)
+        await waitForFetchSlotDeadline(waitMs)
         continue
       }
-      throwIfAborted(signal)
+      const waiter = takeNextFetchSlotWaiter()
+      if (!waiter) continue
+      if (waiter.signal?.aborted) {
+        waiter.reject(abortError())
+        continue
+      }
+      if (waiter.signal && waiter.onAbort) {
+        waiter.signal.removeEventListener('abort', waiter.onAbort)
+      }
       lastFetchAt = Date.now()
-      return performance.now() - requestedAt
+      waiter.resolve(performance.now() - waiter.requestedAt)
     }
+  } finally {
+    fetchSlotRunning = false
+    if (fetchSlotQueue.length > 0) void pumpFetchSlots()
+  }
+}
+
+function waitForFetchSlotDeadline(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let finished = false
+    const done = (): void => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      if (fetchSlotSleepWake === done) fetchSlotSleepWake = null
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    fetchSlotSleepWake = done
   })
-  throttleTail = reservation.then(() => undefined, () => undefined)
-  return reservation
+}
+
+function takeNextFetchSlotWaiter(): FetchSlotWaiter | null {
+  const now = performance.now()
+  let selectedIndex = -1
+  for (let index = 0; index < fetchSlotQueue.length; index += 1) {
+    const candidate = fetchSlotQueue[index]!
+    if (selectedIndex < 0) {
+      selectedIndex = index
+      continue
+    }
+    const selected = fetchSlotQueue[selectedIndex]!
+    const candidateRank = effectiveFetchPriority(candidate, now)
+    const selectedRank = effectiveFetchPriority(selected, now)
+    if (candidateRank > selectedRank || (candidateRank === selectedRank && candidate.sequence < selected.sequence)) {
+      selectedIndex = index
+    }
+  }
+  return selectedIndex >= 0 ? fetchSlotQueue.splice(selectedIndex, 1)[0]! : null
+}
+
+function effectiveFetchPriority(waiter: FetchSlotWaiter, now: number): number {
+  const current = typeof waiter.priority === 'function' ? waiter.priority() : waiter.priority
+  const base = fetchPriorityRank(current)
+  const aging = Math.floor(Math.max(0, now - waiter.requestedAt) / FETCH_PRIORITY_AGING_MS)
+  return Math.min(2, base + aging)
+}
+
+function fetchPriorityRank(priority: ReplayFetchPriority): number {
+  if (priority === 'live') return 2
+  if (priority === 'normal') return 1
+  return 0
 }
 
 function retryDelay(response: Response, attempt: number): number {
