@@ -127,6 +127,28 @@ test('значок платформы не сдвигает колонку те�
   assert.doesNotMatch(svg, /<text x="180" y="410"/)
 })
 
+test('длинный ник обрезается до колонки ПКР', () => {
+  const longName = 'КРЫМСКИЙПОДПИВАС'
+  const longPlayer = { ...player, name: longName, vehicles: ['test_tank'] }
+  const results: ReplayResults = { status: 'success', timePlayed: 60, players: [longPlayer] }
+  const svg = buildBattleSvg(
+    {
+      missionName: '[Domination] Test',
+      header,
+      results,
+      dict: { test_tank: { name: 'Test Tank', cls: 'T', country: 'ussr' } },
+      ratings: new Map([[longName, { rating: 1658, delta: null }]]),
+      winnerTeam: 1,
+    },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+
+  assert.match(svg, /<text x="144" y="376"[^>]*>КРЫМСКИЙПОДПИ…<\/text>/)
+  assert.doesNotMatch(svg, /<text x="144" y="376"[^>]*>КРЫМСКИЙПОДПИВАС<\/text>/)
+  assert.match(svg, /<text x="522" y="396"[^>]*>1658<\/text>/)
+  assert.match(svg, /clip-path="url\(#player-name-0-0\)"/)
+})
+
 test('до передачи рейтингов в таблице стоят прочерки', () => {
   const ratedPlayer = { ...player, vehicles: ['test_tank'] }
   const results: ReplayResults = { status: 'success', timePlayed: 60, players: [ratedPlayer] }
