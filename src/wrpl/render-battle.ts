@@ -2,6 +2,7 @@ import { ensureUnitIcons, loadMapBackground } from './battle-assets.js'
 import type { ClanRating } from './clan-info.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
+import { ensureGameFlags } from './game-flags.js'
 import { ensureGameFonts, GAME_SYMBOLS_FAMILY } from './wt-fonts.js'
 import { runWorkerTask, transferableBuffer, transferableCopy, type WorkerPriority } from '../workers/pool.js'
 
@@ -28,6 +29,8 @@ const W = 1920
 const ROW_H = 88
 const TEAM_HEADER_H = 130
 const CONTENT_TOP = 210
+const TEAM_WIDTH = W / 2
+const TEAM_SIDE_PADDING = 32
 
 const CLASS_COLOR: Record<string, string> = {
   T: '#f0883e', // танк — оранжевый
@@ -159,6 +162,7 @@ export interface BattleImageInput {
 export interface BattleAssets {
   unitIcons: Map<string, string>
   mapImage: string | null
+  gameFlags?: Map<string, string>
   /** Подключён ли фирменный шрифт игры для украшений тегов */
   gameFont: boolean
 }
@@ -172,9 +176,12 @@ export async function renderBattleImage(
     .flat()
     .filter((p) => !isDisconnected(p))
     .flatMap((p) => (p.vehicles[0] ? [p.vehicles[0]] : []))
-  const unitIcons = await ensureUnitIcons(iconIds)
-  const mapImage = await loadMapBackground(input.header.level)
-  const fontFiles = await ensureGameFonts(priority)
+  const [unitIcons, mapImage, fontFiles, gameFlags] = await Promise.all([
+    ensureUnitIcons(iconIds),
+    loadMapBackground(input.header.level),
+    ensureGameFonts(priority),
+    ensureGameFlags(priority),
+  ])
   const wireIcons: [string, ArrayBuffer][] = [...unitIcons].map(([id, data]) => [id, transferableCopy(data)])
   const wireMap = mapImage
     ? { mime: mapImage.mime, data: transferableBuffer(mapImage.data) }
@@ -190,6 +197,7 @@ export async function renderBattleImage(
           unitIcons: wireIcons,
           mapImage: wireMap,
           gameFont: fontFiles.length > 0,
+          gameFlags: [...gameFlags],
           fontFiles,
         },
       },
@@ -232,7 +240,7 @@ export function summarizeTeams(results: ReplayResults, dict: VehicleDict): TeamS
 
 export function buildBattleSvg(
   { missionName, header, results, dict, ratings, winnerTeam }: BattleImageInput,
-  assets: BattleAssets = { unitIcons: new Map(), mapImage: null, gameFont: false },
+  assets: BattleAssets = { unitIcons: new Map(), mapImage: null, gameFlags: new Map(), gameFont: false },
 ): string {
   // " [Conquest #1] Fire Arc" → режим и имя карты
   const m = /^\s*\[(.+?)\]\s*(.+)$/.exec(missionName.trim())
@@ -296,7 +304,7 @@ export function buildBattleSvg(
   rosters.forEach((roster, i) => {
     const theme = TEAM_THEME[Math.min(i, TEAM_THEME.length - 1)]!
     const won = winnerTeam != null && winnerTeam > 0 && roster[0]?.team === winnerTeam
-    parts.push(renderTeam(roster, i === 0 ? 60 : W / 2 + 60, CONTENT_TOP, dict, theme, assets, i, won, ratings))
+    parts.push(renderTeam(roster, i * TEAM_WIDTH + TEAM_SIDE_PADDING, CONTENT_TOP, dict, theme, assets, i, won, ratings))
   })
 
   parts.push(text(W / 2, H - 26, `Match ID: ${header.sessionId}`, 30, '#aab4c0', 'middle'))
@@ -319,18 +327,22 @@ function renderTeam(
   // Первая колонка — личный клановый рейтинг (⊛), дальше статистика боя
   const ratingX = ox + 490
   const statX = [584, 656, 728, 800, 872].map((v) => ox + v)
+  const titleBaseline = contentTop + 52
+  const metaBaseline = contentTop + 94
+  const metaIconTop = contentTop + 68
+  const flagsTop = titleBaseline - 30
 
   // Клан-тег: украшения рисует шрифт игры (или юникод-замены без него).
   const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
   const teamNo = roster[0]?.team ?? teamIndex + 1
   const clanText = clan !== undefined ? clan : `Команда ${teamNo}`
   const clanLabel = tagMarkup(clanText, assets.gameFont)
-  parts.push(text(ox + 10, contentTop + 52, clanLabel, 46, theme.clan, 'start', 600))
+  parts.push(text(ox + 10, titleBaseline, clanLabel, 46, theme.clan, 'start', 600))
   if (won) {
     const victoryLabel =
       `<tspan fill-opacity="0">${clanLabel}</tspan>` +
-      `<tspan dx="18" fill="#f2cc60" font-size="28" font-weight="700">Победа</tspan>`
-    parts.push(text(ox + 10, contentTop + 52, victoryLabel, 46, theme.clan, 'start', 600))
+      `<tspan dx="18" dy="-4" fill="#f2cc60" font-size="28" font-weight="700">Победа</tspan>`
+    parts.push(text(ox + 10, titleBaseline, victoryLabel, 46, theme.clan, 'start', 600))
   }
 
   // Состав: (4F/3T/1AA) — по первой машине каждого игрока
@@ -341,7 +353,7 @@ function renderTeam(
     if (n) compo.push(`<tspan fill="${CLASS_COLOR[cls]}">${n}${cls}</tspan>`)
   }
   parts.push(
-    `<text x="${ox + 10}" y="${contentTop + 94}" font-family="${FONTS}" font-size="30" fill="#c6cfda">(${compo.join(
+    `<text x="${ox + 10}" y="${metaBaseline}" font-family="${FONTS}" font-size="30" fill="#c6cfda">(${compo.join(
       '<tspan fill="#c6cfda">/</tspan>',
     )})</text>`,
   )
@@ -353,14 +365,28 @@ function renderTeam(
     .slice(0, 6)
   const flagsRight = statX[4]! + 18
   nations.forEach((country, i) => {
-    parts.push(flagSvg(flagsRight - (nations.length - i) * 46, contentTop + 8, country, `fl${teamIndex}_${i}`))
+    parts.push(
+      flagSvg(
+        flagsRight - (nations.length - i) * 46,
+        flagsTop,
+        country,
+        `fl${teamIndex}_${i}`,
+        assets.gameFlags,
+      ),
+    )
   })
 
   // Значки колонок: рейтинг, возд, назем, ассисты, захваты, смерти
-  parts.push(iconStarCircle(ratingX - 14, contentTop + 58, 28, '#e6edf3'))
-  const icons = [iconPlane, iconTank, iconStar, iconDiamond, iconSkull]
+  parts.push(iconStarCircle(ratingX - 14, metaIconTop, 28, '#e6edf3'))
+  const icons = [
+    (x: number, y: number, size: number, fill: string) => iconPlane(x, y, size, fill, assets.gameFont),
+    (x: number, y: number, size: number, fill: string) => iconTank(x, y, size, fill, assets.gameFont),
+    (x: number, y: number, size: number, fill: string) => iconStar(x, y, size, fill, assets.gameFont),
+    (x: number, y: number, size: number, fill: string) => iconDiamond(x, y, size, fill, assets.gameFont),
+    (x: number, y: number, size: number, fill: string) => iconSkull(x, y, size, fill, assets.gameFont),
+  ]
   icons.forEach((icon, i) => {
-    parts.push(icon(statX[i]! - 14, contentTop + 58, 28, '#e6edf3'))
+    parts.push(icon(statX[i]! - 14, metaIconTop, 28, '#e6edf3'))
   })
 
   // Игроки
@@ -381,13 +407,20 @@ function renderTeam(
         `<image x="${ox}" y="${y + 6}" width="96" height="56" preserveAspectRatio="xMidYMid meet" href="${icon}"/>`,
       )
     } else {
-      const classIcon = first.cls === 'F' ? iconPlane : first.cls === 'H' ? iconHeli : iconTank
+      const classIcon =
+        first.cls === 'F'
+          ? (x: number, y2: number, size: number, fill: string) => iconPlane(x, y2, size, fill, assets.gameFont)
+          : first.cls === 'H'
+            ? iconHeli
+            : (x: number, y2: number, size: number, fill: string) => iconTank(x, y2, size, fill, assets.gameFont)
       parts.push(classIcon(ox + 24, y + 12, 48, color))
     }
 
-    // Платформа (@psn/@live) → значок перед ником
+    // Платформа (@psn/@live) → значок перед ником. Строка техники
+    // сохраняет исходную колонку и не уезжает вслед за значком.
     const { name, platform } = splitPlatform(p.name)
-    let nameX = ox + 112
+    const vehicleX = ox + 112
+    let nameX = vehicleX
     if (platform === 'live') {
       parts.push(iconXbox(nameX, y + 12, 27, '#dfe6ee'))
       nameX += 36
@@ -395,14 +428,15 @@ function renderTeam(
       parts.push(iconPs(nameX, y + 12, 27, '#dfe6ee'))
       nameX += 36
     }
-    parts.push(text(nameX, y + 36, esc(trimToWidth(name || 'Unknown Player', 20)), 34, theme.player))
+    const nameWidth = platform ? 18 : 20
+    parts.push(text(nameX, y + 36, esc(trimToWidth(name || 'Unknown Player', nameWidth)), 34, theme.player))
 
     // Под ником: техника или пометка отключения
     if (disconnected) {
-      parts.push(text(ox + 112, y + 70, 'Disconnected', 26, '#9aa2b1'))
+      parts.push(text(vehicleX, y + 70, 'Disconnected', 26, '#9aa2b1'))
     } else {
       const extra = p.vehicles.length > 1 ? ` +${p.vehicles.length - 1}` : ''
-      parts.push(text(ox + 112, y + 70, esc(trimToWidth(first.name, 26)) + extra, 26, color))
+      parts.push(text(vehicleX, y + 70, esc(trimToWidth(first.name, 26)) + extra, 26, color))
     }
 
     // Личный клановый рейтинг: дельта за бой сверху, текущее значение снизу
@@ -517,11 +551,30 @@ const p2 = (n: number): string => String(n).padStart(2, '0')
 
 // ---------- флаги наций (38×24) ----------
 
-function flagSvg(x: number, y: number, country: string, uid: string): string {
+function flagSvg(
+  x: number,
+  y: number,
+  country: string,
+  uid: string,
+  gameFlags?: Map<string, string>,
+): string {
+  const native = gameFlags?.get(country)
+  if (native) return nativeFlagSvg(x, y, native, uid)
   return (
     `<g transform="translate(${x} ${y})">` +
     `<clipPath id="${uid}"><rect width="38" height="24" rx="3"/></clipPath>` +
     `<g clip-path="url(#${uid})">${flagInner(country)}</g>` +
+    `<rect width="38" height="24" rx="3" fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="1"/>` +
+    `</g>`
+  )
+}
+
+function nativeFlagSvg(x: number, y: number, raw: string, uid: string): string {
+  const dataUri = `data:image/svg+xml;base64,${Buffer.from(raw, 'utf8').toString('base64')}`
+  return (
+    `<g transform="translate(${x} ${y})">` +
+    `<clipPath id="${uid}"><rect width="38" height="24" rx="3"/></clipPath>` +
+    `<image width="38" height="24" preserveAspectRatio="xMidYMid meet" href="${dataUri}" clip-path="url(#${uid})"/>` +
     `<rect width="38" height="24" rx="3" fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="1"/>` +
     `</g>`
   )
@@ -536,12 +589,10 @@ function flagInner(country: string): string {
       return s + `<rect width="16" height="11.1" fill="#3c3b6e"/>`
     }
     case 'ussr':
-      // Красное полотнище, звезда и серп — чтобы не путать с Китаем
       return (
         `<rect width="38" height="24" fill="#cd0000"/>` +
-        `<polygon points="${starPoints(9, 5.2, 2.6)}" fill="#ffd700"/>` +
-        `<path d="M12.6 15.4 A5 5 0 1 1 13.6 9.2" stroke="#ffd700" stroke-width="1.7" fill="none"/>` +
-        `<path d="M6.2 16.8 L13.4 9.6" stroke="#ffd700" stroke-width="1.7"/>`
+        `<polygon points="${starPoints(8, 6.2, 2.8)}" fill="#ffd700"/>` +
+        `<text x="21.5" y="18.5" font-family="Segoe UI Symbol, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#ffd700" text-anchor="middle">☭</text>`
       )
     case 'germany':
       return (
@@ -614,7 +665,8 @@ function iconGroup(x: number, y: number, size: number, inner: string): string {
   return `<g transform="translate(${x} ${y}) scale(${k})">${inner}</g>`
 }
 
-function iconPlane(x: number, y: number, size: number, fill: string): string {
+function iconPlane(x: number, y: number, size: number, fill: string, gameFont = false): string {
+  if (gameFont) return gameClassIcon(x, y, size, fill, '\u25ad')
   return iconGroup(
     x,
     y,
@@ -636,7 +688,8 @@ function iconHeli(x: number, y: number, size: number, fill: string): string {
   )
 }
 
-function iconTank(x: number, y: number, size: number, fill: string): string {
+function iconTank(x: number, y: number, size: number, fill: string, gameFont = false): string {
+  if (gameFont) return gameClassIcon(x, y, size, fill, '\u25ae')
   return iconGroup(
     x,
     y,
@@ -644,6 +697,15 @@ function iconTank(x: number, y: number, size: number, fill: string): string {
     `<rect x="7" y="7.5" width="9" height="5.5" rx="1.2" fill="${fill}"/>` +
       `<rect x="14.5" y="8.8" width="8.5" height="2" fill="${fill}"/>` +
       `<rect x="2" y="13" width="20" height="7" rx="3.5" fill="${fill}"/>`,
+  )
+}
+
+function gameClassIcon(x: number, y: number, size: number, fill: string, glyph: string): string {
+  return iconGroup(
+    x,
+    y,
+    size,
+    `<text x="12" y="20" font-family="${GAME_SYMBOLS_FAMILY}" font-size="23" font-weight="400" fill="${fill}" text-anchor="middle">${glyph}</text>`,
   )
 }
 
@@ -675,7 +737,8 @@ function iconDisconnect(x: number, y: number, size: number): string {
   )
 }
 
-function iconStar(x: number, y: number, size: number, fill: string): string {
+function iconStar(x: number, y: number, size: number, fill: string, gameFont = false): string {
+  if (gameFont) return gameClassIcon(x, y, size, fill, '\u25b1')
   return iconGroup(
     x,
     y,
@@ -684,7 +747,8 @@ function iconStar(x: number, y: number, size: number, fill: string): string {
   )
 }
 
-function iconDiamond(x: number, y: number, size: number, fill: string): string {
+function iconDiamond(x: number, y: number, size: number, fill: string, gameFont = false): string {
+  if (gameFont) return gameClassIcon(x, y, size, fill, '\u25b3')
   return iconGroup(
     x,
     y,
@@ -694,7 +758,8 @@ function iconDiamond(x: number, y: number, size: number, fill: string): string {
   )
 }
 
-function iconSkull(x: number, y: number, size: number, fill: string): string {
+function iconSkull(x: number, y: number, size: number, fill: string, gameFont = false): string {
+  if (gameFont) return gameClassIcon(x, y, size, fill, '\u258a')
   return iconGroup(
     x,
     y,

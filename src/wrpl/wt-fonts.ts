@@ -51,7 +51,7 @@ export function promoteGameFontLoad(priority: WorkerPriority): void {
 async function loadGameFonts(): Promise<{ paths: string[]; definitive: boolean }> {
   if (await exists(CACHE_FILE)) return { paths: [path.resolve(CACHE_FILE)], definitive: true }
 
-  const gameDir = await findGameDir()
+  const gameDir = await findWarThunderGameDir()
   if (!gameDir) {
     console.warn('[fonts] Клиент War Thunder не найден — украшения клан-тегов будут юникодом (см. WT_GAME_DIR в .env)')
     return { paths: [], definitive: true }
@@ -88,7 +88,7 @@ function promoteFont(priority: WorkerPriority): void {
   fontControl?.promote(priority)
 }
 
-async function findGameDir(): Promise<string | null> {
+export async function findWarThunderGameDir(): Promise<string | null> {
   const fromEnv = process.env['WT_GAME_DIR']
   if (fromEnv && await exists(path.join(fromEnv, 'ui', 'fonts.vromfs.bin'))) return fromEnv
 
