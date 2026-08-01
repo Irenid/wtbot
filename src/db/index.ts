@@ -45,6 +45,7 @@ let selectCommandTotalStatement: StatementSync | null = null
 let selectCommandBreakdownStatement: StatementSync | null = null
 let selectItemTotalStatement: StatementSync | null = null
 let selectItemBreakdownStatement: StatementSync | null = null
+let selectLatestItemSummariesStatement: StatementSync | null = null
 let selectIngestStatsStatement: StatementSync | null = null
 let selectBattlePostSummaryStatement: StatementSync | null = null
 let selectDataVersionStatement: StatementSync | null = null
@@ -76,6 +77,7 @@ function resetPreparedStatements(): void {
   selectCommandBreakdownStatement = null
   selectItemTotalStatement = null
   selectItemBreakdownStatement = null
+  selectLatestItemSummariesStatement = null
   selectIngestStatsStatement = null
   selectBattlePostSummaryStatement = null
   selectDataVersionStatement = null
@@ -118,8 +120,9 @@ function getDataVersion(): number {
  * наоборот, греет конкретный индекс. Новый индекс может сломать 'table'-план.
  */
 export const DB_WARMUP_SQL: readonly { sql: string; expect: 'table' | 'index' }[] = [
-  // score не входит ни в один индекс — честный проход листьев battle_players.
-  { sql: 'SELECT MAX(score) FROM battle_players', expect: 'table' },
+  // Ограниченный хвост таблиц прогревает актуальные страницы без полного
+  // синхронного скана многогигабайтной БД на startup.
+  { sql: 'SELECT score FROM battle_players ORDER BY rowid DESC LIMIT 2048', expect: 'table' },
   { sql: 'SELECT COUNT(*) FROM battle_players', expect: 'index' },
   // Blob-heavy battles нельзя сканировать на main thread: греем компактный
   // covering index, используемый dashboard-статистикой.
@@ -127,8 +130,10 @@ export const DB_WARMUP_SQL: readonly { sql: string; expect: 'table' | 'index' }[
     sql: 'SELECT MAX(duration_sec) FROM battles INDEXED BY idx_battles_metrics',
     expect: 'index',
   },
-  // rating+seen_at вместе не покрыты ни одним индексом — листья снимков ПКР.
-  { sql: 'SELECT MAX(rating), MAX(seen_at) FROM clan_rating_snapshots', expect: 'table' },
+  {
+    sql: 'SELECT rating, seen_at FROM clan_rating_snapshots ORDER BY id DESC LIMIT 2048',
+    expect: 'table',
+  },
   // Индексы клановых чтений: latest-обход и диапазоны истории.
   {
     sql: 'SELECT COUNT(*) FROM (SELECT clan_tag, nick, MAX(id) FROM clan_rating_snapshots GROUP BY clan_tag, nick)',
@@ -138,11 +143,13 @@ export const DB_WARMUP_SQL: readonly { sql: string; expect: 'table' | 'index' }[
     sql: 'SELECT COUNT(*) FROM (SELECT clan_tag, MAX(seen_at) FROM clan_rating_snapshots GROUP BY clan_tag)',
     expect: 'index',
   },
-  { sql: 'SELECT MAX(first_seen_at), MAX(match_confidence) FROM player_identity_aliases', expect: 'table' },
+  {
+    sql: 'SELECT first_seen_at, match_confidence FROM player_identity_aliases ORDER BY rowid DESC LIMIT 2048',
+    expect: 'table',
+  },
 ]
 
 export const DB_BACKGROUND_WARMUP_SQL: readonly string[] = DB_WARMUP_SQL
-  .filter((statement) => statement.expect === 'table')
   .map((statement) => statement.sql)
 
 export function warmupDbHotPages(includeTableScans = true): number {
@@ -377,6 +384,13 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
     version: 4,
     apply(database) {
       addColumnIfMissing(database, 'announce_state', 'message_id', 'TEXT')
+    },
+  },
+  {
+    version: 5,
+    apply() {
+      // Версия уже могла быть установлена локальным dashboard rollout.
+      // Отдельный индекс не нужен: последние записи читаются по INTEGER PK.
     },
   },
 ]
@@ -1735,6 +1749,52 @@ export function getLatestItems(limit = 20, source?: string): StoredItem[] {
   const params = source ? [source, limit] : [limit]
   const rows = getDb().prepare(sql).all(...params) as unknown as ItemRow[]
   return rows.map(toStoredItem)
+}
+
+export interface ItemSummary {
+  id: number
+  source: string
+  externalId: string
+  title: string
+  updatedAt: number
+  analyzed: boolean
+}
+
+export const DASHBOARD_LATEST_ITEMS_SQL = `
+  SELECT
+    i.id,
+    i.source,
+    i.external_id,
+    i.title,
+    i.updated_at,
+    EXISTS(SELECT 1 FROM analyses a WHERE a.item_id = i.id) AS analyzed
+  FROM items i
+  ORDER BY i.id DESC
+  LIMIT ?
+`
+
+/** Последние записи для дашборда без чтения и JSON-разбора большого items.data. */
+export function getLatestItemSummaries(limit = 8): ItemSummary[] {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError('Лимит последних записей должен быть целым от 1 до 100')
+  }
+  selectLatestItemSummariesStatement ??= getDb().prepare(DASHBOARD_LATEST_ITEMS_SQL)
+  const rows = selectLatestItemSummariesStatement.all(limit) as unknown as Array<{
+    id: number
+    source: string
+    external_id: string
+    title: string
+    updated_at: number
+    analyzed: number
+  }>
+  return rows.map((row) => ({
+    id: row.id,
+    source: row.source,
+    externalId: row.external_id,
+    title: row.title,
+    updatedAt: row.updated_at,
+    analyzed: row.analyzed === 1,
+  }))
 }
 
 export interface WtPlayerSnapshot {

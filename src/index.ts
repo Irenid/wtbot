@@ -1,19 +1,20 @@
 import { config } from './config.js'
+import path from 'node:path'
 import {
   closeDb,
   DB_BACKGROUND_WARMUP_SQL,
   initDb,
-  warmupDbHotPages,
 } from './db/index.js'
 import { startBot, stopBotWork } from './bot/index.js'
 import { startVoiceTracker } from './bot/voice-tracker.js'
 import { requestPlayerBoardRefresh, startPlayerBoardPublisher } from './bot/player-board.js'
 import { buildServer } from './web/index.js'
+import type { RuntimeStats } from './web/types.js'
 import { startParsers, stopParsers } from './parsers/index.js'
-import { startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
+import { getIngestTelemetrySnapshot, startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
 import { configureReplayFetchAdmission } from './wrpl/replay-cache.js'
 import { configureReplayProcessBudget } from './wrpl/replay-events.js'
-import { closeWorkerPool, runWorkerTask } from './workers/pool.js'
+import { closeWorkerPool, runWorkerTask, workerPoolSnapshot } from './workers/pool.js'
 import {
   OFFICIAL_PROFILE_PARSER_VERSION,
   OFFICIAL_PROFILE_SOURCE,
@@ -37,6 +38,10 @@ import {
   stopWtCookieRefresh,
   warmupWtTransport,
 } from './parsers/sources/wt-request.js'
+import {
+  acquireRecoverableFileLock,
+  type OwnedFileLock,
+} from './recoverable-file-lock.js'
 
 // Точка входа: main thread владеет Discord, Fastify и SQLite; тяжёлые
 // WRPL/zlib/Resvg-задачи уходят в ограниченный пул worker_threads.
@@ -47,7 +52,28 @@ let voiceTracker: ReturnType<typeof startVoiceTracker> | null = null
 let playerStats: PlayerStatsCoordinator | null = null
 let shuttingDown = false
 let requestedExitCode = 0
+let eventLoopCurrentLagMs = 0
+let eventLoopMaxLagMs = 0
+let previousCpuUsage = process.cpuUsage()
+let previousCpuSampleAt = performance.now()
+let instanceLock: OwnedFileLock | null = null
 const PRODUCER_DRAIN_MS = 10_000
+
+try {
+  instanceLock = await acquireRecoverableFileLock({
+    lockFile: `${path.resolve(config.dbPath)}.process.lock`,
+    timeoutMs: 350,
+    staleMs: 2_000,
+    retryMinMs: 25,
+    retryMaxMs: 50,
+    onRecovered: (_lockFile, owner) => {
+      console.warn(`[core] Восстановлен stale process lock${owner ? ` PID ${owner.pid}` : ''}`)
+    },
+  })
+} catch {
+  console.error('[core] Другой экземпляр wtbot уже запущен для этой SQLite; повторный старт отменён')
+  process.exit(1)
+}
 
 configureReplayProcessBudget({
   exactReservations: config.replayExactReservationEnabled,
@@ -73,8 +99,10 @@ process.on('uncaughtException', (error: unknown) => {
   let lastTick = process.hrtime.bigint()
   const watchdog = setInterval(() => {
     const now = process.hrtime.bigint()
-    const drift = Number(now - lastTick) / 1e6 - WATCHDOG_INTERVAL_MS
+    const drift = Math.max(0, Number(now - lastTick) / 1e6 - WATCHDOG_INTERVAL_MS)
     lastTick = now
+    eventLoopCurrentLagMs = drift
+    eventLoopMaxLagMs = Math.max(eventLoopMaxLagMs, drift)
     if (drift > 500) {
       console.warn(`[watchdog] event loop был заблокирован ~${Math.round(drift)} мс — синхронная работа в main thread`)
     }
@@ -85,9 +113,7 @@ process.on('uncaughtException', (error: unknown) => {
 // 1. База данных
 initDb(config.dbPath, { allowCreate: config.allowNewDb })
 console.log(`[db] SQLite: ${config.dbPath}`)
-// До readiness читаем только компактные индексы. Полные проходы таблиц уходят
-// в background worker после открытия web и не блокируют Discord/Fastify.
-console.log(`[db] Горячие индексы прогреты за ${warmupDbHotPages(false)} мс`)
+console.log('[db] Прогрев страниц отложен до открытия Discord и web')
 const officialPlayerStatsService = config.playerStatsEnabled
   ? new PlayerStatsService({
       provider: new OfficialProfileProvider(),
@@ -148,6 +174,160 @@ const startedVoiceTracker = startVoiceTracker(startedClient, config.voiceChannel
 })
 voiceTracker = startedVoiceTracker
 
+function getRuntimeStats(): RuntimeStats {
+  const sampledAt = performance.now()
+  const cpuDelta = process.cpuUsage(previousCpuUsage)
+  const elapsedMs = Math.max(1, sampledAt - previousCpuSampleAt)
+  previousCpuUsage = process.cpuUsage()
+  previousCpuSampleAt = sampledAt
+
+  const memory = process.memoryUsage()
+  const workers = workerPoolSnapshot()
+  const ingest = getIngestTelemetrySnapshot()
+  const stages = Object.fromEntries(
+    Object.entries(ingest.stages).map(([name, stage]) => [name, {
+      queued: stage.currentQueued,
+      active: stage.currentActive,
+      queuedBytes: stage.currentQueuedBytes,
+      activeBytes: stage.currentActiveBytes,
+      completed: stage.completed,
+      cancelled: stage.cancelled,
+      waitP95Ms: stage.waitMs.p95Ms,
+      activeP95Ms: stage.activeMs.p95Ms,
+    }]),
+  ) as RuntimeStats['ingest']['stages']
+  const plan = config.workerResources
+  const cumulative = workers.cumulative
+
+  return {
+    process: {
+      pid: process.pid,
+      node: process.version,
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+      externalBytes: memory.external,
+      arrayBuffersBytes: memory.arrayBuffers,
+      cpuPercent: (cpuDelta.user + cpuDelta.system) / (elapsedMs * 1_000) * 100,
+    },
+    eventLoop: {
+      currentLagMs: eventLoopCurrentLagMs,
+      maxLagMs: eventLoopMaxLagMs,
+    },
+    resources: {
+      availableCpus: plan.availableCpus,
+      totalMemoryMb: plan.totalMemoryMb,
+      freeMemoryMb: plan.freeMemoryMb,
+      reservedMemoryMb: plan.reservedMemoryMb,
+      workerThreads: plan.workerThreads,
+      backgroundReserveSlots: plan.backgroundReserveSlots,
+      ingestConcurrency: plan.ingestConcurrency,
+      replayProcessByteBudgetMb: plan.replayProcessByteBudgetMb,
+    },
+    workers: {
+      configured: workers.configuredWorkers,
+      reserve: workers.backgroundReserveSlots,
+      live: workers.workers.live,
+      ready: workers.workers.ready,
+      starting: workers.workers.starting,
+      busy: workers.workers.busy,
+      queued: workers.current.queued,
+      running: workers.current.running,
+      queuedBytes: workers.current.queuedInputTransferBytes,
+      runningBytes: workers.current.runningInputTransferBytes,
+      maxQueued: workers.highWater.queued,
+      maxRunning: workers.highWater.running,
+      submitted: cumulative.submitted,
+      completed: cumulative.completed,
+      succeeded: cumulative.succeeded,
+      failed: cumulative.failed,
+      rejected: cumulative.rejected,
+      queueMsAvg: cumulative.completed > 0 ? cumulative.queueMsTotal / cumulative.completed : null,
+      queueMsMax: cumulative.queueMsMax,
+      executionMsAvg: cumulative.executionSamples > 0
+        ? cumulative.executionMsTotal / cumulative.executionSamples
+        : null,
+      executionMsMax: cumulative.executionMsMax,
+      workloads: workers.workloads.map((workload) => ({
+        kind: workload.kind,
+        priority: workload.priority,
+        queued: workload.queued,
+        running: workload.running,
+        completed: workload.completed,
+        failed: workload.failed,
+        rejected: workload.rejected,
+        queueMsMax: workload.queueMsMax,
+        executionMsMax: workload.executionMsMax,
+      })),
+    },
+    ingest: {
+      enabled: config.battleBackgroundEnabled,
+      battlesPerMinute: ingest.battlesPerMinute,
+      backlog: {
+        pending: ingest.backlog.pendingCount,
+        selected: ingest.backlog.selectedCount,
+        limit: ingest.backlog.selectionLimit,
+        saturated: ingest.backlog.saturated,
+        oldestAgeMs: ingest.backlog.oldestAgeMs ?? ingest.backlog.oldestAgeLowerBoundMs,
+      },
+      outcomes: ingest.outcomes,
+      stages,
+      replay: {
+        completed: ingest.replay.completed,
+        succeeded: ingest.replay.succeeded,
+        failed: ingest.replay.failed,
+        aborted: ingest.replay.aborted,
+        bytes: ingest.replay.bytes,
+        cacheHits: ingest.replay.cacheHits,
+        networkParts: ingest.replay.networkParts,
+        retries: ingest.replay.retries,
+        httpErrors: ingest.replay.httpErrors,
+        rateLimited429: ingest.replay.status.rateLimited429,
+        server5xx: ingest.replay.status.server5xx,
+        downloadP95Ms: ingest.replay.downloadMs.p95Ms,
+      },
+      sqlite: {
+        commits: ingest.sqlite.commits,
+        checkpoints: ingest.sqlite.checkpoints,
+        queueP95Ms: ingest.sqlite.queueMs.p95Ms,
+        transactionP95Ms: ingest.sqlite.transactionMs.p95Ms,
+        checkpointP95Ms: ingest.sqlite.checkpointMs.p95Ms,
+      },
+      admission: ingest.admission === null
+        ? null
+        : {
+            enabled: ingest.admission.enabled,
+            currentConcurrency: ingest.admission.currentConcurrency,
+            maxConcurrency: ingest.admission.maxConcurrency,
+            reason: ingest.admission.reason,
+            increases: ingest.admission.increases,
+            decreases: ingest.admission.decreases,
+          },
+      processBudget: {
+        limitBytes: ingest.replayProcessByteBudget.limitBytes,
+        usedBytes: ingest.replayProcessByteBudget.usedBytes,
+        availableBytes: ingest.replayProcessByteBudget.availableBytes,
+        queuedCount: ingest.replayProcessByteBudget.queuedCount,
+        queuedBytes: ingest.replayProcessByteBudget.queuedBytes,
+        highWaterUsedBytes: ingest.replayProcessByteBudget.highWaterUsedBytes,
+        timedOut: ingest.replayProcessByteBudget.timedOut,
+        waitMsMax: ingest.replayProcessByteBudget.waitMs.max,
+      },
+      fetchAdmission: {
+        enabled: ingest.replayFetchAdmission.enabled,
+        currentIntervalMs: ingest.replayFetchAdmission.currentIntervalMs,
+        rateLimitEvents: ingest.replayFetchAdmission.rateLimitEvents,
+        increases: ingest.replayFetchAdmission.increases,
+        decreases: ingest.replayFetchAdmission.decreases,
+      },
+    },
+    playerStats: playerStatsServices.map((service) => ({
+      source: service.source,
+      ...service.getMetrics(),
+    })),
+  }
+}
+
 // 3. Веб-дашборд
 app = buildServer(
   {
@@ -157,6 +337,7 @@ app = buildServer(
       guilds: startedClient.guilds.cache.size,
       uptimeSec: Math.floor(process.uptime()),
     }),
+    getRuntimeStats,
     refreshVoice: () => startedVoiceTracker.refresh(),
     playerStats,
   },
@@ -172,7 +353,7 @@ void runWorkerTask(
   },
   { priority: 'background', timeoutMs: 180_000 },
 ).then((result) => {
-  console.log(`[db] Фоновый прогрев ${result.statements} таблиц завершён за ${Math.round(result.elapsedMs)} мс`)
+  console.log(`[db] Фоновый прогрев ${result.statements} запросов завершён за ${Math.round(result.elapsedMs)} мс`)
 }).catch((error: unknown) => {
   console.warn(`[db] Фоновый прогрев таблиц не завершён: ${
     error instanceof Error ? error.message : String(error)
@@ -251,6 +432,12 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   console.log(`[core:shutdown] CPU pool закрыт за ${Math.round(performance.now() - poolStarted)} мс`)
   const dbStarted = performance.now()
   closeDb()
+  if (instanceLock) {
+    await instanceLock.release().catch((error: unknown) => {
+      console.warn(`[core] process lock не освобождён: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    instanceLock = null
+  }
   console.log(
     `[core:shutdown] SQLite закрыта за ${Math.round(performance.now() - dbStarted)} мс; ` +
       `весь shutdown ${Math.round(performance.now() - shutdownStarted)} мс`,
