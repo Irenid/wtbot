@@ -2,6 +2,7 @@ import { readFile, readdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { writeFileAtomic } from '../atomic-file.js'
+import { mapConcurrent } from '../concurrency.js'
 import { readResponseBuffer } from '../http-response.js'
 import {
   ReplayFetchAdmission,
@@ -12,6 +13,7 @@ import {
 
 const CACHE_DIR = './data/replays'
 const REPLAY_CACHE_DAYS = 7
+const REPLAY_CACHE_CLEANUP_CONCURRENCY = 4
 export const REPLAY_FETCH_PAUSE_MS = 150
 const FETCH_TIMEOUT_MS = 30_000
 const FETCH_PRIORITY_AGING_MS = 30_000
@@ -514,20 +516,27 @@ async function cleanupExpired(): Promise<void> {
     throw error
   }
   const deadline = Date.now() - REPLAY_CACHE_DAYS * 24 * 3600 * 1000
-  for (const entry of directories) {
-    if (!entry.isDirectory() || !/^[0-9a-f]{12,20}$/i.test(entry.name)) continue
+  const sessions = directories.filter(
+    (entry) => entry.isDirectory() && /^[0-9a-f]{12,20}$/i.test(entry.name),
+  )
+  await mapConcurrent(sessions, REPLAY_CACHE_CLEANUP_CONCURRENCY, async (entry) => {
     const directory = path.join(CACHE_DIR, entry.name)
-    await withSessionAccess(cacheSessionKey(CACHE_DIR, entry.name.toLowerCase()), 'write', undefined, async () => {
-      try {
-        if ((await stat(directory)).mtimeMs < deadline) {
-          await rm(directory, { recursive: true, force: true })
-          console.log(`[replays] cache частей ${entry.name} старше ${REPLAY_CACHE_DAYS} дн. удалён`)
+    await withSessionAccess(
+      cacheSessionKey(CACHE_DIR, entry.name.toLowerCase()),
+      'write',
+      undefined,
+      async () => {
+        try {
+          if ((await stat(directory)).mtimeMs < deadline) {
+            await rm(directory, { recursive: true, force: true })
+            console.log(`[replays] cache частей ${entry.name} старше ${REPLAY_CACHE_DAYS} дн. удалён`)
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      }
-    })
-  }
+      },
+    )
+  })
 }
 
 async function withPartLock<T>(

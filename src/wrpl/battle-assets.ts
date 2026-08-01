@@ -213,6 +213,8 @@ async function loadMapViewport(id: string): Promise<MapImageViewport | undefined
  */
 export async function loadMapBackground(headerLevel: string): Promise<BinaryImage | null> {
   const id = levelId(headerLevel)
+  // Последовательность сохраняет приоритет форматов и прекращает I/O после
+  // первого существующего файла.
   for (const ext of ['jpg', 'jpeg', 'png']) {
     const file = path.join(MAPS_DIR, `${id}.${ext}`)
     try {

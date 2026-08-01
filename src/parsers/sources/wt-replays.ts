@@ -205,6 +205,8 @@ export async function collectFreshReplays(
   let totalOnSite = 0
   let pagesRead = 0
   let hitCap = true // сбросится, если выйдем по нормальной границе, а не по пределу
+  // Страницы зависимы: каждая может остановить обход по known/cutoff/cap,
+  // а внешний transport всё равно пропускает запросы через общую очередь.
   for (let page = 1; opts.maxPages === undefined || page <= opts.maxPages; page++) {
     const data = page === 1
       ? await deps.retryFirstPage(
@@ -242,6 +244,8 @@ export async function collectFreshReplays(
   }
 
   const items: ParsedItem[] = []
+  // Детали также идут через общий rate-limited transport; fan-out только
+  // накопит ожидающие promises, не увеличив фактическую пропускную способность.
   for (const replay of fresh) {
     let parts: string[] | null = null
     if (opts.fetchDetails !== false) {

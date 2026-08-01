@@ -323,6 +323,8 @@ async function fetchOnPage(
       await settlePending(pending)
 
       let retryTurnstile = false
+      // Fallback-запросы используют один Turnstile token последовательно:
+      // первый 406 обязан остановить batch, очистить token и перезапустить страницу.
       for (const endpoint of Object.keys(requests) as StatSharkEndpoint[]) {
         if (captured.has(endpoint)) continue
         let result: InPageResult
