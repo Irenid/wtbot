@@ -11,6 +11,7 @@ import {
 } from 'discord.js'
 import { config } from '../config.js'
 import {
+  getDbWorkerPath,
   getEnabledPlayerStatBoards,
   getLatestItems,
   getLatestParsePerSource,
@@ -27,6 +28,7 @@ import {
 } from '../db/index.js'
 import { collectPlayerItem, normalizeNickname as normalizedNickname } from '../parsers/sources/wt-player.js'
 import type { PlayerStatsComparison, PlayerStatsCoordinator } from '../player-stats/comparison.js'
+import { runWorkerTask } from '../workers/pool.js'
 
 const SOURCE = 'wt-players'
 const TICK_MS = 60_000
@@ -633,7 +635,23 @@ async function refreshBoardInternal(
   }
   lastMessageValidation.set(board.guildId, now)
   if (changed) {
-    updatePlayerStatBoardPublication(board.guildId, message.id, render.contentHash)
+    const dbPath = getDbWorkerPath()
+    if (dbPath === null) {
+      updatePlayerStatBoardPublication(board.guildId, message.id, render.contentHash)
+    } else {
+      await runWorkerTask(
+        {
+          kind: 'update-player-stat-board-publication',
+          input: {
+            dbPath,
+            guildId: board.guildId,
+            messageId: message.id,
+            contentHash: render.contentHash,
+          },
+        },
+        { priority: 'normal', timeoutMs: 30_000 },
+      )
+    }
   }
   return {
     changed,

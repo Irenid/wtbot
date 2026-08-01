@@ -96,7 +96,7 @@ export function readEID(r: BitReader): number {
 
 /** Размер поля в битах: 3-битный код или varint (idfieldserializer.ReadSize) */
 function readFieldSize(r: BitReader): number {
-  const hdr = r.readBits(3)[0]!
+  const hdr = r.readUnsignedBits(3)
   switch (hdr) {
     case 1: return 1
     case 2: return 8
@@ -182,8 +182,7 @@ export function deserializeIdFields255(
   r.setBitOffset(indicesAt)
   const indexes: number[] = []
   for (let i = 0; i < fieldsCount; i++) {
-    const b = r.readBits(bitsPerId)
-    indexes.push(b.length > 1 ? b[0]! | (b[1]! << 8) : b[0] ?? 0)
+    indexes.push(r.readUnsignedBits(bitsPerId))
   }
 
   r.setBitOffset(startBody)

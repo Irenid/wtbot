@@ -2,10 +2,20 @@ import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
 /** Читает fetch Response потоково и обрывает ответ до лишнего выделения RAM. */
 export async function readResponseBuffer(response: Response, maxBytes: number, label: string): Promise<Buffer> {
-  const declared = Number(response.headers.get('content-length') ?? 0)
-  if (Number.isFinite(declared) && declared > maxBytes) {
+  const declaredHeader = response.headers.get('content-length')
+  const declared = Number(declaredHeader)
+  if (declaredHeader !== null && Number.isFinite(declared) && declared > maxBytes) {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(`${label}: Content-Length ${declared} больше лимита ${maxBytes}`)
+  }
+  const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase()
+  if (
+    declaredHeader !== null
+    && Number.isSafeInteger(declared)
+    && declared >= 0
+    && (!contentEncoding || contentEncoding === 'identity')
+  ) {
+    return readKnownLengthBody(response, declared, label)
   }
   if (!response.body) return Buffer.alloc(0)
 
@@ -40,6 +50,38 @@ export async function readResponseBuffer(response: Response, maxBytes: number, l
       copiedSinceYield = 0
       await yieldImmediate()
     }
+  }
+  return result
+}
+
+async function readKnownLengthBody(
+  response: Response,
+  declaredBytes: number,
+  label: string,
+): Promise<Buffer> {
+  if (!response.body) {
+    if (declaredBytes === 0) return Buffer.alloc(0)
+    throw new Error(`${label}: пустое тело при Content-Length ${declaredBytes}`)
+  }
+  const reader = response.body.getReader()
+  const result = Buffer.allocUnsafe(declaredBytes)
+  let offset = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (offset + value.byteLength > declaredBytes) {
+        await reader.cancel().catch(() => undefined)
+        throw new Error(`${label}: тело больше Content-Length ${declaredBytes}`)
+      }
+      result.set(value, offset)
+      offset += value.byteLength
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  if (offset !== declaredBytes) {
+    throw new Error(`${label}: тело ${offset} байт не совпадает с Content-Length ${declaredBytes}`)
   }
   return result
 }

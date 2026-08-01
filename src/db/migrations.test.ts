@@ -50,6 +50,12 @@ test('initDb ставит schema version и повторный запуск ид
           .get() !== undefined,
         true,
       )
+      assert.equal(
+        created
+          .prepare("SELECT 1 FROM pragma_table_info('announce_state') WHERE name = 'message_id'")
+          .get() !== undefined,
+        true,
+      )
     } finally {
       created.close()
     }

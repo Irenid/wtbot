@@ -13,12 +13,13 @@ import {
   type WorkerTaskTiming,
 } from '../workers/pool.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
-import type { BattleItemMeta } from './battle-transform.js'
+import type { BattleItemMeta, BattleParseProfile } from './battle-transform.js'
 import { ensureEcsHashesJson } from './ecs.js'
 import {
   fetchReplayPartsRetained,
   type ReplayPartsTiming,
 } from './replay-events.js'
+import type { ReplayFetchPriority, ReplayFetchPrioritySource } from './replay-cache.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 
 export type { BattleItemMeta } from './battle-transform.js'
@@ -43,6 +44,7 @@ export interface BattleLoadTiming {
   workerWallMs: number
   replay: ReplayPartsTiming
   worker: WorkerTaskTiming | null
+  parseProfile: BattleParseProfile
 }
 
 export type BattleLoadPhaseEvent =
@@ -62,6 +64,16 @@ export type BattleLoadPhaseEvent =
       worker: WorkerTaskTiming | null
     }
 
+export interface PreparedBattleData {
+  parts: Buffer[]
+  ecsHashesJson: string
+  replay: ReplayPartsTiming
+  startedAtMs: number
+  startedMonotonicMs: number
+  inputBytes: number
+  release(): void
+}
+
 /**
  * Сеть и файловый cache остаются в main thread, а WRPL/zlib/zstd/JSON/gzip
  * выполняются в пуле worker_threads. Части передаются без structured-clone.
@@ -75,12 +87,35 @@ export async function loadBattleData(
   onWorkerControl?: (control: WorkerTaskControl) => void,
   onPhase?: (event: BattleLoadPhaseEvent) => void,
 ): Promise<LoadedBattle> {
+  const replayPriority = (): ReplayFetchPriority => {
+    const current = typeof priority === 'function' ? priority() : priority
+    return current === 'background' ? 'background' : 'live'
+  }
+  const prepared = await prepareBattleData(partUrls, signal, onPhase, replayPriority)
+  return parsePreparedBattleData(
+    prepared,
+    realNames,
+    meta,
+    priority,
+    signal,
+    onWorkerControl,
+    onPhase,
+  )
+}
+
+export async function prepareBattleData(
+  partUrls: string[],
+  signal?: AbortSignal,
+  onPhase?: (event: BattleLoadPhaseEvent) => void,
+  replayPriority: ReplayFetchPrioritySource = 'normal',
+): Promise<PreparedBattleData> {
   if (partUrls.length === 0) throw new Error('пустой список частей реплея')
   const startedAtMs = Date.now()
-  const started = performance.now()
+  const startedMonotonicMs = performance.now()
   const replayTimingBox: { value: ReplayPartsTiming | null } = { value: null }
   const [replayResult, ecsResult] = await Promise.allSettled([
     fetchReplayPartsRetained(partUrls, signal, {
+      priority: replayPriority,
       onTiming: (timing) => { replayTimingBox.value = timing },
     }),
     ensureEcsHashesJson(),
@@ -91,21 +126,52 @@ export async function loadBattleData(
     retainedReplay.release()
     throw ecsResult.reason
   }
-  const parts = retainedReplay.parts
-  const ecsHashesJson = ecsResult.value
-  try {
   const replayTiming = replayTimingBox.value
-  if (!replayTiming) throw new Error('не получены метрики загрузки replay')
+  if (!replayTiming) {
+    retainedReplay.release()
+    throw new Error('не получены метрики загрузки replay')
+  }
   emitBattleLoadPhase(onPhase, {
     phase: 'replay-ready',
     atMs: Date.now(),
     replay: replayTiming,
   })
+  let released = false
+  return {
+    parts: retainedReplay.parts,
+    ecsHashesJson: ecsResult.value,
+    replay: replayTiming,
+    startedAtMs,
+    startedMonotonicMs,
+    inputBytes: retainedReplay.parts.reduce((sum, part) => sum + part.byteLength, 0),
+    release() {
+      if (released) return
+      released = true
+      retainedReplay.release()
+    },
+  }
+}
+
+export async function parsePreparedBattleData(
+  prepared: PreparedBattleData,
+  realNames: Map<string, string>,
+  meta: BattleItemMeta,
+  priority: WorkerPriority | (() => WorkerPriority) = 'background',
+  signal?: AbortSignal,
+  onWorkerControl?: (control: WorkerTaskControl) => void,
+  onPhase?: (event: BattleLoadPhaseEvent) => void,
+): Promise<LoadedBattle> {
+  try {
   const inputStarted = performance.now()
-  const wireParts = parts.map(transferableBuffer)
+  const wireParts = prepared.parts.map(transferableBuffer)
   const inputBytes = wireParts.reduce((sum, part) => sum + part.byteLength, 0)
   const taskPriority = typeof priority === 'function' ? priority() : priority
-  const workerInput = { parts: wireParts, realNames: [...realNames], meta, ecsHashesJson }
+  const workerInput = {
+    parts: wireParts,
+    realNames: [...realNames],
+    meta,
+    ecsHashesJson: prepared.ecsHashesJson,
+  }
   const inputPrepareMs = performance.now() - inputStarted
   const workerSubmittedAtMs = Date.now()
   emitBattleLoadPhase(onPhase, {
@@ -142,20 +208,21 @@ export async function loadBattleData(
     battle: { ...parsed.battle, eventsBlob: Buffer.from(parsed.battle.eventsBlob) },
     summary: parsed.summary,
     timing: {
-      startedAtMs,
-      replayReadyAtMs: replayTiming.completedAtMs,
+      startedAtMs: prepared.startedAtMs,
+      replayReadyAtMs: prepared.replay.completedAtMs,
       workerSubmittedAtMs,
       workerFinishedAtMs,
       completedAtMs,
-      totalMs: performance.now() - started,
+      totalMs: performance.now() - prepared.startedMonotonicMs,
       inputPrepareMs,
       workerWallMs,
-      replay: replayTiming,
+      replay: prepared.replay,
       worker: workerTiming,
+      parseProfile: parsed.profile,
     },
   }
   } finally {
-    retainedReplay.release()
+    prepared.release()
   }
 }
 

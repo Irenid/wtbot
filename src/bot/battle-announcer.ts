@@ -1,27 +1,30 @@
-import type { Client } from 'discord.js'
+import { escapeMarkdown, type Client, type Message, type SendableChannels } from 'discord.js'
+import { subscribeBattleLifecycle } from '../battle-lifecycle.js'
 import { config } from '../config.js'
 import {
   getBattleClanTags,
   getBattleIngestState,
+  getBattlePostSummary,
   getBotState,
   getMaxItemId,
   getPendingAnnounce,
-  hasBattle,
   markAnnounce,
+  markAnnouncePending,
   nextAnnounceBaseline,
   setBotState,
+  type PendingAnnounceItem,
   type StoredItem,
 } from '../db/index.js'
 import { INGEST_MAX_ATTEMPTS } from '../wrpl/ingest.js'
 import { plainClanTag } from '../wrpl/render-battle.js'
 import { isWorkerPoolSchedulingError } from '../workers/pool.js'
-import { queueWinnerUpdate, renderBattlePost } from './commands/battle.js'
+import { battleAnnouncementDecision } from './battle-post-policy.js'
+import { renderBattlePost } from './commands/battle.js'
 
 /**
- * Автоанонс боёв: раз в 20 секунд смотрит, не принёс ли парсер wt-replays
- * новых записей, и постит каждую в канал WT_BATTLES_CHANNEL тем же
- * сообщением, что и /battle (картинка + кнопки материалов), с фоновым
- * обновлением отметки победителя.
+ * Автоанонс боёв: для небольшого live-поступления сразу публикует сообщение
+ * со ссылкой на replay, а после ingest заменяет его PNG и кнопками /battle.
+ * Массовый catch-up не создаёт поток предварительных сообщений.
  *
  * Статус каждого боя хранится отдельно (таблица announce_state): отправлен
  * или нет, сколько было попыток. Поэтому упавший анонс ретраится в
@@ -48,6 +51,11 @@ const TARGET_CLAN = plainClanTag(config.clanTag)
 let announceTimer: NodeJS.Timeout | null = null
 let activeTick: Promise<void> | null = null
 let stopping = false
+let unsubscribeLifecycle: (() => void) | null = null
+let wakeRequested = false
+let announceSweep = 0
+const immediateSessions = new Set<string>()
+const pendingMessages = new Map<number, Message>()
 
 export function startBattleAnnouncer(client: Client): void {
   if (announceTimer) return
@@ -56,6 +64,8 @@ export function startBattleAnnouncer(client: Client): void {
     return
   }
   stopping = false
+  wakeRequested = false
+  announceSweep = 0
   if (getBotState(BASELINE_KEY) === null) {
     setBotState(BASELINE_KEY, String(getMaxItemId('wt-replays')))
   }
@@ -70,7 +80,9 @@ export function startBattleAnnouncer(client: Client): void {
     if (stopping) return
     try {
       const baseline = Number(getBotState(BASELINE_KEY) ?? '0')
-      const fresh = getPendingAnnounce(baseline, MAX_ATTEMPTS, 5)
+      announceSweep += 1
+      const order = announceSweep % 8 === 0 ? 'oldest' : 'newest'
+      const fresh = getPendingAnnounce(baseline, MAX_ATTEMPTS, 5, order)
       if (fresh.length === 0) return
 
       const channel = await client.channels.fetch(config.battlesChannelId)
@@ -84,13 +96,50 @@ export function startBattleAnnouncer(client: Client): void {
       const ordered = [...fresh].sort((a, b) => startTimeOf(a) - startTimeOf(b))
       for (const item of ordered) {
         if (stopping) break
+        if (!TARGET_CLAN && immediateSessions.has(item.externalId) && item.announceMessageId === null) {
+          try {
+            const message = await channel.send({
+              content: preliminaryBattleContent(item),
+              allowedMentions: { parse: [] },
+            })
+            pendingMessages.set(item.id, message)
+            markAnnouncePending(item.id, message.id)
+            item.announceStatus = 'pending'
+            item.announceMessageId = message.id
+            item.announceAttempts = 0
+            immediateSessions.delete(item.externalId)
+            console.log(`[bot] предварительный анонс боя ${item.externalId}`)
+          } catch (error) {
+            immediateSessions.delete(item.externalId)
+            markAnnounce(item.id, 'failed', error instanceof Error ? error.message : String(error))
+            console.error(
+              `[bot] предварительный анонс ${item.externalId}: ` +
+                `${error instanceof Error ? error.message : String(error)}`,
+            )
+            continue
+          }
+        }
+
+        const summary = getBattlePostSummary(item.externalId)
+        const readiness = battleAnnouncementDecision(
+          (summary?.teamWon ?? 0) > 0,
+          getBattleIngestState(item.externalId),
+          INGEST_MAX_ATTEMPTS,
+        )
+        if (readiness === 'wait') continue
+        if (readiness === 'skip') {
+          await finishPendingWithError(channel, item, 'Реплей не удалось разобрать.')
+          markAnnounce(item.id, 'ok')
+          cleanupPending(item)
+          continue
+        }
         if (TARGET_CLAN) {
           const decision = clanDecision(item)
-          // ждём разбора ingest — не помечаем, перепроверим на следующем тике
-          if (decision === 'wait') continue
-          // не наш клан (или бой не разобрать) — помечаем решённым, не постим
+          // Не наш клан — помечаем решённым, не постим
           if (decision === 'skip') {
+            await deletePendingMessage(channel, item)
             markAnnounce(item.id, 'ok')
+            cleanupPending(item)
             continue
           }
         }
@@ -103,11 +152,14 @@ export function startBattleAnnouncer(client: Client): void {
             console.warn(`[bot] автоанонс ${item.externalId}: у записи нет ссылок на реплей`)
             continue
           }
-          const message = await channel.send(post.payload)
-          // Если сообщение уже ушло, фиксируем успех даже при SIGTERM: иначе
-          // после рестарта оно отправится второй раз.
+          if (item.announceMessageId) {
+            const message = await pendingMessage(channel, item)
+            await message.edit(post.payload)
+          } else {
+            await channel.send(post.payload)
+          }
           markAnnounce(item.id, 'ok')
-          if (!stopping) queueWinnerUpdate(post, (p) => message.edit(p))
+          cleanupPending(item)
           console.log(`[bot] автоанонс боя ${item.externalId} (${item.title.trim()})`)
         } catch (err) {
           if (stopping) break
@@ -126,30 +178,107 @@ export function startBattleAnnouncer(client: Client): void {
 
       // Сдвигаем baseline за решённые бои — окно сканирования не растёт
       if (!stopping) setBotState(BASELINE_KEY, String(nextAnnounceBaseline(baseline, MAX_ATTEMPTS)))
+      if (immediateSessions.size > 0) wakeRequested = true
     } finally {
       // activeTick очищает scheduleTick после полного завершения.
     }
   }
 
   const scheduleTick = (): void => {
-    if (stopping || activeTick) return
+    if (stopping) return
+    if (activeTick) {
+      wakeRequested = true
+      return
+    }
     activeTick = tick()
       .catch((error: unknown) => {
         if (!stopping) console.error(`[bot] сбой тика автоанонса: ${error instanceof Error ? error.message : String(error)}`)
       })
       .finally(() => {
         activeTick = null
+        if (wakeRequested && !stopping) {
+          wakeRequested = false
+          setImmediate(scheduleTick)
+        }
       })
   }
+  unsubscribeLifecycle?.()
+  unsubscribeLifecycle = subscribeBattleLifecycle((event) => {
+    if (!TARGET_CLAN && event.kind === 'discovered' && !event.bulk) {
+      for (const sessionId of event.sessionIds) immediateSessions.add(sessionId)
+    }
+    scheduleTick()
+  })
+  scheduleTick()
   announceTimer = setInterval(scheduleTick, TICK_MS)
   announceTimer.unref()
 }
 
 export async function stopBattleAnnouncer(): Promise<void> {
   stopping = true
+  unsubscribeLifecycle?.()
+  unsubscribeLifecycle = null
   if (announceTimer) clearInterval(announceTimer)
   announceTimer = null
   await activeTick
+}
+
+function preliminaryBattleContent(item: StoredItem): string {
+  const title = escapeMarkdown(item.title.trim().slice(0, 300))
+  return (
+    `Обнаружен новый бой, загружаю и разбираю replay…\n` +
+    `**${title || 'Клановый бой'}**\n` +
+    `Match ID: \`${item.externalId}\`\n` +
+    `https://warthunder.com/en/tournament/replay/${item.externalId}`
+  )
+}
+
+async function pendingMessage(
+  channel: SendableChannels,
+  item: PendingAnnounceItem,
+): Promise<Message> {
+  const current = pendingMessages.get(item.id)
+  if (current) return current
+  if (!item.announceMessageId) throw new Error('у предварительного анонса отсутствует message_id')
+  return await channel.messages.fetch(item.announceMessageId)
+}
+
+async function finishPendingWithError(
+  channel: SendableChannels,
+  item: PendingAnnounceItem,
+  message: string,
+): Promise<void> {
+  if (!item.announceMessageId) return
+  try {
+    const pending = await pendingMessage(channel, item)
+    await pending.edit({ content: `${message}\nMatch ID: \`${item.externalId}\``, components: [] })
+  } catch (error) {
+    console.warn(
+      `[bot] не удалось обновить предварительный анонс ${item.externalId}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+async function deletePendingMessage(
+  channel: SendableChannels,
+  item: PendingAnnounceItem,
+): Promise<void> {
+  if (!item.announceMessageId) return
+  try {
+    const pending = await pendingMessage(channel, item)
+    await pending.delete()
+  } catch (error) {
+    console.warn(
+      `[bot] не удалось удалить предварительный анонс ${item.externalId}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+function cleanupPending(item: PendingAnnounceItem): void {
+  immediateSessions.delete(item.externalId)
+  pendingMessages.delete(item.id)
 }
 
 const startTimeOf = (item: StoredItem): number => {
@@ -160,20 +289,10 @@ const startTimeOf = (item: StoredItem): number => {
 /**
  * Решение фильтра по клану для одного боя:
  *  send — наш клан участвовал, постим;
- *  skip — бой разобран, но нашего клана нет (или ingest его не осилил) — пропустить;
- *  wait — бой ещё не разобран воркером ingest, перепроверить на следующем тике.
+ *  skip — бой разобран, но нашего клана нет.
  */
-function clanDecision(item: StoredItem): 'send' | 'skip' | 'wait' {
+function clanDecision(item: StoredItem): 'send' | 'skip' {
   const tags = getBattleClanTags(item.externalId)
   if (tags.some((t) => plainClanTag(t) === TARGET_CLAN)) return 'send'
-  // Теги есть (или строка боя есть) — бой разобран, нашего клана в нём нет
-  if (tags.length > 0 || hasBattle(item.externalId)) return 'skip'
-  // Ещё не разобран. Если ingest окончательно сдался — не ждём его вечно
-  const ing = getBattleIngestState(item.externalId)
-  const gaveUp =
-    ing !== null &&
-    (ing.status === 'expired' ||
-      ing.status === 'no_parts' ||
-      (ing.status === 'error' && ing.attempts >= INGEST_MAX_ATTEMPTS))
-  return gaveUp ? 'skip' : 'wait'
+  return 'skip'
 }

@@ -24,6 +24,7 @@ import {
 import {
   fetchReplayPart,
   REPLAY_PART_MAX_BYTES,
+  type ReplayFetchPrioritySource,
   type ReplayPartTiming,
 } from './replay-cache.js'
 import { parseWrplHeader } from './replay.js'
@@ -119,6 +120,14 @@ export interface ReplayEvents {
   /** Время последнего пакета, мс — длина записи */
   endTime: number
   errors: string[]
+}
+
+export interface ReplayEventsProfile {
+  headerOrderMs: number
+  inflateMs: number
+  packetDecodeMs: number
+  finalizeMs: number
+  totalMs: number
 }
 
 // ---------- разбор слотов игроков ----------
@@ -295,8 +304,8 @@ class FmParser {
       r.readBit() // unk4
       if (r.readBit()) {
         // unk5: три флага + битсет
-        r.readBits(3)
-        const len = r.readBits(4)[0]!
+        r.ignoreBits(3)
+        const len = r.readUnsignedBits(4)
         r.ignoreBits(len)
       }
 
@@ -388,14 +397,14 @@ class FmParser {
         break
     }
     if (r.readBit()) {
-      const count = r.readBits(6)[0]!
+      const count = r.readUnsignedBits(6)
       for (let i = 0; i < count; i++) r.readU32()
-      r.readBits(6)
+      r.ignoreBits(6)
     }
   }
 
   private readTargets(r: BitReader): void {
-    const n = r.readBits(4)[0]!
+    const n = r.readUnsignedBits(4)
     if (n > 8) throw new Error(`fm: целей ${n} > 8`)
     for (let i = 0; i < n; i++) {
       r.readByte()
@@ -577,8 +586,27 @@ function parseChat(pk: RawPacket): ReplayChat {
 
 // ---------- оркестрация ----------
 
-const matches = (p: Buffer, conds: [number, number][]): boolean =>
-  conds.every(([pos, val]) => pos < p.length && p[pos] === val)
+function isMovementPacket(payload: Buffer): boolean {
+  return (
+    payload.length >= 14
+    && payload[0] === 0xff
+    && payload[1] === 0x0f
+    && payload[5] === 0xa3
+    && payload[6] === 0xf0
+    && payload[10] === 0x00
+    && payload[11] === 0x00
+    && payload[13] === 0x13
+  ) || (
+    payload.length >= 13
+    && payload[0] === 0xff
+    && payload[1] === 0x0f
+    && payload[4] === 0xa3
+    && payload[5] === 0xf0
+    && payload[9] === 0x00
+    && payload[10] === 0x00
+    && payload[12] === 0x13
+  )
+}
 
 /** Прореживание траектории: точка реже 500 мс и 4 м не нужна */
 function thinPath(path: SpaceTime[]): SpaceTime[] {
@@ -587,8 +615,9 @@ function thinPath(path: SpaceTime[]): SpaceTime[] {
   for (let i = 1; i < path.length - 1; i++) {
     const p = path[i]!
     const last = out[out.length - 1]!
-    const dist = Math.hypot(p.x - last.x, p.z - last.z)
-    if (p.t - last.t >= 500 || dist >= 4) out.push(p)
+    const dx = p.x - last.x
+    const dz = p.z - last.z
+    if (p.t - last.t >= 500 || dx * dx + dz * dz >= 16) out.push(p)
   }
   out.push(path[path.length - 1]!)
   return out
@@ -641,6 +670,14 @@ function zoneName(entity: EcsEntity): string {
  * Ошибки разбора отдельных пакетов не прерывают обработку — копятся в errors.
  */
 export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps): ReplayEvents {
+  return extractReplayEventsProfiled(parts, hashes).events
+}
+
+export function extractReplayEventsProfiled(
+  parts: Buffer[],
+  hashes: ComponentHashMaps,
+): { events: ReplayEvents; profile: ReplayEventsProfile } {
+  const totalStarted = performance.now()
   const ecs = new EcsParser(hashes)
   const slot = new SlotParser()
   const movement = new MovementParser()
@@ -654,22 +691,30 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
   let endTime = 0
 
   // Части в порядке номеров; заголовок у каждой свой, поток продолжается
+  let phaseStarted = performance.now()
   const ordered = parts
     .map((buf) => ({ buf, header: parseWrplHeader(buf) }))
     .filter((p) => p.header.isServer)
     .sort((a, b) => a.header.partNumber - b.header.partNumber)
+  const headerOrderMs = performance.now() - phaseStarted
+  let inflateMs = 0
+  let packetDecodeMs = 0
 
   let seq = 0
   for (const { buf, header } of ordered) {
     let stream: Buffer
+    phaseStarted = performance.now()
     try {
       stream = inflateSync(buf.subarray(1234 + header.settingsBlkSize), {
         maxOutputLength: MAX_REPLAY_STREAM_BYTES,
       })
     } catch (err) {
+      inflateMs += performance.now() - phaseStarted
       errors.push(`часть ${header.partNumber}: zlib: ${(err as Error).message}`)
       continue
     }
+    inflateMs += performance.now() - phaseStarted
+    phaseStarted = performance.now()
     for (const pk of iteratePackets(stream, seq)) {
       seq = pk.seq + 1
       if (pk.time > endTime) endTime = pk.time
@@ -687,20 +732,26 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
             break
           }
           case 4:
-            if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x2d], [3, 0xf0]])) slot.parse(pk.payload)
-            else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x74], [3, 0xf0]])) gm.parse(pk.payload, pk.time)
-            else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x73], [3, 0xf0]])) gm.parse(pk.payload, pk.time)
-            else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x58], [3, 0xf0]])) kills.parse(pk)
-            else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x78], [3, 0xf0]])) awards.push(parseAward(pk))
-            else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x56], [3, 0xf0]]))
-              damage.push(parseDamage(pk, 'critical', ecs))
-            else if (matches(pk.payload, [[0, 0x02], [1, 0x58], [2, 0x57], [3, 0xf1]]))
-              damage.push(parseDamage(pk, 'severe', ecs))
-            else if (
-              matches(pk.payload, [[0, 0xff], [1, 0x0f], [5, 0xa3], [6, 0xf0], [10, 0x00], [11, 0x00], [13, 0x13]]) ||
-              matches(pk.payload, [[0, 0xff], [1, 0x0f], [4, 0xa3], [5, 0xf0], [9, 0x00], [10, 0x00], [12, 0x13]])
-            )
+            if (
+              pk.payload.length >= 4
+              && pk.payload[0] === 0x02
+              && pk.payload[1] === 0x58
+            ) {
+              const kind = pk.payload[2]
+              const tail = pk.payload[3]
+              if (kind === 0x2d && tail === 0xf0) slot.parse(pk.payload)
+              else if ((kind === 0x74 || kind === 0x73) && tail === 0xf0) {
+                gm.parse(pk.payload, pk.time)
+              } else if (kind === 0x58 && tail === 0xf0) kills.parse(pk)
+              else if (kind === 0x78 && tail === 0xf0) awards.push(parseAward(pk))
+              else if (kind === 0x56 && tail === 0xf0) {
+                damage.push(parseDamage(pk, 'critical', ecs))
+              } else if (kind === 0x57 && tail === 0xf1) {
+                damage.push(parseDamage(pk, 'severe', ecs))
+              }
+            } else if (isMovementPacket(pk.payload)) {
               movement.parse(pk)
+            }
             break
           case 6:
             ecs.parsePacket(pk.payload)
@@ -713,8 +764,10 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
         }
       }
     }
+    packetDecodeMs += performance.now() - phaseStarted
   }
 
+  const finalizeStarted = performance.now()
   // Победитель: последняя награда hidden_win_streak → команда игрока
   let teamWon = 0
   for (let i = awards.length - 1; i >= 0; i--) {
@@ -802,7 +855,7 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
     zones.push({ name: zoneName(entity), x: point.x, z: point.z })
   }
 
-  return {
+  const events: ReplayEvents = {
     teamWon,
     players,
     kills: kills.kills.map((k) => ({
@@ -829,6 +882,17 @@ export function extractReplayEvents(parts: Buffer[], hashes: ComponentHashMaps):
     zones,
     endTime,
     errors,
+  }
+  const finalizeMs = performance.now() - finalizeStarted
+  return {
+    events,
+    profile: {
+      headerOrderMs,
+      inflateMs,
+      packetDecodeMs,
+      finalizeMs,
+      totalMs: performance.now() - totalStarted,
+    },
   }
 }
 
@@ -882,6 +946,7 @@ export interface ReplayPartsTiming {
 export interface ReplayPartsFetchOptions {
   concurrency?: number
   maxTotalBytes?: number
+  priority?: ReplayFetchPrioritySource
   /** Только для изолированных benchmark/smoke; undefined использует production cache. */
   cacheDirectory?: string | null
   /** null отключает process budget только в изолированном benchmark/test. */
@@ -1101,6 +1166,7 @@ export async function fetchReplayPartsRetained(
         peakActive = Math.max(peakActive, active)
         const part = await fetchReplayPart(partUrls[index]!, {
           signal: combinedSignal,
+          ...(options.priority === undefined ? {} : { priority: options.priority }),
           ...(options.cacheDirectory === undefined
             ? {}
             : { cacheDirectory: options.cacheDirectory }),

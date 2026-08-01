@@ -60,6 +60,10 @@ export const config = {
   dbPath: process.env['DB_PATH'] ?? './data/wtbot.db',
   /** Ленивое получение account-статистики известных игроков с профиля warthunder.com. */
   playerStatsEnabled: envBoolean('WT_PLAYER_STATS_ENABLED', true),
+  /** Account snapshot через официальный companion API без Cloudflare-транспорта сайта. */
+  companionProfilePlayerStatsEnabled: envBoolean('WT_COMPANION_PROFILE_ENABLED', false),
+  /** Сессия официального companion-app; не совпадает с WT_COOKIE. */
+  companionCookie: process.env['WT_COMPANION_COOKIE'] ?? '',
   /** Дополнительный lazy snapshot StatShark по стабильному WT user id. */
   statSharkPlayerStatsEnabled: envBoolean('STATSHARK_PLAYER_STATS_ENABLED', false),
   /** Ники для периодического сбора профилей и реплеев (через запятую). */
@@ -112,8 +116,10 @@ export const config = {
   workerResources: workers,
   /** Фактическая верхняя граница CPU workers. */
   workerThreads: workers.workerThreads,
-  /** AIMD admission ingest; выключен по умолчанию для безопасного rollback. */
-  ingestAdaptiveAdmissionEnabled: envBoolean('WT_INGEST_ADAPTIVE_ENABLED', false),
+  /** AIMD admission ingest; live A/B подтвердил защиту throughput от CDN 429. */
+  ingestAdaptiveAdmissionEnabled: envBoolean('WT_INGEST_ADAPTIVE_ENABLED', true),
+  /** Staged download → ready → parse pipeline; false возвращает legacy runner. */
+  ingestPipelineEnabled: envBoolean('WT_INGEST_PIPELINE_ENABLED', true),
   /** Reservation replay по фактическому размеру; эксперимент, default сохраняет worst-case. */
   replayExactReservationEnabled: envBoolean('WT_REPLAY_EXACT_RESERVATION_ENABLED', false),
   /** Фоновый ingest .wrpl и автоанонс; флаг CLI удобен для облегчённого запуска бота. */

@@ -37,12 +37,17 @@ test('ingest stats count only rows still eligible for selection', () => {
 
     const stats = getIngestStats()
     const selected = getPendingBattleItems(BATTLE_INGEST_MAX_ATTEMPTS, 100)
+    const oldestFirst = getPendingBattleItems(BATTLE_INGEST_MAX_ATTEMPTS, 100, 'oldest')
     assert.equal(stats.pending, 3)
     assert.equal(stats.failed, 4)
     assert.equal(selected.length, stats.pending)
     assert.deepEqual(
       new Set(selected.map((item) => item.externalId)),
       new Set(['unseen-old', 'unseen-new', 'retryable']),
+    )
+    assert.deepEqual(
+      oldestFirst.map((item) => item.externalId),
+      ['unseen-old', 'unseen-new', 'retryable'],
     )
   } finally {
     closeDb()
