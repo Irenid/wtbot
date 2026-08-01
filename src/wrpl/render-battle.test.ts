@@ -52,13 +52,13 @@ test('метка победы следует за клановым тегом в
     { unitIcons: new Map(), mapImage: null, gameFont: false },
   )
 
-  const clanMatch = /<text x="70" y="262"[^>]*>»xGAFx«<\/text>/.exec(svg)
+  const clanMatch = /<text x="42" y="262"[^>]*>»xGAFx«<\/text>/.exec(svg)
   const victoryMatch =
-    /<text x="70" y="262"[^>]*><tspan fill-opacity="0">»xGAFx«<\/tspan><tspan dx="18"[^>]*>Победа<\/tspan><\/text>/.exec(svg)
+    /<text x="42" y="262"[^>]*><tspan fill-opacity="0">»xGAFx«<\/tspan><tspan dx="18" dy="-4"[^>]*>Победа<\/tspan><\/text>/.exec(svg)
   assert.ok(clanMatch)
   assert.ok(victoryMatch)
-  assert.match(svg, /<text x="70" y="304"[^>]*>\(/)
-  assert.doesNotMatch(svg, /<text x="70" y="304"[^>]*>Победа<\/text>/)
+  assert.match(svg, /<text x="42" y="304"[^>]*>\(/)
+  assert.doesNotMatch(svg, /<text x="42" y="304"[^>]*>Победа<\/text>/)
 })
 
 test('метка победы не накладывается на длинный клановый тег', () => {
@@ -71,8 +71,78 @@ test('метка победы не накладывается на длинны�
 
   assert.match(
     svg,
-    /<text x="70" y="262"[^>]*><tspan fill-opacity="0">»VeryLongClanName«<\/tspan><tspan dx="18"[^>]*>Победа<\/tspan><\/text>/,
+    /<text x="42" y="262"[^>]*><tspan fill-opacity="0">»VeryLongClanName«<\/tspan><tspan dx="18" dy="-4"[^>]*>Победа<\/tspan><\/text>/,
   )
+})
+
+test('таблицы имеют симметричные поля и центрированный разделитель', () => {
+  const activePlayer = { ...player, vehicles: ['test_tank'] }
+  const secondPlayer = { ...activePlayer, userId: '2', name: 'Player 2', team: 2 }
+  const results: ReplayResults = { status: 'success', timePlayed: 60, players: [activePlayer, secondPlayer] }
+  const svg = buildBattleSvg(
+    {
+      missionName: '[Domination] Test',
+      header,
+      results,
+      dict: { test_tank: { name: 'Test Tank', cls: 'T', country: 'ussr' } },
+      winnerTeam: 1,
+    },
+    {
+      unitIcons: new Map(),
+      mapImage: null,
+      gameFlags: new Map([['ussr', '<svg width="100" height="66" viewBox="0 0 100 66"><rect width="100" height="66" fill="#bc0000"/></svg>']]),
+      gameFont: false,
+    },
+  )
+
+  assert.match(svg, /<rect x="959" y="220" width="2"/)
+  assert.match(svg, /<text x="42" y="262"[^>]*>»xGAFx«<\/text>/)
+  assert.match(svg, /<text x="1002" y="262"[^>]*>»xGAFx«<\/text>/)
+  assert.match(svg, /<g transform="translate\(876 232\)">/)
+  assert.match(svg, /<g transform="translate\(1836 232\)">/)
+  assert.match(svg, /<g transform="translate\(508 278\) scale\(/)
+  assert.match(svg, /<g transform="translate\(1468 278\) scale\(/)
+  assert.match(svg, /<image width="38" height="24" preserveAspectRatio="xMidYMid meet" href="data:image\/svg\+xml;base64,/)
+  assert.match(svg, /<text x="42" y="304"[^>]*>\(/)
+  assert.match(svg, /<text x="1002" y="304"[^>]*>\(/)
+})
+
+test('значок платформы не сдвигает колонку техники', () => {
+  const platformPlayer = { ...player, name: 'Pilot@psn', vehicles: ['test_tank'] }
+  const results: ReplayResults = { status: 'success', timePlayed: 60, players: [platformPlayer] }
+  const svg = buildBattleSvg(
+    {
+      missionName: '[Domination] Test',
+      header,
+      results,
+      dict: { test_tank: { name: 'Test Tank', cls: 'T', country: 'usa' } },
+      winnerTeam: 1,
+    },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+
+  assert.match(svg, /<g transform="translate\(144 352\) scale\(/)
+  assert.match(svg, /<text x="180" y="376"[^>]*>Pilot<\/text>/)
+  assert.match(svg, /<text x="144" y="410"[^>]*>Test Tank<\/text>/)
+  assert.doesNotMatch(svg, /<text x="180" y="410"/)
+})
+
+test('до передачи рейтингов в таблице стоят прочерки', () => {
+  const ratedPlayer = { ...player, vehicles: ['test_tank'] }
+  const results: ReplayResults = { status: 'success', timePlayed: 60, players: [ratedPlayer] }
+  const svg = buildBattleSvg(
+    {
+      missionName: '[Domination] Test',
+      header,
+      results,
+      dict: { test_tank: { name: 'Test Tank', cls: 'T', country: 'usa' } },
+      ratings: new Map(),
+      winnerTeam: 1,
+    },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+
+  assert.match(svg, /<text x="522" y="388"[^>]*>—<\/text>/)
 })
 
 test('SVG сохраняет оригинальные Unicode-символы в никах игроков', () => {

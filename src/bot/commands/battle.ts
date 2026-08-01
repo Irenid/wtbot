@@ -33,7 +33,7 @@ import {
 } from '../../wrpl/battle-media.js'
 import { isBattleHeatmapKind } from '../../wrpl/battle-media-kind.js'
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
-import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
+import { fetchRatingsForTags, type ClanRating } from '../../wrpl/clan-info.js'
 import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
@@ -148,14 +148,18 @@ export async function renderBattlePost(
   let hasAir = true
 
   // Для интерактивного /battle сохраняем актуальный ПКР. Background-анонс
-  // не ждёт внешний сайт, но использует уже сохранённые снимки из SQLite.
+  // сначала рисует прочерки, пока отдельное обновление не получит свежие очки.
   const clanTags = teams.flatMap((t) => (t.rawTag ? [t.rawTag] : []))
-  let ratings = await fetchRatingsForTags(clanTags, { cachedOnly: priority === 'background' })
+  let ratings: Map<string, ClanRating>
+  if (priority === 'background') {
+    ratings = new Map()
+  } else {
+    ratings = await fetchRatingsForTags(clanTags)
+  }
 
   // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
   let content =
-    `Match ID: \`${header.sessionId}\`\n` +
-    seasonLine(header.startTime) +
+    `Match ID: \`${header.sessionId}\`${seasonMaxBrSuffix(getClanSeasonContext(header.startTime))}\n` +
     teams
       .map((t, i) => {
         const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
@@ -274,15 +278,10 @@ export async function renderBattlePost(
   }
 }
 
-function seasonLine(startTime: number): string {
-  const context = getClanSeasonContext(startTime)
-  if (!context.season) return ''
+export function seasonMaxBrSuffix(context: ReturnType<typeof getClanSeasonContext>): string {
+  if (!context.season?.active) return ''
   const stage = context.currentStage
-  if (!context.season.active || stage === null) {
-    return `Сезон: ${context.season.name} · завершён\n`
-  }
-  const stageName = stage.endsAt === context.season.endsAt ? 'до конца сезона' : `неделя ${stage.week}`
-  return `Сезон: ${context.season.name}, ${stageName}, макс. БР ${stage.maxBr.toFixed(1)} · <t:${stage.startsAt}:d>–<t:${stage.endsAt - 1}:d>\n`
+  return stage ? ` · Макс. БР ${stage.maxBr.toFixed(1)}` : ''
 }
 
 /** Последовательно применяет быстрый ПКР и затем при необходимости durable summary. */

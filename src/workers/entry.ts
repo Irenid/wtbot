@@ -443,6 +443,7 @@ async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-sc
   const svg = buildBattleSvg(input.input, {
     unitIcons: new Map(input.assets.unitIcons.map(([id, data]) => [id, dataUri('image/png', data)])),
     mapImage: input.assets.mapImage ? dataUri(input.assets.mapImage.mime, input.assets.mapImage.data) : null,
+    gameFlags: new Map(input.assets.gameFlags),
     gameFont: input.assets.gameFont,
   })
   const png = await rasterize(svg, input.assets.fontFiles)
@@ -655,6 +656,16 @@ function extractGameFont(input: Extract<AnyWorkerTask, { kind: 'extract-game-fon
   return { value: data, transfer: [data] }
 }
 
+function extractGameFlags(input: Extract<AnyWorkerTask, { kind: 'extract-game-flags' }>['input']) {
+  const files = unpackVromfs(Buffer.from(input.vromfs))
+  const flags: [string, string][] = []
+  for (const file of files) {
+    const match = /^gameuiskin\/country_([^/]+)\.svg$/i.exec(file.name)
+    if (match) flags.push([match[1]!.toLowerCase(), file.data.toString('utf8')])
+  }
+  return { value: flags, transfer: [] }
+}
+
 function buildVehicles(input: Extract<AnyWorkerTask, { kind: 'build-vehicle-dict' }>['input']) {
   return {
     value: buildVehicleDict(
@@ -706,6 +717,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return await renderHeatmap(task.input)
     case 'extract-game-font':
       return extractGameFont(task.input)
+    case 'extract-game-flags':
+      return extractGameFlags(task.input)
     case 'build-vehicle-dict':
       return buildVehicles(task.input)
     case 'parse-mission':

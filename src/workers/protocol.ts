@@ -45,6 +45,7 @@ export interface ScoreboardAssets {
   unitIcons: [string, ArrayBuffer][]
   mapImage: WireImage | null
   gameFont: boolean
+  gameFlags: [string, string][]
   fontFiles: string[]
 }
 
@@ -214,6 +215,10 @@ export interface WorkerTaskMap {
   'extract-game-font': {
     input: { vromfs: ArrayBuffer }
     output: ArrayBuffer | null
+  }
+  'extract-game-flags': {
+    input: { vromfs: ArrayBuffer }
+    output: [string, string][]
   }
   'build-vehicle-dict': {
     input: { csv: ArrayBuffer; wpcost: ArrayBuffer; tags: ArrayBuffer }
