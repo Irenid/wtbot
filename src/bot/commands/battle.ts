@@ -88,7 +88,7 @@ export const battle: Command = {
       return
     }
     await interaction.editReply(post.payload)
-    queueWinnerUpdate(post, (p) => interaction.editReply(p))
+    queueBattlePostUpdates(post, (p) => interaction.editReply({ ...p, attachments: [] }))
   },
 }
 
@@ -103,8 +103,10 @@ export interface BattlePost {
   sessionIdHex: string
   /** null — durable summary уже доступен; иначе ожидание ingest вернёт обновлённый payload. */
   buildWinnerPayload: (() => Promise<BattlePostPayload | null>) | null
-  /** Консервативная оценка retained state замыкания фонового обновления. */
-  winnerUpdateBytes: number
+  /** null — фоновое обновление ПКР не требуется. */
+  buildRatingsPayload: (() => Promise<BattlePostPayload | null>) | null
+  /** Консервативная оценка retained state замыканий обновления сообщения. */
+  updateBytes: number
 }
 
 /**
@@ -146,10 +148,9 @@ export async function renderBattlePost(
   let hasAir = true
 
   // Для интерактивного /battle сохраняем актуальный ПКР. Background-анонс
-  // не ждёт внешний сайт: необязательная колонка не должна задерживать PNG.
-  const ratings: Awaited<ReturnType<typeof fetchRatingsForTags>> = priority === 'background'
-    ? new Map()
-    : await fetchRatingsForTags(teams.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+  // не ждёт внешний сайт, но использует уже сохранённые снимки из SQLite.
+  const clanTags = teams.flatMap((t) => (t.rawTag ? [t.rawTag] : []))
+  let ratings = await fetchRatingsForTags(clanTags, { cachedOnly: priority === 'background' })
 
   // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
   let content =
@@ -238,10 +239,17 @@ export async function renderBattlePost(
   const winner = dbSummary?.teamWon ?? mediaMeta?.teamWon ?? 0
   const initialHasAir = hasAir
   const initialHasChat = hasChat
-  const payload = await makePayload(
-    winner > 0 ? winner : null,
-    hasChat,
-  )
+  let currentWinnerTeam = winner > 0 ? winner : null
+  let currentHasChat = hasChat
+  const payload = await makePayload(currentWinnerTeam, currentHasChat)
+  const buildRatingsPayload = priority === 'background' && clanTags.length > 0
+    ? async (): Promise<BattlePostPayload | null> => {
+        const freshRatings = await fetchRatingsForTags(clanTags)
+        if (sameRatings(ratings, freshRatings)) return null
+        ratings = freshRatings
+        return makePayload(currentWinnerTeam, currentHasChat, 'background')
+      }
+    : null
   const buildWinnerPayload = shouldQueueWinnerUpdate(dbSummary !== null, mediaMeta !== null)
     ? async (): Promise<BattlePostPayload | null> => {
         const fresh = await waitForBattlePostSummary(sessionId)
@@ -252,14 +260,17 @@ export async function renderBattlePost(
           return null
         }
         hasAir = freshHasAir
-        return makePayload(fresh.teamWon > 0 ? fresh.teamWon : null, freshHasChat, 'background')
+        currentWinnerTeam = fresh.teamWon > 0 ? fresh.teamWon : null
+        currentHasChat = freshHasChat
+        return makePayload(currentWinnerTeam, currentHasChat, 'background')
       }
     : null
   return {
     payload,
     sessionIdHex: header.sessionIdHex,
     buildWinnerPayload,
-    winnerUpdateBytes: buildWinnerPayload ? estimateWinnerUpdateBytes(results, content) : 0,
+    buildRatingsPayload,
+    updateBytes: buildWinnerPayload || buildRatingsPayload ? estimatePostUpdateBytes(results, content) : 0,
   }
 }
 
@@ -274,59 +285,65 @@ function seasonLine(startTime: number): string {
   return `Сезон: ${context.season.name}, ${stageName}, макс. БР ${stage.maxBr.toFixed(1)} · <t:${stage.startsAt}:d>–<t:${stage.endsAt - 1}:d>\n`
 }
 
-/** Ждёт durable ingest summary и передаёт apply только обновлённую scoreboard. */
-export function queueWinnerUpdate(post: BattlePost, apply: (p: BattlePostPayload) => Promise<unknown>): void {
-  const build = post.buildWinnerPayload
+/** Последовательно применяет быстрый ПКР и затем при необходимости durable summary. */
+export function queueBattlePostUpdates(post: BattlePost, apply: (p: BattlePostPayload) => Promise<unknown>): void {
+  const builders = [post.buildRatingsPayload, post.buildWinnerPayload].filter(
+    (build): build is () => Promise<BattlePostPayload | null> => build !== null,
+  )
   const sessionIdHex = post.sessionIdHex
-  const estimatedBytes = Math.max(0, Math.floor(post.winnerUpdateBytes))
-  if (!build || winnerUpdatesStopping || winnerUpdates.has(sessionIdHex)) return
-  if (!canAdmitWinnerUpdate(winnerUpdates.size, winnerUpdatesBytes, estimatedBytes)) {
+  const estimatedBytes = Math.max(0, Math.floor(post.updateBytes))
+  if (builders.length === 0 || postUpdatesStopping || postUpdates.has(sessionIdHex)) return
+  if (!canAdmitWinnerUpdate(postUpdates.size, postUpdatesBytes, estimatedBytes)) {
     console.warn(
-      `[bot] обновление победителя ${sessionIdHex} отложено: ` +
-        `очередь ${winnerUpdates.size}, ${(winnerUpdatesBytes / 1024 / 1024).toFixed(1)} МиБ`,
+      `[bot] обновление анонса ${sessionIdHex} отложено: ` +
+        `очередь ${postUpdates.size}, ${(postUpdatesBytes / 1024 / 1024).toFixed(1)} МиБ`,
     )
     return
   }
-  winnerUpdatesBytes += estimatedBytes
+  postUpdatesBytes += estimatedBytes
   const task = (async () => {
     try {
-      const payload = await build()
-      if (payload && !winnerUpdatesStopping) await apply(payload)
+      // Рендеры применяются по порядку: поздний payload обязан включать
+      // уже обновлённые ПКР, winner/chat flags и не откатывать сообщение.
+      for (const build of builders) {
+        const payload = await build()
+        if (payload && !postUpdatesStopping) await apply(payload)
+      }
     } catch (err) {
-      if (!winnerUpdatesStopping) {
-        console.warn(`[bot] обновление победителя ${sessionIdHex}: ${(err as Error).message}`)
+      if (!postUpdatesStopping) {
+        console.warn(`[bot] обновление анонса ${sessionIdHex}: ${(err as Error).message}`)
       }
     }
   })().finally(() => {
-    const current = winnerUpdates.get(sessionIdHex)
+    const current = postUpdates.get(sessionIdHex)
     if (current?.task !== task) return
-    winnerUpdates.delete(sessionIdHex)
-    winnerUpdatesBytes = Math.max(0, winnerUpdatesBytes - current.estimatedBytes)
+    postUpdates.delete(sessionIdHex)
+    postUpdatesBytes = Math.max(0, postUpdatesBytes - current.estimatedBytes)
   })
-  winnerUpdates.set(sessionIdHex, { task, estimatedBytes })
+  postUpdates.set(sessionIdHex, { task, estimatedBytes })
   void task
 }
 
-interface WinnerUpdateEntry {
+interface BattlePostUpdateEntry {
   task: Promise<void>
   estimatedBytes: number
 }
 
 const WINNER_UPDATE_WAIT_MS = 14 * 60_000
 const WINNER_UPDATE_POLL_MS = 1_000
-/** Сессии, ожидающие durable ingest summary; full media здесь не строится. */
-const winnerUpdates = new Map<string, WinnerUpdateEntry>()
-let winnerUpdatesBytes = 0
-let winnerUpdatesStopping = false
+/** Сессии, ожидающие обновление ПКР или durable summary; full media здесь не строится. */
+const postUpdates = new Map<string, BattlePostUpdateEntry>()
+let postUpdatesBytes = 0
+let postUpdatesStopping = false
 
-export async function stopWinnerUpdates(): Promise<void> {
-  winnerUpdatesStopping = true
-  await Promise.allSettled([...winnerUpdates.values()].map((entry) => entry.task))
+export async function stopBattlePostUpdates(): Promise<void> {
+  postUpdatesStopping = true
+  await Promise.allSettled([...postUpdates.values()].map((entry) => entry.task))
 }
 
 async function waitForBattlePostSummary(sessionId: string) {
   const deadline = Date.now() + WINNER_UPDATE_WAIT_MS
-  while (!winnerUpdatesStopping) {
+  while (!postUpdatesStopping) {
     const summary = getBattlePostSummary(sessionId)
     if (summary) return summary
     const remainingMs = deadline - Date.now()
@@ -343,10 +360,22 @@ function sleepWinnerUpdate(ms: number): Promise<void> {
   })
 }
 
-function estimateWinnerUpdateBytes(results: ReplayResults, content: string): number {
+function estimatePostUpdateBytes(results: ReplayResults, content: string): number {
   return 64 * 1024
     + Buffer.byteLength(content, 'utf8')
     + Buffer.byteLength(JSON.stringify(results), 'utf8')
+}
+
+function sameRatings(
+  left: ReadonlyMap<string, { rating: number; delta: number | null }>,
+  right: ReadonlyMap<string, { rating: number; delta: number | null }>,
+): boolean {
+  if (left.size !== right.size) return false
+  for (const [nick, rating] of left) {
+    const other = right.get(nick)
+    if (!other || other.rating !== rating.rating || other.delta !== rating.delta) return false
+  }
+  return true
 }
 
 const KIND_NAMES: Record<BattleMediaKind, string> = {

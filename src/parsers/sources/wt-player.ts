@@ -596,6 +596,8 @@ export const wtPlayers: ParserSource = {
 
     const items: ParsedItem[] = []
     const errors: string[] = []
+    // Игроки намеренно идут последовательно через общую очередь: 429 или
+    // потеря сессии должны остановить batch без лишних запросов.
     for (const nickname of nicknames) {
       try {
         items.push(await collectPlayerItem(nickname))

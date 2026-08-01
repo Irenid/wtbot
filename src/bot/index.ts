@@ -2,7 +2,7 @@ import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, RESTJ
 import { config } from '../config.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
-import { handleBattleButton, stopWinnerUpdates } from './commands/battle.js'
+import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
 
@@ -125,7 +125,7 @@ export async function stopBotWork(graceMs = 10_000): Promise<void> {
   const drain = Promise.allSettled([
     stopBattleAnnouncer(),
     stopPlayerBoardPublisher(),
-    stopWinnerUpdates(),
+    stopBattlePostUpdates(),
     Promise.allSettled([...activeInteractions]),
   ])
   if (graceMs <= 0) {

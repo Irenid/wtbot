@@ -19,7 +19,7 @@ import { INGEST_MAX_ATTEMPTS } from '../wrpl/ingest.js'
 import { plainClanTag } from '../wrpl/render-battle.js'
 import { isWorkerPoolSchedulingError } from '../workers/pool.js'
 import { battleAnnouncementDecision } from './battle-post-policy.js'
-import { renderBattlePost } from './commands/battle.js'
+import { queueBattlePostUpdates, renderBattlePost } from './commands/battle.js'
 
 /**
  * Автоанонс боёв: для небольшого live-поступления сразу публикует сообщение
@@ -152,14 +152,16 @@ export function startBattleAnnouncer(client: Client): void {
             console.warn(`[bot] автоанонс ${item.externalId}: у записи нет ссылок на реплей`)
             continue
           }
+          let message: Message
           if (item.announceMessageId) {
-            const message = await pendingMessage(channel, item)
+            message = await pendingMessage(channel, item)
             await message.edit(post.payload)
           } else {
-            await channel.send(post.payload)
+            message = await channel.send(post.payload)
           }
           markAnnounce(item.id, 'ok')
           cleanupPending(item)
+          queueBattlePostUpdates(post, (payload) => message.edit({ ...payload, attachments: [] }))
           console.log(`[bot] автоанонс боя ${item.externalId} (${item.title.trim()})`)
         } catch (err) {
           if (stopping) break

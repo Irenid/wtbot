@@ -10,6 +10,7 @@ import {
   type Message,
 } from 'discord.js'
 import { config } from '../config.js'
+import { mapConcurrent } from '../concurrency.js'
 import {
   getDbWorkerPath,
   getEnabledPlayerStatBoards,
@@ -39,6 +40,7 @@ const MAX_RENDERED_PLAYERS = 18
 const MAX_VOICE_PLAYERS_TO_LOAD = 50
 const VOICE_PLAYER_CACHE_TTL_SEC = 30 * 60
 const VOICE_PLAYER_RETRY_SEC = 5 * 60
+const BOARD_REFRESH_CONCURRENCY = 4
 
 type PlayerMode = 'arcade' | 'realistic' | 'simulation'
 type MetricValues = Record<string, string | null>
@@ -701,7 +703,7 @@ export function configurePlayerStatBoard(
 
 async function tick(client: Client): Promise<void> {
   const boards = getEnabledPlayerStatBoards()
-  for (const board of boards) {
+  await mapConcurrent(boards, BOARD_REFRESH_CONCURRENCY, async (board) => {
     if (stopping) return
     try {
       const result = await refreshBoardInternal(client, board, false)
@@ -714,7 +716,7 @@ async function tick(client: Client): Promise<void> {
       const message = error instanceof Error ? error.message : String(error)
       console.error(`[player-board] сервер ${board.guildId}: ${message}`)
     }
-  }
+  })
 }
 
 function scheduleBoardTick(client: Client): void {
