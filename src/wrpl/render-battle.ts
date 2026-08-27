@@ -390,7 +390,8 @@ function renderTeam(
     (x: number, y: number, size: number, fill: string) => iconSkull(x, y, size, fill, assets.gameFont),
   ]
   icons.forEach((icon, i) => {
-    parts.push(icon(statX[i]! - 14, metaIconTop, 28, '#e6edf3'))
+    const size = i < 2 ? 42 : 28
+    parts.push(icon(statX[i]! - size / 2, metaIconTop - (size - 28) / 2, size, '#e6edf3'))
   })
 
   // Игроки
