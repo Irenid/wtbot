@@ -8,6 +8,7 @@ import {
   ReplayFetchAdmission,
   type ReplayFetchAdmissionSnapshot,
 } from './replay-fetch-admission.js'
+import { assertReplayPartUrl, fetchReplayUrl } from './replay-url-policy.js'
 
 /** Асинхронный дисковый cache частей replay и вежливое скачивание с CDN. */
 
@@ -195,6 +196,7 @@ async function doFetchReplayPart(
   priority: ReplayFetchPrioritySource | undefined,
 ): Promise<Buffer> {
   throwIfAborted(signal)
+  assertReplayPartUrl(url)
   if (file) {
     let cached: Buffer | null = null
     let cacheReserved = false
@@ -253,9 +255,7 @@ async function doFetchReplayPart(
       let response: Response
       try {
         const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
-        response = await fetch(url, {
-          signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
-        })
+        response = await fetchReplayUrl(url, signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal)
       } catch (error) {
         if (signal?.aborted) throw abortError()
         throw error

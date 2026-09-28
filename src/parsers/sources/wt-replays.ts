@@ -58,6 +58,41 @@ export interface WtListResponse {
   total_count: number
 }
 
+/** Больше элементов на странице API не отдаёт (limit: 20); запас на случай изменения. */
+const MAX_ITEMS_PER_PAGE = 100
+const MAX_REPLAY_TEXT_LENGTH = 2_048
+
+function isShortString(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_REPLAY_TEXT_LENGTH
+}
+
+/**
+ * Минимальная runtime-схема записи Replay API: TypeScript-тип JSON не
+ * проверяет. Поля, которые сразу используются (id, время, заголовок, ссылки),
+ * должны иметь ожидаемые типы; ссылки и число частей дополнительно проверяет
+ * resolveReplayPartUrls при скачивании.
+ */
+export function isWellFormedReplay(value: unknown): value is WtReplay {
+  if (typeof value !== 'object' || value === null) return false
+  const replay = value as Record<string, unknown>
+  return typeof replay['sessionId'] === 'string'
+    && /^\d{1,20}$/.test(replay['sessionId'])
+    && typeof replay['startTime'] === 'number'
+    && Number.isFinite(replay['startTime'])
+    && isShortString(replay['missionName'])
+    && isShortString(replay['gameMode'])
+    && isShortString(replay['url'])
+    && typeof replay['partsCount'] === 'number'
+    && (replay['players'] === undefined || (typeof replay['players'] === 'object' && replay['players'] !== null))
+}
+
+function assertListResponse(data: WtListResponse, label: string): void {
+  if (typeof data !== 'object' || data === null || !Array.isArray(data.items)
+    || typeof data.total_count !== 'number' || data.items.length > MAX_ITEMS_PER_PAGE) {
+    throw new Error(`${label}: неожиданный формат ответа Replay API`)
+  }
+}
+
 interface WtDetailResponse {
   replay?: WtReplay
   replay_parts?: string[]
@@ -178,6 +213,8 @@ export interface CollectResult {
   items: ParsedItem[]
   totalOnSite: number
   pagesRead: number
+  /** Записи API, отброшенные runtime-схемой. */
+  rejected: number
   /** true — упёрлись в maxPages, не встретив границы (известный бой/дата) */
   hitCap: boolean
 }
@@ -206,6 +243,7 @@ export async function collectFreshReplays(
   const fresh: WtReplay[] = []
   let totalOnSite = 0
   let pagesRead = 0
+  let rejected = 0
   let hitCap = true // сбросится, если выйдем по нормальной границе, а не по пределу
   // Страницы зависимы: каждая может остановить обход по known/cutoff/cap,
   // а внешний transport всё равно пропускает запросы через общую очередь.
@@ -218,6 +256,7 @@ export async function collectFreshReplays(
           'Replay API вернул пустой список',
         )
       : await deps.fetchPage(page)
+    assertListResponse(data, `список replay, страница ${page}`)
     totalOnSite = data.total_count
     pagesRead = page
     if (page === 1 && data.total_count === 0 && data.items.length === 0) {
@@ -229,7 +268,9 @@ export async function collectFreshReplays(
 
     let reachedCutoff = false
     let unseenOnPage = 0
-    for (const replay of data.items) {
+    const wellFormed = data.items.filter(isWellFormedReplay)
+    rejected += data.items.length - wellFormed.length
+    for (const replay of wellFormed) {
       if (opts.sinceTs !== undefined && replay.startTime < opts.sinceTs) {
         reachedCutoff = true
         continue
@@ -243,7 +284,7 @@ export async function collectFreshReplays(
     if (reachedCutoff) { hitCap = false; break } // дошли до даты-границы
     if (data.items.length < 20) { hitCap = false; break } // последняя страница списка
     // встретили известный бой — дальше только уже собранное (инкрементально)
-    if (opts.stopAtKnown && unseenOnPage < data.items.length) { hitCap = false; break }
+    if (opts.stopAtKnown && unseenOnPage < wellFormed.length) { hitCap = false; break }
   }
 
   const items: ParsedItem[] = []
@@ -263,7 +304,7 @@ export async function collectFreshReplays(
     })
   }
 
-  return { items, totalOnSite, pagesRead, hitCap }
+  return { items, totalOnSite, pagesRead, hitCap, rejected }
 }
 
 export const wtReplays: ParserSource = {
@@ -274,7 +315,7 @@ export const wtReplays: ParserSource = {
   async run(signal) {
     // Догон: листаем до первого уже сохранённого боя. Планировщик не допускает
     // параллельных запусков этого source, а запросы ограничены паузой 1,5 с.
-    const { items, totalOnSite, pagesRead, hitCap } = await collectFreshReplays({
+    const { items, totalOnSite, pagesRead, hitCap, rejected } = await collectFreshReplays({
       maxPages: PLANNED_REPLAYS_MAX_PAGES,
       stopAtKnown: true,
       signal,
@@ -286,6 +327,7 @@ export const wtReplays: ParserSource = {
     let summary = `Новых реплеев: ${items.length} (всего на сайте: ${totalOnSite})`
     if (pagesRead > 1) summary += ` · прочитано страниц: ${pagesRead}`
     if (hitCap) summary += ` · достигнут предел ${PLANNED_REPLAYS_MAX_PAGES} страниц`
+    if (rejected > 0) summary += ` · отброшено некорректных записей API: ${rejected}`
     return { summary, items }
   },
 }

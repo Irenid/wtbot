@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 import { fetchReplayPart } from './replay-cache.js'
+import { configureReplayUrlPolicy } from './replay-url-policy.js'
+
+// Локальный HTTP-сервер теста: http и 127.0.0.1 разрешены только явной инъекцией.
+configureReplayUrlPolicy({ allowInsecureForTests: true })
 
 test('live replay overtakes queued background fetches without bypassing limiter', async () => {
   const fixture = Buffer.alloc(1234)
@@ -21,23 +25,23 @@ test('live replay overtakes queued background fetches without bypassing limiter'
     assert.ok(address && typeof address !== 'string')
     const base = `http://127.0.0.1:${address.port}`
     await Promise.all([
-      fetchReplayPart(`${base}/background-one.wrpl`, {
+      fetchReplayPart(`${base}/background-one/0000.wrpl`, {
         cacheDirectory: null,
         priority: 'background',
       }),
-      fetchReplayPart(`${base}/background-two.wrpl`, {
+      fetchReplayPart(`${base}/background-two/0000.wrpl`, {
         cacheDirectory: null,
         priority: 'background',
       }),
-      fetchReplayPart(`${base}/live.wrpl`, {
+      fetchReplayPart(`${base}/live/0000.wrpl`, {
         cacheDirectory: null,
         priority: 'live',
       }),
     ])
     assert.deepEqual(requested, [
-      '/background-one.wrpl',
-      '/live.wrpl',
-      '/background-two.wrpl',
+      '/background-one/0000.wrpl',
+      '/live/0000.wrpl',
+      '/background-two/0000.wrpl',
     ])
   } finally {
     await new Promise<void>((resolve, reject) => {
@@ -66,26 +70,27 @@ test('promoted replay updates priority while waiting for the shared fetch slot',
     const address = server.address()
     assert.ok(address && typeof address !== 'string')
     const base = `http://127.0.0.1:${address.port}`
-    const first = fetchReplayPart(`${base}/background-one.wrpl`, {
+    const first = fetchReplayPart(`${base}/background-one/0000.wrpl`, {
       cacheDirectory: null,
       priority: 'background',
     })
-    await firstRequest
-    const second = fetchReplayPart(`${base}/background-two.wrpl`, {
+    // Если загрузка упадёт до запроса, тест должен упасть, а не ждать вечно.
+    await Promise.race([firstRequest, first.then(() => undefined)])
+    const second = fetchReplayPart(`${base}/background-two/0000.wrpl`, {
       cacheDirectory: null,
       priority: 'background',
     })
     let promotedPriority: 'background' | 'live' = 'background'
-    const promoted = fetchReplayPart(`${base}/promoted.wrpl`, {
+    const promoted = fetchReplayPart(`${base}/promoted/0000.wrpl`, {
       cacheDirectory: null,
       priority: () => promotedPriority,
     })
     promotedPriority = 'live'
     await Promise.all([first, second, promoted])
     assert.deepEqual(requested, [
-      '/background-one.wrpl',
-      '/promoted.wrpl',
-      '/background-two.wrpl',
+      '/background-one/0000.wrpl',
+      '/promoted/0000.wrpl',
+      '/background-two/0000.wrpl',
     ])
   } finally {
     await new Promise<void>((resolve, reject) => {

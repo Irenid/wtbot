@@ -10,6 +10,10 @@ import {
   isReplayByteBudgetSchedulingError,
   type ReplayPartsTiming,
 } from './replay-events.js'
+import { configureReplayUrlPolicy } from './replay-url-policy.js'
+
+// Локальный HTTP-сервер теста: http и 127.0.0.1 разрешены только явной инъекцией.
+configureReplayUrlPolicy({ allowInsecureForTests: true })
 
 const MIB = 1024 * 1024
 
