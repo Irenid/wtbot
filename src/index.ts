@@ -140,13 +140,14 @@ const playerStatsServices = [
   companionProfilePlayerStatsService,
   statSharkPlayerStatsService,
 ].filter((service): service is PlayerStatsService => service !== null)
-playerStats = new PlayerStatsCoordinator({
+const playerStatsCoordinator = new PlayerStatsCoordinator({
   externalServices: playerStatsServices,
   externalSource: officialPlayerStatsService?.source
     ?? companionProfilePlayerStatsService?.source
     ?? statSharkPlayerStatsService?.source
     ?? OFFICIAL_PROFILE_SOURCE,
 })
+playerStats = playerStatsCoordinator
 console.log(
   `[player-stats] Профиль warthunder.com: ${officialPlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
 )
@@ -165,17 +166,6 @@ console.log(
     ` · резерв RAM ${config.workerResources.reservedMemoryMb} МБ` +
     ` · ingest ×${config.workerResources.ingestConcurrency}`,
 )
-
-// 2. Discord-бот (+трекер голосовых каналов — пишет присутствие в БД)
-const startedClient = await startBot()
-client = startedClient
-// Табло запускается до первого voice-снимка: callback трекера сразу
-// перерисует его после синхронизации voice_presence.
-startPlayerBoardPublisher(startedClient, { playerStats })
-const startedVoiceTracker = startVoiceTracker(startedClient, config.voiceChannelIds, {
-  onPresenceChange: requestPlayerBoardRefresh,
-})
-voiceTracker = startedVoiceTracker
 
 function getRuntimeStats(): RuntimeStats {
   const sampledAt = performance.now()
@@ -331,60 +321,92 @@ function getRuntimeStats(): RuntimeStats {
   }
 }
 
-// 3. Веб-дашборд
-app = buildServer(
-  {
-    getBotStatus: () => ({
-      online: startedClient.isReady(),
-      tag: startedClient.user?.tag ?? null,
-      guilds: startedClient.guilds.cache.size,
-      uptimeSec: Math.floor(process.uptime()),
-    }),
-    getRuntimeStats,
-    refreshVoice: () => startedVoiceTracker.refresh(),
-    playerStats,
-  },
-  undefined,
-  { host: config.webHost, token: config.webToken },
-)
-await app.listen({ port: config.port, host: config.webHost })
-console.log(`[web] Дашборд: http://${config.webHost}:${config.port}`)
-void runWorkerTask(
-  {
-    kind: 'warm-sqlite',
-    input: { dbPath: config.dbPath, statements: [...DB_BACKGROUND_WARMUP_SQL] },
-  },
-  { priority: 'background', timeoutMs: 180_000 },
-).then((result) => {
-  console.log(`[db] Фоновый прогрев ${result.statements} запросов завершён за ${Math.round(result.elapsedMs)} мс`)
-}).catch((error: unknown) => {
-  console.warn(`[db] Фоновый прогрев таблиц не завершён: ${
-    error instanceof Error ? error.message : String(error)
-  }`)
-})
+/**
+ * Этапы запуска с ожиданием сети. Сигнал может прийти во время любого await:
+ * тогда shutdown уже идёт, и следующие этапы не стартуют — иначе парсеры,
+ * ingest и трекеры начали бы писать в закрывающиеся SQLite и worker pool.
+ */
+async function startServices(): Promise<void> {
+  // 2. Discord-бот (+трекер голосовых каналов — пишет присутствие в БД)
+  const startedClient = await startBot()
+  if (shuttingDown) {
+    // shutdown мог уже пройти шаг закрытия Discord: этот клиент закрываем сами.
+    await startedClient.destroy()
+    return
+  }
+  client = startedClient
+  // Табло запускается до первого voice-снимка: callback трекера сразу
+  // перерисует его после синхронизации voice_presence.
+  startPlayerBoardPublisher(startedClient, { playerStats: playerStatsCoordinator })
+  const startedVoiceTracker = startVoiceTracker(startedClient, config.voiceChannelIds, {
+    onPresenceChange: requestPlayerBoardRefresh,
+  })
+  voiceTracker = startedVoiceTracker
 
-// 4. Фоновые парсеры. Дожидаемся прогрева и синхронизации browser-cookies:
-// иначе немедленный первый запуск источников обгоняет Edge и видит пустой API.
-await warmupWtTransport().catch((error: unknown) => {
-  console.warn(`[wt-request] Прогрев браузерного транспорта не удался: ${
-    error instanceof Error ? error.message : String(error)
-  }`)
-})
-startWtCookieRefresh()
-startParsers()
-
-// 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
-// фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)
-if (config.battleBackgroundEnabled) {
-  startIngestWorker(
-    config.workerResources.ingestConcurrency,
-    config.dbPath,
-    config.ingestAdaptiveAdmissionEnabled,
-    config.ingestPipelineEnabled,
+  // 3. Веб-дашборд
+  app = buildServer(
+    {
+      getBotStatus: () => ({
+        online: startedClient.isReady(),
+        tag: startedClient.user?.tag ?? null,
+        guilds: startedClient.guilds.cache.size,
+        uptimeSec: Math.floor(process.uptime()),
+      }),
+      getRuntimeStats,
+      refreshVoice: () => startedVoiceTracker.refresh(),
+      playerStats: playerStatsCoordinator,
+    },
+    undefined,
+    { host: config.webHost, token: config.webToken },
   )
-} else {
-  console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
+  await app.listen({ port: config.port, host: config.webHost })
+  if (shuttingDown) return
+  console.log(`[web] Дашборд: http://${config.webHost}:${config.port}`)
+  void runWorkerTask(
+    {
+      kind: 'warm-sqlite',
+      input: { dbPath: config.dbPath, statements: [...DB_BACKGROUND_WARMUP_SQL] },
+    },
+    { priority: 'background', timeoutMs: 180_000 },
+  ).then((result) => {
+    console.log(`[db] Фоновый прогрев ${result.statements} запросов завершён за ${Math.round(result.elapsedMs)} мс`)
+  }).catch((error: unknown) => {
+    console.warn(`[db] Фоновый прогрев таблиц не завершён: ${
+      error instanceof Error ? error.message : String(error)
+    }`)
+  })
+
+  // 4. Фоновые парсеры. Дожидаемся прогрева и синхронизации browser-cookies:
+  // иначе немедленный первый запуск источников обгоняет Edge и видит пустой API.
+  await warmupWtTransport().catch((error: unknown) => {
+    console.warn(`[wt-request] Прогрев браузерного транспорта не удался: ${
+      error instanceof Error ? error.message : String(error)
+    }`)
+  })
+  if (shuttingDown) return
+  startWtCookieRefresh()
+  startParsers()
+
+  // 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
+  // фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)
+  if (config.battleBackgroundEnabled) {
+    startIngestWorker(
+      config.workerResources.ingestConcurrency,
+      config.dbPath,
+      config.ingestAdaptiveAdmissionEnabled,
+      config.ingestPipelineEnabled,
+    )
+  } else {
+    console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
+  }
 }
+
+await startServices().catch((error: unknown) => {
+  // Раньше ошибка запуска (например, неверный Discord token) роняла процесс
+  // без shutdown; теперь SQLite закрывается и process lock освобождается штатно.
+  console.error('[core] запуск не удался, останавливаюсь:', error)
+  requestShutdown('startup-error', 1)
+})
 
 async function shutdown(signal: string, exitCode = 0): Promise<void> {
   requestedExitCode = Math.max(requestedExitCode, exitCode)
@@ -393,13 +415,14 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   const shutdownStarted = performance.now()
   console.log(`\n[core] Получен ${signal} — останавливаюсь...`)
   stopWtCookieRefresh()
-  stopParsers()
+  const parsersStopped = stopParsers()
   const ingestStopped = stopIngestWorker()
   // Все вызовы сначала запрещают новую работу. Общий deadline важен: один
   // voice refresh может последовательно ждать несколько сетевых timeout, а
   // Fastify.close — тот же незавершённый request. После дедлайна process всё
   // равно безопасно закрывает client/pool/DB; кэши публикуются атомарно.
   const producerDrain = Promise.allSettled([
+    parsersStopped,
     app?.close() ?? Promise.resolve(),
     stopBotWork(PRODUCER_DRAIN_MS),
     voiceTracker?.stop() ?? Promise.resolve(),

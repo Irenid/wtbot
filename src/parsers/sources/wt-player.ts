@@ -587,7 +587,7 @@ export function collectPlayerItem(nickname: string): Promise<ParsedItem> {
 export const wtPlayers: ParserSource = {
   name: 'wt-players',
   intervalMs: 30 * 60_000,
-  async run() {
+  async run(signal) {
     const nicknames = config.playerNames
     if (nicknames.length === 0) return { summary: 'Список WT-игроков пуст — сбор пропущен', items: [] }
     if (config.wtCookie.trim() === '') {
@@ -599,6 +599,7 @@ export const wtPlayers: ParserSource = {
     // Игроки намеренно идут последовательно через общую очередь: 429 или
     // потеря сессии должны остановить batch без лишних запросов.
     for (const nickname of nicknames) {
+      signal.throwIfAborted()
       try {
         items.push(await collectPlayerItem(nickname))
       } catch (error) {

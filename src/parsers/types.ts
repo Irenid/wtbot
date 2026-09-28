@@ -18,7 +18,8 @@ export interface ParserSource {
   intervalMs: number
   /**
    * Один цикл парсинга. Верни сводку и (опционально) записи;
-   * при ошибке — бросай исключение.
+   * при ошибке — бросай исключение. signal отменяется при остановке
+   * планировщика: длинный обход должен проверять его между запросами.
    */
-  run(): Promise<ParseOutput>
+  run(signal: AbortSignal): Promise<ParseOutput>
 }
