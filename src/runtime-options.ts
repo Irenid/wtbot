@@ -33,6 +33,37 @@ export interface WorkerResourcePlan {
   maxOldGenerationSizeMb: number
 }
 
+export interface MemoryProbe {
+  totalBytes: number
+  freeBytes: number
+  /** process.constrainedMemory(): лимит cgroup; 0 или огромное значение — лимита нет. */
+  constrainedBytes: number
+  /** process.availableMemory(): свободная память с учётом лимита. */
+  availableBytes: number
+}
+
+/**
+ * Память, которую реально может занять процесс. В Docker os.totalmem() и
+ * os.freemem() показывают память хоста: без учёта cgroup-лимита авто-план на
+ * хосте с 32 ГБ и лимитом контейнера 2 ГБ выбрал бы слишком много workers,
+ * и ядро убило бы контейнер по OOM.
+ */
+export function containerAwareMemory(probe: MemoryProbe): { totalBytes: number; freeBytes: number } {
+  const limited = probe.constrainedBytes > 0 && probe.constrainedBytes < probe.totalBytes
+  const totalBytes = limited ? probe.constrainedBytes : probe.totalBytes
+  const availableBytes = probe.availableBytes > 0 ? probe.availableBytes : probe.freeBytes
+  return { totalBytes, freeBytes: Math.min(totalBytes, probe.freeBytes, availableBytes) }
+}
+
+function systemMemory(): { totalBytes: number; freeBytes: number } {
+  return containerAwareMemory({
+    totalBytes: totalmem(),
+    freeBytes: freemem(),
+    constrainedBytes: process.constrainedMemory(),
+    availableBytes: process.availableMemory(),
+  })
+}
+
 function integerSetting(
   env: WorkerResourceEnvironment,
   name: string,
@@ -67,9 +98,11 @@ export function workerResourcePlan(options: WorkerResourcePlanOptions = {}): Wor
 
   const env = options.env ?? process.env
   const availableCpus = Math.max(1, Math.floor(options.availableCpus ?? availableParallelism()))
+  let probed: { totalBytes: number; freeBytes: number } | undefined
+  const measured = () => (probed ??= systemMemory())
   const totalMemoryMb = Math.max(
     256,
-    Math.floor(options.totalMemoryMb ?? totalmem() / BYTES_PER_MB),
+    Math.floor(options.totalMemoryMb ?? measured().totalBytes / BYTES_PER_MB),
   )
   const freeMemoryMb = Math.max(
     0,
@@ -77,7 +110,7 @@ export function workerResourcePlan(options: WorkerResourcePlanOptions = {}): Wor
       totalMemoryMb,
       Math.floor(
         options.freeMemoryMb ??
-          (options.totalMemoryMb === undefined ? freemem() / BYTES_PER_MB : totalMemoryMb),
+          (options.totalMemoryMb === undefined ? measured().freeBytes / BYTES_PER_MB : totalMemoryMb),
       ),
     ),
   )

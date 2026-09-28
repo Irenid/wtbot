@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -85,6 +85,87 @@ test('SQLite backup отклоняет нехватку места и парал
       /уже выполняется/,
     )
     assert.equal(readdirSync(outputDir).includes(BACKUP_LOCK_FILE), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('SQLite backup снимает lock прерванного запуска, но не трогает живой', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-db-backup-'))
+  try {
+    const sourcePath = createFixture(root)
+    const outputDir = path.join(root, 'backups')
+    const lockPath = path.join(outputDir, BACKUP_LOCK_FILE)
+    const availableBytes = () => 1024n ** 3n
+    mkdirSync(outputDir, { recursive: true })
+    const writeLock = (pid: number, createdAt: number) => {
+      writeFileSync(lockPath, JSON.stringify({ ownerToken: 'crashed', pid, createdAt }), 'utf8')
+    }
+    const originalWarn = console.warn
+    console.warn = () => {}
+    try {
+      // Живой владелец и свежий lock — параллельный запуск отклоняется.
+      writeLock(4242, Date.now())
+      assert.throws(
+        () => createSqliteBackup({ sourcePath, outputDir, availableBytes, isProcessAlive: () => true }),
+        /уже выполняется/,
+      )
+      assert.equal(readdirSync(outputDir).includes(BACKUP_LOCK_FILE), true)
+
+      // Владелец умер (например, выключение ПК посреди ночного backup) — lock снимается.
+      writeLock(4242, Date.now())
+      createSqliteBackup({
+        sourcePath,
+        outputDir,
+        availableBytes,
+        now: new Date('2026-02-01T00:00:00Z'),
+        isProcessAlive: () => false,
+      })
+
+      // Lock старше 12 часов снимается даже при «живом» PID: Windows переиспользует PID.
+      writeLock(4242, Date.now() - 13 * 60 * 60_000)
+      createSqliteBackup({
+        sourcePath,
+        outputDir,
+        availableBytes,
+        now: new Date('2026-02-02T00:00:00Z'),
+        isProcessAlive: () => true,
+      })
+
+      // Свой PID в свежем lock — след прошлого процесса (перезапуск контейнера).
+      writeLock(process.pid, Date.now())
+      createSqliteBackup({
+        sourcePath,
+        outputDir,
+        availableBytes,
+        now: new Date('2026-02-02T12:00:00Z'),
+        isProcessAlive: () => true,
+      })
+
+      // Повреждённый lock снимается только по возрасту файла.
+      writeFileSync(lockPath, 'не JSON', 'utf8')
+      assert.throws(
+        () => createSqliteBackup({ sourcePath, outputDir, availableBytes, isProcessAlive: () => false }),
+        /уже выполняется/,
+      )
+      const old = new Date(Date.now() - 13 * 60 * 60_000)
+      utimesSync(lockPath, old, old)
+      createSqliteBackup({
+        sourcePath,
+        outputDir,
+        availableBytes,
+        now: new Date('2026-02-03T00:00:00Z'),
+        isProcessAlive: () => false,
+      })
+    } finally {
+      console.warn = originalWarn
+    }
+
+    // Ротация хранит 3 последних копии из четырёх созданных.
+    assert.deepEqual(
+      readdirSync(outputDir).sort(),
+      ['wtbot-20260202T000000Z.db', 'wtbot-20260202T120000Z.db', 'wtbot-20260203T000000Z.db'],
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
