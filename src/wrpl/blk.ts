@@ -60,6 +60,12 @@ export function parseBlk(input: Buffer): BlkMap {
   }
 }
 
+/**
+ * Предел вложенности дерева. Реальные BLK реплеев и миссий неглубокие;
+ * предел защищает стек от цепочки из сотен тысяч блоков.
+ */
+const MAX_BLK_DEPTH = 256
+
 interface BlockDesc {
   nameId: number
   fieldCount: number
@@ -220,12 +226,18 @@ function parseFatBlk(buf: Buffer): BlkMap {
     flat.push({ name, fields, childCount: d.childCount, firstChild: d.firstChild })
   }
 
-  // Собираем дерево; повторяющиеся ключи склеиваются в массив
+  // Собираем дерево; повторяющиеся ключи склеиваются в массив. В корректном
+  // FAT BLK у каждого блока ровно один родитель. Без этой проверки DAG из
+  // общих потомков (i → i+1, i+2) разворачивается экспоненциально: 85 байт
+  // входа давали десятки тысяч объектов. С ней каждый блок строится не более
+  // одного раза, и размер дерева линеен по входу.
   const visiting = new Set<number>()
-  function build(idx: number): BlkMap {
+  const claimed = new Uint8Array(flat.length)
+  claimed[0] = 1
+  function build(idx: number, depth: number): BlkMap {
     const fb = flat[idx]
     if (!fb) throw new Error(`блок ${idx} вне диапазона`)
-    if (visiting.has(idx)) throw new Error(`цикл в дереве BLK на блоке ${idx}`)
+    if (depth > MAX_BLK_DEPTH) throw new Error(`дерево BLK глубже ${MAX_BLK_DEPTH} уровней`)
     if (fb.firstChild > flat.length || fb.childCount > flat.length - fb.firstChild) {
       throw new Error(`дочерние блоки ${idx} вне диапазона`)
     }
@@ -235,13 +247,16 @@ function parseFatBlk(buf: Buffer): BlkMap {
     for (let c = fb.firstChild; c < fb.firstChild + fb.childCount; c++) {
       const child = flat[c]
       if (!child) throw new Error(`дочерний блок ${c} вне диапазона`)
-      putKV(m, child.name, build(c))
+      if (visiting.has(c)) throw new Error(`цикл в дереве BLK на блоке ${c}`)
+      if (claimed[c] === 1) throw new Error(`блок ${c} повторно встречается в дереве BLK`)
+      claimed[c] = 1
+      putKV(m, child.name, build(c, depth + 1))
     }
     visiting.delete(idx)
     return m
   }
 
-  return build(0)
+  return build(0, 0)
 }
 
 function putKV(m: BlkMap, k: string, v: BlkValue): void {
