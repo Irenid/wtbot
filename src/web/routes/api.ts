@@ -148,7 +148,17 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
     return { items: getLatestItems(request.query.limit ?? 20, request.query.source) }
   })
 
-  app.get<{ Params: { source: string } }>('/api/parsers/:source/history', async (request) => ({
+  app.get<{ Params: { source: string } }>('/api/parsers/:source/history', {
+    schema: {
+      params: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['source'],
+        // Имена источников — короткие slug вида wt-replays.
+        properties: { source: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$' } },
+      },
+    },
+  }, async (request) => ({
     history: getParseHistory(request.params.source),
   }))
 
