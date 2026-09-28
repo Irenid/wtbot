@@ -126,6 +126,20 @@ export class OfficialProfileProvider implements PlayerStatsProvider {
       }
     }
 
+    // Профиль адресуется ником. Если страница показала другой ник, это чужой
+    // аккаунт (ник переименован или занят заново) — не приписываем его identity.
+    if (document.nick.trim().toLowerCase() !== nickname.toLowerCase()) {
+      return {
+        player,
+        fetchedAt,
+        sourceUpdatedAt: null,
+        status: 'not_found',
+        rawJson: null,
+        error: `Страница профиля показала другой ник: ${document.nick.trim().slice(0, 64)}`,
+        normalized: null,
+      }
+    }
+
     const rawJson = JSON.stringify(document)
     try {
       const normalized = normalizeOfficialProfile(document)
@@ -133,9 +147,10 @@ export class OfficialProfileProvider implements PlayerStatsProvider {
         player: {
           source: this.source,
           sourcePlayerId: document.nick,
-          // Страница профиля не публикует числовой id: он остаётся тем, что
-          // identity уже знает из локальных реплеев.
-          wtUserId: player.wtUserId,
+          // Страница профиля не публикует числовой id и найдена по нику, поэтому
+          // provider не подтверждает wt_user_id: связь остаётся exact_nick,
+          // а не user_id с высокой уверенностью.
+          wtUserId: null,
           nick: document.nick,
           platform: platformFromNick(document.nick) ?? player.platform,
         },
