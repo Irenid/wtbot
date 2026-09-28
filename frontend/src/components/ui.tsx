@@ -186,6 +186,8 @@ export function SegControl<T extends string>({ options, value, onChange, ariaLab
           key={option.value}
           type="button"
           className={option.value === value ? 'active' : ''}
+          // Выбранный вариант виден скринридеру, а не только по CSS-классу.
+          aria-pressed={option.value === value}
           onClick={() => onChange(option.value)}
         >
           {option.label}

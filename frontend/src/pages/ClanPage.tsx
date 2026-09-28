@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { fetchClan, fetchClanHistory, fetchClans, SiteApiError, type ClanDetail, type ClanHistoryPoint } from '../api'
-import { battleVersusLabel, coreClanTag, fmtDateTime, fmtInt } from '../lib/format'
+import { fetchClan, fetchClanHistory, SiteApiError, type ClanDetail, type ClanHistoryPoint } from '../api'
+import { battleVersusLabel, fmtDateTime, fmtInt } from '../lib/format'
 import { Chip, DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl } from '../components/ui'
 import { SeasonPanel } from '../components/SeasonPanel'
 import { TimeChart } from '../components/TimeChart'
@@ -25,10 +25,10 @@ export function ClanPage() {
   const { coreTag = '' } = useParams()
   const { locale } = useLocale()
   const [detail, setDetail] = useState<ClanDetail | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const [history, setHistory] = useState<ClanHistoryPoint[] | null>(null)
   const [historyTruncated, setHistoryTruncated] = useState(false)
-  const [rank, setRank] = useState<number | null>(null)
-  const [delta30d, setDelta30d] = useState<number | null>(null)
+  const [historyError, setHistoryError] = useState<unknown>(null)
   const [days, setDays] = useState<'7' | '30' | '90'>('30')
   const [battleFilter, setBattleFilter] = useState<'all' | 'w' | 'l'>('all')
   const [error, setError] = useState<unknown>(null)
@@ -46,13 +46,21 @@ export function ClanPage() {
     { value: 'l', label: t('battles.filter.losses') },
   ] as const, [locale])
 
+  // Другой клан — прежние данные не показываем ни мгновения.
+  useEffect(() => {
+    setDetail(null)
+  }, [coreTag])
+
+  // Смена периода обновляет только данные: страница остаётся на месте,
+  // карточка боёв приглушается до ответа.
   useEffect(() => {
     let cancelled = false
-    setDetail(null)
     setError(null)
+    setRefreshing(true)
     fetchClan(coreTag, Number(days))
       .then((body) => { if (!cancelled) setDetail(body) })
       .catch((err) => { if (!cancelled) setError(err) })
+      .finally(() => { if (!cancelled) setRefreshing(false) })
     return () => { cancelled = true }
   }, [coreTag, days])
 
@@ -60,34 +68,18 @@ export function ClanPage() {
     let cancelled = false
     setHistory(null)
     setHistoryTruncated(false)
+    setHistoryError(null)
     fetchClanHistory(coreTag, 90)
       .then((body) => {
         if (cancelled) return
         setHistory(body.points)
         setHistoryTruncated(body.truncated)
       })
-      .catch(() => {})
+      .catch((err) => { if (!cancelled) setHistoryError(err) })
     return () => { cancelled = true }
   }, [coreTag])
 
-  useEffect(() => {
-    let cancelled = false
-    setRank(null)
-    setDelta30d(null)
-    // URL мог прийти в другой нормализации — сравниваем по ядру тега, как сервер.
-    const target = coreClanTag(coreTag)
-    fetchClans()
-      .then((body) => {
-        if (cancelled) return
-        const index = body.clans.findIndex((clan) => clan.coreTag === target)
-        setRank(index >= 0 ? index + 1 : null)
-        setDelta30d(index >= 0 ? body.clans[index]!.delta30d : null)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [coreTag])
-
-  if (error !== null) {
+  if (error !== null && detail === null) {
     const message = error instanceof SiteApiError && error.status === 404
       ? t('clan.notFound')
       : undefined
@@ -101,6 +93,7 @@ export function ClanPage() {
   if (!detail) return <Loading text={t('clan.loading')} />
 
   const { clan, roster, battles, recent } = detail
+  const { rank, delta30d } = clan
   const kd = battles.deaths > 0 ? (battles.kills / battles.deaths).toFixed(2) : '—'
   const perBattle = battles.total > 0 ? Math.round(battles.score / battles.total) : null
   const topRating = Math.max(roster[0]?.rating ?? 1, 1)
@@ -117,13 +110,14 @@ export function ClanPage() {
       </div>
 
       <SeasonPanel context={detail.season} compact />
+      {error !== null && <ErrorNotice error={error} />}
 
       <header className="hero-card">
         <span className="avatar-tile">{clan.coreTag.slice(0, 2).toUpperCase()}</span>
         <div className="who">
           <h1>{clan.displayTag} {clan.name && <span className="sub">{clan.name}</span>}</h1>
           <div className="chips">
-            {rank !== null && <Chip tone="accent">{t('clan.rank', { n: rank })}</Chip>}
+            <Chip tone="accent">{t('clan.rank', { n: rank })}</Chip>
             <Chip>{tp('common.members', clan.members)}</Chip>
             <Chip>{t('common.updated', { when: fmtDateTime(clan.lastSeenAt) })}</Chip>
           </div>
@@ -141,7 +135,7 @@ export function ClanPage() {
         </div>
       </header>
 
-      <div className="card">
+      <div className="card" style={refreshing ? { opacity: 0.6, transition: 'opacity 0.2s' } : undefined} aria-busy={refreshing}>
         <SecHead title={t('clan.battles')} hint={t('clan.battles.hint')}>
           <span style={{ marginLeft: 'auto' }}>
             <SegControl options={PERIODS} value={days} onChange={setDays} ariaLabel={t('a11y.period.clanBattles')} />
@@ -198,10 +192,17 @@ export function ClanPage() {
           </div>
           <div className="muted small" style={{ padding: '12px 20px', borderTop: '1px solid var(--line)' }}>
             {t('clan.roster.footnote')}
+            {!clan.rosterKnown && <> {t('clan.roster.unverified')}</>}
           </div>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+          {historyError !== null && (
+            <div className="card" style={{ marginBottom: 0 }}>
+              <SecHead title={t('clan.dynamics')} />
+              <ErrorNotice error={historyError} />
+            </div>
+          )}
           {history !== null && history.length >= 2 && (
             <div className="card" style={{ marginBottom: 0 }}>
               <SecHead

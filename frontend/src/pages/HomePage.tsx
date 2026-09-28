@@ -140,16 +140,27 @@ export function HomePage() {
   const [suggestions, setSuggestions] = useState<PlayerSearchEntry[]>([])
   const [error, setError] = useState<unknown>(null)
   const [clans, setClans] = useState<ClanListEntry[] | null>(null)
+  const [clansError, setClansError] = useState<unknown>(null)
   const [recent, setRecent] = useState<BattleListEntry[] | null>(null)
+  const [recentError, setRecentError] = useState<unknown>(null)
   const [stats, setStats] = useState<SiteStats | null>(null)
+  const [statsError, setStatsError] = useState<unknown>(null)
   // Номер поколения запросов подсказок: устаревшие ответы отбрасываются.
   const suggestSeq = useRef(0)
 
+  // Каждая карточка показывает свою ошибку: без этого отказ выглядел как
+  // вечная загрузка или молча убирал плитки статистики.
   useEffect(() => {
     let cancelled = false
-    fetchClans().then((body) => { if (!cancelled) setClans(body.clans.slice(0, 8)) }).catch(() => {})
-    fetchBattles({ limit: 9 }).then((body) => { if (!cancelled) setRecent(body.battles) }).catch(() => {})
-    fetchSiteStats().then((body) => { if (!cancelled) setStats(body) }).catch(() => {})
+    fetchClans()
+      .then((body) => { if (!cancelled) setClans(body.clans.slice(0, 8)) })
+      .catch((err) => { if (!cancelled) setClansError(err) })
+    fetchBattles({ limit: 9 })
+      .then((body) => { if (!cancelled) setRecent(body.battles) })
+      .catch((err) => { if (!cancelled) setRecentError(err) })
+    fetchSiteStats()
+      .then((body) => { if (!cancelled) setStats(body) })
+      .catch((err) => { if (!cancelled) setStatsError(err) })
     return () => { cancelled = true }
   }, [])
 
@@ -262,6 +273,7 @@ export function HomePage() {
 
       {stats !== null && <SeasonPanel context={stats.season} compact />}
 
+      {statsError !== null && <ErrorNotice error={statsError} />}
       {stats !== null && (
         <section className="stat-tiles" style={{ marginBottom: 26 }}>
           <div className="stat-tile"><div className="v">{fmtInt(stats.players)}</div><div className="l">{t('home.stats.players')}</div></div>
@@ -304,7 +316,7 @@ export function HomePage() {
       <div className="grid-2">
         <div className="card hoverable home-feed-card">
           <SecHead title={t('home.card.topClans')} hint={t('home.card.topClans.hint')} />
-          {clans === null ? <Loading /> : clans.length === 0 ? (
+          {clansError !== null ? <ErrorNotice error={clansError} /> : clans === null ? <Loading /> : clans.length === 0 ? (
             <div className="muted small">{t('home.card.clans.empty')}</div>
           ) : (
             <>
@@ -331,7 +343,7 @@ export function HomePage() {
 
         <div className="card hoverable home-feed-card">
           <SecHead title={t('home.card.recent')} />
-          {recent === null ? <Loading /> : recent.length === 0 ? (
+          {recentError !== null ? <ErrorNotice error={recentError} /> : recent === null ? <Loading /> : recent.length === 0 ? (
             <div className="muted small">{t('home.card.recent.empty')}</div>
           ) : (
             <>
