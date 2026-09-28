@@ -41,9 +41,20 @@ function envCsvUnique(name: string): string[] {
 
 const workers = workerResourcePlan()
 
+/**
+ * Токен Discord-бота. Процессы, которым нужен Discord (бот, deploy:commands),
+ * вызывают проверку явно при старте, а оффлайн-тесты, verify:* и CLI вроде
+ * db:backup импортируют config без секрета.
+ */
+export function requireDiscordToken(): string {
+  return required('TOKEN')
+}
+
 export const config = {
-  /** Токен Discord-бота (Developer Portal → Bot → Reset Token) */
-  token: required('TOKEN'),
+  /** Токен Discord-бота (Developer Portal → Bot → Reset Token); читается лениво. */
+  get token(): string {
+    return requireDiscordToken()
+  },
   /** Application ID — нужен для регистрации slash-команд (npm run deploy:commands) */
   clientId: process.env['CLIENT_ID'],
   /** ID тестового сервера: команды на нём регистрируются мгновенно (опционально) */

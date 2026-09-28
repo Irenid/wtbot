@@ -3,7 +3,6 @@ import test from 'node:test'
 import type { Client } from 'discord.js'
 
 test('автоанонс не отправляет текст до завершения ingest', async () => {
-  process.env['TOKEN'] ??= 'test-token'
   process.env['WT_BATTLES_CHANNEL'] = 'test-channel'
   const [
     { emitBattleLifecycle },
