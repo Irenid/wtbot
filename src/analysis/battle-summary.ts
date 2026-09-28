@@ -6,6 +6,7 @@ import { buildBattleMedia, cachedBattleMeta } from '../wrpl/battle-media.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../wrpl/replay.js'
 import { buildRosters, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
+import { configureReplayUrlPolicy } from '../wrpl/replay-url-policy.js'
 import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 
 // Результаты боя из файла реплея .wrpl. Запуск:
@@ -24,6 +25,7 @@ const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
 const wanted = args[0]
 
 initDb(config.dbPath, { allowCreate: config.allowNewDb })
+configureReplayUrlPolicy({ allowedHosts: config.replayHosts })
 
 let sessionId: string | undefined
 if (wanted) {

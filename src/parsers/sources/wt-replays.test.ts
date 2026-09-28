@@ -107,3 +107,27 @@ test('wt-replays применяет date cutoff до сохранения items'
   ])
   assert.equal(result.hitCap, false)
 })
+
+test('wt-replays отбрасывает записи API, не прошедшие runtime-схему', async () => {
+  const broken = [
+    { ...replay(2), sessionId: '../../etc' },
+    { ...replay(3), partsCount: '7' },
+    { ...replay(4), missionName: null },
+    null,
+  ] as unknown as WtReplay[]
+  const fixture = collectionDeps([page([replay(1), ...broken], 5)])
+  const result = await collectFreshReplays(
+    { maxPages: 50, stopAtKnown: true, fetchDetails: false },
+    fixture.deps,
+  )
+  assert.deepEqual(result.items.map((item) => item.externalId), ['1'])
+  assert.equal(result.rejected, 4)
+})
+
+test('wt-replays отклоняет ответ API неожиданного формата', async () => {
+  const fixture = collectionDeps([{ items: 'nope', count: 0, total_count: 1 } as unknown as WtListResponse])
+  await assert.rejects(
+    collectFreshReplays({ maxPages: 50, stopAtKnown: true, fetchDetails: false }, fixture.deps),
+    /неожиданный формат ответа Replay API/,
+  )
+})

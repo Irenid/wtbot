@@ -18,7 +18,7 @@
     "capture:map": "tsx src/analysis/capture-map.ts",
     "backfill": "tsx src/parsers/backfill.ts",
     "site": "tsx src/analysis/site-real.ts",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "tsx --test --test-timeout=120000 --test-force-exit \"src/**/*.test.ts\"",
     "verify:wt-transport": "tsx src/analysis/wt-transport-smoke.ts",
     "verify:workers": "tsx src/analysis/worker-smoke.ts",
     "verify:workers:dist": "node dist/analysis/worker-smoke.js",

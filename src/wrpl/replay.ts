@@ -1,4 +1,5 @@
 import { parseBlk, type BlkMap, type BlkValue } from './blk.js'
+import { MAX_REPLAY_PARTS, replayUrlStructureProblem } from './replay-url-policy.js'
 import { fetchReplayPart } from './replay-cache.js'
 import { runWorkerTask, transferableBuffer, type WorkerPriority } from '../workers/pool.js'
 
@@ -216,17 +217,69 @@ export function normalizeSessionId(raw: string): string {
   return /^\d+$/.test(raw) ? raw : BigInt('0x' + raw.replace(/^0x/i, '')).toString(10)
 }
 
-/** Список ссылок на части реплея из данных записи (с фолбэком по шаблону CDN) */
-export function replayPartUrls(data: {
+export interface ReplayPartUrlSource {
   replayParts?: string[] | null
   url?: string
   partsCount?: number
-}): string[] {
-  if (data.replayParts && data.replayParts.length > 0) return data.replayParts
-  if (data.url && typeof data.partsCount === 'number') {
-    return Array.from({ length: data.partsCount + 1 }, (_, i) => `${data.url}${String(i).padStart(4, '0')}.wrpl`)
+}
+
+export interface ReplayPartsResolution {
+  urls: string[]
+  /** Почему ссылки отклонены; null — ссылки корректны или их просто нет. */
+  problem: string | null
+}
+
+function explicitPartUrls(parts: unknown): ReplayPartsResolution {
+  if (!Array.isArray(parts)) return { urls: [], problem: 'replayParts не является списком' }
+  if (parts.length > MAX_REPLAY_PARTS) {
+    return { urls: [], problem: `частей ${parts.length} больше предела ${MAX_REPLAY_PARTS}` }
   }
-  return []
+  const urls: string[] = []
+  for (const part of parts) {
+    if (typeof part !== 'string') return { urls: [], problem: 'ссылка на часть не является строкой' }
+    const problem = replayUrlStructureProblem(part, true)
+    if (problem !== null) return { urls: [], problem }
+    urls.push(part)
+  }
+  return { urls, problem: null }
+}
+
+function templatePartUrls(base: unknown, partsCount: unknown): ReplayPartsResolution {
+  if (typeof base !== 'string' || typeof partsCount !== 'number') return { urls: [], problem: null }
+  // partsCount — индекс последней части: частей partsCount + 1.
+  if (!Number.isSafeInteger(partsCount) || partsCount < 0 || partsCount >= MAX_REPLAY_PARTS) {
+    return { urls: [], problem: `некорректное число частей ${String(partsCount)}` }
+  }
+  if (base.includes('?') || base.includes('#') || !base.endsWith('/')) {
+    return { urls: [], problem: 'базовый URL реплея должен заканчиваться на / без query' }
+  }
+  const urls = Array.from({ length: partsCount + 1 }, (_, i) => `${base}${String(i).padStart(4, '0')}.wrpl`)
+  const problem = replayUrlStructureProblem(urls[0]!, true)
+  return problem === null ? { urls, problem: null } : { urls: [], problem }
+}
+
+/**
+ * Ссылки на части реплея из данных записи (с фолбэком по шаблону CDN) после
+ * структурной проверки URL и предела частей: данные пришли из внешнего API.
+ * Отказ здесь терминален (no_parts), поэтому allowlist WT_REPLAY_HOSTS
+ * проверяется позже, при скачивании, как обычная повторяемая ошибка.
+ */
+export function resolveReplayPartUrls(data: ReplayPartUrlSource): ReplayPartsResolution {
+  let explicitProblem: string | null = null
+  if (data.replayParts !== undefined && data.replayParts !== null
+    && !(Array.isArray(data.replayParts) && data.replayParts.length === 0)) {
+    const explicit = explicitPartUrls(data.replayParts)
+    if (explicit.problem === null) return explicit
+    explicitProblem = explicit.problem
+  }
+  const templated = templatePartUrls(data.url, data.partsCount)
+  if (templated.urls.length > 0) return templated
+  return { urls: [], problem: templated.problem ?? explicitProblem }
+}
+
+/** Список проверенных ссылок на части реплея; пустой, если ссылок нет или они отклонены. */
+export function replayPartUrls(data: ReplayPartUrlSource): string[] {
+  return resolveReplayPartUrls(data).urls
 }
 
 /**

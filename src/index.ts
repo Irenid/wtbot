@@ -14,6 +14,7 @@ import { startParsers, stopParsers } from './parsers/index.js'
 import { getIngestTelemetrySnapshot, startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
 import { configureReplayFetchAdmission } from './wrpl/replay-cache.js'
 import { configureReplayProcessBudget } from './wrpl/replay-events.js'
+import { configureReplayUrlPolicy } from './wrpl/replay-url-policy.js'
 import { closeWorkerPool, runWorkerTask, workerPoolSnapshot } from './workers/pool.js'
 import {
   OFFICIAL_PROFILE_PARSER_VERSION,
@@ -82,6 +83,7 @@ configureReplayProcessBudget({
   exactReservations: config.replayExactReservationEnabled,
 })
 configureReplayFetchAdmission(config.ingestAdaptiveAdmissionEnabled)
+configureReplayUrlPolicy({ allowedHosts: config.replayHosts })
 
 process.once('SIGINT', () => requestShutdown('SIGINT'))
 process.once('SIGTERM', () => requestShutdown('SIGTERM'))

@@ -81,6 +81,11 @@ export const config = {
   playerNames: envCsvUnique('WT_PLAYER_NAMES'),
   /** Куки залогиненной сессии warthunder.com (identity_*) для WT-парсеров. */
   wtCookie: process.env['WT_COOKIE'] ?? '',
+  /**
+   * Разрешённые хосты CDN частей реплеев (точное имя или домен-суффикс, через
+   * запятую). Пусто — только структурные проверки URL из Replay API.
+   */
+  replayHosts: envCsvUnique('WT_REPLAY_HOSTS'),
   /** Весь трафик warthunder.com идёт через настоящий Edge: Cloudflare не пропускает Node-fetch. */
   wtBrowserEnabled: envBoolean('WT_BROWSER_ENABLED', true),
   /**
