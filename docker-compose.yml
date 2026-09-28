@@ -1,0 +1,55 @@
+# Боевой запуск wtbot на Linux: `docker compose up -d --build`.
+# Перед первым запуском: .env по образцу .env.example (TOKEN, WT_COOKIE,
+# WEB_TOKEN обязателен), база и assets — в ./data (см. README, «Docker»).
+services:
+  wtbot:
+    build: .
+    image: wtbot:latest
+    init: true
+    # Стабильное имя хоста: Chromium хранит его в SingletonLock профиля.
+    hostname: wtbot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Пути и сеть контейнера важнее значений из .env, записанных для Windows.
+      PORT: "3000"
+      WEB_HOST: 0.0.0.0
+      DB_PATH: /app/data/wtbot.db
+      WT_BROWSER_PROFILE_DIR: /app/data/wt-browser-profile
+      WT_BROWSER_EXECUTABLE: /usr/bin/chromium
+      WT_BROWSER_NO_SANDBOX: "true"
+      WT_GAME_DIR: ""
+      TZ: ${TZ:-UTC}
+    ports:
+      # Только на loopback хоста. Для доступа из сети поставьте перед ботом
+      # reverse proxy с TLS (и WEB_TRUST_PROXY) или замените на "3000:3000".
+      - "127.0.0.1:3000:3000"
+      # VNC к виртуальному дисплею браузера (нужен WT_VNC_PASSWORD в .env):
+      # - "127.0.0.1:5900:5900"
+    volumes:
+      - ./data:/app/data
+    # Shutdown: до 10 с на producers, затем Edge, Discord, worker pool и SQLite.
+    stop_grace_period: 45s
+
+  backup:
+    image: wtbot:latest
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - wtbot
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/wtbot.db
+      WT_BROWSER_ENABLED: "false"
+      WTBOT_BACKUP_DIR: /backups
+      WTBOT_BACKUP_TIME: ${WTBOT_BACKUP_TIME:-04:30}
+      WTBOT_BACKUP_KEEP: ${WTBOT_BACKUP_KEEP:-3}
+      TZ: ${TZ:-UTC}
+    command: ["node", "dist/analysis/db-backup-schedule.js"]
+    healthcheck:
+      disable: true
+    volumes:
+      - ./data:/app/data
+      # Держите копии на другом диске хоста, если он есть.
+      - ./backups:/backups
+    stop_grace_period: 10m

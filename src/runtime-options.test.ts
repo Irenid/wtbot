@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { workerResourcePlan } from './runtime-options.js'
+import { containerAwareMemory, workerResourcePlan } from './runtime-options.js'
+
+const GIB = 1024 ** 3
+
+test('лимит памяти контейнера (cgroup) важнее памяти хоста', () => {
+  // Docker: хост 32 ГиБ, лимит контейнера 2 ГиБ.
+  assert.deepEqual(
+    containerAwareMemory({ totalBytes: 32 * GIB, freeBytes: 20 * GIB, constrainedBytes: 2 * GIB, availableBytes: 1.5 * GIB }),
+    { totalBytes: 2 * GIB, freeBytes: 1.5 * GIB },
+  )
+  // Без лимита constrainedMemory() возвращает 0 (Windows) или огромное значение (cgroup без limit).
+  assert.deepEqual(
+    containerAwareMemory({ totalBytes: 16 * GIB, freeBytes: 5 * GIB, constrainedBytes: 0, availableBytes: 5 * GIB }),
+    { totalBytes: 16 * GIB, freeBytes: 5 * GIB },
+  )
+  assert.deepEqual(
+    containerAwareMemory({ totalBytes: 16 * GIB, freeBytes: 5 * GIB, constrainedBytes: 2 ** 62, availableBytes: 0 }),
+    { totalBytes: 16 * GIB, freeBytes: 5 * GIB },
+  )
+})
 
 test('auto resource plan jointly budgets workers and retained replay bytes', () => {
   const plan = workerResourcePlan({

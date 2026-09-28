@@ -41,6 +41,7 @@ import {
 } from './parsers/sources/wt-request.js'
 import {
   acquireRecoverableFileLock,
+  FileLockTimeoutError,
   type OwnedFileLock,
 } from './recoverable-file-lock.js'
 
@@ -74,8 +75,13 @@ try {
       console.warn(`[core] Восстановлен stale process lock${owner ? ` PID ${owner.pid}` : ''}`)
     },
   })
-} catch {
-  console.error('[core] Другой экземпляр wtbot уже запущен для этой SQLite; повторный старт отменён')
+} catch (error) {
+  if (error instanceof FileLockTimeoutError) {
+    console.error('[core] Другой экземпляр wtbot уже запущен для этой SQLite; повторный старт отменён')
+    process.exit(1)
+  }
+  // Ошибка файловой системы (права, диск) — не выдавать её за второй экземпляр.
+  console.error('[core] Не удалось захватить process lock SQLite:', error)
   process.exit(1)
 }
 
@@ -359,7 +365,7 @@ async function startServices(): Promise<void> {
       playerStats: playerStatsCoordinator,
     },
     undefined,
-    { host: config.webHost, token: config.webToken },
+    { host: config.webHost, token: config.webToken, trustProxy: config.webTrustProxy },
   )
   await app.listen({ port: config.port, host: config.webHost })
   if (shuttingDown) return
