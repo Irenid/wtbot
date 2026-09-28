@@ -5,7 +5,8 @@
  * (Copyright (c) 2025 LivingTheDagor, BSD-3-Clause) и Dagor Engine
  * (Copyright (c) 2023 Gaijin Entertainment, BSD-3-Clause). Изменено участниками
  * wtbot в 2026 году. Полные тексты лицензий и обязательные уведомления
- * BSD-3-Clause — в THIRD_PARTY_NOTICES.md. Файл распространяется как часть wtbot
+ * BSD-3-Clause — в LICENSES/BSD-3-Clause-WrplReplayParser.txt и
+ * LICENSES/BSD-3-Clause-DagorEngine.txt. Файл распространяется как часть wtbot
  * на условиях GNU AGPL-3.0-or-later; полный текст — в LICENSE. Без гарантий.
  */
 import { BitReader, EofError } from './bit-reader.js'
