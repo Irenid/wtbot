@@ -77,7 +77,7 @@ function parseLeaderboardPage(raw: string, page: number): LbPage {
 export const wtClans: ParserSource = {
   name: 'wt-clans',
   intervalMs: INTERVAL_MS,
-  async run() {
+  async run(signal) {
     // Парсеры запускаются при каждом старте процесса (tsx watch перезапускает
     // его на любое изменение кода) — свежий словарь не пересобираем
     const existing = getClansStats()
@@ -88,6 +88,7 @@ export const wtClans: ParserSource = {
     const entries: { tag: string; name: string }[] = []
     let pages = 0
     for (let page = 1; page <= MAX_PAGES; page++) {
+      signal.throwIfAborted()
       const res = await fetchWtResponse(
         `${LB_URL}/${page}/sort/dr_era5`,
         { headers: { accept: 'application/json' } },
