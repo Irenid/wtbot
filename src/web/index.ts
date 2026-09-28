@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto'
-import fastify, { type FastifyInstance } from 'fastify'
+import fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import type { WebDeps } from './types.js'
 import { apiRoutes } from './routes/api.js'
 import { pageRoutes } from './routes/pages.js'
@@ -25,14 +25,48 @@ function hasValidBearerToken(request: { headers: Record<string, string | string[
   return provided.length === expected.length && timingSafeEqual(provided, expected)
 }
 
-function pathWithoutQuery(url: string): string {
-  return url.split('?', 1)[0] ?? url
-}
-
-function isProtectedPath(url: string): boolean {
-  const pathname = pathWithoutQuery(url)
+function isProtectedPathname(pathname: string): boolean {
   return pathname === '/' || pathname === '/app' || pathname.startsWith('/app/')
     || pathname === '/api' || pathname.startsWith('/api/')
+}
+
+/**
+ * Нормализует сырой request-target к пути, по которому маршрутизирует Fastify:
+ * снимает absolute-form (`http://host/...`, приходит через прокси или HTTP/2),
+ * query и fragment, затем разово декодирует percent-escapes. Используется
+ * только как fallback (см. isProtectedRequest), когда маршрут не определён.
+ */
+function normalizedPathname(rawUrl: string): string {
+  let pathname = rawUrl
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(pathname)) {
+    try {
+      pathname = new URL(pathname).pathname
+    } catch {
+      // некорректный absolute URL — разбираем строку как есть
+    }
+  }
+  pathname = pathname.split('?', 1)[0] ?? pathname
+  pathname = pathname.split('#', 1)[0] ?? pathname
+  try {
+    pathname = decodeURIComponent(pathname)
+  } catch {
+    // битый percent-escape — сравниваем сырой путь
+  }
+  return pathname
+}
+
+/**
+ * Требует ли запрос авторизации. Решение принимается по фактически выбранному
+ * Fastify маршруту (`routeOptions.url`), а не по сырой строке `request.url`:
+ * закодированный (`/%61pi/...`) или absolute-form (`http://host/api/...`) путь
+ * иначе расходится с представлением роутера и обходит проверку. Если маршрут
+ * не найден (routeOptions.url отсутствует), запрос до защищённого обработчика
+ * не дойдёт, но на всякий случай отклоняем и по нормализованному пути.
+ */
+function isProtectedRequest(request: FastifyRequest): boolean {
+  const routeUrl = request.routeOptions?.url
+  if (routeUrl !== undefined) return isProtectedPathname(routeUrl)
+  return isProtectedPathname(normalizedPathname(request.url))
 }
 
 function isSafePostOrigin(request: {
@@ -79,7 +113,7 @@ export function buildServer(
   const app = fastify({ logger: false })
 
   app.addHook('onRequest', async (request, reply) => {
-    if (!requireToken || !isProtectedPath(request.url)) return
+    if (!requireToken || !isProtectedRequest(request)) return
     if (!hasValidBearerToken(request, token)) {
       reply.code(401).header('WWW-Authenticate', 'Bearer').send({
         ok: false,
