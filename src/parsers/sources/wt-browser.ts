@@ -5,13 +5,24 @@ import { resolve } from 'node:path'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
 import { writeFileAtomic } from '../../atomic-file.js'
 import { config } from '../../config.js'
-import { absorbCookieValues, cookieValues } from './wt-cookies.js'
+import { absorbCookieValues, cookieValues, wtCookieSeedHash } from './wt-cookies.js'
 import {
+  freshestCookies,
   isChallengeResponse,
   looksCleared,
-  preferHostCookies,
+  staleDuplicateCookies,
   type PageSignals,
 } from './wt-challenge.js'
+import {
+  browserExecutableCandidates,
+  browserSpawnArgs,
+  clearanceProbeDelayMs,
+  displayProblem,
+  findProfileBrowserPids,
+  MAX_FAILED_CLEARANCE_PROBES,
+  profileTooBroadToKill,
+  removeChromiumSingletonFiles,
+} from './wt-browser-platform.js'
 
 /**
  * Браузерный транспорт для warthunder.com.
@@ -38,7 +49,6 @@ const CLEARANCE_POLL_MS = 500
 const CLEARANCE_COOLDOWN_MS = 60_000
 const CDP_WAIT_MS = 20_000
 const CLOSE_WAIT_MS = 5_000
-const OFFSCREEN_POSITION = '-32000,-32000'
 const ENDPOINT_FILE = 'wtbot-cdp.json'
 /** Попытки одного запроса: две на транспортные сбои плюс одна после проверки. */
 const MAX_REQUEST_ATTEMPTS = 3
@@ -82,6 +92,8 @@ export interface WtBrowserMetrics {
   clearances: number
   /** Неудачных прохождений проверки. */
   clearanceFailures: number
+  /** Сетевых проб clearance: настоящие запросы к warthunder.com мимо общей очереди. */
+  clearanceProbes: number
   lastClearanceMs: number | null
   lastClearanceAt: number | null
   poolSize: number
@@ -100,6 +112,7 @@ const metrics: WtBrowserMetrics = {
   transportErrors: 0,
   clearances: 0,
   clearanceFailures: 0,
+  clearanceProbes: 0,
   lastClearanceMs: null,
   lastClearanceAt: null,
   poolSize: 0,
@@ -122,17 +135,7 @@ function profileDir(): string {
 }
 
 async function edgeExecutable(): Promise<string> {
-  const candidates = [
-    config.wtBrowserExecutable,
-    process.env['ProgramFiles(x86)'] === undefined
-      ? ''
-      : `${process.env['ProgramFiles(x86)']}/Microsoft/Edge/Application/msedge.exe`,
-    process.env['ProgramFiles'] === undefined
-      ? ''
-      : `${process.env['ProgramFiles']}/Microsoft/Edge/Application/msedge.exe`,
-    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-  ].filter((candidate): candidate is string => candidate.trim() !== '')
+  const candidates = browserExecutableCandidates(process.platform, process.env, config.wtBrowserExecutable)
   const available = await Promise.all(
     candidates.map((candidate) => access(candidate).then(
       () => true,
@@ -141,7 +144,7 @@ async function edgeExecutable(): Promise<string> {
   )
   const executable = candidates.find((_, index) => available[index])
   if (executable !== undefined) return executable
-  throw new WtBrowserError('исполняемый файл Microsoft Edge не найден; задайте WT_BROWSER_EXECUTABLE')
+  throw new WtBrowserError('исполняемый файл Edge/Chrome/Chromium не найден; задайте WT_BROWSER_EXECUTABLE')
 }
 
 async function cdpIsReady(port: number): Promise<boolean> {
@@ -214,18 +217,17 @@ async function rememberPort(port: number): Promise<void> {
  * молча завершается, а CDP-порт так и не открывается.
  */
 function killStaleProfileBrowsers(): Promise<void> {
-  if (process.platform !== 'win32') return Promise.resolve()
+  if (process.platform !== 'win32' && process.platform !== 'linux') return Promise.resolve()
   const dir = profileDir()
-  // Слишком общий путь совпал бы с личным Edge пользователя, поэтому по
-  // корню диска или короткому каталогу не убиваем ничего.
-  if (dir.length < 12 || !/[\\/].+[\\/]/.test(dir)) {
-    console.warn(`[wt-browser] Профиль ${dir} слишком общий — не снимаю чужие процессы Edge`)
+  // Слишком общий путь совпал бы с чужим браузером, а личный профиль Edge/Chrome
+  // не наш — его процессы нельзя гасить, даже если его указали в WT_BROWSER_PROFILE_DIR.
+  const refusal = profileTooBroadToKill(dir)
+  if (refusal !== null) {
+    console.warn(`[wt-browser] ${refusal}`)
     return Promise.resolve()
   }
-  // Личный профиль Edge не наш, и его браузер нельзя гасить ни при каких
-  // обстоятельствах, даже если его указали в WT_BROWSER_PROFILE_DIR.
-  if (/[\\/]AppData[\\/]Local[\\/]Microsoft[\\/]Edge[\\/]/i.test(`${dir}/`)) {
-    console.warn('[wt-browser] WT_BROWSER_PROFILE_DIR указывает на личный профиль Edge — не трогаю его процессы')
+  if (process.platform === 'linux') {
+    killLinuxProfileBrowsers(dir)
     return Promise.resolve()
   }
   // Путь уходит через переменную окружения: в -like обратный слэш не является
@@ -256,25 +258,45 @@ function killStaleProfileBrowsers(): Promise<void> {
   })
 }
 
+/**
+ * Linux: гасит процессы с нашим --user-data-dir и снимает SingletonLock
+ * профиля. В Docker профиль лежит в volume, и lock-файлы Chromium от прошлого
+ * контейнера иначе навсегда помечают профиль занятым.
+ */
+function killLinuxProfileBrowsers(dir: string): void {
+  for (const pid of findProfileBrowserPids(dir)) {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // Процесс уже завершился.
+    }
+  }
+  try {
+    removeChromiumSingletonFiles(dir)
+  } catch (error) {
+    console.warn(`[wt-browser] Не удалось снять SingletonLock профиля (${safeErrorMessage(error)})`)
+  }
+}
+
 function spawnArgs(port: number): string[] {
-  return [
-    '--remote-debugging-address=127.0.0.1',
-    `--remote-debugging-port=${port}`,
-    `--remote-allow-origins=http://127.0.0.1:${port}`,
-    `--user-data-dir=${profileDir()}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-features=Translate,MediaRouter',
-    // Cloudflare отклоняет настоящий headless, поэтому окно остаётся обычным и
-    // просто уезжает за пределы экрана.
-    ...(config.wtBrowserHeadless
-      ? [`--window-position=${OFFSCREEN_POSITION}`, '--window-size=1365,900']
-      : []),
-  ]
+  return browserSpawnArgs({
+    port,
+    profileDir: profileDir(),
+    offscreen: config.wtBrowserHeadless,
+    noSandbox: config.wtBrowserNoSandbox,
+    platform: process.platform,
+  })
 }
 
 async function spawnEdge(): Promise<{ child: ChildProcess; port: number }> {
+  const noDisplay = displayProblem(process.platform, process.env)
+  if (noDisplay !== null) throw new WtBrowserError(noDisplay)
   const executable = await edgeExecutable()
+  // Профиль без живых процессов: SingletonLock остался от прошлого запуска
+  // (или контейнера) и помешает браузеру открыть DevTools-порт.
+  if (process.platform === 'linux' && findProfileBrowserPids(profileDir()).length === 0) {
+    removeChromiumSingletonFiles(profileDir())
+  }
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const port = config.wtBrowserCdpPort > 0 ? config.wtBrowserCdpPort : await ephemeralPort()
     const child = spawn(executable, spawnArgs(port), { stdio: 'ignore', windowsHide: true })
@@ -492,16 +514,59 @@ export async function withEdgeBrowserPage<T>(work: (page: Page) => Promise<T>): 
   }
 }
 
+/** В профиле браузера: хэш WT_COOKIE, которой профиль засеян последний раз. */
+const COOKIE_SEED_MARKER = 'wtbot-cookie-seed.json'
+const WT_COOKIE_DOMAIN = /^\.?warthunder\.com$/
+
+/**
+ * Сессию warthunder.com ведёт браузер: сервер ротирует identity_sid в ответах
+ * и выдаёт identity_* на `.warthunder.com`. Поэтому cookies из jar кладутся в
+ * профиль только когда в нём нет живой сессии или в .env новая WT_COOKIE.
+ * Раньше seed при каждом старте добавлял host-only копии рядом с доменными:
+ * браузер отправлял обе, сервер читал устаревшую и уводил на повторный вход.
+ */
 async function seedBrowserCookies(context: BrowserContext): Promise<void> {
+  const existing = await context.cookies(WT_ORIGIN).catch(() => [])
+  for (const stale of staleDuplicateCookies(existing)) {
+    await context
+      .clearCookies({ name: stale.name, domain: stale.domain, path: stale.path })
+      .catch(() => undefined)
+  }
+
+  const markerFile = resolve(profileDir(), COOKIE_SEED_MARKER)
+  const seed = wtCookieSeedHash()
+  const seededWith = await readFile(markerFile, 'utf8')
+    .then((text) => (JSON.parse(text) as { seedHash?: unknown }).seedHash)
+    .catch(() => null)
+  const nowSec = Date.now() / 1_000
+  const browserHasSession = existing.some((cookie) => cookie.name === 'identity_sid' && cookie.expires > nowSec)
+  // Профиль без маркера, но с живой сессией (обновление с прежней версии) —
+  // тоже доверяем браузеру: его сессия новее jar.
+  if (browserHasSession && (seededWith === null || seededWith === seed)) {
+    if (seededWith === null) await writeFileAtomic(markerFile, JSON.stringify({ seedHash: seed })).catch(() => undefined)
+    return
+  }
+
   const values = await cookieValues()
-  if (values.length === 0) return
   // cf_* не переносим: клиренс из Node-jar привязан к другому отпечатку и в
   // браузере бесполезен, а свой браузер выдаёт себе сам.
   const authValues = values.filter(({ name }) => !name.startsWith('cf_') && !name.startsWith('__cf'))
   if (authValues.length === 0) return
+  for (const { name } of authValues) {
+    await context.clearCookies({ name, domain: WT_COOKIE_DOMAIN }).catch(() => undefined)
+  }
   await context
-    .addCookies(authValues.map(({ name, value }) => ({ name, value, url: WT_ORIGIN })))
+    .addCookies(authValues.map(({ name, value }) => ({
+      name,
+      value,
+      domain: '.warthunder.com',
+      path: '/',
+      secure: true,
+      httpOnly: true,
+      sameSite: 'Lax' as const,
+    })))
     .catch(() => undefined)
+  await writeFileAtomic(markerFile, JSON.stringify({ seedHash: seed })).catch(() => undefined)
 }
 
 /**
@@ -511,7 +576,7 @@ async function seedBrowserCookies(context: BrowserContext): Promise<void> {
 async function saveBrowserCookies(context: BrowserContext): Promise<void> {
   const cookies = await context.cookies(WT_ORIGIN).catch(() => [])
   if (cookies.length === 0) return
-  await absorbCookieValues(preferHostCookies(cookies))
+  await absorbCookieValues(freshestCookies(cookies))
 }
 
 function browserHeaders(init: RequestInit): Record<string, string> {
@@ -671,12 +736,14 @@ async function runClearance(reason: string, force: boolean): Promise<boolean> {
     await entry.page.goto(WARMUP_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
     const deadline = started + config.wtBrowserTimeoutMs
     let lastSignals: PageSignals | null = null
+    let failedProbes = 0
     while (Date.now() < deadline) {
       lastSignals = await pageSignals(entry.page)
       if (looksCleared(lastSignals)) {
         // DOM выглядит чистым, но истина — только ответ сервера.
         const probe = await inPageFetch(entry.page, WARMUP_URL, { method: 'GET' }, 512 * 1024)
           .catch(() => null)
+        metrics.clearanceProbes += 1
         if (probe !== null && !isChallenge(probe) && probe.status < 400) {
           await saveBrowserCookies(current.context)
           lastClearanceAt = Date.now()
@@ -686,6 +753,12 @@ async function runClearance(reason: string, force: boolean): Promise<boolean> {
           console.log(`[wt-browser] Проверка Cloudflare пройдена за ${metrics.lastClearanceMs} мс (${reason})`)
           return true
         }
+        // DOM «чистый», а сервер отказывает: растущая пауза и предел проб,
+        // чтобы не слать десятки запросов с авторизованной сессии за попытку.
+        failedProbes += 1
+        if (failedProbes >= MAX_FAILED_CLEARANCE_PROBES) break
+        await entry.page.waitForTimeout(clearanceProbeDelayMs(failedProbes)).catch(() => undefined)
+        continue
       }
       await entry.page.waitForTimeout(CLEARANCE_POLL_MS).catch(() => undefined)
     }

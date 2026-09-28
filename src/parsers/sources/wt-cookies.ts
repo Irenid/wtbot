@@ -43,6 +43,11 @@ function seedHash(): string {
   return createHash('sha256').update(config.wtCookie).digest('hex')
 }
 
+/** Хэш текущей WT_COOKIE: браузерный профиль по нему понимает, что seed сменился. */
+export function wtCookieSeedHash(): string {
+  return seedHash()
+}
+
 function serialized<T>(task: () => Promise<T>): Promise<T> {
   const result = queueTail.then(task, task)
   queueTail = result.then(() => undefined, () => undefined)
