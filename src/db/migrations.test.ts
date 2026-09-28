@@ -150,3 +150,40 @@ test('migration runner не проглатывает блокировку кон
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('миграции v6–v7 ставят в очередь бои 2.59, разобранные до исправления', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v6-'))
+  const dbPath = path.join(root, 'v6.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const battle = database.prepare(`
+      INSERT INTO battles (session_id, session_hex, mission_name, level, start_time, duration_sec, game_version, kill_count)
+      VALUES (?, ?, 'm', 'l', 1, 1, ?, ?)
+    `)
+    const ingest = database.prepare(`INSERT INTO battle_ingest (session_id, status, attempts) VALUES (?, ?, 1)`)
+    battle.run('1', '01', '2.59.0.28', 0); ingest.run('1', 'ok')
+    battle.run('2', '02', '2.59.0.28', 7); ingest.run('2', 'ok')
+    battle.run('3', '03', '2.57.1.60', 0); ingest.run('3', 'ok')
+    battle.run('4', '04', '2.59.0.28', 0); ingest.run('4', 'expired')
+    database.exec('PRAGMA user_version = 5')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const left = (migrated.prepare('SELECT session_id FROM battle_ingest ORDER BY session_id').all() as { session_id: string }[])
+        .map((row) => row.session_id)
+      // 1 и 2 (2.59, ok) — в очередь; 3 (2.57) и 4 (expired) не трогаются.
+      assert.deepEqual(left, ['3', '4'])
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

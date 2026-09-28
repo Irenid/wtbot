@@ -23,7 +23,8 @@ import {
   type SavePlayerExternalSnapshotResult,
   type SavePlayerIdentityInput,
 } from '../player-stats/types.js'
-import { CLAN_SEASON_SCHEDULES, stageAt } from '../clan-season.js'
+import { CLAN_SEASON_SCHEDULES, stageAt, type ClanSeasonSchedule } from '../clan-season.js'
+import { FORUM_SEASON_ID_PREFIX } from '../clan-season-forum.js'
 
 // Общий слой хранения: им пользуются и бот, и сайт, и парсеры.
 // SQLite встроен в Node 22.5+ — отдельный сервер БД не нужен.
@@ -391,6 +392,38 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
     apply() {
       // Версия уже могла быть установлена локальным dashboard rollout.
       // Отдельный индекс не нужен: последние записи читаются по INTEGER PK.
+    },
+  },
+  {
+    version: 6,
+    apply(database) {
+      // Бои игры 2.59 до исправления разбирались без событий: пакетный поток
+      // стал zstd, а construct ECS получил новый байт. Строки боя и игроков
+      // верны (из results-BLK), но убийств, траекторий и победителя нет.
+      // Снятие статуса ingest ставит их в очередь повторно, пока части
+      // реплеев ещё лежат на CDN; persist заменит строки боя целиком.
+      database.exec(`
+        DELETE FROM battle_ingest
+        WHERE status = 'ok'
+          AND session_id IN (
+            SELECT session_id FROM battles
+            WHERE game_version LIKE '2.59.%' AND kill_count = 0
+          );
+      `)
+    },
+  },
+  {
+    version: 7,
+    apply(database) {
+      // Вторая часть исправления 2.59: сбой одной ECS-сущности (подвесное
+      // вооружение нового формата) обрывал весь пакет, и техника игроков из
+      // того же пакета терялась — часть боёв после v6 разобрана не полностью.
+      // Все бои 2.59, существующие к моменту миграции, разобраны до исправления.
+      database.exec(`
+        DELETE FROM battle_ingest
+        WHERE status = 'ok'
+          AND session_id IN (SELECT session_id FROM battles WHERE game_version LIKE '2.59.%');
+      `)
     },
   },
 ]
@@ -1485,6 +1518,34 @@ export function getPendingAnnounce(
 }
 
 /**
+ * Помечает решёнными (без публикации) ждущие анонса бои, начавшиеся раньше
+ * cutoffSec. Трогает только бои без предварительного сообщения в Discord:
+ * такое сообщение обычный путь анонса обязан дописать или удалить.
+ * Возвращает число пропущенных боёв.
+ */
+export function skipStaleAnnounce(baselineId: number, maxAttempts: number, cutoffSec: number): number {
+  const result = getDb()
+    .prepare(`
+      INSERT INTO announce_state (item_id, status, attempts, error, updated_at)
+      SELECT i.id, 'ok', COALESCE(a.attempts, 0), 'устарел — не анонсирован', unixepoch()
+      FROM items i
+      LEFT JOIN announce_state a ON a.item_id = i.id
+      WHERE i.source = 'wt-replays' AND i.id > ?
+        AND json_extract(i.data, '$.startTime') < ?
+        AND (
+          a.item_id IS NULL
+          OR (a.status = 'failed' AND a.attempts < ? AND a.message_id IS NULL)
+        )
+      ON CONFLICT (item_id) DO UPDATE SET
+        status = excluded.status,
+        error = excluded.error,
+        updated_at = excluded.updated_at
+    `)
+    .run(baselineId, cutoffSec, maxAttempts)
+  return Number(result.changes)
+}
+
+/**
  * Новое значение baseline: id самого старого ещё не решённого боя минус 1
  * (всё до него уже отправлено или окончательно пропущено), а если решены
  * все — текущий максимум. Так окно сканирования не растёт бесконечно, но
@@ -1595,6 +1656,96 @@ function currentClanSeasonStart(): number {
   return getClanSeasonContext().season?.startsAt ?? 0
 }
 
+export interface ForumClanSeasonSyncResult {
+  inserted: string[]
+  updated: string[]
+  unchanged: string[]
+  /** Прежние версии сезона с форума (сдвинулось начало), которые заменила новая. */
+  replaced: string[]
+}
+
+/**
+ * Записывает сезоны, разобранные с форума (id `forum-…`). Если модераторы
+ * сдвинули начало сезона, у него новый id: прежняя forum-запись с пересекающимся
+ * интервалом удаляется. Пересечение со встроенным сезоном из кода — ошибка:
+ * значит, форум противоречит проверенному расписанию, и молча выбирать нельзя.
+ */
+export function syncForumClanSeasons(schedules: readonly ClanSeasonSchedule[]): ForumClanSeasonSyncResult {
+  const database = getDb()
+  const result: ForumClanSeasonSyncResult = { inserted: [], updated: [], unchanged: [], replaced: [] }
+  const overlapStmt = database.prepare(`
+    SELECT season_id FROM clan_seasons
+    WHERE season_id <> ? AND starts_at < ? AND ends_at > ?
+  `)
+  const seasonRowStmt = database.prepare(`
+    SELECT name, starts_at, ends_at FROM clan_seasons WHERE season_id = ?
+  `)
+  const stageRowsStmt = database.prepare(`
+    SELECT week, starts_at, ends_at, max_br FROM clan_season_stages WHERE season_id = ? ORDER BY week
+  `)
+  const deleteStagesStmt = database.prepare('DELETE FROM clan_season_stages WHERE season_id = ?')
+  const deleteSeasonStmt = database.prepare('DELETE FROM clan_seasons WHERE season_id = ?')
+  const seasonStmt = database.prepare(`
+    INSERT INTO clan_seasons (season_id, name, starts_at, ends_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(season_id) DO UPDATE SET
+      name = excluded.name,
+      starts_at = excluded.starts_at,
+      ends_at = excluded.ends_at
+  `)
+  const stageStmt = database.prepare(`
+    INSERT INTO clan_season_stages (season_id, week, starts_at, ends_at, max_br)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    for (const season of schedules) {
+      if (!season.id.startsWith(FORUM_SEASON_ID_PREFIX)) {
+        throw new Error(`сезон ${season.id}: с форума принимаются только id ${FORUM_SEASON_ID_PREFIX}…`)
+      }
+      const overlapping = (overlapStmt.all(season.id, season.endsAt, season.startsAt) as { season_id: string }[])
+        .map((row) => row.season_id)
+      const builtIn = overlapping.filter((id) => !id.startsWith(FORUM_SEASON_ID_PREFIX))
+      if (builtIn.length > 0) {
+        throw new Error(`сезон ${season.id} с форума пересекается со встроенным сезоном ${builtIn.join(', ')}`)
+      }
+      for (const id of overlapping) {
+        deleteStagesStmt.run(id)
+        deleteSeasonStmt.run(id)
+        result.replaced.push(id)
+      }
+
+      const current = seasonRowStmt.get(season.id) as { name: string; starts_at: number; ends_at: number } | undefined
+      const currentStages = stageRowsStmt.all(season.id) as { week: number; starts_at: number; ends_at: number; max_br: number }[]
+      const same = current !== undefined
+        && current.name === season.name
+        && current.starts_at === season.startsAt
+        && current.ends_at === season.endsAt
+        && currentStages.length === season.stages.length
+        && season.stages.every((stage, index) => {
+          const row = currentStages[index]!
+          return row.week === stage.week && row.starts_at === stage.startsAt
+            && row.ends_at === stage.endsAt && row.max_br === stage.maxBr
+        })
+      if (same) {
+        result.unchanged.push(season.id)
+        continue
+      }
+      seasonStmt.run(season.id, season.name, season.startsAt, season.endsAt)
+      deleteStagesStmt.run(season.id)
+      for (const stage of season.stages) {
+        stageStmt.run(season.id, stage.week, stage.startsAt, stage.endsAt, stage.maxBr)
+      }
+      ;(current === undefined ? result.inserted : result.updated).push(season.id)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  return result
+}
+
 function seedClanSeasons(database: DatabaseSync): void {
   const seasonStmt = database.prepare(`
     INSERT INTO clan_seasons (season_id, name, starts_at, ends_at)
@@ -1612,6 +1763,11 @@ function seedClanSeasons(database: DatabaseSync): void {
       ends_at = excluded.ends_at,
       max_br = excluded.max_br
   `)
+  // Этапы, убранные из расписания, иначе остались бы в SQLite навсегда:
+  // upsert обновляет только существующие недели.
+  const pruneStagesStmt = database.prepare(`
+    DELETE FROM clan_season_stages WHERE season_id = ? AND week > ?
+  `)
   database.exec('BEGIN IMMEDIATE')
   try {
     for (const season of CLAN_SEASON_SCHEDULES) {
@@ -1619,6 +1775,7 @@ function seedClanSeasons(database: DatabaseSync): void {
       for (const stage of season.stages) {
         stageStmt.run(season.id, stage.week, stage.startsAt, stage.endsAt, stage.maxBr)
       }
+      pruneStagesStmt.run(season.id, season.stages.length)
     }
     database.exec('COMMIT')
   } catch (error) {

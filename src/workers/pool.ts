@@ -996,6 +996,11 @@ export function closeWorkerPool(graceMs?: number): Promise<void> {
   return pool.close(graceMs)
 }
 
+/** Задача начала выполняться и не уложилась в свой timeout (worker заменён). */
+export function isWorkerExecutionTimeout(error: unknown): error is WorkerPoolError {
+  return error instanceof WorkerPoolError && error.code === 'EXEC_TIMEOUT'
+}
+
 export function isWorkerPoolSchedulingError(error: unknown): error is WorkerPoolError {
   return (
     error instanceof WorkerPoolError &&
