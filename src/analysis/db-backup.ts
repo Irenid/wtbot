@@ -1,6 +1,9 @@
 import {
   closeSync,
+  constants as fsConstants,
+  copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -17,6 +20,9 @@ import { fileURLToPath } from 'node:url'
 
 export const BACKUP_LOCK_FILE = '.wtbot-backup.lock'
 const MIN_FREE_MARGIN_BYTES = 64n * 1024n * 1024n
+/** Незавершённая копия: не совпадает с шаблоном ротации `wtbot-*.db`. */
+const TEMP_PREFIX = '.wtbot-backup-'
+const TEMP_SUFFIX = '.tmp'
 
 function sqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`
@@ -70,6 +76,44 @@ function acquireBackupLock(outputDir: string): () => void {
   }
 }
 
+function collisionError(backupPath: string): Error {
+  return new Error(`Backup с таким временем уже существует: ${backupPath}`)
+}
+
+/**
+ * Остатки прерванных запусков. Вызывается под backup-lock, поэтому других
+ * живых записей в каталоге нет и такие файлы точно никому не принадлежат.
+ */
+function removeStaleTempFiles(outputDir: string): void {
+  for (const name of readdirSync(outputDir)) {
+    if (name.startsWith(TEMP_PREFIX) && name.endsWith(TEMP_SUFFIX)) {
+      rmSync(path.join(outputDir, name), { force: true })
+    }
+  }
+}
+
+/**
+ * Публикует проверенную копию под итоговым именем, не перезаписывая чужой
+ * файл: жёсткая ссылка атомарна и падает с EEXIST, если имя уже занято.
+ * На ФС без жёстких ссылок копирует с COPYFILE_EXCL — тоже без перезаписи.
+ */
+function publishBackup(tempPath: string, backupPath: string): void {
+  try {
+    linkSync(tempPath, backupPath)
+    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw collisionError(backupPath)
+  }
+  try {
+    copyFileSync(tempPath, backupPath, fsConstants.COPYFILE_EXCL)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw collisionError(backupPath)
+    // EXCL гарантирует, что файл создан этим вызовом: неполную копию убираем.
+    rmSync(backupPath, { force: true })
+    throw error
+  }
+}
+
 export interface CreateSqliteBackupOptions {
   sourcePath: string
   outputDir?: string | undefined
@@ -87,8 +131,11 @@ export function createSqliteBackup(options: CreateSqliteBackupOptions): string {
   const keep = normalizedKeep(options.keep ?? 3)
   mkdirSync(outputDir, { recursive: true })
   const releaseLock = acquireBackupLock(outputDir)
-  let backupPath = ''
+  // Единственный файл, которым владеет вызов до публикации. Итоговое имя
+  // никогда не удаляется в catch: при коллизии оно принадлежит прошлой копии.
+  let tempPath = ''
   try {
+    removeStaleTempFiles(outputDir)
     const requiredBytes = requiredBackupBytes(sourcePath)
     const freeBytes = (options.availableBytes ?? availableBytes)(outputDir)
     if (freeBytes < requiredBytes) {
@@ -98,18 +145,19 @@ export function createSqliteBackup(options: CreateSqliteBackupOptions): string {
     }
 
     const stamp = (options.now ?? new Date()).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
-    backupPath = path.join(outputDir, `wtbot-${stamp}.db`)
-    if (existsSync(backupPath)) throw new Error(`Backup с таким временем уже существует: ${backupPath}`)
+    const backupPath = path.join(outputDir, `wtbot-${stamp}.db`)
+    if (existsSync(backupPath)) throw collisionError(backupPath)
+    tempPath = path.join(outputDir, `${TEMP_PREFIX}${stamp}-${randomUUID()}${TEMP_SUFFIX}`)
 
     const source = new DatabaseSync(sourcePath, { readOnly: true })
     try {
       source.exec('PRAGMA busy_timeout = 5000;')
-      source.exec(`VACUUM INTO ${sqlString(backupPath)}`)
+      source.exec(`VACUUM INTO ${sqlString(tempPath)}`)
     } finally {
       source.close()
     }
 
-    const backup = new DatabaseSync(backupPath, { readOnly: true })
+    const backup = new DatabaseSync(tempPath, { readOnly: true })
     try {
       const row = backup.prepare('PRAGMA quick_check').get() as { quick_check: string }
       if (row.quick_check !== 'ok') {
@@ -118,6 +166,10 @@ export function createSqliteBackup(options: CreateSqliteBackupOptions): string {
     } finally {
       backup.close()
     }
+
+    publishBackup(tempPath, backupPath)
+    rmSync(tempPath, { force: true })
+    tempPath = ''
 
     const backups = readdirSync(outputDir)
       .filter((name) => /^wtbot-.*\.db$/u.test(name))
@@ -128,7 +180,7 @@ export function createSqliteBackup(options: CreateSqliteBackupOptions): string {
     }
     return backupPath
   } catch (error) {
-    if (backupPath !== '') rmSync(backupPath, { force: true })
+    if (tempPath !== '') rmSync(tempPath, { force: true })
     throw error
   } finally {
     releaseLock()
