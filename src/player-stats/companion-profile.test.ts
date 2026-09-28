@@ -6,8 +6,6 @@ import {
   type CompanionProfile,
 } from './companion-protobuf.js'
 
-process.env['TOKEN'] ??= 'test-token'
-
 function varint(value: number): Buffer {
   let remaining = BigInt(value)
   const bytes: number[] = []

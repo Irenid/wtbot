@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
-// Конфиг импортируется лениво, поэтому smoke не требует реального Discord token
-// или WT-cookie и не делает сетевых запросов.
-process.env['TOKEN'] ??= 'player-board-voice-smoke-token'
+// Конфиг импортируется лениво, поэтому smoke не требует WT-cookie и не делает
+// сетевых запросов; Discord token config читает только по требованию.
 process.env['WT_COOKIE'] = ''
 process.env['WT_BROWSER_ENABLED'] = 'false'
 

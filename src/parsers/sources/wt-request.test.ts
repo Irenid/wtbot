@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-
-process.env['TOKEN'] ??= 'test-token'
-
-const { retryAfterWtSessionRefresh } = await import('./wt-request.js')
+import { retryAfterWtSessionRefresh } from './wt-request.js'
 
 test('повторяет запрос один раз после успешного обновления WT-сессии', async () => {
   let requests = 0
