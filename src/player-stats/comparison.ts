@@ -234,6 +234,18 @@ function aliasesForStableMatch(matches: readonly KnownPlayerMatch[], wtUserId: s
   return [...unique.values()]
 }
 
+/** Identity без WT user id среди совпадений ника (voice, рейтинг клана, прошлые lookup). */
+function nickOnlyIdentities(matches: readonly KnownPlayerMatch[]): PlayerIdentity[] {
+  const identityIds = [...new Set(
+    matches
+      .map((match) => match.identityId)
+      .filter((identityId): identityId is number => identityId !== null),
+  )]
+  return identityIds
+    .map((identityId) => getPlayerIdentityById(identityId))
+    .filter((identity): identity is PlayerIdentity => identity !== null && identity.wtUserId === null)
+}
+
 export function resolveKnownPlayer(player: string): KnownPlayerResolution {
   const query = normalizedLookupText(player)
   const matches = findKnownPlayerMatches(query)
@@ -264,7 +276,23 @@ export function resolveKnownPlayer(player: string): KnownPlayerResolution {
   if (stable !== undefined) {
     const [wtUserId, stableMatches] = stable
     const selected = bestMatch(stableMatches)
-    const existing = getPlayerIdentityByWtUserId(wtUserId)
+    let existing = getPlayerIdentityByWtUserId(wtUserId)
+    if (existing === null) {
+      // Ник мог стать identity раньше, чем появился его WT user id (voice,
+      // рейтинг клана). Такую nick-only identity усыновляем, а не создаём
+      // вторую: иначе её снимки и история навсегда теряли бы связь с игроком.
+      const nickOnly = nickOnlyIdentities(matches)
+      if (nickOnly.length > 1) {
+        return {
+          status: 'ambiguous',
+          candidates: nickOnly.flatMap((identity) => {
+            const identityMatches = matches.filter((match) => match.identityId === identity.id)
+            return identityMatches.length === 0 ? [] : [candidate(identityMatches)]
+          }),
+        }
+      }
+      existing = nickOnly[0] ?? null
+    }
     return {
       status: 'ok',
       identity: savePlayerIdentity({

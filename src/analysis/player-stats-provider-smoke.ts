@@ -90,14 +90,16 @@ async function verifyOfficialProfileProvider(): Promise<void> {
   const ok = await provider.fetchPlayerStats({
     source: 'official-profile',
     sourcePlayerId: 'Venukbr',
-    // Числовой id известен identity из локальных реплеев и должен сохраниться.
+    // Числовой id известен identity из локальных реплеев, но страница его не
+    // публикует и найдена по нику: provider не должен «подтверждать» id — иначе
+    // статистика переименованного ника легла бы под чужой wt_user_id с высокой уверенностью.
     wtUserId: '82922922',
     nick: 'Venukbr',
     platform: null,
   })
   assert.equal(ok.status, 'ok')
   assert.equal(ok.error, null)
-  assert.equal(ok.player.wtUserId, '82922922')
+  assert.equal(ok.player.wtUserId, null)
   assert.equal(ok.fetchedAt, 2_000)
   assert.ok(ok.rawJson !== null)
   // В raw snapshot должны лежать извлечённые строки, а не HTML страницы.
