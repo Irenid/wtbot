@@ -83,7 +83,9 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
   const key = (kind === 'wt' ? params['wtUserId'] : params['identityId']) ?? ''
   const [profile, setProfile] = useState<PlayerProfile | null>(null)
   const [history, setHistory] = useState<PlayerHistory | null>(null)
+  const [historyError, setHistoryError] = useState<unknown>(null)
   const [battles, setBattles] = useState<BattleListEntry[] | null>(null)
+  const [battlesError, setBattlesError] = useState<unknown>(null)
   const [dict, setDict] = useState<VehicleDict>({})
   const [days, setDays] = useState<'30' | '90' | '400'>('90')
   const [error, setError] = useState<unknown>(null)
@@ -100,14 +102,16 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
     setProfile(null)
     setError(null)
     setBattles(null)
+    setBattlesError(null)
     fetchPlayerProfile(kind, key)
       .then((body) => {
         if (cancelled) return
         setProfile(body)
         if (body.player.wtUserId) {
+          // Отказ запроса — не «у игрока нет боёв»: показываем ошибку, а не пустой список.
           fetchBattles({ player: body.player.wtUserId, limit: 15 })
             .then((list) => { if (!cancelled) setBattles(list.battles) })
-            .catch(() => { if (!cancelled) setBattles([]) })
+            .catch((err) => { if (!cancelled) setBattlesError(err) })
         } else {
           setBattles([])
         }
@@ -120,9 +124,11 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
   useEffect(() => {
     let cancelled = false
     setHistory(null)
+    setHistoryError(null)
+    // Без отдельного состояния ошибки отказ выглядел как вечная загрузка.
     fetchPlayerHistory(kind, key, Number(days))
       .then((body) => { if (!cancelled) setHistory(body) })
-      .catch(() => { if (!cancelled) setHistory(null) })
+      .catch((err) => { if (!cancelled) setHistoryError(err) })
     return () => { cancelled = true }
   }, [kind, key, days])
 
@@ -335,7 +341,7 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
             <SegControl options={HISTORY_DAYS} value={days} onChange={setDays} ariaLabel={t('a11y.period.history')} />
           </span>
         </SecHead>
-        {history === null ? <Loading text={t('player.history.building')} /> : (
+        {historyError !== null ? <ErrorNotice error={historyError} /> : history === null ? <Loading text={t('player.history.building')} /> : (
           <div className="grid-2">
             {ratingChart && (
               <Panel title={t('player.history.pkr')} sub={t('player.history.pkr.hint')}>
@@ -509,7 +515,7 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
               <Link to={`/battles?player=${player.wtUserId}`} style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 600 }}>{t('common.allLink')}</Link>
             )}
           </SecHead>
-          {battles === null ? <Loading /> : battles.length === 0 ? (
+          {battlesError !== null ? <ErrorNotice error={battlesError} /> : battles === null ? <Loading /> : battles.length === 0 ? (
             <div className="muted small">{t('player.recent.empty')}</div>
           ) : (
             battles.map((battle) => (

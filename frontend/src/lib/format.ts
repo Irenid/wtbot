@@ -88,6 +88,17 @@ export function weekdayShort(day: string): string {
   return new Date(`${day}T00:00:00Z`).toLocaleDateString(localeTag(), { weekday: 'short', timeZone: 'UTC' })
 }
 
+/** Короткое обозначение режима для плиток: АБ/РБ/СБ (AB/RB/SB…); '?' — неизвестен. */
+export function modeShortLabel(mode: string | null | undefined): string {
+  switch (mode) {
+    case 'arcade': return t('mode.arcade.short')
+    case 'realistic': return t('mode.realistic.short')
+    case 'simulation':
+    case 'simulator': return t('mode.simulator.short')
+    default: return '?'
+  }
+}
+
 /** Название режима War Thunder с принятым сокращением (АБ/РБ/СБ, AB/RB/SB…). */
 export function modeLabel(mode: string | null | undefined): string {
   switch (mode) {

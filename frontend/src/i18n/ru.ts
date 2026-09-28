@@ -57,8 +57,9 @@ export const ru = {
   'mode.realistic': 'Реалистичные (РБ)',
   'mode.simulator': 'Симуляторные (СБ)',
   'mode.unknown': 'режим неизвестен',
-  'mode.ground.letter': 'З',
-  'mode.air.letter': 'В',
+  'mode.arcade.short': 'АБ',
+  'mode.realistic.short': 'РБ',
+  'mode.simulator.short': 'СБ',
 
   // --- Метрики ---
   'metric.battles': 'Бои',
@@ -158,6 +159,7 @@ export const ru = {
   'clan.roster': 'Ростер и ПКР',
   'clan.roster.hint': 'вклад в сумму',
   'clan.roster.footnote': 'Без ссылки — игроки, чей ник не удалось однозначно связать с профилем. Δ — изменение ПКР участника с его предыдущего снимка (окно у каждого своё).',
+  'clan.roster.unverified': 'Состав ещё не сверялся со страницей клана — в сумму могут входить ушедшие игроки.',
   'clan.tier.elite': 'Элита',
   'clan.tier.good': 'Хорошо',
   'clan.tier.normal': 'Норм',
@@ -237,18 +239,17 @@ export const ru = {
   'battles.title': 'Бои',
   'battles.chip.player': 'игрок {id}',
   'battles.subtitle': 'из локально собранных реплеев',
-  'battles.shown': 'показано {shown} из {total}',
+  'battles.shown': 'показано {shown} из {total} загруженных',
   'battles.filter.outcome': 'Исход',
   'battles.filter.wins': 'Победы',
   'battles.filter.losses': 'Поражения',
-  'battles.filter.mode': 'Режим',
-  'battles.filter.ground': 'Земля',
-  'battles.filter.air': 'Воздух',
   'battles.filter.clan': 'Клан',
   'battles.empty': 'Боёв не найдено.',
   'battles.empty.filtered': 'Боёв не найдено — сбрось фильтры.',
   'battles.score.count': '{n} очков',
   'battles.hint': 'Клик по бою — скорборд, карта с траекториями и лента событий.',
+  'battles.more': 'Показать ещё',
+  'battles.end': 'Больше боёв за этот период нет.',
 
   // --- Страница боя ---
   'battlePage.title': 'Бой',
@@ -320,7 +321,6 @@ export const ru = {
 
   // --- Подписи для скринридеров (не видны на экране) ---
   'a11y.filter.outcome': 'Фильтр исхода',
-  'a11y.filter.mode': 'Фильтр режима',
   'a11y.filter.clan': 'Фильтр клана',
   'a11y.period.clanBattles': 'Период боёв клана',
   'a11y.period.history': 'Период истории',
@@ -336,6 +336,10 @@ export const ru = {
   'apiError.INVALID_BATTLE': 'Некорректный ключ боя',
   'apiError.INVALID_PERIOD': 'Некорректный период: начало позже конца',
   'apiError.searchFailed': 'Не удалось выполнить поиск',
+
+  // --- Подвал: AGPL требует предложить исходный код пользователям сети ---
+  'footer.license': 'Свободное ПО на условиях GNU AGPL-3.0-or-later',
+  'footer.source': 'Исходный код',
 } as const
 
 export type MessageKey = keyof typeof ru
