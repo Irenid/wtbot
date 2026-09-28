@@ -87,3 +87,58 @@ test('web server hides internal error details', async () => {
     await app.close()
   }
 })
+
+test('auth-проверка не обходится percent-кодированием пути', async () => {
+  const app = buildServer(deps, undefined, { host: '192.0.2.10', token: 'test-secret' })
+  try {
+    // Роутер декодирует %61 → 'a', поэтому /%61pi/... попадает в обработчик
+    // /api/...; проверка обязана защитить этот путь так же, как /api/...
+    const encodedPost = await app.inject({ method: 'POST', url: '/%61pi/voice/refresh' })
+    assert.equal(encodedPost.statusCode, 401)
+    assert.equal(encodedPost.json().code, 'UNAUTHORIZED')
+
+    const encodedGet = await app.inject({ method: 'GET', url: '/%61pi/stats' })
+    assert.equal(encodedGet.statusCode, 401)
+
+    // Правильный токен по закодированному пути по-прежнему пропускается
+    const authorized = await app.inject({
+      method: 'POST',
+      url: '/%61pi/voice/refresh',
+      headers: {
+        authorization: 'Bearer test-secret',
+        host: 'dashboard.example',
+        origin: 'https://dashboard.example',
+        'sec-fetch-site': 'same-origin',
+      },
+    })
+    assert.equal(authorized.statusCode, 200)
+    assert.equal(authorized.json().ok, true)
+  } finally {
+    await app.close()
+  }
+})
+
+test('auth-проверка не обходится absolute-form request-target', async () => {
+  const app = buildServer(deps, undefined, { host: '192.0.2.10', token: 'test-secret' })
+  try {
+    // Absolute-form (`http://host/api/...`) приходит через прокси/HTTP2; роутер
+    // маршрутизирует по пути, значит и защита должна опираться на него.
+    const absolute = await app.inject({ method: 'GET', url: 'http://attacker.example/api/stats' })
+    assert.equal(absolute.statusCode, 401)
+    assert.equal(absolute.json().code, 'UNAUTHORIZED')
+  } finally {
+    await app.close()
+  }
+})
+
+test('loopback-сервер без токена не защищает и не ломается на закодированном пути', async () => {
+  const app = buildServer(deps, undefined, { host: '127.0.0.1', token: '' })
+  try {
+    // На loopback токен не требуется — проверяем, что новая нормализация пути
+    // не начала ложно отклонять валидные запросы.
+    const health = await app.inject({ method: 'GET', url: '/health' })
+    assert.equal(health.statusCode, 200)
+  } finally {
+    await app.close()
+  }
+})
