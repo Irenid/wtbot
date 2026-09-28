@@ -6,7 +6,8 @@ import type {
 } from './types.js'
 
 export const STATSHARK_SOURCE = 'statshark'
-export const STATSHARK_PARSER_VERSION = 'statshark-v1'
+/** v2: сводные бои и победы считаются по режимам, где известны оба числа. */
+export const STATSHARK_PARSER_VERSION = 'statshark-v2'
 
 const MODE_NAMES = ['arcade', 'realistic', 'simulator'] as const
 const PROFILE_MODE_KEYS = ['arcade', 'rb', 'sim'] as const
@@ -266,8 +267,11 @@ export function normalizeStatSharkBundle(bundle: StatSharkBundle): NormalizedSta
     throw new StatSharkSchemaError('StatShark: не найдены PvP-итоги ни одного режима')
   }
 
-  const battles = sum(pvpTotals.map((row) => row.battles))
-  const victories = sum(pvpTotals.map((row) => row.victories))
+  // Бои и победы — только по режимам, где известны оба числа: иначе сводный
+  // win rate делил бы победы одних режимов на бои других.
+  const paired = pvpTotals.filter((row) => row.battles !== null && row.victories !== null)
+  const battles = sum(paired.map((row) => row.battles))
+  const victories = sum(paired.map((row) => row.victories))
   totals.unshift({
     gameType: null,
     mode: null,

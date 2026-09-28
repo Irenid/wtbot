@@ -258,6 +258,75 @@ test('русская локаль разбирается теми же прав�
   assert.equal(fighters?.timePlayedSec, 16 * 86_400 + 22 * 3_600)
 })
 
+test('морская ветка: «ships» во множественном числе и незнакомая строка не затирают итог', () => {
+  const navalSection = section(
+    [
+      'Naval battles',
+      'Naval battles in ships',
+      'Naval battles in submarines',
+      'Time played in naval battles',
+      'Time played in ships',
+      'Total targets destroyed',
+      'Naval targets destroyed',
+    ],
+    ['520', '71', '9', '10h 0m', '8h 0m', '300', '120'],
+    [null, null, null, null, null, null, null],
+  )
+  const stats = normalizeOfficialProfile({
+    nick: 'Venukbr',
+    clan: null,
+    level: null,
+    registrationDate: null,
+    sections: [generalSection, navalSection],
+  })
+  const naval = (category: string) => stats.totals.find(
+    (row) => row.gameType === 'naval' && row.mode === 'arcade' && row.category === category,
+  )
+  // Итог ветки берётся из первой строки, а не из последней похожей.
+  assert.equal(naval('all')?.respawns, 520)
+  assert.equal(naval('all')?.timePlayedSec, 10 * 3_600)
+  assert.equal(naval('all')?.navalKills, 120)
+  assert.equal(naval('ships')?.respawns, 71)
+  assert.equal(naval('ships')?.timePlayedSec, 8 * 3_600)
+  // Незнакомая категория не попадает ни в итог, ни в выдуманную категорию.
+  assert.ok(stats.totals.every((row) => row.category !== 'submarines'))
+})
+
+test('сводный win rate считается только по режимам с известными боями и победами', () => {
+  const partialGeneral = section(
+    [
+      'Statistics',
+      'Victories',
+      'Completed missions',
+      'Deaths',
+    ],
+    ['Arcade battles', null, '3000', '100'],
+    ['Realistic battles', '410', '1020', '50'],
+  )
+  const stats = normalizeOfficialProfile({
+    nick: 'Venukbr',
+    clan: null,
+    level: null,
+    registrationDate: null,
+    sections: [partialGeneral],
+  })
+  const aggregate = stats.totals.find(
+    (row) => row.gameType === null && row.mode === null && row.category === null,
+  )
+  assert.ok(aggregate)
+  // Аркада без побед исключена из обеих частей дроби: 410 / 1020, а не 410 / 4020.
+  assert.equal(aggregate.battles, 1020)
+  assert.equal(aggregate.victories, 410)
+  assert.equal(aggregate.defeats, 610)
+  assert.equal(aggregate.deaths, 150)
+})
+
+test('нереалистично большое время игры считается ошибкой разбора', () => {
+  assert.equal(parseProfilePlayTime('14 y'), 14 * 365 * 86_400)
+  assert.equal(parseProfilePlayTime('16 y'), null)
+  assert.equal(parseProfilePlayTime('500 M'), null)
+})
+
 test('страница без общего блока считается сменой вёрстки', () => {
   assert.throws(
     () => normalizeOfficialProfile({

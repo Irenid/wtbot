@@ -22,7 +22,8 @@ import type {
  * числа боёв, потому что в одном бою он летает и ездит).
  */
 
-export const OFFICIAL_PROFILE_PARSER_VERSION = 'wt-official-profile-v1'
+/** v2: итог ветки не перетирается незнакомыми строками, win rate — по согласованным режимам. */
+export const OFFICIAL_PROFILE_PARSER_VERSION = 'wt-official-profile-v2'
 export const OFFICIAL_PROFILE_SOURCE = 'official-profile'
 
 /** Профиль не публикует длительность точнее двух значащих цифр для крупных единиц. */
@@ -73,7 +74,8 @@ const CATEGORY_PATTERNS: Record<Exclude<SectionKind, 'general'>, ReadonlyArray<r
     ['sub_chasers', /(?:sub-chaser|охотник)/i],
     ['destroyers', /(?:destroyer|эсминц)/i],
     ['naval_ferry_barges', /(?:ferry barge|баржа|баржах)/i],
-    ['ships', /(?:\bship\b|корабл)/i],
+    // Страница пишет «Naval battles in ships» — во множественном числе.
+    ['ships', /(?:\bships?\b|корабл)/i],
   ],
 }
 
@@ -138,6 +140,12 @@ export function parseProfileCount(value: string | null | undefined): number | nu
  * считается за 30 дней, а год за 365 — точнее исходные данные всё равно не
  * позволяют. Неизвестная единица даёт null, а не молчаливый ноль.
  */
+/**
+ * Потолок правдоподобия: War Thunder вышел в 2012 году, поэтому суммарное
+ * время профиля больше 15 лет — ошибка разбора единиц, а не данные.
+ */
+const MAX_PLAY_TIME_SEC = 15 * 365 * 24 * 60 * 60
+
 export function parseProfilePlayTime(value: string | null | undefined): number | null {
   if (value === undefined || value === null) return null
   const text = value.replace(/[  ]/g, ' ').trim()
@@ -159,7 +167,7 @@ export function parseProfilePlayTime(value: string | null | undefined): number |
     seconds += amount * factor
   }
   const rounded = Math.round(seconds)
-  return Number.isSafeInteger(rounded) ? rounded : null
+  return Number.isSafeInteger(rounded) && rounded <= MAX_PLAY_TIME_SEC ? rounded : null
 }
 
 function sectionKind(section: ProfileStatSection): SectionKind | null {
@@ -168,8 +176,17 @@ function sectionKind(section: ProfileStatSection): SectionKind | null {
   return SECTION_KINDS.find(([, pattern]) => pattern.test(first))?.[0] ?? null
 }
 
-function categoryOf(kind: Exclude<SectionKind, 'general'>, title: string): string {
-  return CATEGORY_PATTERNS[kind].find(([, pattern]) => pattern.test(title))?.[0] ?? 'all'
+/**
+ * Категория строки ветки. Итоговые строки ветки («Air battles», «Time played
+ * in air battles», «Выходы на задания в авиации») содержат название самой
+ * ветки и дают 'all'. Незнакомая строка даёт null: раньше она тоже падала в
+ * 'all' и перетирала итог ветки (так «Naval battles in ships» затирала флот).
+ */
+function categoryOf(kind: Exclude<SectionKind, 'general'>, title: string): string | null {
+  const known = CATEGORY_PATTERNS[kind].find(([, pattern]) => pattern.test(title))?.[0]
+  if (known !== undefined) return known
+  const branch = SECTION_KINDS.find(([sectionKind]) => sectionKind === kind)?.[1]
+  return branch !== undefined && branch.test(title) ? 'all' : null
 }
 
 function generalValues(section: ProfileStatSection, mode: ProfileStatMode): GeneralValues {
@@ -210,6 +227,15 @@ function branchCategories(
     categories.set(category, fresh)
     return fresh
   }
+  // Первая строка метрики побеждает: повторная (или ошибочно сопоставленная)
+  // строка не должна молча переписать уже разобранное значение.
+  const assigned = new Set<string>()
+  const assign = (category: string, metric: keyof BranchCategory, value: number | null): void => {
+    const key = `${category}:${metric}`
+    if (assigned.has(key)) return
+    assigned.add(key)
+    ensure(category)[metric] = value
+  }
 
   for (const title of section.titles) {
     const raw = values[title] ?? null
@@ -217,15 +243,15 @@ function branchCategories(
       // Фраги публикуются только на уровне ветки; «всего уничтожено» — это
       // сумма трёх строк ниже, отдельной колонки для неё нет.
       if (TOTAL_KILLS_TITLE.test(title)) continue
-      const branch = ensure('all')
-      if (AIR_KILLS_TITLE.test(title)) branch.airKills = parseProfileCount(raw)
-      else if (GROUND_KILLS_TITLE.test(title)) branch.groundKills = parseProfileCount(raw)
-      else if (NAVAL_KILLS_TITLE.test(title)) branch.navalKills = parseProfileCount(raw)
+      if (AIR_KILLS_TITLE.test(title)) assign('all', 'airKills', parseProfileCount(raw))
+      else if (GROUND_KILLS_TITLE.test(title)) assign('all', 'groundKills', parseProfileCount(raw))
+      else if (NAVAL_KILLS_TITLE.test(title)) assign('all', 'navalKills', parseProfileCount(raw))
       continue
     }
-    const category = ensure(categoryOf(kind, title))
-    if (TIME_TITLE.test(title)) category.timePlayedSec = parseProfilePlayTime(raw)
-    else category.respawns = parseProfileCount(raw)
+    const category = categoryOf(kind, title)
+    if (category === null) continue
+    if (TIME_TITLE.test(title)) assign(category, 'timePlayedSec', parseProfilePlayTime(raw))
+    else assign(category, 'respawns', parseProfileCount(raw))
   }
   return categories
 }
@@ -332,8 +358,12 @@ export function normalizeOfficialProfile(payload: OfficialProfilePayload): Norma
   // выборки одного источника, поэтому их сложение корректно (в отличие от
   // сложения веток техники).
   const modes = [...generalByMode.values()]
-  const battles = sumMetric(modes.map((values) => values.battles))
-  const victories = sumMetric(modes.map((values) => values.victories))
+  // Бои и победы складываются только по режимам, где известны оба числа:
+  // иначе победы трёх режимов делились бы на бои двух, и сводный win rate
+  // врал бы без признаков неполноты.
+  const paired = modes.filter((values) => values.battles !== null && values.victories !== null)
+  const battles = sumMetric(paired.map((values) => values.battles))
+  const victories = sumMetric(paired.map((values) => values.victories))
   totals.unshift({
     gameType: null,
     mode: null,
