@@ -17,6 +17,10 @@ import {
   REPLAY_TOTAL_MAX_BYTES,
   type ReplayPartsTiming,
 } from '../wrpl/replay-events.js'
+import { configureReplayUrlPolicy } from '../wrpl/replay-url-policy.js'
+
+// Benchmark раздаёт fixture с локального http-сервера 127.0.0.1.
+configureReplayUrlPolicy({ allowInsecureForTests: true })
 
 interface NumericSummary {
   count: number

@@ -25,7 +25,7 @@ import {
   isReplayByteBudgetSchedulingError,
   replayProcessByteBudgetSnapshot,
 } from './replay-events.js'
-import { realNamesFromItem, replayPartUrls } from './replay.js'
+import { realNamesFromItem, resolveReplayPartUrls } from './replay.js'
 import {
   shouldContinueIngestImmediately,
   type IngestOutcome,
@@ -145,9 +145,9 @@ async function ingestOne(
     partsCount?: number
     players?: unknown
   }
-  const parts = replayPartUrls(data)
+  const { urls: parts, problem: partsProblem } = resolveReplayPartUrls(data)
   if (parts.length === 0) {
-    markBattleIngest(item.externalId, 'no_parts', 'нет ссылок на части реплея')
+    markBattleIngest(item.externalId, 'no_parts', partsProblem ?? 'нет ссылок на части реплея')
     outcome = 'no_parts'
     telemetry.finish(outcome)
     return outcome
@@ -289,9 +289,9 @@ async function prepareIngest(
     partsCount?: number
     replayParts?: string[] | null
   }
-  const parts = replayPartUrls(data)
+  const { urls: parts, problem: partsProblem } = resolveReplayPartUrls(data)
   if (parts.length === 0) {
-    markBattleIngest(item.externalId, 'no_parts', 'нет ссылок на части реплея')
+    markBattleIngest(item.externalId, 'no_parts', partsProblem ?? 'нет ссылок на части реплея')
     telemetry.finish('no_parts')
     return { outcome: 'no_parts' }
   }

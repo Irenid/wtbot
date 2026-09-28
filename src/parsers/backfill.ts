@@ -32,7 +32,7 @@ console.log(
 )
 
 try {
-  const { items, totalOnSite, pagesRead, hitCap } = await collectFreshReplays({
+  const { items, totalOnSite, pagesRead, hitCap, rejected } = await collectFreshReplays({
     maxPages,
     stopAtKnown: false, // идём насквозь: возможны пропуски-«дыры» в середине
     sinceTs,
@@ -45,6 +45,7 @@ try {
   console.log(
     `Новых боёв: ${items.length}, сохранено: ${saved.changed}, без изменений: ${saved.unchanged}. Всего на сайте: ${totalOnSite}.`,
   )
+  if (rejected > 0) console.warn(`Отброшено некорректных записей Replay API: ${rejected}.`)
   if (saved.changed > 0) {
     console.log('Разбор в БД (фраги, траектории, победитель) сделает воркер ingest при следующем npm run dev.')
   }
