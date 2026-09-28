@@ -79,3 +79,63 @@ test('BLK ограничивает varint, описания и циклы дер
     /цикл в дереве BLK/,
   )
 })
+
+function uleb128(value: number): number[] {
+  const out: number[] = []
+  let rest = value
+  do {
+    let byte = rest % 128
+    rest = Math.floor(rest / 128)
+    if (rest > 0) byte |= 0x80
+    out.push(byte)
+  } while (rest > 0)
+  return out
+}
+
+/** Минимальный FAT BLK без параметров: children — [первый ребёнок, число детей]. */
+function fatBlk(names: string[], blocks: { nameId: number; children?: [number, number] }[]): Buffer {
+  const nameBytes = Buffer.from(names.map((name) => `${name}\0`).join(''), 'utf8')
+  const bytes = [
+    0x01,
+    ...uleb128(names.length),
+    ...uleb128(nameBytes.length),
+    ...nameBytes,
+    ...uleb128(blocks.length),
+    ...uleb128(0),
+    ...uleb128(0),
+  ]
+  for (const block of blocks) {
+    const [first, count] = block.children ?? [0, 0]
+    bytes.push(...uleb128(block.nameId), ...uleb128(0), ...uleb128(count))
+    if (count > 0) bytes.push(...uleb128(first))
+  }
+  return Buffer.from(bytes)
+}
+
+test('BLK собирает корректное дерево и склеивает повторяющиеся ключи', () => {
+  const blk = fatBlk(['a', 'b'], [
+    { nameId: 0, children: [1, 3] },
+    { nameId: 1, children: [4, 1] },
+    { nameId: 2 },
+    { nameId: 2 },
+    { nameId: 2 },
+  ])
+  assert.deepEqual(parseBlk(blk), { a: { b: {} }, b: [{}, {}] })
+})
+
+test('BLK отвергает общих потомков вместо экспоненциального разворачивания', () => {
+  // i → i+1, i+2: раньше 20 блоков разворачивались в 17 710 объектов.
+  const blocks: { nameId: number; children?: [number, number] }[] = []
+  for (let i = 0; i < 20; i++) {
+    blocks.push(i < 18 ? { nameId: 1, children: [i + 1, 2] } : { nameId: 1 })
+  }
+  assert.throws(() => parseBlk(fatBlk(['x'], blocks)), /повторно встречается/)
+})
+
+test('BLK ограничивает глубину вложенности', () => {
+  const blocks: { nameId: number; children?: [number, number] }[] = []
+  for (let i = 0; i < 300; i++) {
+    blocks.push(i < 299 ? { nameId: 1, children: [i + 1, 1] } : { nameId: 1 })
+  }
+  assert.throws(() => parseBlk(fatBlk(['x'], blocks)), /глубже 256/)
+})
