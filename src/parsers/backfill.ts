@@ -21,8 +21,10 @@ import { collectFreshReplays } from './sources/wt-replays.js'
 
 const days = Math.max(1, Math.floor(Number(process.argv[2]) || 3))
 const sinceTs = Math.floor(Date.now() / 1000) - days * 86_400
-// ~473 боя/сутки, 20 на странице → с запасом, но с потолком
-const maxPages = Math.min(500, Math.ceil((days * 500) / 20) + 5)
+// На 2026-09 сайт хранит ~28 000 клановых боёв за ~2 недели, это ~2000 в
+// сутки; 20 на странице → с запасом, но с потолком (~40 минут при 1,5 с).
+const BATTLES_PER_DAY_ESTIMATE = 2_000
+const maxPages = Math.min(1_600, Math.ceil((days * BATTLES_PER_DAY_ESTIMATE) / 20) + 5)
 
 initDb(config.dbPath, { allowCreate: config.allowNewDb })
 
@@ -40,7 +42,7 @@ try {
   })
   const saved = saveItems('wt-replays', items)
   console.log(
-    `Готово. Страниц прочитано: ${pagesRead}${hitCap ? ` (упёрлись в предел ${maxPages} — возьми окно поменьше или запусти ещё раз)` : ''}.`,
+    `Готово. Страниц прочитано: ${pagesRead}${hitCap ? ` (упёрлись в предел ${maxPages} — до начала окна не дошли; повтор прочитает те же свежие страницы, поэтому оценка боёв в сутки в backfill.ts занижена)` : ''}.`,
   )
   console.log(
     `Новых боёв: ${items.length}, сохранено: ${saved.changed}, без изменений: ${saved.unchanged}. Всего на сайте: ${totalOnSite}.`,

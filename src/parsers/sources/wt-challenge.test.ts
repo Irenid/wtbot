@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isChallengeResponse, looksCleared, preferHostCookies } from './wt-challenge.js'
+import { freshestCookies, isChallengeResponse, looksCleared, staleDuplicateCookies } from './wt-challenge.js'
 
 test('проверкой считается только 403 с признаками Cloudflare', () => {
   assert.equal(
@@ -44,23 +44,23 @@ test('страница считается чистой только без ма�
   assert.equal(looksCleared({ ...clean, bodyLength: 12 }), false)
 })
 
-test('из пары cookie побеждает host-cookie независимо от порядка', () => {
-  assert.deepEqual(
-    preferHostCookies([
-      { name: 'identity_sid', value: 'domain', domain: '.warthunder.com' },
-      { name: 'identity_sid', value: 'host', domain: 'warthunder.com' },
-      { name: 'cf_clearance', value: 'clearance', domain: '.warthunder.com' },
-    ]),
-    [
-      { name: 'identity_sid', value: 'host' },
+test('из одноимённых cookie побеждает самая свежая, при равном сроке — host-cookie', () => {
+  // Session-копия от прежнего seed и ротированная сервером доменная cookie.
+  const seeded = { name: 'identity_sid', value: 'old', domain: 'warthunder.com', path: '/', expires: -1 }
+  const rotated = { name: 'identity_sid', value: 'new', domain: '.warthunder.com', path: '/', expires: 1_791_800_000 }
+  const clearance = { name: 'cf_clearance', value: 'clearance', domain: '.warthunder.com', path: '/', expires: 1_800_000_000 }
+  for (const order of [[seeded, rotated, clearance], [rotated, seeded, clearance]]) {
+    assert.deepEqual(freshestCookies(order), [
+      { name: 'identity_sid', value: 'new' },
       { name: 'cf_clearance', value: 'clearance' },
-    ],
-  )
+    ])
+    assert.deepEqual(staleDuplicateCookies(order), [seeded])
+  }
   assert.deepEqual(
-    preferHostCookies([
-      { name: 'identity_sid', value: 'host', domain: 'warthunder.com' },
-      { name: 'identity_sid', value: 'domain', domain: '.warthunder.com' },
+    freshestCookies([
+      { name: 'identity_id', value: 'domain', domain: '.warthunder.com' },
+      { name: 'identity_id', value: 'host', domain: 'warthunder.com' },
     ]),
-    [{ name: 'identity_sid', value: 'host' }],
+    [{ name: 'identity_id', value: 'host' }],
   )
 })
