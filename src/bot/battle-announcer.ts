@@ -11,11 +11,13 @@ import {
   markAnnounce,
   nextAnnounceBaseline,
   setBotState,
+  skipStaleAnnounce,
   type PendingAnnounceItem,
 } from '../db/index.js'
 import { INGEST_MAX_ATTEMPTS } from '../wrpl/ingest.js'
 import { plainClanTag } from '../wrpl/render-battle.js'
-import { isWorkerPoolSchedulingError } from '../workers/pool.js'
+import { isWorkerExecutionTimeout, isWorkerPoolSchedulingError } from '../workers/pool.js'
+import { ExecTimeoutBudget } from '../workers/exec-timeout-budget.js'
 import { battleAnnouncementDecision } from './battle-post-policy.js'
 import { queueBattlePostUpdates, renderBattlePost } from './commands/battle.js'
 
@@ -43,6 +45,9 @@ const BASELINE_KEY = 'battles:lastAnnouncedId'
 const TICK_MS = 20_000
 /** Сколько раз пытаться заанонсить бой, прежде чем пропустить его */
 const MAX_ATTEMPTS = 3
+/** Таймауты рендера подряд, после которых анонс считается обычной неудачной попыткой. */
+const RENDER_EXEC_TIMEOUTS_BEFORE_ATTEMPT = 3
+const renderExecTimeouts = new ExecTimeoutBudget(RENDER_EXEC_TIMEOUTS_BEFORE_ATTEMPT)
 /** Клан для фильтра (ядро тега без украшений); пусто — анонсим все бои */
 const TARGET_CLAN = plainClanTag(config.clanTag)
 let announceTimer: NodeJS.Timeout | null = null
@@ -76,6 +81,13 @@ export function startBattleAnnouncer(client: Client): void {
     if (stopping) return
     try {
       const baseline = Number(getBotState(BASELINE_KEY) ?? '0')
+      if (config.announceMaxAgeHours > 0) {
+        const cutoffSec = Math.floor(Date.now() / 1_000) - config.announceMaxAgeHours * 3_600
+        const skipped = skipStaleAnnounce(baseline, MAX_ATTEMPTS, cutoffSec)
+        if (skipped > 0) {
+          console.log(`[bot] автоанонс: пропущено боёв старше ${config.announceMaxAgeHours} ч — ${skipped}`)
+        }
+      }
       announceSweep += 1
       const order = announceSweep % 8 === 0 ? 'oldest' : 'newest'
       const fresh = getPendingAnnounce(baseline, MAX_ATTEMPTS, 5, order)
@@ -132,11 +144,19 @@ export function startBattleAnnouncer(client: Client): void {
             message = await channel.send(post.payload)
           }
           markAnnounce(item.id, 'ok')
+          renderExecTimeouts.clear(item.externalId)
           cleanupPending(item)
           queueBattlePostUpdates(post, (payload) => message.edit({ ...payload, attachments: [] }))
           console.log(`[bot] автоанонс боя ${item.externalId} (${item.title.trim()})`)
         } catch (err) {
           if (stopping) break
+          // Рендер, который раз за разом не укладывается в таймаут, иначе
+          // повторялся бы каждый тик вечно, занимая worker на весь таймаут.
+          if (isWorkerExecutionTimeout(err) && renderExecTimeouts.register(item.externalId)) {
+            markAnnounce(item.id, 'failed', `${err.message} (${RENDER_EXEC_TIMEOUTS_BEFORE_ATTEMPT} раза подряд)`)
+            console.error(`[bot] автоанонс ${item.externalId}: рендер ${RENDER_EXEC_TIMEOUTS_BEFORE_ATTEMPT} раза подряд превысил таймаут`)
+            continue
+          }
           if (isWorkerPoolSchedulingError(err)) {
             console.warn(
               `[bot] автоанонс ${item.externalId}: CPU scheduler занят (${err.message}); попытка не расходуется`,

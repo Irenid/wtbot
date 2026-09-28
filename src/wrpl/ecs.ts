@@ -178,15 +178,34 @@ export function parseComponentHashMaps(json: string): ComponentHashMaps {
   return maps
 }
 
+/**
+ * Версия заголовка .wrpl, с которой construct-сообщение ECS содержит
+ * дополнительный байт между шаблоном и счётчиком компонентов (игра 2.59,
+ * заголовок 101404; у 2.57 — 101387 — байта нет). Во всех разобранных
+ * реплеях байт нулевой; иное значение — новый формат, и разбор должен упасть
+ * громко, а не прочитать 0 компонентов.
+ */
+export const ECS_CONSTRUCT_PREFIX_VERSION = 101404
+const MAX_ENTITY_ERRORS = 100
+
 export class EcsParser {
   mgr = new EntityManager()
   templates = new Map<number, Template>()
   componentDefs = new Map<number, HashedComponent>()
   internedStrings = new Map<number, string>()
   maps: ComponentHashMaps
+  /** Читать ли байт перед счётчиком компонентов (см. ECS_CONSTRUCT_PREFIX_VERSION). */
+  constructPrefix = false
+  /** Сбои разбора отдельных сущностей; пакет при этом продолжает разбираться. */
+  entityErrors: string[] = []
 
   constructor(maps: ComponentHashMaps) {
     this.maps = maps
+  }
+
+  /** Настраивает формат по версии заголовка реплея. */
+  useReplayVersion(version: number): void {
+    this.constructPrefix = version >= ECS_CONSTRUCT_PREFIX_VERSION
   }
 
   /** Пакет типа 6: 0x24 — создание сущностей, 0x25 — то же в LZ4 */
@@ -207,9 +226,20 @@ export class EcsParser {
     const eid = readEID(r)
     const blockSize = r.readCompressed()
     const block = Buffer.from(r.readBytes(blockSize))
+    // Граница блока известна заранее, поэтому сбой одной сущности (например,
+    // незнакомый сериализатор подвесного вооружения в 2.59) не должен
+    // обрывать остальные сущности пакета — среди них техника игроков.
     const br = new BitReader(block)
     const templ = this.parseTemplate(br)
-    const entity = this.deserializeConstruction(br, templ)
+    const entity: EcsEntity = { template: templ.name, data: new EcsObject() }
+    try {
+      this.deserializeConstruction(br, templ, entity)
+    } catch (error) {
+      if (this.entityErrors.length < MAX_ENTITY_ERRORS) {
+        this.entityErrors.push(`${templ.name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    // Уже прочитанные компоненты сохраняем: uid и модель часто идут раньше сбоя.
     this.mgr.addEntity(eid, entity)
   }
 
@@ -234,10 +264,13 @@ export class EcsParser {
     return templ
   }
 
-  private deserializeConstruction(r: BitReader, templ: Template): EcsEntity {
+  private deserializeConstruction(r: BitReader, templ: Template, entity: EcsEntity): void {
     const total = templ.components.length
+    if (this.constructPrefix) {
+      const prefix = r.readByte()
+      if (prefix !== 0) throw new Error(`ECS construct: неизвестный байт формата 0x${prefix.toString(16)} (${templ.name})`)
+    }
     const compCount = total < 256 ? r.readByte() : r.readCompressed()
-    const entity: EcsEntity = { template: templ.name, data: new EcsObject() }
     let comp = 0
     for (let i = 0; i < compCount; i++) {
       const ofs = total < 256 ? r.readByte() : r.readCompressed()
@@ -250,7 +283,6 @@ export class EcsParser {
       if (!named) throw new Error(`неизвестный хэш компонента 0x${def.nameHash.toString(16)} (обнови ${HASHES_FILE})`)
       entity.data.add(named.name, value)
     }
-    return entity
   }
 
   deserializeComponent(r: BitReader, typeHash: number, nameHash: number): unknown {
