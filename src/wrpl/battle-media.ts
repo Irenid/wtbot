@@ -108,7 +108,7 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 41
+  version?: 42
   renderOptions?: string
   teamWon: number
   endTimeMs: number
@@ -143,7 +143,8 @@ export async function cachedBattleHeatmap2x(
   }
 }
 
-const BATTLE_MEDIA_VERSION = 41
+// 42: реплеи 2.59 (zstd-поток и новый байт ECS) — прежние картинки этих боёв пустые.
+const BATTLE_MEDIA_VERSION = 42
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)
@@ -688,13 +689,37 @@ async function publishBattleArtifacts(
   await enforceCacheCap(writtenUpperBound)
 }
 
-const CACHE_CAP_BYTES = Math.max(50, Number(config.battleCacheMb) || 400) * 1024 * 1024
+// Диапазон проверяет config.ts: опечатка в WT_BATTLE_CACHE_MB — ошибка старта, а не тихие 400 МБ.
+const CACHE_CAP_BYTES = config.battleCacheMb * 1024 * 1024
 let cacheCapChecked = false
 let cacheEstimatedBytes: number | null = null
 let cacheCatalogUpdatedAt = 0
 let cacheCapTail = Promise.resolve()
 
 /** Scene-кэш сайта живёт в том же каталоге и подчиняется тому же лимиту. */
+/**
+ * Удаляет готовые артефакты одной сессии (PNG, meta, сцена). Вызывается после
+ * commit разбора: при повторном ingest (например, после исправления парсера)
+ * кэш иначе отдавал бы картинки, построенные по прежним событиям, — версия
+ * кэша у них та же.
+ */
+export async function dropBattleArtifacts(sessionIdHex: string): Promise<void> {
+  const hex = sessionIdHex.toLowerCase()
+  if (!/^[0-9a-f]{12,20}$/.test(hex)) return
+  let names: string[]
+  try {
+    names = await readdir(CACHE_DIR)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  const owned = names.filter((name) => {
+    const lower = name.toLowerCase()
+    return lower.startsWith(`${hex}-`) || lower === `${hex}.png`
+  })
+  await Promise.all(owned.map((name) => rm(path.join(CACHE_DIR, name), { force: true })))
+}
+
 export function enforceBattleCacheCap(writtenUpperBound = 0): Promise<void> {
   return enforceCacheCap(writtenUpperBound)
 }

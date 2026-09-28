@@ -675,6 +675,18 @@ function zoneName(entity: EcsEntity): string {
 }
 
 /**
+ * Сжатие пакетного потока части. До версии игры 2.59 — zlib (`78 xx`),
+ * с 2.59 (заголовок 101404) — zstd-кадр (`28 b5 2f fd`). Определяем по магии,
+ * а не по версии: старые и новые реплеи разбираются одним кодом.
+ */
+export function packetStreamCodec(packed: Uint8Array): 'zstd' | 'zlib' {
+  return packed.length >= 4
+    && packed[0] === 0x28 && packed[1] === 0xb5 && packed[2] === 0x2f && packed[3] === 0xfd
+    ? 'zstd'
+    : 'zlib'
+}
+
+/**
  * Извлекает события боя из скачанных частей реплея.
  * Ошибки разбора отдельных пакетов не прерывают обработку — копятся в errors.
  */
@@ -706,20 +718,25 @@ export function extractReplayEventsProfiled(
     .filter((p) => p.header.isServer)
     .sort((a, b) => a.header.partNumber - b.header.partNumber)
   const headerOrderMs = performance.now() - phaseStarted
+  // Все части одного боя пишет одна версия игры; формат ECS — по первой.
+  if (ordered[0]) ecs.useReplayVersion(ordered[0].header.version)
   let inflateMs = 0
   let packetDecodeMs = 0
 
   let seq = 0
+  let decodedParts = 0
   for (const { buf, header } of ordered) {
     let stream: Buffer
     phaseStarted = performance.now()
+    const packed = buf.subarray(1234 + header.settingsBlkSize)
+    const codec = packetStreamCodec(packed)
     try {
-      stream = inflateSync(buf.subarray(1234 + header.settingsBlkSize), {
-        maxOutputLength: MAX_REPLAY_STREAM_BYTES,
-      })
+      stream = codec === 'zstd'
+        ? zstdDecompressSync(packed, { maxOutputLength: MAX_REPLAY_STREAM_BYTES })
+        : inflateSync(packed, { maxOutputLength: MAX_REPLAY_STREAM_BYTES })
     } catch (err) {
       inflateMs += performance.now() - phaseStarted
-      errors.push(`часть ${header.partNumber}: zlib: ${(err as Error).message}`)
+      errors.push(`часть ${header.partNumber}: ${codec}: ${(err as Error).message}`)
       continue
     }
     inflateMs += performance.now() - phaseStarted
@@ -774,6 +791,17 @@ export function extractReplayEventsProfiled(
       }
     }
     packetDecodeMs += performance.now() - phaseStarted
+    decodedParts += 1
+  }
+  // Ни одна часть не распаковалась — это смена формата, а не бой без событий:
+  // пустой результат записался бы как успешный разбор (так было с 2.59).
+  if (ordered.length > 0 && decodedParts === 0) {
+    throw new Error(`пакетный поток не распакован ни в одной части: ${errors.slice(0, 3).join('; ')}`)
+  }
+
+  for (const entityError of ecs.entityErrors) {
+    if (errors.length >= 200) break
+    errors.push(`ECS-сущность ${entityError}`)
   }
 
   const finalizeStarted = performance.now()

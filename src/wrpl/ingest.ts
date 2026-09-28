@@ -15,10 +15,13 @@ import {
   type PreparedBattleData,
 } from './battle-data.js'
 import {
+  isWorkerExecutionTimeout,
   isWorkerPoolSchedulingError,
   runWorkerTask,
   transferableBuffer,
 } from '../workers/pool.js'
+import { ExecTimeoutBudget } from '../workers/exec-timeout-budget.js'
+import { dropBattleArtifacts } from './battle-media.js'
 import { dropReplayCache, replayFetchAdmissionSnapshot } from './replay-cache.js'
 import {
   ReplayPartsFetchError,
@@ -70,6 +73,13 @@ const READY_QUEUE_HIGH_COUNT = 4
 const READY_QUEUE_LOW_COUNT = 2
 const READY_QUEUE_HIGH_BYTES = 256 * 1024 * 1024
 const READY_QUEUE_LOW_BYTES = 128 * 1024 * 1024
+/**
+ * Сколько таймаутов разбора подряд прощается без расхода попытки. Таймауты
+ * записи в SQLite (медленный диск) бьют по всем боям сразу и попытку не
+ * расходуют никогда: иначе перегрузка диска превратилась бы в потерю боёв.
+ */
+const PARSE_EXEC_TIMEOUTS_BEFORE_ERROR = 3
+const parseExecTimeouts = new ExecTimeoutBudget(PARSE_EXEC_TIMEOUTS_BEFORE_ERROR)
 
 const sleep = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
   if (signal.aborted) {
@@ -153,6 +163,8 @@ async function ingestOne(
     return outcome
   }
 
+  // true, пока ошибка может прийти из разбора (parse-battle), а не из записи в SQLite.
+  let parsing = true
   try {
     if (!prepared) telemetry.startDownload()
     const onPhase = (event: BattleLoadPhaseEvent): void => {
@@ -183,6 +195,8 @@ async function ingestOne(
           undefined,
           onPhase,
         )
+    parsing = false
+    parseExecTimeouts.clear(item.externalId)
     if (signal.aborted) {
       outcome = 'cancelled'
       return outcome
@@ -221,6 +235,14 @@ async function ingestOne(
     const sqliteQueueMs = Math.max(0, performance.now() - sqliteQueuedAt - sqliteMs)
     telemetry.persistTiming(sqliteQueueMs, transactionMs, checkpointMs)
     admission?.observePersist(sqliteQueueMs)
+    // До события committed: анонс и сайт после него должны строить media по
+    // новым строкам, а не отдать кэш прежнего разбора этой же сессии.
+    await dropBattleArtifacts(loaded.header.sessionIdHex).catch((error: unknown) => {
+      console.warn(
+        `[ingest] бой ${item.externalId}: не удалось очистить кэш media: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
     emitBattleLifecycle({ kind: 'committed', sessionId: item.externalId })
     await dropReplayCache(loaded.header.sessionIdHex)
     const events = loaded.summary
@@ -252,6 +274,26 @@ async function ingestOne(
     const message = err instanceof Error ? err.message : String(err)
     if (isReplayByteBudgetSchedulingError(err)) {
       console.warn(`[ingest] бой ${item.externalId}: memory budget занят (${message}); попытка не расходуется`)
+      outcome = 'deferred'
+      return outcome
+    }
+    if (parsing && isWorkerExecutionTimeout(err)) {
+      if (parseExecTimeouts.register(item.externalId)) {
+        markBattleIngest(
+          item.externalId,
+          'error',
+          `${message} (разбор ${PARSE_EXEC_TIMEOUTS_BEFORE_ERROR} раза подряд не уложился в таймаут)`,
+        )
+        console.warn(
+          `[ingest] бой ${item.externalId}: разбор ${PARSE_EXEC_TIMEOUTS_BEFORE_ERROR} раза подряд превысил таймаут — считаю попыткой`,
+        )
+        outcome = 'error'
+        return outcome
+      }
+      console.warn(
+        `[ingest] бой ${item.externalId}: таймаут разбора ` +
+          `${parseExecTimeouts.count(item.externalId)}/${PARSE_EXEC_TIMEOUTS_BEFORE_ERROR}; попытка не расходуется`,
+      )
       outcome = 'deferred'
       return outcome
     }
