@@ -1,4 +1,6 @@
 * text=auto eol=lf
+# Shell-скрипты исполняются в Linux-контейнере: CR в shebang ломает запуск.
+*.sh text eol=lf
 
 *.db binary
 *.sqlite binary

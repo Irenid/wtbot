@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { isIP } from 'node:net'
 import { workerResourcePlan } from './runtime-options.js'
 
 function required(name: string): string {
@@ -23,6 +24,31 @@ function envNumber(name: string, fallback: number, min: number, max: number): nu
     throw new Error(`Переменная ${name} должна быть числом от ${min} до ${max}`)
   }
   return parsed
+}
+
+/**
+ * WEB_TRUST_PROXY для Fastify trustProxy: пусто/false — не доверять
+ * X-Forwarded-*; true — доверять всем (только если порт недоступен никому,
+ * кроме прокси); иначе список IP/CIDR через запятую либо ключевые слова
+ * proxy-addr (loopback, linklocal, uniquelocal). Счёт хопов числом Fastify
+ * 5.12 убрал из-за подделки X-Forwarded-* (GHSA-3m5p-2c4r-xxw2).
+ */
+function envTrustProxy(name: string): boolean | string[] {
+  const raw = process.env[name]?.trim() ?? ''
+  if (raw === '' || /^(?:false|0|no|off)$/i.test(raw)) return false
+  if (/^(?:true|yes|on)$/i.test(raw)) return true
+  const entries = raw.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
+  for (const entry of entries) {
+    const [address = '', prefix, extra] = entry.split('/')
+    const keyword = ['loopback', 'linklocal', 'uniquelocal'].includes(entry.toLowerCase())
+    const version = isIP(address)
+    const prefixValid = prefix === undefined
+      || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (version === 6 ? 128 : 32))
+    if (!keyword && (version === 0 || !prefixValid || extra !== undefined)) {
+      throw new Error(`Переменная ${name}: «${entry}» не IP, CIDR или loopback/linklocal/uniquelocal`)
+    }
+  }
+  return entries
 }
 
 function envCsvUnique(name: string): string[] {
@@ -63,8 +89,13 @@ export const config = {
   port: Math.floor(envNumber('PORT', 3000, 1, 65_535)),
   /** Интерфейс веб-сервера; loopback по умолчанию не выставляет API в сеть. */
   webHost: process.env['WEB_HOST']?.trim() || '127.0.0.1',
-  /** Общий bearer-token обязателен, если WEB_HOST не loopback. */
+  /**
+   * Общий токен обязателен, если WEB_HOST не loopback: API-клиенты передают его
+   * как Bearer, браузер — паролем HTTP Basic (имя пользователя любое).
+   */
   webToken: process.env['WEB_TOKEN']?.trim() ?? '',
+  /** Доверенные reverse proxy для X-Forwarded-For (см. envTrustProxy); по умолчанию не доверять. */
+  webTrustProxy: envTrustProxy('WEB_TRUST_PROXY'),
   /** Разрешить создание новой SQLite только явным флагом. */
   allowNewDb: envBoolean('WTBOT_ALLOW_NEW_DB', false),
   /** Путь к файлу SQLite */
@@ -102,8 +133,16 @@ export const config = {
   wtBrowserPoolSize: Math.floor(envNumber('WT_BROWSER_POOL_SIZE', 3, 1, 8)),
   /** Фиксированный DevTools-порт Edge; 0 — свободный порт, запомненный в профиле. */
   wtBrowserCdpPort: Math.floor(envNumber('WT_BROWSER_CDP_PORT', 0, 0, 65_535)),
-  /** Необязательный путь к Edge/Chromium; по умолчанию используется канал msedge. */
+  /**
+   * Необязательный путь к Edge/Chrome/Chromium. Без него ищется Edge (Windows),
+   * а на Linux — Edge, Chrome или Chromium в стандартных путях.
+   */
   wtBrowserExecutable: process.env['WT_BROWSER_EXECUTABLE']?.trim() ?? '',
+  /**
+   * Запуск браузера с --no-sandbox. Нужен в Docker: seccomp по умолчанию
+   * запрещает namespace-песочницу Chromium. Вне контейнера оставляйте false.
+   */
+  wtBrowserNoSandbox: envBoolean('WT_BROWSER_NO_SANDBOX', false),
   /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
   voiceChannelIds: (process.env['WT_VOICE_CHANNELS'] ?? '')
     .split(',')
@@ -116,8 +155,14 @@ export const config = {
    * все клановые бои. Сравнивается по «ядру» тега без украшений/регистра.
    */
   clanTag: (process.env['WT_CLAN_TAG'] ?? '').trim(),
+  /**
+   * Бои старше стольких часов (по времени начала) не анонсируются, а
+   * помечаются пропущенными: после простоя бота иначе в канал ушла бы вся
+   * накопившаяся история. 0 — без ограничения.
+   */
+  announceMaxAgeHours: envNumber('WT_ANNOUNCE_MAX_AGE_HOURS', 2, 0, 24 * 365),
   /** Лимит кэша картинок боёв data/battles в МБ (перерисовываются из БД) */
-  battleCacheMb: process.env['WT_BATTLE_CACHE_MB'] ?? '400',
+  battleCacheMb: envNumber('WT_BATTLE_CACHE_MB', 400, 50, 1_048_576),
   /** Повторно использовать готовые PNG/TXT; новые результаты сохраняются всегда. */
   battleCacheEnabled: envBoolean('WT_BATTLE_CACHE_ENABLED', true),
   /** Настройки отображения авиационной heatmap, передаваемые в CPU worker. */
