@@ -1,0 +1,6 @@
+{
+  // Сборка production-кода в dist/: тесты проверяются `npm run typecheck`,
+  // но в dist/ и Docker-образ не попадают.
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/**/*.spec.ts"]
+}

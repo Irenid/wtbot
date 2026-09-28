@@ -45,8 +45,10 @@
     "skipLibCheck": true,
     "esModuleInterop": true
   },
+  // Полная проверка типов, включая тесты (npm run typecheck). Сборку в dist/
+  // без тестов делает tsconfig.build.json (npm run build).
   "include": ["src/**/*"],
-  "exclude": ["**/*.spec.ts","node_modules","dist"]
+  "exclude": ["node_modules","dist"]
 }
 
 

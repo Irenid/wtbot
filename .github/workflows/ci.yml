@@ -1,0 +1,69 @@
+# Офлайн-проверки wtbot: без секретов, сети War Thunder и Discord.
+# Прод запускается в Docker на Linux, разработка и тесты — на Windows,
+# поэтому проверки идут на обеих ОС, а образ собирается отдельно.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      - run: npm ci
+      - run: npm --prefix frontend ci
+      - run: npm run build
+      # typecheck, npm test и все офлайн-smoke (verify:*), включая WRPL-корпус.
+      - run: npm run verify
+      - run: npm run verify:workers:dist
+      - run: npm run build:web
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm --prefix frontend audit --audit-level=high
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Сборка образа
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: wtbot:ci
+      - name: Образ запускает Node, Chromium и Xvfb
+        run: |
+          docker run --rm --entrypoint node wtbot:ci -e "console.log(process.version)"
+          docker run --rm --entrypoint chromium wtbot:ci --version
+          docker run --rm --entrypoint sh wtbot:ci -c 'command -v Xvfb && command -v x11vnc && test -f dist/index.js && test -f frontend/dist/index.html'
+      - name: Сервис бэкапа стартует без бота и секретов
+        run: |
+          mkdir -p ci-data
+          docker run --rm -e WT_BROWSER_ENABLED=false -e WTBOT_ALLOW_NEW_DB=true \
+            -v "$PWD/ci-data:/app/data" wtbot:ci \
+            node -e "import('./dist/db/index.js').then((db) => { db.initDb('/app/data/wtbot.db', { allowCreate: true }); db.closeDb(); console.log('sqlite ok') })"
+          docker run --rm -e WT_BROWSER_ENABLED=false -v "$PWD/ci-data:/app/data" wtbot:ci node dist/analysis/db-backup.js
