@@ -1,4 +1,4 @@
-import { config } from './config.js'
+import { config, requireDiscordToken } from './config.js'
 import path from 'node:path'
 import {
   closeDb,
@@ -58,6 +58,9 @@ let previousCpuUsage = process.cpuUsage()
 let previousCpuSampleAt = performance.now()
 let instanceLock: OwnedFileLock | null = null
 const PRODUCER_DRAIN_MS = 10_000
+
+// Без Discord-токена основной процесс бесполезен: проверяем до lock, SQLite и сети.
+requireDiscordToken()
 
 try {
   instanceLock = await acquireRecoverableFileLock({
