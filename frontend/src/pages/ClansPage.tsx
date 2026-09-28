@@ -124,6 +124,7 @@ export function ClansPage() {
             .then((history) => {
               if (!cancelled) setHistories((prev) => ({ ...prev, [clan.coreTag]: history.points }))
             })
+            // Спарклайн декоративный: без него карточка остаётся полной, ошибку не показываем.
             .catch(() => {})
         }
       })

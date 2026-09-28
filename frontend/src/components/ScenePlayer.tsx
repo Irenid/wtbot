@@ -135,6 +135,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
     let raf = 0
     let lastFrameAt = performance.now()
     let disposed = false
+    let lastSignature = ''
 
     const draw = (now: number): void => {
       if (disposed) return
@@ -157,6 +158,18 @@ export function ScenePlayer({ scene, dict, battleKey }: {
       }
       const W = canvas.width
       const H = canvas.height
+
+      // Статичный кадр (пауза, конец боя) не перерисовываем 60 раз в секунду:
+      // кадр меняется только вместе со временем, размером, фильтрами или фокусом.
+      const signature = [
+        t, W, H, state.showZones, state.showAir, state.showTeams[0], state.showTeams[1],
+        state.showTraj, state.showKills, state.focusUserId ?? '',
+      ].join('|')
+      if (signature === lastSignature) {
+        raf = requestAnimationFrame(draw)
+        return
+      }
+      lastSignature = signature
 
       const scale = Math.min(W / worldW, H / worldH)
       const ox = (W - worldW * scale) / 2

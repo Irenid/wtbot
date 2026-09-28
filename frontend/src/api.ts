@@ -181,6 +181,10 @@ export interface ClanListEntry {
    * уход из состава в дельту не входят; null — ни у кого нет базиса.
    */
   delta30d: number | null
+  /** Место в общем рейтинге всех кланов, а не только в показанной сотне. */
+  rank: number
+  /** false — ростер ещё не обходили: сумма может включать ушедших участников. */
+  rosterKnown: boolean
 }
 
 export function fetchClans(): Promise<{ ok: true; season: ClanSeasonContext; clans: ClanListEntry[] }> {
@@ -251,6 +255,9 @@ export interface ClanDetail {
     members: number
     totalRating: number
     lastSeenAt: number
+    rank: number
+    delta30d: number | null
+    rosterKnown: boolean
   }
   roster: {
     nick: string
@@ -279,11 +286,13 @@ export function fetchClan(coreTag: string, days?: number): Promise<ClanDetail> {
   return getJson(`/api/clans/${encodeURIComponent(coreTag)}${query}`)
 }
 
-export function fetchBattles(params: { player?: string; clan?: string; limit?: number }): Promise<{ ok: true; battles: BattleListEntry[] }> {
+/** `to` — исключающая граница по времени старта (Unix, с): для «показать ещё». */
+export function fetchBattles(params: { player?: string; clan?: string; limit?: number; to?: number }): Promise<{ ok: true; battles: BattleListEntry[] }> {
   const search = new URLSearchParams()
   if (params.player) search.set('player', params.player)
   if (params.clan) search.set('clan', params.clan)
   if (params.limit) search.set('limit', String(params.limit))
+  if (params.to !== undefined) search.set('to', String(params.to))
   const suffix = search.size > 0 ? `?${search.toString()}` : ''
   return getJson(`/api/battles${suffix}`)
 }
@@ -383,10 +392,18 @@ export type VehicleDict = Record<string, VehicleInfo>
 
 let vehicleDictPromise: Promise<VehicleDict> | null = null
 
-/** Словарь техники кэшируется на всё время жизни вкладки. */
+/**
+ * Словарь техники кэшируется на всё время жизни вкладки. Отказ (429, 503) не
+ * запоминается: иначе после одной ошибки весь сайт до перезагрузки показывал
+ * бы внутренние id техники. Текущий экран получает пустой словарь, следующий
+ * вызов повторит запрос.
+ */
 export function fetchVehicleDict(): Promise<VehicleDict> {
   vehicleDictPromise ??= getJson<{ ok: true; vehicles: VehicleDict }>('/api/vehicles')
     .then((body) => body.vehicles)
-    .catch(() => ({}))
+    .catch(() => {
+      vehicleDictPromise = null
+      return {}
+    })
   return vehicleDictPromise
 }
