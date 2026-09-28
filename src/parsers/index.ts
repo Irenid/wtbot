@@ -17,9 +17,16 @@ import type { ParserSource } from './types.js'
 const MAX_SOURCE_BACKOFF_MS = 30 * 60_000
 const runtimes = new Map<string, { failures: number; timer: NodeJS.Timeout | null }>()
 let parsersRunning = false
-/** Источники, чей прошлый запуск ещё не завершился — чтобы догон парсера
- *  (может листать десятки страниц) не наложился на следующий тик */
-const running = new Set<string>()
+/** Поколение планировщика: stop/restart делает результаты старых запусков неактуальными. */
+let generation = 0
+let stopController = new AbortController()
+/** Незавершённые запуски по источникам — чтобы догон парсера (может листать
+ *  десятки страниц) не наложился на следующий тик, а shutdown дождался их. */
+const activeRuns = new Map<string, Promise<boolean>>()
+
+function isCurrent(runGeneration: number): boolean {
+  return parsersRunning && runGeneration === generation
+}
 
 async function persistParseResult(
   source: string,
@@ -41,11 +48,12 @@ async function persistParseResult(
   )
 }
 
-async function runOnce(source: ParserSource): Promise<boolean> {
-  if (running.has(source.name)) return true
-  running.add(source.name)
+async function runOnce(source: ParserSource, runGeneration: number, signal: AbortSignal): Promise<boolean> {
   try {
-    const output = await source.run()
+    const output = await source.run(signal)
+    // После stop или перезапуска результат не сохраняем: БД и worker pool
+    // могут уже закрываться, а несохранённые записи источник соберёт снова.
+    if (!isCurrent(runGeneration)) return true
     let summary = output.summary
     const gotItems = output.items !== undefined && output.items.length > 0
     if (gotItems) {
@@ -66,13 +74,23 @@ async function runOnce(source: ParserSource): Promise<boolean> {
     if (gotItems || source.name === 'wt-replays') console.log(`[parser:${source.name}] OK — ${summary}`)
     return true
   } catch (err) {
+    // Отмена при остановке — не ошибка источника и не повод для backoff.
+    if (!isCurrent(runGeneration)) return true
     const message = err instanceof Error ? err.message : String(err)
     await persistParseResult(source.name, false, null, message)
     console.error(`[parser:${source.name}] Ошибка — ${message}`)
     return false
-  } finally {
-    running.delete(source.name)
   }
+}
+
+function launch(source: ParserSource, runGeneration: number, signal: AbortSignal): Promise<boolean> {
+  // Прошлый запуск (в том числе прошлого поколения) ещё идёт — тик пропускаем.
+  if (activeRuns.has(source.name)) return Promise.resolve(true)
+  const run: Promise<boolean> = runOnce(source, runGeneration, signal).finally(() => {
+    if (activeRuns.get(source.name) === run) activeRuns.delete(source.name)
+  })
+  activeRuns.set(source.name, run)
+  return run
 }
 
 export function parserBackoffMs(intervalMs: number, failures: number): number {
@@ -82,17 +100,17 @@ export function parserBackoffMs(intervalMs: number, failures: number): number {
   return Math.min(intervalMs * 2 ** Math.min(failures - 1, 10), MAX_SOURCE_BACKOFF_MS)
 }
 
-function schedule(source: ParserSource, delayMs: number): void {
-  if (!parsersRunning) return
+function schedule(source: ParserSource, delayMs: number, runGeneration: number, signal: AbortSignal): void {
+  if (!isCurrent(runGeneration)) return
   const runtime = runtimes.get(source.name)
   if (!runtime) return
   runtime.timer = setTimeout(() => {
     runtime.timer = null
-    void runOnce(source)
+    void launch(source, runGeneration, signal)
       .then((ok) => {
         if (ok) {
           runtime.failures = 0
-          schedule(source, source.intervalMs)
+          schedule(source, source.intervalMs, runGeneration, signal)
           return
         }
         runtime.failures += 1
@@ -100,12 +118,13 @@ function schedule(source: ParserSource, delayMs: number): void {
         console.warn(
           `[parser:${source.name}] backoff после ${runtime.failures} ошибок: следующая попытка через ${Math.ceil(nextDelay / 1_000)} с`,
         )
-        schedule(source, nextDelay)
+        schedule(source, nextDelay, runGeneration, signal)
       })
       .catch((error: unknown) => {
+        if (!isCurrent(runGeneration)) return
         runtime.failures += 1
         console.error(`[parser:${source.name}] scheduler завершился ошибкой:`, error)
-        schedule(source, parserBackoffMs(source.intervalMs, runtime.failures))
+        schedule(source, parserBackoffMs(source.intervalMs, runtime.failures), runGeneration, signal)
       })
   }, Math.max(0, delayMs))
 }
@@ -119,22 +138,34 @@ export function startParsers(sourceList: readonly ParserSource[] = sources): voi
     }
     names.add(source.name)
   }
-  if (parsersRunning) stopParsers()
+  // Старые запуски дорабатывают в фоне, но их результаты уже не сохраняются.
+  if (parsersRunning) void stopParsers()
   parsersRunning = true
+  stopController = new AbortController()
+  const runGeneration = generation
+  const signal = stopController.signal
   if (sourceList.some((source) => source.name === 'wt-replays')) {
     primeKnownItemExternalIds('wt-replays')
   }
   for (const source of sourceList) {
     runtimes.set(source.name, { failures: 0, timer: null })
-    schedule(source, 0)
+    schedule(source, 0, runGeneration, signal)
   }
   console.log(`[parsers] Запущено источников: ${sourceList.length}`)
 }
 
-export function stopParsers(): void {
+/**
+ * Запрещает новые запуски, отменяет активные через AbortSignal и возвращает
+ * promise их завершения — shutdown включает его в общий drain producers.
+ * Результаты запусков, закончившихся после stop, в БД не пишутся.
+ */
+export function stopParsers(): Promise<void> {
   parsersRunning = false
+  generation += 1
+  stopController.abort(new Error('parser scheduler остановлен'))
   for (const runtime of runtimes.values()) {
     if (runtime.timer !== null) clearTimeout(runtime.timer)
   }
   runtimes.clear()
+  return Promise.allSettled([...activeRuns.values()]).then(() => undefined)
 }

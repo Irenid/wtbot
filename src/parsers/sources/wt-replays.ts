@@ -170,6 +170,8 @@ export interface CollectOpts {
    * (проверено — совпадают), лишние N запросов не нужны.
    */
   fetchDetails?: boolean | undefined
+  /** Отмена обхода при остановке планировщика; проверяется между запросами. */
+  signal?: AbortSignal | undefined
 }
 
 export interface CollectResult {
@@ -208,6 +210,7 @@ export async function collectFreshReplays(
   // Страницы зависимы: каждая может остановить обход по known/cutoff/cap,
   // а внешний transport всё равно пропускает запросы через общую очередь.
   for (let page = 1; opts.maxPages === undefined || page <= opts.maxPages; page++) {
+    opts.signal?.throwIfAborted()
     const data = page === 1
       ? await deps.retryFirstPage(
           () => deps.fetchPage(page),
@@ -249,6 +252,7 @@ export async function collectFreshReplays(
   for (const replay of fresh) {
     let parts: string[] | null = null
     if (opts.fetchDetails !== false) {
+      opts.signal?.throwIfAborted()
       parts = await deps.fetchParts(replay.sessionId)
     }
     items.push({
@@ -267,12 +271,13 @@ export const wtReplays: ParserSource = {
   // Частый опрос дешёвый: парсинг инкрементальный, без новых реплеев
   // это один запрос первой страницы списка
   intervalMs: 20_000,
-  async run() {
+  async run(signal) {
     // Догон: листаем до первого уже сохранённого боя. Планировщик не допускает
     // параллельных запусков этого source, а запросы ограничены паузой 1,5 с.
     const { items, totalOnSite, pagesRead, hitCap } = await collectFreshReplays({
       maxPages: PLANNED_REPLAYS_MAX_PAGES,
       stopAtKnown: true,
+      signal,
       // Точные URL частей восстанавливаются из url + partsCount. Отдельный
       // запрос на каждый новый бой замедляет догон и быстро приводит к 429.
       fetchDetails: false,
