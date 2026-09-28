@@ -1,6 +1,8 @@
 # План производительности wtbot
 
-Обновлено: 2026-08-01.
+Обновлено: 2026-08-01 (замеры на Windows-десктопе; боевой запуск теперь —
+Docker на Linux, профиль под него ещё не снимался). Открытые задачи — в
+[ROADMAP.md](../ROADMAP.md).
 
 Статус: критические bottleneck текущего ingest-профиля измерены и исправлены.
 WRPL parser ускорен примерно на 70%, exact replay reservation устраняет
@@ -181,7 +183,7 @@ Live canary запускается только с пустым `WT_BATTLES_CHAN
 
 | Метрика | Gate |
 | --- | ---: |
-| Offline correctness | 143/143 tests |
+| Offline correctness | `npm run verify` зелёный (baseline — AGENTS.md, раздел 10) |
 | Throughput при backlog | >=10 battles/min |
 | HTTP 429 ratio | <2% attempts |
 | Ready/worker queue p95 | <100 мс |
