@@ -1,4 +1,3 @@
-@'
 # Python environments and caches
 .venv/
 venv/
@@ -65,4 +64,3 @@ pnpm-lock.yaml
 yarn.lock
 poetry.lock
 uv.lock
-'@ | Set-Content ".cbmignore" -Encoding UTF8
