@@ -1,3 +1,12 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Портировано из wrpl-inspector (Copyright (C) 2025 flexcoral),
+ * https://github.com/maxsupermanhd/wrpl-inspector, ветка v3.
+ * Изменено участниками wtbot в 2026 году: порт на TypeScript и адаптация к
+ * архитектуре wtbot. Распространяется на условиях GNU AGPL-3.0-or-later; полный
+ * текст лицензии — в файле LICENSE в корне репозитория. Без каких-либо гарантий.
+ */
 import { BitReader } from './bit-reader.js'
 
 /**
