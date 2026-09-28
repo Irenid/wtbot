@@ -1052,6 +1052,7 @@ function renderDashboard(data) {
     row('challenge', fmtMetric(transport.challenged), transport.challenged ? 'fail' : 'muted'),
     row('transport errors', fmtMetric(transport.transportErrors), transport.transportErrors ? 'fail' : 'muted'),
     row('clearance ok / fail', fmtMetric(transport.clearances) + ' / ' + fmtMetric(transport.clearanceFailures)),
+    row('clearance probes', fmtMetric(transport.clearanceProbes)),
     row('последний clearance', transport.lastClearanceAt ? fmtTimestamp(Math.floor(transport.lastClearanceAt / 1000)) : '—')
   );
 

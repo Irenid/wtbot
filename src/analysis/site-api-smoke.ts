@@ -376,11 +376,16 @@ async function main(): Promise<void> {
         totalRating: number
         avgRating: number
         delta30d: number | null
+        rank: number
+        rosterKnown: boolean
       }[]
       season: { currentStage: { week: number; maxBr: number } | null }
     }
     assert.equal(clansBody.season.currentStage?.week, expectedSeason.currentStage?.week)
     assert.equal(clansBody.clans.length, 4)
+    // Ранг — место в общем рейтинге, список отсортирован по нему.
+    assert.deepEqual(clansBody.clans.map((clan) => clan.rank), [1, 2, 3, 4])
+    assert.ok(clansBody.clans.every((clan) => typeof clan.rosterKnown === 'boolean'))
     const testClan = clansBody.clans.find((clan) => clan.coreTag === 'tst')
     assert.equal(testClan?.name, 'Test Clan')
     // Покинувший Ghost исключён из состава и суммы; базиса месяц назад нет.
@@ -402,12 +407,16 @@ async function main(): Promise<void> {
     const clanDetail = await app.inject({ method: 'GET', url: '/api/clans/TST' })
     assert.equal(clanDetail.statusCode, 200)
     const clanBody = clanDetail.json() as {
-      clan: { coreTag: string; name: string | null }
+      clan: { coreTag: string; name: string | null; rank: number; delta30d: number | null; rosterKnown: boolean }
       roster: { nick: string; rating: number; delta: number | null; wtUserId: string | null; identityId: number | null }[]
       battles: { total: number; wins: number; losses: number; winRate: number | null }
       recent: unknown[]
     }
     assert.equal(clanBody.clan.coreTag, 'tst')
+    // Страница клана получает ранг и дельту из самого ответа, а не из списка топ-100.
+    assert.equal(clanBody.clan.rank, testClan?.rank)
+    assert.equal(clanBody.clan.delta30d, testClan?.delta30d)
+    assert.equal(clanBody.clan.rosterKnown, testClan?.rosterKnown)
     assert.equal(clanBody.roster[0]?.nick, 'PilotOne')
     assert.equal(clanBody.roster[0]?.delta, 20)
     assert.equal(clanBody.roster[0]?.wtUserId, '501', 'ростер должен линковаться через алиасы')

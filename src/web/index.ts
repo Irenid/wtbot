@@ -10,6 +10,8 @@ import { spaDistAvailable, spaRoutes } from './routes/spa.js'
 export interface WebSecurityOptions {
   host?: string
   token?: string
+  /** Fastify trustProxy: адреса reverse proxy, которым доверяется X-Forwarded-For. */
+  trustProxy?: boolean | string[] | undefined
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -17,10 +19,51 @@ function isLoopbackHost(host: string): boolean {
   return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1'
 }
 
-function hasValidBearerToken(request: { headers: Record<string, string | string[] | undefined> }, token: string): boolean {
-  const authorization = request.headers['authorization']
-  if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) return false
-  const provided = Buffer.from(authorization.slice('Bearer '.length), 'utf8')
+/** Имя хоста из заголовка Host без порта; IPv6 — без квадратных скобок. */
+function hostHeaderName(value: string | string[] | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim().toLowerCase()
+  if (text === '') return null
+  if (text.startsWith('[')) {
+    const end = text.indexOf(']')
+    return end > 1 ? text.slice(1, end) : null
+  }
+  const colon = text.indexOf(':')
+  return colon >= 0 ? text.slice(0, colon) : text
+}
+
+/**
+ * Защита от DNS rebinding в loopback-режиме: страница злоумышленника может
+ * перепривязать своё имя на 127.0.0.1 и читать API из браузера оператора, но
+ * Host у такого запроса останется её именем. `*.localhost` браузеры всегда
+ * резолвят локально, поэтому его подделать нельзя.
+ */
+function hasLoopbackHostHeader(value: string | string[] | undefined): boolean {
+  const name = hostHeaderName(value)
+  if (name === null) return false
+  return name === '127.0.0.1' || name === '::1' || name === 'localhost' || name.endsWith('.localhost')
+}
+
+/**
+ * Токен из Authorization: `Bearer <WEB_TOKEN>` для API-клиентов или HTTP Basic
+ * с паролем WEB_TOKEN (имя пользователя любое) — браузер сам показывает окно
+ * входа и затем отправляет его с каждой навигацией и fetch к этому origin.
+ */
+function providedToken(authorization: string | string[] | undefined): string | null {
+  if (typeof authorization !== 'string') return null
+  const bearer = /^bearer\s+(.+)$/i.exec(authorization.trim())
+  if (bearer !== null) return bearer[1] ?? null
+  const basic = /^basic\s+([A-Za-z0-9+/=]+)$/i.exec(authorization.trim())
+  if (basic === null) return null
+  const decoded = Buffer.from(basic[1] ?? '', 'base64').toString('utf8')
+  const colon = decoded.indexOf(':')
+  return colon >= 0 ? decoded.slice(colon + 1) : null
+}
+
+function hasValidToken(request: { headers: Record<string, string | string[] | undefined> }, token: string): boolean {
+  const value = providedToken(request.headers['authorization'])
+  if (value === null) return false
+  const provided = Buffer.from(value, 'utf8')
   const expected = Buffer.from(token, 'utf8')
   return provided.length === expected.length && timingSafeEqual(provided, expected)
 }
@@ -69,9 +112,7 @@ function isProtectedRequest(request: FastifyRequest): boolean {
   return isProtectedPathname(normalizedPathname(request.url))
 }
 
-function isSafePostOrigin(request: {
-  headers: Record<string, string | string[] | undefined>
-}): boolean {
+function isSafePostOrigin(request: FastifyRequest): boolean {
   const fetchSite = request.headers['sec-fetch-site']
   if (typeof fetchSite === 'string' && fetchSite !== 'same-origin' && fetchSite !== 'same-site' && fetchSite !== 'none') {
     return false
@@ -79,10 +120,12 @@ function isSafePostOrigin(request: {
   const origin = request.headers['origin']
   if (origin === undefined) return true
   if (typeof origin !== 'string') return false
-  const host = request.headers['host']
-  if (typeof host !== 'string') return false
+  // request.host учитывает X-Forwarded-Host, если включён trustProxy: за reverse
+  // proxy браузер видит внешнее имя, а сырой Host — адрес upstream.
+  const host = request.host
+  if (typeof host !== 'string' || host === '') return false
   try {
-    return new URL(origin).host === host
+    return new URL(origin).host.toLowerCase() === host.toLowerCase()
   } catch {
     return false
   }
@@ -110,26 +153,50 @@ export function buildServer(
     throw new Error('WEB_TOKEN обязателен, если WEB_HOST не указывает loopback-интерфейс')
   }
 
-  const app = fastify({ logger: false })
+  // trustProxy только явным opt-in (WEB_TRUST_PROXY): безусловное доверие дало
+  // бы любому клиенту подделать X-Forwarded-For и обойти лимиты по IP.
+  const app = fastify({ logger: false, trustProxy: security.trustProxy ?? false })
 
   app.addHook('onRequest', async (request, reply) => {
-    if (!requireToken || !isProtectedRequest(request)) return
-    if (!hasValidBearerToken(request, token)) {
-      reply.code(401).header('WWW-Authenticate', 'Bearer').send({
+    if (!requireToken && !hasLoopbackHostHeader(request.headers['host'])) {
+      return reply.code(421).send({
         ok: false,
-        code: 'UNAUTHORIZED',
-        error: 'Требуется авторизация',
+        code: 'HOST_NOT_ALLOWED',
+        error: 'Недопустимый заголовок Host для локального сервера',
       })
-      return
     }
+    if (requireToken && isProtectedRequest(request) && !hasValidToken(request, token)) {
+      return reply
+        .code(401)
+        .header('WWW-Authenticate', 'Basic realm="wtbot", charset="UTF-8"')
+        .send({
+          ok: false,
+          code: 'UNAUTHORIZED',
+          error: 'Требуется авторизация',
+        })
+    }
+    // CSRF: POST принимается только same-origin в любом режиме — на loopback
+    // запрос с чужой страницы тоже приходит из браузера оператора.
     if (request.method === 'POST' && !isSafePostOrigin(request)) {
-      reply.code(403).send({
+      return reply.code(403).send({
         ok: false,
         code: 'CSRF_BLOCKED',
         error: 'Кросс-доменный POST запрещён',
       })
     }
   })
+
+  if (requireToken) {
+    // Ответ за авторизацией нельзя хранить в общем кэше reverse proxy: иначе
+    // он ушёл бы следующему клиенту без проверки токена.
+    app.addHook('onSend', async (request, reply, payload) => {
+      const cacheControl = reply.getHeader('cache-control')
+      if (typeof cacheControl === 'string' && /\bpublic\b/i.test(cacheControl) && isProtectedRequest(request)) {
+        reply.header('cache-control', cacheControl.replace(/\bpublic\b/gi, 'private'))
+      }
+      return payload
+    })
+  }
 
   app.register(pageRoutes)
   app.register(apiRoutes, { deps })

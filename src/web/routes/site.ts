@@ -96,6 +96,18 @@ interface SiteClanGroup {
   members: SiteClanMemberLatest[]
   totalRating: number
   lastSeenAt: number
+  /** Место в рейтинге всех кланов по totalRating (1 — лучший). */
+  rank: number
+  /**
+   * Состав известен из обхода claninfo. false — ростера ещё нет, и сумма
+   * считается по всем, кто когда-либо носил этот тег (могут быть ушедшие).
+   */
+  rosterKnown: boolean
+}
+
+/** Единый порядок рейтинга кланов: сумма ПКР, при равенстве — тег. */
+function compareClanGroups(left: SiteClanGroup, right: SiteClanGroup): number {
+  return right.totalRating - left.totalRating || left.coreTag.localeCompare(right.coreTag)
 }
 
 interface ClanSnapshot {
@@ -164,6 +176,8 @@ function buildClanSnapshot(): ClanSnapshot {
         members: [],
         totalRating: 0,
         lastSeenAt: 0,
+        rank: 0,
+        rosterKnown: (rosterByCore.get(core)?.size ?? 0) > 0,
       }
       groups.set(core, group)
     }
@@ -197,6 +211,12 @@ function buildClanSnapshot(): ClanSnapshot {
       }
     }
   }
+  // Ранг считается по всем кланам: список /api/clans обрезан до 100, и
+  // страница клана вне сотни раньше теряла своё место и дельту.
+  const ranked = [...groups.values()].sort(compareClanGroups)
+  ranked.forEach((group, index) => {
+    group.rank = index + 1
+  })
   // Час-округлённая граница даёт стабильный базис в пределах TTL кэша.
   // Базис тоже фильтруется по текущему составу — уход не искажает дельту.
   const baselineAt = Math.max(
@@ -212,6 +232,24 @@ function buildClanSnapshot(): ClanSnapshot {
     baseline.set(baselineKey(core, row.nick), row.rating)
   }
   return { builtAt: Date.now(), groups, baseline }
+}
+
+/**
+ * Честная дельта суммы ПКР за 30 дней: только участники, известные и месяц
+ * назад, и сейчас — приход и уход состава в дельту не попадают.
+ */
+function clanDelta30d(snapshot: ClanSnapshot, group: SiteClanGroup): number | null {
+  const baselineRatings: number[] = []
+  const currentRatings: number[] = []
+  for (const member of group.members) {
+    const base = snapshot.baseline.get(baselineKey(group.coreTag, member.nick))
+    if (base === undefined) continue
+    baselineRatings.push(base)
+    currentRatings.push(member.rating)
+  }
+  return baselineRatings.length > 0
+    ? totalSquadronRating(currentRatings) - totalSquadronRating(baselineRatings)
+    : null
 }
 
 interface SiteAccountView {
@@ -382,11 +420,33 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
   const ipBuckets = new Map<string, RateBucket>()
   const globalBuckets = new Map<string, RateBucket>()
   let clanSnapshot: ClanSnapshot | null = null
+  let clanRebuildScheduled = false
+  let closed = false
+  app.addHook('onClose', async () => {
+    closed = true
+  })
 
+  /**
+   * Stale-while-revalidate: запрос получает последний снимок сразу, а
+   * перестройка (~200 мс синхронного SQLite и JS на большой БД) идёт после
+   * ответа, а не внутри него. Синхронно строится только самый первый снимок.
+   */
   function cachedClanSnapshot(): ClanSnapshot {
-    const now = Date.now()
-    if (!clanSnapshot || now - clanSnapshot.builtAt >= CLAN_CACHE_TTL_MS) {
+    if (clanSnapshot === null) {
       clanSnapshot = buildClanSnapshot()
+      return clanSnapshot
+    }
+    if (Date.now() - clanSnapshot.builtAt >= CLAN_CACHE_TTL_MS && !clanRebuildScheduled) {
+      clanRebuildScheduled = true
+      setImmediate(() => {
+        try {
+          if (!closed) clanSnapshot = buildClanSnapshot()
+        } catch (error) {
+          console.warn(`[site] Снимок кланов не перестроен: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+          clanRebuildScheduled = false
+        }
+      })
     }
     return clanSnapshot
   }
@@ -632,37 +692,27 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
 
   app.get('/api/clans', async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
-    // Честная дельта за 30 дней: только участники, известные и месяц назад,
-    // и сейчас — приход/уход состава в дельту не попадает.
+    // Совпадает с TTL серверного снимка: переходы Home → Clans → Battles не
+    // запрашивают одни и те же данные заново.
+    void reply.header('Cache-Control', 'public, max-age=60')
     const snapshot = cachedClanSnapshot()
     const groups = [...snapshot.groups.values()]
-      .map((group) => {
-        const baselineRatings: number[] = []
-        const currentRatings: number[] = []
-        for (const member of group.members) {
-          const base = snapshot.baseline.get(baselineKey(group.coreTag, member.nick))
-          if (base === undefined) continue
-          baselineRatings.push(base)
-          currentRatings.push(member.rating)
-        }
-        const delta = baselineRatings.length > 0
-          ? totalSquadronRating(currentRatings) - totalSquadronRating(baselineRatings)
-          : null
-        return {
-          coreTag: group.coreTag,
-          displayTag: clanDisplayName(group.displayTag),
-          name: group.name,
-          members: group.members.length,
-          totalRating: group.totalRating,
-          avgRating: group.members.length > 0
-            ? Math.round(group.members.reduce((sum, member) => sum + member.rating, 0) / group.members.length)
-            : 0,
-          lastSeenAt: group.lastSeenAt,
-          delta30d: delta,
-        }
-      })
-      .sort((a, b) => b.totalRating - a.totalRating)
+      .sort(compareClanGroups)
       .slice(0, 100)
+      .map((group) => ({
+        coreTag: group.coreTag,
+        displayTag: clanDisplayName(group.displayTag),
+        name: group.name,
+        members: group.members.length,
+        totalRating: group.totalRating,
+        avgRating: group.members.length > 0
+          ? Math.round(group.members.reduce((sum, member) => sum + member.rating, 0) / group.members.length)
+          : 0,
+        lastSeenAt: group.lastSeenAt,
+        delta30d: clanDelta30d(snapshot, group),
+        rank: group.rank,
+        rosterKnown: group.rosterKnown,
+      }))
     return { ok: true, season: getClanSeasonContext(), clans: groups }
   })
 
@@ -730,7 +780,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!core) {
       return reply.code(400).send({ ok: false, code: 'INVALID_CLAN', error: 'Некорректный тег клана' })
     }
-    const group = clanGroups().get(core)
+    const snapshot = cachedClanSnapshot()
+    const group = snapshot.groups.get(core)
     if (!group) {
       return reply.code(404).send({ ok: false, code: 'CLAN_NOT_FOUND', error: 'Клан не найден в снимках рейтинга' })
     }
@@ -816,6 +867,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         members: roster.length,
         totalRating: group.totalRating,
         lastSeenAt: group.lastSeenAt,
+        rank: group.rank,
+        delta30d: clanDelta30d(snapshot, group),
+        rosterKnown: group.rosterKnown,
       },
       roster,
       battles: {
@@ -893,6 +947,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!summary) {
       return reply.code(404).send({ ok: false, code: 'BATTLE_NOT_FOUND', error: 'Бой не найден среди разобранных' })
     }
+    // Скорборд разобранного боя не меняется; короткий срок оставлен на случай переразбора.
+    void reply.header('Cache-Control', 'public, max-age=300')
     const teamsMap = new Map<number, { team: number; totalScore: number; players: unknown[] }>()
     for (const player of summary.players) {
       let team = teamsMap.get(player.team)
@@ -1018,10 +1074,12 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       void reply.header('Cache-Control', 'public, max-age=86400')
       return { ok: true, vehicles: dict }
     } catch (error) {
+      // Текст ошибки загрузки (сеть, пути data/) остаётся в серверном логе.
+      console.warn(`[site] Словарь техники недоступен: ${error instanceof Error ? error.message : String(error)}`)
       return reply.code(503).send({
         ok: false,
         code: 'VEHICLES_UNAVAILABLE',
-        error: `Словарь техники недоступен: ${error instanceof Error ? error.message : String(error)}`,
+        error: 'Словарь техники временно недоступен',
       })
     }
   })
