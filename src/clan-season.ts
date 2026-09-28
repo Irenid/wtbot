@@ -31,7 +31,43 @@ const seasonStages = [
   ['2026-08-26', '2026-09-01', 4.7],
 ] as const
 
-/** Расписание нужно менять добавлением новой записи, старые сезоны не переписываются. */
+/**
+ * Проверяет расписание: этапы идут подряд без дыр и перекрытий, первый
+ * начинается вместе с сезоном, последний заканчивается вместе с ним, недели
+ * нумеруются с 1, сезоны не пересекаются. Ошибка в расписании — ошибка
+ * старта, а не тихо неверные рейтинговые границы.
+ */
+export function validateClanSeasonSchedules(schedules: readonly ClanSeasonSchedule[]): void {
+  const ids = new Set<string>()
+  const sorted = [...schedules].sort((left, right) => left.startsAt - right.startsAt)
+  sorted.forEach((season, index) => {
+    const label = `сезон ${season.id}`
+    if (ids.has(season.id)) throw new Error(`${label}: повторяющийся id`)
+    ids.add(season.id)
+    if (!(season.endsAt > season.startsAt)) throw new Error(`${label}: конец не позже начала`)
+    const previous = sorted[index - 1]
+    if (previous !== undefined && season.startsAt < previous.endsAt) {
+      throw new Error(`${label}: пересекается с сезоном ${previous.id}`)
+    }
+    if (season.stages.length === 0) throw new Error(`${label}: нет этапов`)
+    let expectedStart = season.startsAt
+    season.stages.forEach((stage, stageIndex) => {
+      if (stage.week !== stageIndex + 1) throw new Error(`${label}: этапы должны нумероваться 1, 2, 3…`)
+      if (stage.startsAt !== expectedStart) throw new Error(`${label}: дыра или перекрытие перед этапом ${stage.week}`)
+      if (!(stage.endsAt > stage.startsAt)) throw new Error(`${label}: этап ${stage.week} пустой`)
+      if (!(stage.maxBr > 0)) throw new Error(`${label}: этап ${stage.week} без максимального БР`)
+      expectedStart = stage.endsAt
+    })
+    if (expectedStart !== season.endsAt) throw new Error(`${label}: последний этап не совпадает с концом сезона`)
+  })
+}
+
+/**
+ * Встроенные сезоны. Новые сезоны бот берёт сам с форума
+ * (clan-season-forum.ts, источник wt-clan-season) с id `forum-ГГГГ-ММ-ДД`;
+ * сюда их добавлять не нужно. Старые записи не переписываются,
+ * seedClanSeasons() синхронизирует SQLite с этим списком.
+ */
 export const CLAN_SEASON_SCHEDULES: readonly ClanSeasonSchedule[] = [
   {
     id: '2026-summer',
@@ -53,3 +89,5 @@ export function stageAt(
 ): ClanSeasonStage | null {
   return season.stages.find((stage) => atSec >= stage.startsAt && atSec < stage.endsAt) ?? null
 }
+
+validateClanSeasonSchedules(CLAN_SEASON_SCHEDULES)
