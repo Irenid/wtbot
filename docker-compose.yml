@@ -9,6 +9,11 @@ services:
     # Стабильное имя хоста: Chromium хранит его в SingletonLock профиля.
     hostname: wtbot
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     env_file: .env
     environment:
       # Пути и сеть контейнера важнее значений из .env, записанных для Windows.
@@ -35,6 +40,11 @@ services:
     image: wtbot:latest
     init: true
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       - wtbot
     env_file: .env

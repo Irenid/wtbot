@@ -83,9 +83,11 @@ Windows (`.github/workflows/ci.yml`), он же собирает Docker-обра
 
 ## Бэкап и восстановление
 
-- Разовый бэкап: `npm run db:backup` (или `docker compose run --rm backup node dist/analysis/db-backup.js`).
-  Копия создаётся через `VACUUM INTO`, проверяется `PRAGMA quick_check` и
-  публикуется атомарно.
+- Разовый бэкап: `npm run db:backup` (или
+  `docker compose run --rm --no-deps backup node dist/analysis/db-backup.js /backups 3`;
+  без `--no-deps` Compose пересоздаёт работающий `wtbot`, если его конфигурация
+  изменилась). Копия создаётся через `VACUUM INTO`, проверяется
+  `PRAGMA quick_check` и публикуется атомарно.
 - Восстановление: остановите бота, проверьте выбранную копию `quick_check`,
   переименуйте текущую `wtbot.db` в `wtbot.db.pre-restore`, скопируйте копию
   на место `DB_PATH`, запустите бота без `WTBOT_ALLOW_NEW_DB` и проверьте `/health`.
