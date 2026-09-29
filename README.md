@@ -65,7 +65,12 @@ copy .env.example .env   # заполните TOKEN, WT_COOKIE, WT_PLAYER_NAMES
 npm run dev              # бот + сайт http://127.0.0.1:3000 + парсеры
 ```
 
-Сайт отдельно на реальной БД без бота: `npm run site` → `http://127.0.0.1:3210/app`.
+Боевая база одна — на сервере с Docker; бот с тем же `TOKEN` локально не
+запускайте, иначе анонсы в Discord задвоятся. SPA на данных сервера без
+локальной БД: задайте в `.env` `WTBOT_API_URL` (адрес сайта за reverse proxy) и
+`WTBOT_API_TOKEN` (его `WEB_TOKEN`), затем `npm run dev:web` →
+`http://127.0.0.1:5173/app/`.
+Сайт на локальной копии БД без бота: `npm run site` → `http://127.0.0.1:3210/app`.
 Демо на тестовых реплеях без БД: `npx tsx src/analysis/site-preview.ts`.
 Остановка — `Ctrl+C` в консоли. Макеты дизайн-системы сайта — `frontend/design/`.
 
