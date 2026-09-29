@@ -113,6 +113,9 @@ CPU pool и последней SQLite. Не закрывай pool до оста�
 - `WEB_TRUST_PROXY`: доверенные reverse proxy для `X-Forwarded-For`
   (`false`/`true`/список IP-CIDR). Числовой hop count Fastify 5.12 не
   поддерживает.
+- `WTBOT_API_URL`, `WTBOT_API_TOKEN`: только dev-прокси Vite
+  (`frontend/vite.config.ts`), бот их не читает. Направляют `/api` на боевой
+  сервер и добавляют Bearer; в клиентский бандл токен попадать не должен.
 - `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG`: Discord filters.
   Если задан канал боёв, а clan tag пуст, автоанонс охватывает все кланы
   (~1300 боёв в сутки). `WT_ANNOUNCE_MAX_AGE_HOURS` (default 2): бои старше
