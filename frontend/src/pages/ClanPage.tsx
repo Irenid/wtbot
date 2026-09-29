@@ -119,6 +119,9 @@ export function ClanPage() {
           <div className="chips">
             <Chip tone="accent">{t('clan.rank', { n: rank })}</Chip>
             <Chip>{tp('common.members', clan.members)}</Chip>
+            {clan.seasonBattles !== null && clan.seasonWins !== null && (
+              <Chip>{t('clan.seasonRecord', { wins: fmtInt(clan.seasonWins), battles: fmtInt(clan.seasonBattles) })}</Chip>
+            )}
             <Chip>{t('common.updated', { when: fmtDateTime(clan.lastSeenAt) })}</Chip>
           </div>
         </div>
@@ -126,12 +129,18 @@ export function ClanPage() {
           <div className="big">
             {fmtInt(clan.totalRating)}
             {delta30d !== null && delta30d !== 0 && (
-              <span style={{ marginLeft: 8, verticalAlign: 'middle' }} title={t('clan.deltaTooltip')}>
+              <span
+                style={{ marginLeft: 8, verticalAlign: 'middle' }}
+                title={t(clan.official ? 'clan.deltaTooltip.official' : 'clan.deltaTooltip')}
+              >
                 <DeltaPill value={delta30d} />
               </span>
             )}
           </div>
-          <div className="label">{t('metric.pkr.sum')}{delta30d !== null && delta30d !== 0 ? ` · Δ ${t('common.days.30')}` : ''}</div>
+          <div className="label">
+            {t(clan.official ? 'clan.officialRating' : 'metric.pkr.sum')}
+            {delta30d !== null && delta30d !== 0 ? ` · Δ ${t('common.days.30')}` : ''}
+          </div>
         </div>
       </header>
 
@@ -207,7 +216,7 @@ export function ClanPage() {
             <div className="card" style={{ marginBottom: 0 }}>
               <SecHead
                 title={t('clan.dynamics')}
-                hint={`${t('clan.dynamics.hint')}${historyTruncated ? ` · ${t('clan.dynamics.truncated')}` : ''}`}
+                hint={`${t(clan.official ? 'clan.dynamics.hint.official' : 'clan.dynamics.hint')}${historyTruncated ? ` · ${t('clan.dynamics.truncated')}` : ''}`}
               />
               <TimeChart
                 xs={history.map((point) => point.t)}

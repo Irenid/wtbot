@@ -309,6 +309,23 @@ export function realNamesFromItem(data: { players?: unknown }): Map<string, stri
   return map
 }
 
+/**
+ * userId всех игроков боя из записи сайта (Replay API), включая ботов:
+ * официальный состав, с которым сверяются игроки results-BLK.
+ */
+export function listedUserIdsFromItem(data: { players?: unknown }): string[] {
+  const ids: string[] = []
+  if (data.players === null || typeof data.players !== 'object') return ids
+  for (const list of Object.values(data.players)) {
+    if (!Array.isArray(list)) continue
+    for (const raw of list) {
+      const p = raw as { userId?: unknown } | null
+      if (p !== null && typeof p.userId === 'string') ids.push(p.userId)
+    }
+  }
+  return ids
+}
+
 /** Подменяет анонимные ники в results на реальные (по userId) */
 export function applyRealNames(results: ReplayResults, names: Map<string, string>): void {
   if (names.size === 0) return

@@ -10,6 +10,7 @@ import {
   getClanSeasonContext,
   initDb,
   saveBattle,
+  saveClanLeaderboard,
   saveClanRatingSnapshots,
   savePlayerExternalSnapshot,
   savePlayerIdentity,
@@ -562,6 +563,88 @@ async function main(): Promise<void> {
         assert.equal(response.statusCode, 429)
         assert.ok(Number(response.headers['retry-after']) >= 1)
       }
+    }
+
+    // --- Официальный лидерборд: рейтинг и место кланов — из него ---
+    // Снимок кланов кэшируется в экземпляре приложения, поэтому после записи
+    // лидерборда проверяется отдельный экземпляр.
+    const seasonStart = getClanSeasonContext().season?.startsAt ?? 0
+    const baseAt = Math.max(seasonStart, 1)
+    const fullCrawlAt = nowSec - 7_200
+    const topCrawlAt = nowSec - 600
+    const lbClan = (tag: string, name: string, rating: number, position: number, extra: object = {}) => ({
+      tag, name, rating, position, members: null, battles: null, wins: null, ...extra,
+    })
+    saveClanLeaderboard([lbClan('[AVR]', 'AVANGARD', 40_000, 1)], baseAt)
+    saveClanLeaderboard([
+      lbClan('[AVR]', 'AVANGARD', 48_307, 1, { members: 121, battles: 2_540, wins: 2_270 }),
+      lbClan(CLAN_RAW_TAG, 'Test Clan', 3_000, 2, { members: 2, battles: 10, wins: 6 }),
+      lbClan('[OLD]', 'Dropped Clan', 2_900, 3),
+    ], fullCrawlAt)
+    saveClanLeaderboard([
+      lbClan('[AVR]', 'AVANGARD', 48_400, 1, { members: 121, battles: 2_545, wins: 2_274 }),
+      lbClan(CLAN_RAW_TAG, 'Test Clan', 3_000, 2, { members: 2, battles: 11, wins: 7 }),
+      lbClan('[NEW]', 'Newcomer', 2_800, 3),
+    ], topCrawlAt)
+    const officialApp = buildServer(
+      {
+        getBotStatus: () => ({ online: false, tag: null, guilds: 0, uptimeSec: 0 }),
+        refreshVoice: async () => ({ players: 0, clans: 0 }),
+        playerStats: new PlayerStatsCoordinator({ externalService: null, externalSource: 'fixture' }),
+      },
+      { loadVehicleDict: async () => ({}) },
+    )
+    try {
+      const officialClans = await officialApp.inject({ method: 'GET', url: '/api/clans' })
+      assert.equal(officialClans.statusCode, 200)
+      const officialList = (officialClans.json() as {
+        clans: {
+          coreTag: string; name: string | null; totalRating: number; members: number; avgRating: number | null
+          seasonBattles: number | null; seasonWins: number | null; delta30d: number | null; rank: number; lastSeenAt: number
+        }[]
+      }).clans
+      // Выпавший из свежего обхода [OLD] ниже свежих кланов, хотя его прежний
+      // рейтинг выше, а кланы без официальных данных — после всех официальных.
+      assert.deepEqual(officialList.slice(0, 4).map((clan) => clan.coreTag), ['avr', 'tst', 'new', 'old'])
+      assert.deepEqual(officialList.slice(0, 4).map((clan) => clan.rank), [1, 2, 3, 4])
+      assert.equal(officialList.find((clan) => clan.coreTag === 'form')?.rank, 5, 'сумма ПКР не должна обгонять официальных')
+      const leader = officialList[0]
+      assert.equal(leader?.name, 'AVANGARD')
+      assert.equal(leader?.totalRating, 48_400)
+      assert.equal(leader?.members, 121)
+      assert.equal(leader?.seasonBattles, 2_545)
+      assert.equal(leader?.seasonWins, 2_274)
+      assert.equal(leader?.avgRating, null, 'без снимков состава средний ПКР неизвестен')
+      assert.equal(leader?.lastSeenAt, topCrawlAt)
+      assert.equal(leader?.delta30d, 48_400 - 40_000, 'дельта — от официального значения месяц назад')
+      const officialTst = officialList.find((clan) => clan.coreTag === 'tst')
+      assert.equal(officialTst?.totalRating, 3_000, 'официальный рейтинг заменяет сумму снимков ПКР')
+      assert.equal(officialTst?.avgRating, 1_460, 'средний ПКР по снимкам состава сохраняется')
+
+      const leaderDetail = await officialApp.inject({ method: 'GET', url: '/api/clans/avr' })
+      assert.equal(leaderDetail.statusCode, 200, 'клан лидерборда без снимков ПКР должен открываться')
+      const leaderBody = leaderDetail.json() as {
+        clan: { rank: number; members: number; totalRating: number; seasonBattles: number | null; seasonWins: number | null }
+        roster: unknown[]
+      }
+      assert.equal(leaderBody.clan.rank, 1)
+      assert.equal(leaderBody.clan.members, 121)
+      assert.equal(leaderBody.clan.totalRating, 48_400)
+      assert.equal(leaderBody.clan.seasonBattles, 2_545)
+      assert.equal(leaderBody.clan.seasonWins, 2_274)
+      assert.equal(leaderBody.roster.length, 0)
+
+      const leaderHistory = await officialApp.inject({ method: 'GET', url: '/api/clans/avr/history?days=90' })
+      const leaderPoints = (leaderHistory.json() as { points: { t: number; total: number }[] }).points
+      assert.deepEqual(leaderPoints.map((point) => point.total), [40_000, 48_307, 48_400])
+      assert.equal(leaderPoints[leaderPoints.length - 1]?.t, topCrawlAt)
+
+      const leaderBattles = await officialApp.inject({ method: 'GET', url: '/api/battles?clan=avr' })
+      assert.equal(leaderBattles.statusCode, 200)
+      const officialStats = await officialApp.inject({ method: 'GET', url: '/api/site-stats' })
+      assert.equal((officialStats.json() as { clans: number }).clans, 7, 'счётчик кланов включает официальные')
+    } finally {
+      await officialApp.close()
     }
 
     // --- Rate limit (последним: исчерпывает per-IP корзину) ---

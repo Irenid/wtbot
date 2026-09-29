@@ -28,7 +28,7 @@ import {
   isReplayByteBudgetSchedulingError,
   replayProcessByteBudgetSnapshot,
 } from './replay-events.js'
-import { realNamesFromItem, resolveReplayPartUrls } from './replay.js'
+import { listedUserIdsFromItem, realNamesFromItem, resolveReplayPartUrls } from './replay.js'
 import {
   shouldContinueIngestImmediately,
   type IngestOutcome,
@@ -180,7 +180,12 @@ async function ingestOne(
       ? await parsePreparedBattleData(
           prepared,
           realNamesFromItem(data),
-          { missionName: data.missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
+          {
+            missionName: data.missionName,
+            gameMode: data.gameMode,
+            gameVersion: data.gameVersion,
+            listedUserIds: listedUserIdsFromItem(data),
+          },
           'background',
           signal,
           undefined,
@@ -189,7 +194,12 @@ async function ingestOne(
       : await loadBattleData(
           parts,
           realNamesFromItem(data),
-          { missionName: data.missionName, gameMode: data.gameMode, gameVersion: data.gameVersion },
+          {
+            missionName: data.missionName,
+            gameMode: data.gameMode,
+            gameVersion: data.gameVersion,
+            listedUserIds: listedUserIdsFromItem(data),
+          },
           'background',
           signal,
           undefined,

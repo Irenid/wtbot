@@ -412,14 +412,20 @@ async function readSiteDashboardStats(
       GROUP BY day
       ORDER BY day
     `).all(input.sinceTs) as unknown as { day: string; battles: number }[]
+    // Те же кланы, что в рейтинге сайта: со снимками ПКР сезона и с
+    // официальной статистикой сезона из лидерборда.
     const clanRows = database.prepare(`
-      SELECT DISTINCT clan_tag
+      SELECT DISTINCT clan_tag AS tag
       FROM clan_rating_snapshots
       WHERE seen_at >= ?
-    `).all(input.seasonStart) as unknown as { clan_tag: string }[]
+      UNION
+      SELECT tag
+      FROM clans
+      WHERE rating IS NOT NULL AND rating_at >= ?
+    `).all(input.seasonStart, input.seasonStart) as unknown as { tag: string }[]
     const clans = new Set(
       clanRows
-        .map((row) => plainClanTag(row.clan_tag))
+        .map((row) => plainClanTag(row.tag))
         .filter((tag) => tag !== ''),
     ).size
     return {

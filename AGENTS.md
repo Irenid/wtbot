@@ -254,7 +254,14 @@ read-only `quick_check`. Restore выполняй только при остан
   неполной странице, date cutoff или cap.
 - `wt-players`: каждые 30 минут, `WT_PLAYER_NAMES` последовательно, только
   первая страница Replay API.
-- `wt-clans`: примерно каждые 12 часов.
+- `wt-clans`: каждые 20 минут первые 5 страниц официального лидерборда полков
+  (сотня лидеров сайта), раз в 12 часов — дальше, пока у кланов ненулевой
+  рейтинг сезона (словарь «тег → имя» для claninfo). Рейтинг `dr_era5_hist`,
+  место, состав, бои, победы, фраги, смерти, налёт, активность, регион, тип,
+  дата основания, слоган и награды сезонов пишутся в `clans` с общим
+  `rating_at` обхода; изменения рейтинга, боёв, побед, фрагов и смертей —
+  change-point в `clan_rating_history`; сезон лидерборда — `bot_state`
+  `wt-clans:season`, расхождение с форумом видно в статусе источника.
 - `wt-clan-season`: каждые 6 часов читает первый пост темы форума
   `forum.warthunder.ru/raw/2509/1` (не warthunder.com, без Cloudflare, обычный
   bounded fetch) и пишет сезоны `forum-ГГГГ-ММ-ДД` в `clan_seasons`.
@@ -411,8 +418,12 @@ delta/XOR/RLE.
   `WT_VOICE_CHANNELS` означает все voice channels.
 - POST `/api/voice/refresh` имеет route limit 5000 мс, `Retry-After` и
   single-flight `refreshVoice()`.
-- `wt-clans` обновляет tag -> clan name. `clan_roster` отражает последний
-  непустой roster; rating sums/deltas/history фильтруются по текущему roster.
+- Рейтинг, место, «за 30 дн.» и график клана на сайте — официальные, из
+  лидерборда: снимки ПКР есть лишь у кланов, чьи бои бот рисовал, и сумма по
+  ним теряла лидеров. Кланы свежего обхода идут раньше кланов из прежних
+  обходов сезона, сумма ПКР по снимкам — только для кланов без официальных
+  данных. `clan_roster` отражает последний непустой roster; ростер, ПКР
+  участников и их дельты фильтруются по текущему roster.
 - `CLAN_SEASON_SCHEDULES` использует UTC интервалы `[startsAt, endsAt)`.
   Изменение существующего seeded schedule требует reconciliation или data
   migration, а не ручного исправления рабочей SQLite. Новые сезоны в код не
@@ -497,8 +508,8 @@ CI (`.github/workflows/ci.yml`) выполняет те же шаги на Linux
 неделю. Не добавляй в `npm test` флаг `--test-force-exit`: на Windows с Node 24
 он роняет процесс тестов с fetch (libuv assert), а зависающих тестов нет.
 
-Baseline на **2026-09-28**: `npm run build` и `npm run verify` проходят,
-`npm test` даёт **220 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
+Baseline на **2026-09-29**: `npm run build` и `npm run verify` проходят,
+`npm test` даёт **234 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
 новый count; любое новое падение считай регрессией.
 
 Команды с внешними или локальными side effects не запускай только ради smoke

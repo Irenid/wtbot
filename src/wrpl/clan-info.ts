@@ -23,11 +23,42 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0'
 /** Не дёргать страницу клана чаще, чем раз в 2 минуты (спам-рендеры одного боя) */
 const COOLDOWN_MS = 2 * 60_000
+/** Клан, чья страница не открылась, не запрашивается снова до конца паузы. */
+const FAILURE_COOLDOWN_MS = 10 * 60_000
+/**
+ * 404 подряд у стольких разных кланов значит, что страницы кланов отключены
+ * на сайте целиком (так было 2026-09-29), — запросы claninfo встают на паузу,
+ * а каждый рендер боя берёт ПКР из сохранённых снимков.
+ */
+const PAGES_DOWN_THRESHOLD = 3
+const PAGES_DOWN_PAUSE_MS = 60 * 60_000
 const CLAN_FETCH_CONCURRENCY = 4
 
 const lastFetch = new Map<string, { at: number; seasonId: string | null }>()
+const lastFailure = new Map<string, number>()
+const notFoundTags = new Set<string>()
+let pagesDownUntil = 0
 
 export type { ClanRating }
+
+/** Страница клана ответила не 2xx. */
+export class ClanPageHttpError extends Error {
+  constructor(
+    readonly status: number,
+    clanName: string,
+  ) {
+    super(`HTTP ${status} на странице клана ${clanName}`)
+    this.name = 'ClanPageHttpError'
+  }
+}
+
+/** Сбрасывает кулдауны и паузу запросов claninfo (изоляция тестов). */
+export function resetClanInfoState(): void {
+  lastFetch.clear()
+  lastFailure.clear()
+  notFoundTags.clear()
+  pagesDownUntil = 0
+}
 
 /** Участники клана с ПКР со страницы claninfo */
 export async function fetchClanMembers(clanName: string): Promise<{ nick: string; rating: number }[]> {
@@ -37,7 +68,7 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
   })
   if (!res.ok) {
     await res.body?.cancel().catch(() => undefined)
-    throw new Error(`HTTP ${res.status} на странице клана ${clanName}`)
+    throw new ClanPageHttpError(res.status, clanName)
   }
   const html = await readResponseText(res, 4 * 1024 * 1024, `страница клана ${clanName}`)
 
@@ -61,6 +92,24 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
     )
   }
   return members
+}
+
+/**
+ * Пауза для клана после сбоя; 404 у нескольких разных кланов подряд ставит
+ * на паузу все страницы кланов — предупреждение пишется один раз на паузу.
+ */
+function noteClanPageFailure(tag: string, err: unknown): void {
+  const now = Date.now()
+  lastFailure.set(tag, now)
+  if (!(err instanceof ClanPageHttpError) || err.status !== 404) return
+  notFoundTags.add(tag)
+  if (notFoundTags.size < PAGES_DOWN_THRESHOLD || now < pagesDownUntil) return
+  pagesDownUntil = now + PAGES_DOWN_PAUSE_MS
+  notFoundTags.clear()
+  console.warn(
+    `[clan-info] страницы кланов отдают 404 (${PAGES_DOWN_THRESHOLD} клана подряд) — ` +
+      `ПКР берётся из сохранённых снимков, повтор через ${PAGES_DOWN_PAUSE_MS / 60_000} мин`,
+  )
 }
 
 /** Сохранённые ПКР по тегам без сетевого обновления. */
@@ -99,11 +148,22 @@ export async function fetchRatingsForTags(
         const name = getClanNameByTag(tag)
         if (!name) return null // клана нет в словаре — источник wt-clans ещё не прошёлся
 
+        const now = Date.now()
         const last = lastFetch.get(tag)
-        if (opts.force || last?.seasonId !== seasonId || Date.now() - (last?.at ?? 0) > COOLDOWN_MS) {
-          const members = await fetchClanMembers(name)
-          saveClanRatingSnapshots(tag, members)
-          lastFetch.set(tag, { at: Date.now(), seasonId })
+        const due = opts.force || last?.seasonId !== seasonId || now - (last?.at ?? 0) > COOLDOWN_MS
+        const allowed = opts.force
+          || (now >= pagesDownUntil && now - (lastFailure.get(tag) ?? 0) > FAILURE_COOLDOWN_MS)
+        if (due && allowed) {
+          try {
+            const members = await fetchClanMembers(name)
+            saveClanRatingSnapshots(tag, members)
+            lastFetch.set(tag, { at: Date.now(), seasonId })
+            lastFailure.delete(tag)
+            notFoundTags.clear()
+          } catch (err) {
+            noteClanPageFailure(tag, err)
+            throw err
+          }
         }
         return getClanRatingsWithDelta(tag)
       } catch (err) {

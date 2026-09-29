@@ -27,6 +27,8 @@ export interface BattleItemMeta {
   missionName?: string | undefined
   gameMode?: string | undefined
   gameVersion?: string | undefined
+  /** userId состава боя по Replay API; без него игроки results-BLK не отбрасываются. */
+  listedUserIds?: string[] | undefined
 }
 
 export interface ParsedBattle {
@@ -139,6 +141,21 @@ function roundEventsInPlace(events: ReplayEvents): void {
 const pos = (point: { x: number; y: number; z: number } | null): { x: number; y: number; z: number } | null =>
   point ? { x: point.x, y: point.y, z: point.z } : null
 
+/**
+ * Игроки results-BLK без фантомного бота: отрицательный userId, ни одной
+ * машины и нет в составе Replay API — давал 17 игроков вместо 16. Бот без
+ * машины из официального состава остаётся: сайт игры тоже считает его
+ * участником. Без состава (старые пути разбора) никто не отбрасывается.
+ */
+export function battleParticipants<T extends { userId: string; vehicles: readonly string[] }>(
+  players: readonly T[],
+  listedUserIds: readonly string[] | undefined,
+): T[] {
+  if (listedUserIds === undefined) return [...players]
+  const listed = new Set(listedUserIds)
+  return players.filter((player) => !(player.userId.startsWith('-') && player.vehicles.length === 0 && !listed.has(player.userId)))
+}
+
 function buildBattleInput(
   meta: BattleItemMeta,
   header: WrplHeader,
@@ -148,7 +165,7 @@ function buildBattleInput(
   summary: BattleEventSummary,
 ): BattleInput {
   const slotByUserId = new Map(events.players.map((slot) => [slot.userId, slot]))
-  const players: BattlePlayerInput[] = results.players.map((player) => {
+  const players: BattlePlayerInput[] = battleParticipants(results.players, meta.listedUserIds).map((player) => {
     const slot = slotByUserId.get(player.userId)
     const disconnected = player.name === '' || player.vehicles.length === 0
     const normalized = (value: number): number => (disconnected ? Math.max(value, 0) : value)

@@ -7,6 +7,8 @@ import test from 'node:test'
 import {
   DB_SCHEMA_VERSION,
   closeDb,
+  findKnownPlayerMatches,
+  getPlayerReplayStats,
   initDb,
   saveBattle,
   savePlayerIdentity,
@@ -111,6 +113,14 @@ test('поиск игроков использует Unicode casefold для ide
     const ascii = searchSitePlayers('blitz')
     assert.equal(ascii[0]?.wtUserId, '703')
     assert.equal(ascii[0]?.nick, 'BlitzZ')
+
+    // Точный lookup статистики игрока: тот же casefold (COLLATE NOCASE не
+    // понимал кириллицу) и индексы вместо скана battle_players.
+    const known = (player: string) => findKnownPlayerMatches(player).map((match) => [match.origin, match.wtUserId])
+    assert.deepEqual(known('ёжик').filter(([origin]) => origin === 'identity'), [['identity', '701']])
+    assert.deepEqual(known('жара').filter(([origin]) => origin === 'alias'), [['alias', '702']])
+    assert.deepEqual(known('жукz'), [['replay', '900']])
+    assert.deepEqual(known('900'), [['replay', '900']])
   } finally {
     closeDb()
   }
@@ -177,5 +187,40 @@ test('initDb дозаполняет search keys в legacy SQLite schema', () => 
   } finally {
     closeDb()
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('слот coop/Bot с настоящим userId не входит в статистику, ник и поиск игрока', () => {
+  initDb(':memory:')
+  try {
+    const battle = (sessionId: string, startTime: number, nick: string) => ({
+      sessionId,
+      sessionHex: sessionId.padStart(16, '0'),
+      missionName: 'fixture',
+      level: 'fixture',
+      gameMode: null,
+      battleType: null,
+      environment: null,
+      status: null,
+      startTime,
+      durationSec: 600,
+      endTimeMs: 600_000,
+      teamWon: 1,
+      gameVersion: null,
+      missionSettings: null,
+      players: [{ ...replayPlayer(nick), userId: '555' }],
+      kills: [],
+      chat: [],
+      eventsBlob: Buffer.from('{}'),
+    })
+    saveBattle(battle('1', 100, 'RealNick'))
+    // Позже по времени: за слот игрока играл бот, ник в results — coop/Bot.
+    saveBattle(battle('2', 200, 'coop/Bot7'))
+
+    assert.equal(getPlayerReplayStats({ userId: '555' }).battles, 1)
+    assert.deepEqual(findKnownPlayerMatches('555').map((match) => match.nick), ['RealNick'])
+    assert.deepEqual(searchSitePlayers('coop'), [])
+  } finally {
+    closeDb()
   }
 })

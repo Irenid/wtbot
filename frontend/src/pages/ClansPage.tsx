@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchClanHistory, fetchClans, type ClanHistoryPoint, type ClanListEntry, type ClanSeasonContext } from '../api'
-import { fmtDateTime, fmtInt } from '../lib/format'
+import { fmtDateTime, fmtInt, fmtPercent } from '../lib/format'
 import { t } from '../i18n'
 import { SeasonPanel } from '../components/SeasonPanel'
 import { BarTrack, DeltaPill, ErrorNotice, Loading, SecHead } from '../components/ui'
@@ -43,6 +43,19 @@ function Sparkline({ points, gold }: { points: ClanHistoryPoint[]; gold: boolean
   )
 }
 
+/* Доля побед в сезоне по официальному лидерборду; null — данных нет. */
+function seasonWinRate(clan: ClanListEntry): number | null {
+  return clan.seasonBattles !== null && clan.seasonBattles > 0 && clan.seasonWins !== null
+    ? clan.seasonWins / clan.seasonBattles
+    : null
+}
+
+function seasonWinTitle(clan: ClanListEntry): string | undefined {
+  return clan.seasonBattles !== null && clan.seasonWins !== null
+    ? t('clans.winRate.title', { wins: fmtInt(clan.seasonWins), battles: fmtInt(clan.seasonBattles) })
+    : undefined
+}
+
 function ClanHeroCard({ clan, rank, leaderRating, history }: {
   clan: ClanListEntry
   rank: number
@@ -81,9 +94,9 @@ function ClanHeroCard({ clan, rank, leaderRating, history }: {
           </span>
           <span className="muted" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('clans.sumDelta')}</span>
         </span>
-        <span>
-          <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(clan.avgRating)}</span>
-          <span className="muted" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('clans.avg')}</span>
+        <span title={seasonWinTitle(clan)}>
+          <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmtPercent(seasonWinRate(clan))}</span>
+          <span className="muted" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('clans.winRate')}</span>
         </span>
         <span>
           <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(clan.members)}</span>
@@ -172,7 +185,7 @@ export function ClansPage() {
                   <tr>
                     <th>#</th><th>{t('clans.col.clan')}</th>
                     <th style={{ width: '26%' }}>{t('clans.col.sum')}</th>
-                    <th className="num">{t('clans.col.avg')}</th><th className="num">{t('clans.col.members')}</th>
+                    <th className="num">{t('clans.col.winRate')}</th><th className="num">{t('clans.col.members')}</th>
                     <th className="num">{t('clans.col.delta30')}</th>
                     <th>{t('clans.col.updated')}</th>
                   </tr>
@@ -193,7 +206,7 @@ export function ClansPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="num">{fmtInt(clan.avgRating)}</td>
+                      <td className="num" title={seasonWinTitle(clan)}>{fmtPercent(seasonWinRate(clan))}</td>
                       <td className="num">{fmtInt(clan.members)}</td>
                       <td className="num">{clan.delta30d === null ? <span className="muted">—</span> : <DeltaPill value={clan.delta30d} />}</td>
                       <td className="muted" style={{ fontWeight: 400 }}>{fmtDateTime(clan.lastSeenAt)}</td>

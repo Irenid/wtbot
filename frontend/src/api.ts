@@ -173,12 +173,17 @@ export interface ClanListEntry {
   displayTag: string
   name: string | null
   members: number
+  /** Официальный рейтинг полковых боёв; для клана вне лидерборда — сумма ПКР. */
   totalRating: number
-  avgRating: number
+  /** Средний ПКР по снимкам состава; null — снимков нет. */
+  avgRating: number | null
+  /** Бои и победы сезона по официальному лидерборду; null — клана в нём нет. */
+  seasonBattles: number | null
+  seasonWins: number | null
   lastSeenAt: number
   /**
-   * Изменение ПКР участников, известных и месяц назад, и сейчас — приход и
-   * уход из состава в дельту не входят; null — ни у кого нет базиса.
+   * Изменение рейтинга с отметки месяц назад внутри сезона; у клана вне
+   * лидерборда — ПКР участников, известных и тогда, и сейчас. null — базиса нет.
    */
   delta30d: number | null
   /** Место в общем рейтинге всех кланов, а не только в показанной сотне. */
@@ -253,11 +258,15 @@ export interface ClanDetail {
     displayTag: string
     name: string | null
     members: number
+    seasonBattles: number | null
+    seasonWins: number | null
     totalRating: number
     lastSeenAt: number
     rank: number
     delta30d: number | null
     rosterKnown: boolean
+    /** true — рейтинг и дельта с официального лидерборда, иначе по снимкам ПКР. */
+    official: boolean
   }
   roster: {
     nick: string

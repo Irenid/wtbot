@@ -426,6 +426,106 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       `)
     },
   },
+  {
+    version: 8,
+    apply(database) {
+      // Рейтинг кланов на сайте считался только по снимкам ПКР участников —
+      // их нет у кланов, чьи бои бот не рисовал, и лидеры сезона выпадали.
+      // Официальная статистика лидерборда и её история это заменяют.
+      addColumnIfMissing(database, 'clans', 'rating', 'INTEGER')
+      addColumnIfMissing(database, 'clans', 'position', 'INTEGER')
+      addColumnIfMissing(database, 'clans', 'members', 'INTEGER')
+      addColumnIfMissing(database, 'clans', 'battles', 'INTEGER')
+      addColumnIfMissing(database, 'clans', 'wins', 'INTEGER')
+      addColumnIfMissing(database, 'clans', 'rating_at', 'INTEGER')
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS clan_rating_history (
+          clan_core   TEXT    NOT NULL,
+          captured_at INTEGER NOT NULL,
+          rating      INTEGER NOT NULL,
+          PRIMARY KEY (clan_core, captured_at)
+        ) WITHOUT ROWID;
+      `)
+    },
+  },
+  {
+    version: 9,
+    apply(database) {
+      // Legacy-схемы получают колонки боя и игроков пост-миграционным
+      // bootstrap: без них чистить нечего.
+      const battleColumns = tableColumns(database, 'battles')
+      const playerColumns = tableColumns(database, 'battle_players')
+      // Сверка с Replay API (2026-09-29). Июльские бои, разобранные лишь на
+      // первые ~95 с из 10–13 минут (без победителя), неверны целиком, а части
+      // реплеев с CDN уже не скачать: строки боя удаляются, запись реплея
+      // остаётся со статусом expired и в очередь не возвращается.
+      if (battleColumns.has('duration_sec') && battleColumns.has('team_won')) database.exec(`
+        CREATE TEMP TABLE migration_truncated AS
+          SELECT b.session_id
+          FROM battles b
+          JOIN items i ON i.source = 'wt-replays' AND i.external_id = b.session_id
+          WHERE b.duration_sec < 120
+            AND b.team_won NOT IN (1, 2)
+            AND json_extract(i.data, '$.endTime') - json_extract(i.data, '$.startTime') - b.duration_sec >= 60;
+        DELETE FROM battle_kills WHERE session_id IN (SELECT session_id FROM migration_truncated);
+        DELETE FROM battle_chat WHERE session_id IN (SELECT session_id FROM migration_truncated);
+        DELETE FROM battle_players WHERE session_id IN (SELECT session_id FROM migration_truncated);
+        DELETE FROM battles WHERE session_id IN (SELECT session_id FROM migration_truncated);
+        UPDATE battle_ingest
+        SET status = 'expired',
+            error = 'реплей разобран не полностью, части ушли с CDN',
+            updated_at = unixepoch()
+        WHERE session_id IN (SELECT session_id FROM migration_truncated);
+        DROP TABLE temp.migration_truncated;
+      `)
+      // Фантомный бот results-BLK: отрицательный userId, ни одной машины и нет
+      // в составе Replay API — давал 17 игроков вместо 16. Бот без машины из
+      // официального состава остаётся: сайт игры тоже считает его участником.
+      if (playerColumns.has('vehicle') && playerColumns.has('vehicles')) database.exec(`
+        CREATE TEMP TABLE migration_phantom AS
+          SELECT bp.session_id, bp.user_id
+          FROM battle_players bp
+          WHERE bp.user_id GLOB '-*' AND bp.vehicle IS NULL AND (bp.vehicles IS NULL OR bp.vehicles = '[]')
+            AND NOT EXISTS (
+              SELECT 1
+              FROM items i, json_each(i.data, '$.players') team, json_each(team.value) listed
+              WHERE i.source = 'wt-replays' AND i.external_id = bp.session_id
+                AND json_extract(listed.value, '$.userId') = bp.user_id
+            );
+        DELETE FROM battle_players
+        WHERE (session_id, user_id) IN (SELECT session_id, user_id FROM migration_phantom);
+        UPDATE battles
+        SET player_count = (SELECT COUNT(*) FROM battle_players bp WHERE bp.session_id = battles.session_id)
+        WHERE session_id IN (SELECT session_id FROM migration_phantom);
+        DROP TABLE temp.migration_phantom;
+      `)
+    },
+  },
+  {
+    version: 10,
+    apply(database) {
+      // Полная официальная статистика клана с лидерборда и её история:
+      // фраги, смерти, налёт, активность, регион, тип, основание, слоган,
+      // награды прошлых сезонов; в истории — бои, победы, фраги и смерти.
+      for (const [column, definition] of [
+        ['air_kills', 'INTEGER'],
+        ['ground_kills', 'INTEGER'],
+        ['deaths', 'INTEGER'],
+        ['flight_time', 'INTEGER'],
+        ['activity', 'INTEGER'],
+        ['region', 'TEXT'],
+        ['clan_type', 'TEXT'],
+        ['founded_at', 'INTEGER'],
+        ['slogan', 'TEXT'],
+        ['rewards', 'TEXT'],
+      ] as const) {
+        addColumnIfMissing(database, 'clans', column, definition)
+      }
+      for (const column of ['battles', 'wins', 'air_kills', 'ground_kills', 'deaths']) {
+        addColumnIfMissing(database, 'clan_rating_history', column, 'INTEGER')
+      }
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -508,12 +608,45 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
     );
 
     -- Словарь кланов с лидерборда сайта: полный тег (с украшениями) → имя
-    -- для страницы claninfo. Обновляет источник wt-clans.
+    -- для страницы claninfo и официальная статистика клана на момент
+    -- rating_at: рейтинг полковых боёв сезона, место, состав, бои, победы,
+    -- фраги, смерти, налёт (минуты), активность, регион, тип, дата основания,
+    -- слоган и награды прошлых сезонов (JSON). Обновляет источник wt-clans.
     CREATE TABLE IF NOT EXISTS clans (
-      tag        TEXT PRIMARY KEY,
-      name       TEXT NOT NULL,
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      tag          TEXT PRIMARY KEY,
+      name         TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+      rating       INTEGER,
+      position     INTEGER,
+      members      INTEGER,
+      battles      INTEGER,
+      wins         INTEGER,
+      rating_at    INTEGER,
+      air_kills    INTEGER,
+      ground_kills INTEGER,
+      deaths       INTEGER,
+      flight_time  INTEGER,
+      activity     INTEGER,
+      region       TEXT,
+      clan_type    TEXT,
+      founded_at   INTEGER,
+      slogan       TEXT,
+      rewards      TEXT
     );
+
+    -- История официальной статистики по ядру тега (без украшений): строка
+    -- пишется только при изменении рейтинга, боёв, побед, фрагов или смертей.
+    CREATE TABLE IF NOT EXISTS clan_rating_history (
+      clan_core    TEXT    NOT NULL,
+      captured_at  INTEGER NOT NULL,
+      rating       INTEGER NOT NULL,
+      battles      INTEGER,
+      wins         INTEGER,
+      air_kills    INTEGER,
+      ground_kills INTEGER,
+      deaths       INTEGER,
+      PRIMARY KEY (clan_core, captured_at)
+    ) WITHOUT ROWID;
 
     CREATE TABLE IF NOT EXISTS clan_seasons (
       season_id  TEXT PRIMARY KEY,
@@ -2056,12 +2189,180 @@ export function getClanNameByTag(tag: string): string | null {
   return row?.name ?? null
 }
 
-/** Размер словаря кланов и время последнего обновления (для пропуска лишних обходов) */
-export function getClansStats(): { count: number; newestAt: number } {
-  const row = getDb()
-    .prepare('SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS newest FROM clans')
-    .get() as { count: number; newest: number } | undefined
-  return { count: row?.count ?? 0, newestAt: row?.newest ?? 0 }
+/** Награды клана за прошлые сезоны: [номер сезона, звание вида «place1@historical»]. */
+export interface ClanSeasonRewards {
+  /** Лучшие результаты (как показывает сайт игры). */
+  best: [number, string][]
+  /** Все сезоны с наградой: [номер, звания]. */
+  log: [number, string[]][]
+}
+
+/** Клан из официального лидерборда warthunder.com. */
+export interface ClanLeaderboardEntry {
+  /** Полный тег с украшениями, как в реплеях. */
+  tag: string
+  name: string
+  /** Рейтинг полковых боёв текущего сезона (dr_era5_hist); null — лидерборд его не дал. */
+  rating: number | null
+  /** Место в лидерборде, с 1. */
+  position: number | null
+  members: number | null
+  battles: number | null
+  wins: number | null
+  airKills?: number | null
+  groundKills?: number | null
+  deaths?: number | null
+  /** Налёт сезона, минуты (ftime_hist). */
+  flightTime?: number | null
+  activity?: number | null
+  region?: string | null
+  /** normal, battalion — как в лидерборде. */
+  clanType?: string | null
+  /** Дата основания, Unix-секунды. */
+  foundedAt?: number | null
+  slogan?: string | null
+  rewards?: ClanSeasonRewards | null
+}
+
+/**
+ * Обход официального лидерборда одной транзакцией: словарь «тег → имя» и
+ * статистика клана на момент capturedAt (у всех строк обхода он общий — по
+ * нему сайт отличает свежий обход от прежних). История по ядру тега
+ * пополняется только при изменении рейтинга, боёв, побед, фрагов или
+ * смертей — как снимки ПКР. Клан без рейтинга обновляет лишь имя и не
+ * затирает прежнюю статистику.
+ */
+export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], capturedAt: number): void {
+  if (!Number.isSafeInteger(capturedAt) || capturedAt <= 0) {
+    throw new RangeError('capturedAt лидерборда должен быть положительным Unix-временем')
+  }
+  const database = getDb()
+  const upsertStats = database.prepare(`
+    INSERT INTO clans (
+      tag, name, rating, position, members, battles, wins, rating_at,
+      air_kills, ground_kills, deaths, flight_time, activity, region, clan_type, founded_at, slogan, rewards
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (tag) DO UPDATE SET
+      name = excluded.name,
+      rating = excluded.rating,
+      position = excluded.position,
+      members = excluded.members,
+      battles = excluded.battles,
+      wins = excluded.wins,
+      rating_at = excluded.rating_at,
+      air_kills = excluded.air_kills,
+      ground_kills = excluded.ground_kills,
+      deaths = excluded.deaths,
+      flight_time = excluded.flight_time,
+      activity = excluded.activity,
+      region = excluded.region,
+      clan_type = excluded.clan_type,
+      founded_at = excluded.founded_at,
+      slogan = excluded.slogan,
+      rewards = excluded.rewards,
+      updated_at = unixepoch()
+  `)
+  const upsertName = database.prepare(`
+    INSERT INTO clans (tag, name) VALUES (?, ?)
+    ON CONFLICT (tag) DO UPDATE SET name = excluded.name, updated_at = unixepoch()
+  `)
+  const lastPoint = database.prepare(`
+    SELECT rating, battles, wins, air_kills, ground_kills, deaths FROM clan_rating_history
+    WHERE clan_core = ?
+    ORDER BY captured_at DESC
+    LIMIT 1
+  `)
+  const insertHistory = database.prepare(`
+    INSERT INTO clan_rating_history (clan_core, captured_at, rating, battles, wins, air_kills, ground_kills, deaths)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (clan_core, captured_at) DO UPDATE SET
+      rating = excluded.rating,
+      battles = excluded.battles,
+      wins = excluded.wins,
+      air_kills = excluded.air_kills,
+      ground_kills = excluded.ground_kills,
+      deaths = excluded.deaths
+  `)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    for (const entry of entries) {
+      if (entry.rating === null) {
+        upsertName.run(entry.tag, entry.name)
+        continue
+      }
+      const point = [
+        entry.rating,
+        entry.battles,
+        entry.wins,
+        entry.airKills ?? null,
+        entry.groundKills ?? null,
+        entry.deaths ?? null,
+      ] as const
+      upsertStats.run(
+        entry.tag,
+        entry.name,
+        entry.rating,
+        entry.position,
+        entry.members,
+        entry.battles,
+        entry.wins,
+        capturedAt,
+        entry.airKills ?? null,
+        entry.groundKills ?? null,
+        entry.deaths ?? null,
+        entry.flightTime ?? null,
+        entry.activity ?? null,
+        entry.region ?? null,
+        entry.clanType ?? null,
+        entry.foundedAt ?? null,
+        entry.slogan ?? null,
+        entry.rewards ? JSON.stringify(entry.rewards) : null,
+      )
+      const core = clanCoreOf(entry.tag)
+      if (!core) continue
+      const last = lastPoint.get(core) as
+        | { rating: number; battles: number | null; wins: number | null; air_kills: number | null; ground_kills: number | null; deaths: number | null }
+        | undefined
+      const previous = last
+        ? [last.rating, last.battles, last.wins, last.air_kills, last.ground_kills, last.deaths]
+        : null
+      if (previous === null || previous.some((value, index) => value !== point[index])) {
+        insertHistory.run(core, capturedAt, ...point)
+      }
+    }
+    database.exec('COMMIT')
+  } catch (err) {
+    database.exec('ROLLBACK')
+    throw err
+  }
+}
+
+/** Сезон полковых боёв по данным лидерборда warthunder.com. */
+export interface OfficialClanSeason {
+  seasonId: number
+  startsAt: number
+  /** Исключающая граница, Unix-секунды. */
+  endsAt: number
+}
+
+const OFFICIAL_CLAN_SEASON_KEY = 'wt-clans:season'
+
+export function saveOfficialClanSeason(season: OfficialClanSeason): void {
+  setBotState(OFFICIAL_CLAN_SEASON_KEY, JSON.stringify(season))
+}
+
+/** Сохранённый официальный сезон; null — лидерборд ещё не обходили или запись битая. */
+export function getOfficialClanSeason(): OfficialClanSeason | null {
+  const raw = getBotState(OFFICIAL_CLAN_SEASON_KEY)
+  if (raw === null) return null
+  try {
+    const value = JSON.parse(raw) as Partial<OfficialClanSeason>
+    const valid = [value.seasonId, value.startsAt, value.endsAt].every((part) => Number.isSafeInteger(part))
+    return valid ? { seasonId: value.seasonId!, startsAt: value.startsAt!, endsAt: value.endsAt! } : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -2554,6 +2855,9 @@ export function findKnownPlayerMatches(player: string): KnownPlayerMatch[] {
   const query = requiredPlayerStatsText(player, 'player')
   if (query.length > 64) throw new RangeError('Ник или WT user id не может быть длиннее 64 символов')
   const numericQuery = /^\d+$/.test(query) ? query : null
+  // Та же нормализация, что у *_search колонок: NFKC + locale-neutral
+  // lowercase; COLLATE NOCASE не понимает кириллицу и не использует индексы.
+  const searchKey = normalizePlayerSearchKey(query)
   const database = getDb()
   type MatchRow = {
     origin: KnownPlayerMatchOrigin
@@ -2577,10 +2881,10 @@ export function findKnownPlayerMatches(player: string): KnownPlayerMatch[] {
       updated_at AS seen_at
     FROM player_identities
     WHERE (? IS NOT NULL AND wt_user_id = ?)
-       OR canonical_nick = ? COLLATE NOCASE
+       OR canonical_nick_search = ?
     ORDER BY updated_at DESC, id DESC
     LIMIT 50
-  `).all(numericQuery, numericQuery, query) as unknown as MatchRow[])
+  `).all(numericQuery, numericQuery, searchKey) as unknown as MatchRow[])
 
   rows.push(...database.prepare(`
     SELECT
@@ -2593,42 +2897,16 @@ export function findKnownPlayerMatches(player: string): KnownPlayerMatch[] {
       pia.last_seen_at AS seen_at
     FROM player_identity_aliases pia
     JOIN player_identities pi ON pi.id = pia.identity_id
-    WHERE pia.nick = ? COLLATE NOCASE
+    WHERE pia.nick_search = ?
     ORDER BY pia.last_seen_at DESC, pi.id DESC
     LIMIT 50
-  `).all(query) as unknown as MatchRow[])
+  `).all(searchKey) as unknown as MatchRow[])
 
-  rows.push(...database.prepare(`
-    WITH ranked AS (
-      SELECT
-        bp.user_id,
-        bp.nick,
-        b.start_time,
-        ROW_NUMBER() OVER (
-          PARTITION BY bp.user_id
-          ORDER BY b.start_time DESC, b.session_id DESC
-        ) AS row_number
-      FROM battle_players bp
-      JOIN battles b ON b.session_id = bp.session_id
-      WHERE bp.user_id <> ''
-        AND ((? IS NOT NULL AND bp.user_id = ?) OR bp.nick = ? COLLATE NOCASE)
-    )
-    SELECT
-      'replay' AS origin,
-      'wrpl' AS source,
-      NULL AS identity_id,
-      CASE
-        WHEN user_id NOT GLOB '*[^0-9]*' THEN user_id
-        ELSE NULL
-      END AS wt_user_id,
-      nick,
-      NULL AS platform,
-      start_time AS seen_at
-    FROM ranked
-    WHERE row_number = 1
-    ORDER BY start_time DESC, user_id
-    LIMIT 50
-  `).all(numericQuery, numericQuery, query) as unknown as MatchRow[])
+  // Реплеи: две индексируемые ветки вместо OR — с OR и COLLATE NOCASE план
+  // сканировал весь battle_players (~0,5 с синхронно на каждый lookup).
+  rows.push(...(numericQuery !== null
+    ? siteStatement('knownPlayerReplayByUserOrNick').all(numericQuery, searchKey)
+    : siteStatement('knownPlayerReplayByNick').all(searchKey)) as unknown as MatchRow[])
 
   rows.push(...database.prepare(`
     SELECT
@@ -3473,6 +3751,7 @@ export function getPlayerReplayStats(
       JOIN battles b ON b.session_id = bp.session_id
       WHERE bp.user_id = ?
         AND bp.user_id <> ''
+        AND bp.nick NOT GLOB 'coop/Bot*'
         AND (? IS NULL OR b.start_time >= ?)
         AND (? IS NULL OR b.start_time < ?)
     )
@@ -3508,6 +3787,7 @@ export function getPlayerReplayStats(
       JOIN battles b ON b.session_id = bp.session_id
       WHERE bp.user_id = ?
         AND bp.user_id <> ''
+        AND bp.nick NOT GLOB 'coop/Bot*'
         AND (? IS NULL OR b.start_time >= ?)
         AND (? IS NULL OR b.start_time < ?)
     ), vehicle_rows AS (
@@ -4201,6 +4481,8 @@ const SITE_IN_FILLER = '\u0000'
 
 const siteInSlots = (count: number): string => Array.from({ length: count }, () => '?').join(', ')
 
+// Слот с ником coop/Bot… и настоящим userId сыграл бот (0 очков, 0 фрагов):
+// в личную статистику, поиск и определение ника игрока он не входит.
 export const SITE_SQL = {
   searchIdentitiesByNick: `
     SELECT id, wt_user_id, canonical_nick, platform, updated_at
@@ -4222,11 +4504,74 @@ export const SITE_SQL = {
     ORDER BY a.nick_search, a.last_seen_at DESC
     LIMIT ?
   `,
+  knownPlayerReplayByNick: `
+    WITH matched AS (
+      SELECT user_id, nick, session_id FROM battle_players WHERE nick_search = ? AND nick NOT GLOB 'coop/Bot*'
+    ),
+    ranked AS (
+      SELECT
+        m.user_id,
+        m.nick,
+        b.start_time,
+        ROW_NUMBER() OVER (
+          PARTITION BY m.user_id
+          ORDER BY b.start_time DESC, b.session_id DESC
+        ) AS row_number
+      FROM matched m
+      JOIN battles b ON b.session_id = m.session_id
+      WHERE m.user_id <> ''
+    )
+    SELECT
+      'replay' AS origin,
+      'wrpl' AS source,
+      NULL AS identity_id,
+      CASE WHEN user_id NOT GLOB '*[^0-9]*' THEN user_id ELSE NULL END AS wt_user_id,
+      nick,
+      NULL AS platform,
+      start_time AS seen_at
+    FROM ranked
+    WHERE row_number = 1
+    ORDER BY start_time DESC, user_id
+    LIMIT 50
+  `,
+  knownPlayerReplayByUserOrNick: `
+    WITH matched AS (
+      SELECT user_id, nick, session_id FROM battle_players WHERE user_id = ? AND nick NOT GLOB 'coop/Bot*'
+      UNION
+      SELECT user_id, nick, session_id FROM battle_players WHERE nick_search = ? AND nick NOT GLOB 'coop/Bot*'
+    ),
+    ranked AS (
+      SELECT
+        m.user_id,
+        m.nick,
+        b.start_time,
+        ROW_NUMBER() OVER (
+          PARTITION BY m.user_id
+          ORDER BY b.start_time DESC, b.session_id DESC
+        ) AS row_number
+      FROM matched m
+      JOIN battles b ON b.session_id = m.session_id
+      WHERE m.user_id <> ''
+    )
+    SELECT
+      'replay' AS origin,
+      'wrpl' AS source,
+      NULL AS identity_id,
+      CASE WHEN user_id NOT GLOB '*[^0-9]*' THEN user_id ELSE NULL END AS wt_user_id,
+      nick,
+      NULL AS platform,
+      start_time AS seen_at
+    FROM ranked
+    WHERE row_number = 1
+    ORDER BY start_time DESC, user_id
+    LIMIT 50
+  `,
   searchReplayNicks: `
     SELECT nick, user_id
     FROM battle_players
     WHERE nick_search >= ? AND nick_search < ?
       AND user_id <> ''
+      AND nick NOT GLOB 'coop/Bot*'
     GROUP BY user_id, nick_search, nick
     LIMIT ?
   `,
@@ -4257,7 +4602,7 @@ export const SITE_SQL = {
       COALESCE(SUM(CASE WHEN b.team_won = 0 THEN 1 ELSE 0 END), 0) AS unknown_results
     FROM battle_players bp
     JOIN battles b ON b.session_id = bp.session_id
-    WHERE bp.user_id = ? AND bp.user_id <> '' AND b.start_time >= ?
+    WHERE bp.user_id = ? AND bp.user_id <> '' AND bp.nick NOT GLOB 'coop/Bot*' AND b.start_time >= ?
     GROUP BY day
     ORDER BY day
   `,
@@ -4306,7 +4651,7 @@ export const SITE_SQL = {
       bp.deaths, bp.vehicle
     FROM battle_players bp
     JOIN battles b ON b.session_id = bp.session_id
-    WHERE bp.user_id = ? AND bp.user_id <> ''
+    WHERE bp.user_id = ? AND bp.user_id <> '' AND bp.nick NOT GLOB 'coop/Bot*'
       AND (? IS NULL OR b.start_time >= ?) AND (? IS NULL OR b.start_time < ?)
     ORDER BY b.start_time DESC
     LIMIT ?
@@ -4351,7 +4696,7 @@ export const SITE_SQL = {
   `,
   replayNickByUserId: `
     SELECT nick FROM battle_players
-    WHERE user_id = ? AND user_id <> ''
+    WHERE user_id = ? AND user_id <> '' AND nick NOT GLOB 'coop/Bot*'
     ORDER BY rowid DESC
     LIMIT 1
   `,
@@ -4410,6 +4755,26 @@ export const SITE_SQL = {
       GROUP BY clan_tag, nick
     ) latest ON latest.max_id = s.id
     WHERE s.seen_at >= ?
+  `,
+  clanDictionary: `
+    SELECT
+      tag, name, rating, position, members, battles, wins, rating_at,
+      air_kills, ground_kills, deaths, flight_time, activity, region, clan_type, founded_at, slogan, rewards
+    FROM clans
+  `,
+  clanOfficialRatingAt: `
+    SELECT captured_at, rating
+    FROM clan_rating_history
+    WHERE clan_core = ? AND captured_at >= ? AND captured_at <= ?
+    ORDER BY captured_at DESC
+    LIMIT 1
+  `,
+  clanOfficialRatingEvents: `
+    SELECT captured_at, rating, battles, wins
+    FROM clan_rating_history
+    WHERE clan_core = ? AND captured_at > ? AND captured_at <= ?
+    ORDER BY captured_at
+    LIMIT ?
   `,
   battleTeamClans: `
     SELECT team, clan_tag, COUNT(*) AS players
@@ -4865,6 +5230,130 @@ export function getSiteClanBaselineRatings(atTs: number): { clanTag: string; nic
     rating: number
   }[]
   return rows.map((row) => ({ clanTag: row.clan_tag, nick: row.nick, rating: row.rating }))
+}
+
+export interface SiteClanDictionaryRow {
+  tag: string
+  name: string
+  /** Официальный рейтинг сезона на момент ratingAt; null — только имя. */
+  rating: number | null
+  position: number | null
+  members: number | null
+  battles: number | null
+  wins: number | null
+  ratingAt: number | null
+  airKills: number | null
+  groundKills: number | null
+  deaths: number | null
+  flightTime: number | null
+  activity: number | null
+  region: string | null
+  clanType: string | null
+  foundedAt: number | null
+  slogan: string | null
+  rewards: ClanSeasonRewards | null
+}
+
+/** Награды из JSON колонки rewards; битая запись — null, а не ошибка страницы. */
+function parseClanRewards(raw: string | null): ClanSeasonRewards | null {
+  if (raw === null) return null
+  try {
+    const value = JSON.parse(raw) as Partial<ClanSeasonRewards>
+    return Array.isArray(value.best) && Array.isArray(value.log) ? { best: value.best, log: value.log } : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Весь словарь кланов с официальной статистикой (~тысяча строк). Сезон и
+ * группировка по ядру тега — у вызывающего кода: старые варианты украшений
+ * без свежего рейтинга всё равно нужны как теги для выборки боёв.
+ */
+export function getSiteClanDictionary(): SiteClanDictionaryRow[] {
+  const rows = siteStatement('clanDictionary').all() as unknown as {
+    tag: string
+    name: string
+    rating: number | null
+    position: number | null
+    members: number | null
+    battles: number | null
+    wins: number | null
+    rating_at: number | null
+    air_kills: number | null
+    ground_kills: number | null
+    deaths: number | null
+    flight_time: number | null
+    activity: number | null
+    region: string | null
+    clan_type: string | null
+    founded_at: number | null
+    slogan: string | null
+    rewards: string | null
+  }[]
+  return rows.map((row) => ({
+    tag: row.tag,
+    name: row.name,
+    rating: row.rating,
+    position: row.position,
+    members: row.members,
+    battles: row.battles,
+    wins: row.wins,
+    ratingAt: row.rating_at,
+    airKills: row.air_kills,
+    groundKills: row.ground_kills,
+    deaths: row.deaths,
+    flightTime: row.flight_time,
+    activity: row.activity,
+    region: row.region,
+    clanType: row.clan_type,
+    foundedAt: row.founded_at,
+    slogan: row.slogan,
+    rewards: parseClanRewards(row.rewards),
+  }))
+}
+
+/** Официальный рейтинг клана на момент atTs: последнее изменение в [fromTs, atTs] или null. */
+export function getSiteClanOfficialRatingAt(
+  clanCore: string,
+  fromTs: number,
+  atTs: number,
+): { capturedAt: number; rating: number } | null {
+  if (!clanCore) return null
+  if (!Number.isSafeInteger(fromTs) || fromTs < 0 || !Number.isSafeInteger(atTs) || atTs < 0) {
+    throw new RangeError('Границы истории рейтинга клана должны быть неотрицательным Unix-временем')
+  }
+  const row = siteStatement('clanOfficialRatingAt').get(clanCore, fromTs, atTs) as
+    | { captured_at: number; rating: number }
+    | undefined
+  return row ? { capturedAt: row.captured_at, rating: row.rating } : null
+}
+
+/** Изменения официальной статистики клана в (fromTs, toTs]; truncated — упёрлись в лимит. */
+export function getSiteClanOfficialRatingEvents(
+  clanCore: string,
+  fromTs: number,
+  toTs: number,
+  limit = 10_000,
+): {
+  events: { capturedAt: number; rating: number; battles: number | null; wins: number | null }[]
+  truncated: boolean
+} {
+  if (!clanCore) return { events: [], truncated: false }
+  if (!Number.isSafeInteger(fromTs) || fromTs < 0 || !Number.isSafeInteger(toTs) || toTs < 0) {
+    throw new RangeError('Границы истории рейтинга клана должны быть неотрицательным Unix-временем')
+  }
+  const normalizedLimit = siteLimit(limit, 10_000, 'Лимит истории рейтинга клана')
+  const rows = siteStatement('clanOfficialRatingEvents').all(clanCore, fromTs, toTs, normalizedLimit) as unknown as {
+    captured_at: number
+    rating: number
+    battles: number | null
+    wins: number | null
+  }[]
+  return {
+    events: rows.map((row) => ({ capturedAt: row.captured_at, rating: row.rating, battles: row.battles, wins: row.wins })),
+    truncated: rows.length === normalizedLimit,
+  }
 }
 
 export interface SiteBattleTeamClanRow {

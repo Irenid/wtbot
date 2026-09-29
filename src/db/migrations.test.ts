@@ -187,3 +187,100 @@ test('миграции v6–v7 ставят в очередь бои 2.59, ра�
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('миграция v8 добавляет в словарь кланов официальную статистику лидерборда', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v8-'))
+  const dbPath = path.join(root, 'v8.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    // Схема v7: словарь только «тег → имя», истории рейтинга нет.
+    const database = new DatabaseSync(dbPath)
+    database.exec(`
+      DROP TABLE clan_rating_history;
+      ALTER TABLE clans DROP COLUMN rating;
+      ALTER TABLE clans DROP COLUMN position;
+      ALTER TABLE clans DROP COLUMN members;
+      ALTER TABLE clans DROP COLUMN battles;
+      ALTER TABLE clans DROP COLUMN wins;
+      ALTER TABLE clans DROP COLUMN rating_at;
+      INSERT INTO clans (tag, name) VALUES ('[AVR]', 'AVANGARD');
+      PRAGMA user_version = 7;
+    `)
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const columns = (migrated.prepare("SELECT name FROM pragma_table_info('clans')").all() as { name: string }[])
+        .map((row) => row.name)
+      for (const column of ['rating', 'position', 'members', 'battles', 'wins', 'rating_at']) {
+        assert.ok(columns.includes(column), `в clans нет колонки ${column}`)
+      }
+      assert.equal(tableExists(migrated, 'clan_rating_history'), true)
+      assert.deepEqual(
+        { ...(migrated.prepare('SELECT tag, name, rating, rating_at FROM clans').get() as object) },
+        { tag: '[AVR]', name: 'AVANGARD', rating: null, rating_at: null },
+      )
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('миграция v9 удаляет обрезанные бои и фантомных ботов вне состава Replay API', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v9-'))
+  const dbPath = path.join(root, 'v9.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const item = database.prepare(`
+      INSERT INTO items (source, external_id, title, data, content_hash) VALUES ('wt-replays', ?, 't', ?, ?)
+    `)
+    const battle = database.prepare(`
+      INSERT INTO battles (session_id, session_hex, mission_name, level, start_time, duration_sec, team_won, player_count)
+      VALUES (?, ?, 'm', 'l', 1000, ?, ?, ?)
+    `)
+    const player = database.prepare(`
+      INSERT INTO battle_players (session_id, user_id, nick, nick_base, nick_search, team, vehicle, vehicles, disconnected)
+      VALUES (?, ?, ?, ?3, lower(?3), 1, ?, ?, ?)
+    `)
+    const ingest = database.prepare(`INSERT INTO battle_ingest (session_id, status, attempts) VALUES (?, 'ok', 1)`)
+    const roster = (ids: string[]) => JSON.stringify({ startTime: 1000, endTime: 1700, players: { team_1: ids.map((userId) => ({ userId, name: userId, fakeName: '' })), team_2: [] } })
+    // 1 — разобран на 95 с из 700 без победителя: удаляется целиком.
+    item.run('1', roster(['501']), 'h1'); battle.run('1', '01', 95, 0, 1); ingest.run('1')
+    player.run('1', '501', 'Pilot', 'tank', '["tank"]', 0)
+    // 2 — полный бой: фантом -10 вне состава удаляется, бот -11 из состава остаётся.
+    item.run('2', roster(['501', '-11']), 'h2'); battle.run('2', '02', 695, 1, 3); ingest.run('2')
+    player.run('2', '501', 'Pilot', 'tank', '["tank"]', 0)
+    player.run('2', '-10', 'coop/Bot1', null, '[]', 1)
+    player.run('2', '-11', 'coop/Bot2', null, '[]', 1)
+    database.exec('PRAGMA user_version = 8')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS n FROM battles WHERE session_id = '1'").get()?.['n'], 0)
+      assert.equal(migrated.prepare("SELECT COUNT(*) AS n FROM battle_players WHERE session_id = '1'").get()?.['n'], 0)
+      assert.equal(migrated.prepare("SELECT status FROM battle_ingest WHERE session_id = '1'").get()?.['status'], 'expired')
+      const left = (migrated.prepare("SELECT user_id FROM battle_players WHERE session_id = '2' ORDER BY user_id").all() as { user_id: string }[])
+        .map((row) => row.user_id)
+      assert.deepEqual(left, ['-11', '501'])
+      assert.equal(migrated.prepare("SELECT player_count FROM battles WHERE session_id = '2'").get()?.['player_count'], 2)
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

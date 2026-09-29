@@ -11,6 +11,7 @@ const BIG_TABLES = new Set([
   'battle_kills',
   'battle_chat',
   'clan_rating_snapshots',
+  'clan_rating_history',
   'player_external_snapshots',
   'player_identity_aliases',
   'player_identities',

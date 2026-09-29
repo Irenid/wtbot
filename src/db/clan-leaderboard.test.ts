@@ -1,0 +1,101 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  closeDb,
+  getSiteClanDictionary,
+  getSiteClanOfficialRatingAt,
+  getSiteClanOfficialRatingEvents,
+  initDb,
+  saveClanLeaderboard,
+  type ClanLeaderboardEntry,
+} from './index.js'
+
+const NO_EXTRAS = {
+  airKills: null,
+  groundKills: null,
+  deaths: null,
+  flightTime: null,
+  activity: null,
+  region: null,
+  clanType: null,
+  foundedAt: null,
+  slogan: null,
+  rewards: null,
+}
+
+function entry(tag: string, name: string, rating: number, extra: Partial<ClanLeaderboardEntry> = {}): ClanLeaderboardEntry {
+  return { tag, name, rating, position: 1, members: 100, battles: 10, wins: 7, ...extra }
+}
+
+test('saveClanLeaderboard пишет статистику клана и историю рейтинга только при изменении', () => {
+  initDb(':memory:')
+  try {
+    saveClanLeaderboard([entry('[AVR]', 'AVANGARD', 48_000)], 1_000)
+    saveClanLeaderboard([entry('[AVR]', 'AVANGARD', 48_000, { position: 2 })], 2_000)
+    // Новые украшения тега — та же история по ядру «avr».
+    saveClanLeaderboard([entry('╍AVR╎', 'AVANGARD', 48_300, { members: 101 })], 3_000)
+
+    const dictionary = new Map(getSiteClanDictionary().map((row) => [row.tag, row]))
+    assert.deepEqual(dictionary.get('[AVR]'), {
+      tag: '[AVR]', name: 'AVANGARD', rating: 48_000, position: 2, members: 100, battles: 10, wins: 7, ratingAt: 2_000, ...NO_EXTRAS,
+    })
+    assert.deepEqual(dictionary.get('╍AVR╎'), {
+      tag: '╍AVR╎', name: 'AVANGARD', rating: 48_300, position: 1, members: 101, battles: 10, wins: 7, ratingAt: 3_000, ...NO_EXTRAS,
+    })
+
+    assert.deepEqual(getSiteClanOfficialRatingEvents('avr', 0, 10_000), {
+      events: [
+        { capturedAt: 1_000, rating: 48_000, battles: 10, wins: 7 },
+        { capturedAt: 3_000, rating: 48_300, battles: 10, wins: 7 },
+      ],
+      truncated: false,
+    })
+    assert.deepEqual(getSiteClanOfficialRatingEvents('avr', 1_000, 10_000).events, [{ capturedAt: 3_000, rating: 48_300, battles: 10, wins: 7 }])
+    assert.deepEqual(getSiteClanOfficialRatingAt('avr', 0, 2_500), { capturedAt: 1_000, rating: 48_000 })
+    assert.equal(getSiteClanOfficialRatingAt('avr', 1_500, 2_500), null, 'изменение до начала периода не базис')
+  } finally {
+    closeDb()
+  }
+})
+
+test('saveClanLeaderboard без рейтинга обновляет только имя и не затирает статистику', () => {
+  initDb(':memory:')
+  try {
+    saveClanLeaderboard([entry('[A]', 'Old', 500)], 1_000)
+    saveClanLeaderboard([{ tag: '[A]', name: 'New', rating: null, position: null, members: null, battles: null, wins: null }], 2_000)
+
+    assert.deepEqual(getSiteClanDictionary(), [
+      { tag: '[A]', name: 'New', rating: 500, position: 1, members: 100, battles: 10, wins: 7, ratingAt: 1_000, ...NO_EXTRAS },
+    ])
+    assert.equal(getSiteClanOfficialRatingEvents('a', 0, 10_000).events.length, 1)
+  } finally {
+    closeDb()
+  }
+})
+
+test('saveClanLeaderboard отклоняет некорректный момент обхода', () => {
+  initDb(':memory:')
+  try {
+    assert.throws(() => saveClanLeaderboard([entry('[A]', 'A', 1)], 0), RangeError)
+    assert.throws(() => saveClanLeaderboard([entry('[A]', 'A', 1)], 1.5), RangeError)
+  } finally {
+    closeDb()
+  }
+})
+
+test('saveClanLeaderboard пишет точку истории при новом бое без изменения рейтинга', () => {
+  initDb(':memory:')
+  try {
+    saveClanLeaderboard([entry('[AVR]', 'AVANGARD', 48_307, { deaths: 8_307 })], 1_000)
+    saveClanLeaderboard([entry('[AVR]', 'AVANGARD', 48_307, { deaths: 8_307 })], 2_000)
+    saveClanLeaderboard([entry('[AVR]', 'AVANGARD', 48_307, { battles: 11, deaths: 8_315 })], 3_000)
+
+    assert.deepEqual(getSiteClanOfficialRatingEvents('avr', 0, 10_000).events.map((event) => [event.capturedAt, event.battles]), [
+      [1_000, 10],
+      [3_000, 11],
+    ])
+    assert.equal(getSiteClanDictionary()[0]?.deaths, 8_315)
+  } finally {
+    closeDb()
+  }
+})

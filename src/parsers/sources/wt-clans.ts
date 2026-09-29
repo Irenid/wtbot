@@ -1,43 +1,130 @@
-import { getClansStats, upsertClans } from '../../db/index.js'
+import {
+  getBotState,
+  getClanSeasonContext,
+  saveClanLeaderboard,
+  saveOfficialClanSeason,
+  setBotState,
+  type ClanLeaderboardEntry,
+  type ClanSeasonRewards,
+  type OfficialClanSeason,
+} from '../../db/index.js'
 import { readResponseText } from '../../http-response.js'
 import { fetchWtResponse } from './wt-request.js'
 import type { ParserSource } from '../types.js'
 
 /**
- * Словарь кланов с лидерборда warthunder.com: полный тег с украшениями
- * («╁0NYX╂») → имя клана («0NYX») для страницы claninfo.
+ * Официальный лидерборд полков warthunder.com: полный тег с украшениями
+ * («╁0NYX╂») → имя клана («0NYX») для страницы claninfo и статистика клана —
+ * рейтинг полковых боёв текущего сезона (dr_era5_hist), место, состав, бои,
+ * победы.
  *
  * Зачем: в реплее лежит только тег, а личный клановый рейтинг (ПКР)
- * участников виден на странице клана, которая открывается по имени.
- * Поиска по тегу у сайта нет, зато лидерборд отдаёт и тег, и имя.
+ * участников виден на странице клана, которая открывается по имени. Рейтинг
+ * же самого клана — только здесь: снимки ПКР есть лишь у кланов, чьи бои бот
+ * рисовал, и сумма по ним теряла лидеров сезона.
  *
- * Идём по страницам (20 кланов на каждой), пока у кланов ненулевой
- * рейтинг клановых боёв текущего сезона (dr_era5) — активные кланы,
- * чьи бои и попадают в реплеи, все в этой части списка.
- * Пишем не в items, а в свою таблицу clans (см. db/index.ts).
+ * Каждый запуск читает первые TOP_PAGES страниц (20 кланов на каждой) — сотню
+ * лидеров, которую показывает сайт. Раз в 12 часов обход идёт дальше, пока у
+ * кланов ненулевой рейтинг сезона: активные кланы, чьи бои и попадают в
+ * реплеи, все в этой части списка. Пишем не в items, а в clans и
+ * clan_rating_history (см. db/index.ts).
  */
 
 const LB_URL = 'https://warthunder.com/en/community/getclansleaderboard/dif/_hist/page'
+const PAGE_SIZE = 20
+const TOP_PAGES = 5
 const MAX_PAGES = 40
-const INTERVAL_MS = 12 * 60 * 60_000
+const INTERVAL_MS = 20 * 60_000
+const FULL_CRAWL_INTERVAL_SEC = 12 * 60 * 60
+const FULL_CRAWL_STATE_KEY = 'wt-clans:full-crawl-at'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+const MAX_TEXT_LENGTH = 256
+const MAX_REWARDS = 100
 
-interface LbClan {
-  tag?: string
-  name?: string
-  astat?: Record<string, unknown>
-}
-
-interface LbPage {
+export interface LeaderboardPage {
   status: string
-  data: LbClan[]
+  /** Элементов на странице; пустая страница — конец лидерборда. */
+  size: number
+  /** Кланы с тегом и именем; элементы без них пропускаются. */
+  clans: ClanLeaderboardEntry[]
+  /** Хотя бы у одного клана ненулевой рейтинг сезона. */
+  hasActive: boolean
+  /** Официальный сезон (clanSeasonRatingRewards первого клана с ним). */
+  season: OfficialClanSeason | null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function parseLeaderboardPage(raw: string, page: number): LbPage {
+/** Неотрицательное целое поле лидерборда; отсутствие — null, иной тип — ошибка схемы. */
+function optionalCount(value: unknown, field: string, page: number, index: number): number | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверное поле ${field}`)
+  }
+  return value
+}
+
+/** Строка украшения (регион, тип, слоган): обрезанная и ограниченная, пустая — null. */
+function optionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return text === '' ? null : text.slice(0, MAX_TEXT_LENGTH)
+}
+
+/** Дата лидерборда вида {"$date": мс} → Unix-секунды; иное — null. */
+function mongoDateSec(value: unknown): number | null {
+  const ms = isRecord(value) ? value['$date'] : undefined
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1_000) : null
+}
+
+function seasonNumber(value: unknown): number | null {
+  const match = typeof value === 'string' ? /^seasonId(\d{1,4})_/.exec(value) : null
+  return match ? Number(match[1]) : null
+}
+
+/**
+ * Награды прошлых сезонов: лучшие (clanBestRewards) и все (clanRewardLog).
+ * Украшение, а не схема: незнакомый формат элемента пропускается.
+ */
+function parseRewards(best: unknown, log: unknown): ClanSeasonRewards | null {
+  const rewards: ClanSeasonRewards = { best: [], log: [] }
+  if (Array.isArray(best)) {
+    for (const item of best.slice(0, MAX_REWARDS)) {
+      if (!isRecord(item)) continue
+      const season = seasonNumber(item['seasonName'])
+      const title = optionalText(item['title'])
+      if (season !== null && title !== null) rewards.best.push([season, title])
+    }
+  }
+  if (isRecord(log)) {
+    for (const [key, item] of Object.entries(log).slice(0, MAX_REWARDS)) {
+      if (!isRecord(item)) continue
+      const season = seasonNumber(key)
+      const titles = Array.isArray(item['titles'])
+        ? item['titles'].map(optionalText).filter((title): title is string => title !== null)
+        : []
+      if (season !== null && titles.length > 0) rewards.log.push([season, titles])
+    }
+    rewards.log.sort((left, right) => right[0] - left[0])
+  }
+  return rewards.best.length > 0 || rewards.log.length > 0 ? rewards : null
+}
+
+/** Официальные границы сезона: конец в лидерборде включающий (23:59:59). */
+function parseSeason(value: unknown): OfficialClanSeason | null {
+  if (!isRecord(value)) return null
+  const seasonId = value['seasonId']
+  const startsAt = mongoDateSec(value['seasonStartTimestamp'])
+  const lastSecond = mongoDateSec(value['seasonEndTimestamp'])
+  if (typeof seasonId !== 'number' || !Number.isSafeInteger(seasonId) || startsAt === null || lastSecond === null) {
+    return null
+  }
+  return lastSecond >= startsAt ? { seasonId, startsAt, endsAt: lastSecond + 1 } : null
+}
+
+export function parseLeaderboardPage(raw: string, page: number): LeaderboardPage {
   let value: unknown
   try {
     value = JSON.parse(raw)
@@ -48,7 +135,9 @@ function parseLeaderboardPage(raw: string, page: number): LbPage {
     throw new Error(`лидерборд, страница ${page}: неожиданная схема ответа`)
   }
 
-  const data: LbClan[] = []
+  const clans: ClanLeaderboardEntry[] = []
+  let hasActive = false
+  let season: OfficialClanSeason | null = null
   for (const [index, rawClan] of value['data'].entries()) {
     if (!isRecord(rawClan)) {
       throw new Error(`лидерборд, страница ${page}: элемент ${index} не является объектом`)
@@ -65,29 +154,53 @@ function parseLeaderboardPage(raw: string, page: number): LbPage {
     if (astat !== undefined && !isRecord(astat)) {
       throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный astat`)
     }
-    const clan: LbClan = {}
-    if (tag !== undefined) clan.tag = tag
-    if (name !== undefined) clan.name = name
-    if (astat !== undefined) clan.astat = astat
-    data.push(clan)
+    const rating = optionalCount(astat?.['dr_era5_hist'], 'dr_era5_hist', page, index)
+    if (rating !== null && rating > 0) hasActive = true
+    season ??= parseSeason(rawClan['clanSeasonRatingRewards'])
+    if (!tag || !name) continue
+    // pos считается с нуля; без него место восстанавливается по странице.
+    const pos = optionalCount(rawClan['pos'], 'pos', page, index)
+    clans.push({
+      tag,
+      name,
+      rating,
+      position: pos === null ? (page - 1) * PAGE_SIZE + index + 1 : pos + 1,
+      members: optionalCount(rawClan['members_cnt'], 'members_cnt', page, index),
+      battles: optionalCount(astat?.['battles_hist'], 'battles_hist', page, index),
+      wins: optionalCount(astat?.['wins_hist'], 'wins_hist', page, index),
+      airKills: optionalCount(astat?.['akills_hist'], 'akills_hist', page, index),
+      groundKills: optionalCount(astat?.['gkills_hist'], 'gkills_hist', page, index),
+      deaths: optionalCount(astat?.['deaths_hist'], 'deaths_hist', page, index),
+      flightTime: optionalCount(astat?.['ftime_hist'], 'ftime_hist', page, index),
+      activity: optionalCount(astat?.['activity'], 'activity', page, index),
+      region: optionalText(rawClan['region']),
+      clanType: optionalText(rawClan['type']),
+      foundedAt: mongoDateSec(rawClan['cdate']),
+      slogan: optionalText(rawClan['slogan']),
+      rewards: parseRewards(rawClan['clanBestRewards'], rawClan['clanRewardLog']),
+    })
   }
-  return { status: value['status'], data }
+  return { status: value['status'], size: value['data'].length, clans, hasActive, season }
 }
 
 export const wtClans: ParserSource = {
   name: 'wt-clans',
   intervalMs: INTERVAL_MS,
   async run(signal) {
-    // Парсеры запускаются при каждом старте процесса (tsx watch перезапускает
-    // его на любое изменение кода) — свежий словарь не пересобираем
-    const existing = getClansStats()
-    if (existing.count > 0 && Date.now() / 1000 - existing.newestAt < (INTERVAL_MS / 1000) * 0.9) {
-      return { summary: `Словарь свежий (${existing.count} кланов) — обход пропущен` }
-    }
+    // Один момент на весь обход: по общему rating_at сайт отличает кланы
+    // свежего обхода от оставшихся с прежних.
+    const capturedAt = Math.floor(Date.now() / 1_000)
+    const lastFullCrawl = Number(getBotState(FULL_CRAWL_STATE_KEY) ?? 0)
+    const full = !Number.isFinite(lastFullCrawl) || capturedAt - lastFullCrawl >= FULL_CRAWL_INTERVAL_SEC * 0.9
+    const maxPages = full ? MAX_PAGES : TOP_PAGES
 
-    const entries: { tag: string; name: string }[] = []
+    const entries: ClanLeaderboardEntry[] = []
+    const seenTags = new Set<string>()
+    let season: OfficialClanSeason | null = null
     let pages = 0
-    for (let page = 1; page <= MAX_PAGES; page++) {
+    // Страницы зависимы: конец списка и нулевой рейтинг останавливают обход,
+    // а общая очередь warthunder.com всё равно выполняет запросы по одному.
+    for (let page = 1; page <= maxPages; page++) {
       signal.throwIfAborted()
       const res = await fetchWtResponse(
         `${LB_URL}/${page}/sort/dr_era5`,
@@ -104,26 +217,49 @@ export const wtClans: ParserSource = {
         await res.body?.cancel().catch(() => undefined)
         throw new Error(`лидерборд, страница ${page}: сервер вернул не JSON`)
       }
-      const json = parseLeaderboardPage(
+      const parsed = parseLeaderboardPage(
         await readResponseText(res, MAX_RESPONSE_BYTES, `лидерборд, страница ${page}`),
         page,
       )
-      const clans = json.data
-      if (json.status !== 'ok' || clans.length === 0) break
+      if (parsed.status !== 'ok' || parsed.size === 0) break
       pages = page
-
-      let sawActive = false
-      for (const clan of clans) {
-        if (!clan.tag || !clan.name) continue
-        const rating = Number(clan.astat?.['dr_era5_hist'] ?? 0)
-        if (rating > 0) sawActive = true
-        entries.push({ tag: clan.tag, name: clan.name })
+      season ??= parsed.season
+      // Пока идёт обход, клан может сдвинуться на соседнюю страницу — дубль
+      // с более низким местом отбрасываем.
+      for (const clan of parsed.clans) {
+        if (seenTags.has(clan.tag)) continue
+        seenTags.add(clan.tag)
+        entries.push(clan)
       }
       // страница целиком из кланов с нулевым рейтингом — дальше только неактивные
-      if (!sawActive) break
+      if (!parsed.hasActive) break
+    }
+    if (entries.length === 0) {
+      throw new Error('лидерборд не вернул ни одного клана — изменился ответ сайта или доступ')
     }
 
-    upsertClans(entries)
-    return { summary: `Кланов в словаре: ${entries.length} (страниц лидерборда: ${pages})` }
+    saveClanLeaderboard(entries, capturedAt)
+    if (full) setBotState(FULL_CRAWL_STATE_KEY, String(capturedAt))
+    if (season) saveOfficialClanSeason(season)
+    const leader = entries[0]!
+    const leaderText = leader.rating === null ? '' : ` · лидер ${leader.tag} — ${leader.rating}`
+    const seasonText = season ? ` · сезон ${season.seasonId}${seasonMismatch(season)}` : ''
+    return {
+      summary: full
+        ? `Кланов в лидерборде: ${entries.length} (страниц: ${pages}, полный обход)${leaderText}${seasonText}`
+        : `Лидеры обновлены: ${entries.length} кланов (страниц: ${pages})${leaderText}${seasonText}`,
+    }
   },
+}
+
+/**
+ * Сверка сезона с форумом (источник wt-clan-season): расхождение видно в
+ * статусе источника на дашборде, расписание при этом не меняется.
+ */
+function seasonMismatch(official: OfficialClanSeason): string {
+  const forum = getClanSeasonContext(official.startsAt).season
+  if (forum === null) return ' (на форуме сезона нет)'
+  return forum.startsAt === official.startsAt && forum.endsAt === official.endsAt
+    ? ''
+    : ' (даты с форумом расходятся)'
 }

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { beforeEach } from 'node:test'
 import { closeDb, initDb, saveClanRatingSnapshots, upsertClans } from '../db/index.js'
-import { fetchClanMembers, fetchRatingsForTags } from './clan-info.js'
+import { fetchClanMembers, fetchRatingsForTags, resetClanInfoState } from './clan-info.js'
+
+// Кулдауны и пауза claninfo живут в модуле — каждый тест начинает с чистого листа.
+beforeEach(() => {
+  resetClanInfoState()
+})
 
 test('fetchClanMembers читает ПКР участника внутри noindex-обёртки', async () => {
   const originalFetch = globalThis.fetch
@@ -104,6 +109,69 @@ test('fetchRatingsForTags запускает запросы двух клано�
     assert.equal(ratings.get('PlayerB')?.rating, 500)
   } finally {
     releaseFirst()
+    closeDb()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchRatingsForTags не повторяет запрос клана, чья страница не открылась', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls += 1
+    return new Response('', { status: 503 })
+  }
+  initDb(':memory:')
+
+  try {
+    upsertClans([{ tag: 'CLAN', name: 'Clan' }])
+    saveClanRatingSnapshots('CLAN', [{ nick: 'Player', rating: 125 }])
+
+    await fetchRatingsForTags(['CLAN'])
+    const ratings = await fetchRatingsForTags(['CLAN'])
+    assert.equal(calls, 1, 'повторный рендер в пределах паузы не должен идти в сеть')
+    assert.deepEqual(ratings.get('Player'), { rating: 125, delta: null })
+
+    await fetchRatingsForTags(['CLAN'], { force: true })
+    assert.equal(calls, 2, 'принудительное обновление идёт в сеть и во время паузы')
+  } finally {
+    closeDb()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchRatingsForTags ставит страницы кланов на паузу после 404 у трёх кланов подряд', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWarn = console.warn
+  const warnings: string[] = []
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(' '))
+  }
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls += 1
+    return new Response('', { status: 404 })
+  }
+  initDb(':memory:')
+
+  try {
+    upsertClans([
+      { tag: 'A', name: 'ClanA' },
+      { tag: 'B', name: 'ClanB' },
+      { tag: 'C', name: 'ClanC' },
+      { tag: 'D', name: 'ClanD' },
+    ])
+    saveClanRatingSnapshots('D', [{ nick: 'Stored', rating: 900 }])
+
+    await fetchRatingsForTags(['A', 'B', 'C'])
+    assert.equal(calls, 3)
+    const ratings = await fetchRatingsForTags(['D'])
+
+    assert.equal(calls, 3, 'во время паузы страницы кланов не запрашиваются')
+    assert.equal(ratings.get('Stored')?.rating, 900, 'ПКР берётся из сохранённых снимков')
+    assert.equal(warnings.filter((line) => line.includes('страницы кланов отдают 404')).length, 1)
+  } finally {
+    console.warn = originalWarn
     closeDb()
     globalThis.fetch = originalFetch
   }
