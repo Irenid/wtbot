@@ -35,6 +35,16 @@ jobs:
       - run: npm ci
       - run: npm --prefix frontend ci
       - run: npm run build
+      # Словарь ECS-хэшей не хранится в Git (data/ игнорируется), а
+      # verify:benchmark-corpus работает офлайн. Версия закреплена коммитом
+      # wrpl-inspector и SHA-256, чтобы корпус проверялся детерминированно.
+      - name: Словарь ECS-хэшей для WRPL-корпуса
+        shell: bash
+        run: |
+          mkdir -p data
+          curl -fsSL --retry 3 --max-time 60 -o data/ecshashes.json \
+            https://raw.githubusercontent.com/maxsupermanhd/wrpl-inspector/a645bc985ef814b2f430f2b542077a4f14ffad68/data/ecshashes.json
+          echo "2a9da38ae92731414fcde247b41a7f0199d7248d44f321e20e14fe99f2b32b75  data/ecshashes.json" | sha256sum -c -
       # typecheck, npm test и все офлайн-smoke (verify:*), включая WRPL-корпус.
       - run: npm run verify
       - run: npm run verify:workers:dist
