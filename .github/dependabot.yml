@@ -1,5 +1,8 @@
 # Еженедельные PR с обновлениями зависимостей: advisory больше не копятся
 # незаметно, как между аудитами июля и сентября 2026.
+# Обновления каждой экосистемы приходят одним PR: связанные пакеты
+# (react и react-dom, vite и @vitejs/plugin-react) обновляются вместе,
+# а в истории не появляется отдельная ветка на каждую зависимость.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -7,15 +10,24 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      npm:
+        patterns: ["*"]
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      frontend:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
   - package-ecosystem: docker
     directory: /
     schedule:
