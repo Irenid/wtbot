@@ -51,13 +51,13 @@
     "node": ">=22.15.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
-    "tsx": "^4.23.1",
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
-    "@fastify/static": "^10.1.2",
+    "@fastify/static": "^10.1.4",
     "@resvg/resvg-js": "^2.6.2",
     "cheerio": "^1.2.0",
     "discord.js": "^14.27.0",
