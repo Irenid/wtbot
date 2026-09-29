@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Сборка: backend (tsc) и SPA (vite) с dev-зависимостями ----------
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
@@ -15,7 +15,7 @@ COPY frontend ./frontend
 RUN npm run build && npm run build:web && npm prune --omit=dev
 
 # ---------- Рантайм: Node, Chromium под Xvfb и шрифты для рендера ----------
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 
 # chromium — транспорт warthunder.com (Cloudflare не пропускает headless,
 #            поэтому браузер работает в обычном окне на виртуальном дисплее);
