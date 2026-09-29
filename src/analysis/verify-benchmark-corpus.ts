@@ -157,7 +157,7 @@ function successDescriptor(parsed: ParsedBattleResult, inputBytes: number): Succ
     sessionIdHex: parsed.header.sessionIdHex,
     inputBytes,
     eventsBlobBytes: parsed.battle.eventsBlob.byteLength,
-    eventsBlobSha256: sha256(Buffer.from(parsed.battle.eventsBlob)),
+    eventsBlobSha256: sha256(withManifestGzipOs(Buffer.from(parsed.battle.eventsBlob))),
     players: parsed.results.players.length,
     kills: parsed.summary.kills,
     chatCount: parsed.summary.chat,
@@ -168,6 +168,19 @@ function successDescriptor(parsed: ParsedBattleResult, inputBytes: number): Succ
 
 function sha256(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex')
+}
+
+/**
+ * Байт OS gzip-заголовка (RFC 1952, смещение 9) zlib заполняет по платформе:
+ * 10 на Windows, 3 на Unix, а сам сжатый поток одинаков. Эталонные хэши
+ * manifest записаны на Windows, поэтому байт приводится к 10: иначе тот же
+ * результат разбора на Linux (CI, Docker) расходится с эталоном.
+ */
+function withManifestGzipOs(blob: Buffer): Buffer {
+  if (blob.byteLength < 10 || blob[0] !== 0x1f || blob[1] !== 0x8b) return blob
+  const normalized = Buffer.from(blob)
+  normalized[9] = 10
+  return normalized
 }
 
 function formatMiB(bytes: number): string {
