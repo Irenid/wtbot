@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict'
 import test, { beforeEach } from 'node:test'
-import { closeDb, getClanRosterRefreshedAt, initDb, saveClanRatingSnapshots, upsertClans } from '../db/index.js'
+import {
+  closeDb,
+  getClanRosterRefreshedAt,
+  getSiteClanRosterDetails,
+  initDb,
+  saveClanRatingSnapshots,
+  upsertClans,
+} from '../db/index.js'
 import {
   ClanPageHttpError,
   fetchClanMembers,
   fetchRatingsForTags,
+  parseClanEntryDate,
   resetClanInfoState,
 } from './clan-info.js'
 
@@ -60,8 +68,8 @@ test('fetchClanMembers читает ПКР участника внутри noind
 
   try {
     assert.deepEqual(await fetchClanMembers('--ATB--'), [
-      { nick: 'TelaR', rating: 781 },
-      { nick: 'Nick_Vidishok', rating: 935 },
+      { nick: 'TelaR', rating: 781, activity: null, role: null, joinedAt: null },
+      { nick: 'Nick_Vidishok', rating: 935, activity: null, role: null, joinedAt: null },
     ])
   } finally {
     globalThis.fetch = originalFetch
@@ -227,4 +235,46 @@ test('getClanRosterRefreshedAt отдаёт время последнего об
   } finally {
     closeDb()
   }
+})
+
+test('fetchClanMembers читает активность, роль и дату вступления, а ростер их сохраняет', async () => {
+  const originalFetch = globalThis.fetch
+  const cell = (value: string, mobileHidden = false) =>
+    `<div class="squadrons-members__grid-item${mobileHidden ? ' global__mobile-hidden' : ''}"> ${value} </div>`
+  globalThis.fetch = async () =>
+    new Response(`<div class="squadrons-members__table">
+      ${cell('num.')}${cell('Player')}${cell('Personal clan rating')}${cell('Activity')}
+      ${cell('Role', true)}${cell('Date of entry', true)}
+      ${cell('1')}<div class="squadrons-members__grid-item">
+        <noindex><div class="robots-nocontent"><a href="en/community/userinfo/?nick=Boss">Boss</a></div></noindex>
+      </div>${cell('1779')}${cell('1440')}${cell('Commander', true)}${cell('01.11.2023', true)}
+      ${cell('2')}<div class="squadrons-members__grid-item"><a href="en/community/userinfo/?nick=Rookie">Rookie</a></div>
+      ${cell('0')}${cell('963')}${cell('Private', true)}${cell('31.02.2022', true)}
+    </div>`)
+  initDb(':memory:')
+
+  try {
+    const members = await fetchClanMembers('Clan')
+    assert.deepEqual(members, [
+      { nick: 'Boss', rating: 1779, activity: 1440, role: 'Commander', joinedAt: Date.UTC(2023, 10, 1) / 1_000 },
+      // Несуществующая дата — null, остальное читается.
+      { nick: 'Rookie', rating: 0, activity: 963, role: 'Private', joinedAt: null },
+    ])
+    saveClanRatingSnapshots('[CLAN]', members)
+    assert.deepEqual(getSiteClanRosterDetails('clan').get('Boss'), {
+      role: 'Commander',
+      joinedAt: Date.UTC(2023, 10, 1) / 1_000,
+      activity: 1440,
+    })
+  } finally {
+    closeDb()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('parseClanEntryDate принимает только настоящую дату вида ДД.ММ.ГГГГ', () => {
+  assert.equal(parseClanEntryDate('26.05.2021'), Date.UTC(2021, 4, 26) / 1_000)
+  assert.equal(parseClanEntryDate('01.01.1970'), null)
+  assert.equal(parseClanEntryDate('2021-05-26'), null)
+  assert.equal(parseClanEntryDate('29.02.2023'), null)
 })

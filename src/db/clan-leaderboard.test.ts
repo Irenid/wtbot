@@ -4,6 +4,7 @@ import {
   closeDb,
   getSiteClanDictionary,
   getSiteClanOfficialRatingAt,
+  getSiteClanProfile,
   getSiteClanOfficialRatingEvents,
   initDb,
   saveClanLeaderboard,
@@ -95,6 +96,44 @@ test('saveClanLeaderboard пишет точку истории при новом
       [3_000, 11],
     ])
     assert.equal(getSiteClanDictionary()[0]?.deaths, 8_315)
+  } finally {
+    closeDb()
+  }
+})
+
+test('saveClanLeaderboard хранит профиль клана: описание, условия вступления, приём и тег без украшений', () => {
+  initDb(':memory:')
+  try {
+    const requirements = {
+      ranks: { mode: 'or' as const, items: [{ unitType: 'Tank', rank: 8, count: 1 }] },
+      battles: [{ difficulty: 'historical', count: 1000 }],
+    }
+    saveClanLeaderboard([
+      entry('╆LVUA╇', 'LVTeam', 45_673, {
+        clanId: 1_070_535,
+        description: 'Вступ через Discord\nВимоги: 1.5+ К/Б',
+        announcement: null,
+        requirements,
+        status: 'open',
+        autoAccept: false,
+        plainTag: '.LVUA.',
+        regalia: 'place3',
+      }),
+      entry('[OLD]', 'Old', 10),
+    ], 1_790_000_000)
+
+    assert.deepEqual(getSiteClanProfile('╆LVUA╇'), {
+      clanId: 1_070_535,
+      description: 'Вступ через Discord\nВимоги: 1.5+ К/Б',
+      announcement: null,
+      requirements,
+      status: 'open',
+      autoAccept: false,
+      plainTag: '.LVUA.',
+      regalia: 'place3',
+    })
+    assert.equal(getSiteClanProfile('[OLD]')?.requirements, null)
+    assert.equal(getSiteClanProfile('[NONE]'), null)
   } finally {
     closeDb()
   }

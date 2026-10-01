@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { leaderboardText, parseLeaderboardPage, pickRostersToRefresh } from './wt-clans.js'
+import {
+  leaderboardMultilineText,
+  leaderboardText,
+  parseClanRequirements,
+  parseLeaderboardPage,
+  pickRostersToRefresh,
+} from './wt-clans.js'
 
 function page(data: unknown[], status = 'ok'): string {
   return JSON.stringify({ status, data })
@@ -17,13 +23,37 @@ const EMPTY_EXTRAS = {
   foundedAt: null,
   slogan: null,
   rewards: null,
+  clanId: null,
+  description: null,
+  announcement: null,
+  requirements: null,
+  status: null,
+  autoAccept: null,
+  plainTag: null,
+  regalia: null,
 }
 
 test('parseLeaderboardPage читает полную статистику клана, награды и сезон', () => {
   const parsed = parseLeaderboardPage(page([
     {
       pos: 20,
-      tag: '[AVR]',
+      _id: 1_031_031,
+      tag: '╆AVR╇',
+      lastPaidTag: '[AVR]',
+      currentTagRegalia: 'place1',
+      status: 'open',
+      autoaccept: false,
+      desc: '&lt;color=#3556ca&gt;Вступление через Discord&lt;/color&gt;\n\n\n  Требования:   KD 1.5+  ',
+      announcement: '',
+      membership_req: {
+        ranks: {
+          rank_Aircraft: { type: 'rank', rank: 9, count: 1, unitType: 'Aircraft' },
+          rank_Tank: { type: 'rank', rank: 8, count: 1, unitType: 'Tank' },
+          type: 'or',
+        },
+        battles_historical: { type: 'battles', difficulty: 'historical', count: 1000 },
+        type: 'and',
+      },
       name: 'AVANGARD',
       members_cnt: 121,
       region: ' WINNERS ',
@@ -64,7 +94,7 @@ test('parseLeaderboardPage читает полную статистику кла
   assert.deepEqual(parsed.season, { seasonId: 62, startsAt: 1_788_220_800, endsAt: 1_793_491_200 })
   assert.deepEqual(parsed.clans, [
     {
-      tag: '[AVR]',
+      tag: '╆AVR╇',
       name: 'AVANGARD',
       rating: 48_307,
       position: 21,
@@ -81,6 +111,23 @@ test('parseLeaderboardPage читает полную статистику кла
       foundedAt: 1_557_650_605,
       slogan: 'The House',
       rewards: { best: [[57, 'place1@historical']], log: [[57, ['place1@historical']], [22, ['top100@historical']]] },
+      clanId: 1_031_031,
+      description: 'Вступление через Discord\n\nТребования: KD 1.5+',
+      announcement: null,
+      requirements: {
+        ranks: {
+          mode: 'or',
+          items: [
+            { unitType: 'Aircraft', rank: 9, count: 1 },
+            { unitType: 'Tank', rank: 8, count: 1 },
+          ],
+        },
+        battles: [{ difficulty: 'historical', count: 1000 }],
+      },
+      status: 'open',
+      autoAccept: false,
+      plainTag: '[AVR]',
+      regalia: 'place1',
     },
     { tag: '╍Nrst╎', name: 'North_Steel', rating: 0, position: 22, members: 124, battles: null, wins: null, ...EMPTY_EXTRAS },
   ])
@@ -164,4 +211,30 @@ test('pickRostersToRefresh берёт лидеров с устаревшим р�
   assert.deepEqual(pickRostersToRefresh(clans, refreshed, now), ['[A]', '[C]', '[D]'])
   assert.deepEqual(pickRostersToRefresh(clans, refreshed, now, 2), ['[A]', '[C]'])
   assert.deepEqual(pickRostersToRefresh([], refreshed, now), [])
+})
+
+test('leaderboardMultilineText сохраняет переносы строк и снимает разметку игры', () => {
+  assert.equal(leaderboardMultilineText('строка&lt;br&gt;вторая'), 'строка\nвторая')
+  assert.equal(leaderboardMultilineText(' a \r\n\r\n\r\n b\t c '), 'a\n\nb c')
+  assert.equal(leaderboardMultilineText('&lt;b&gt;&lt;/b&gt;\n '), null)
+  assert.equal(leaderboardMultilineText('x'.repeat(3_000))?.length, 2_048)
+  assert.equal(leaderboardMultilineText(null), null)
+})
+
+test('parseClanRequirements: пустой массив — условий нет, незнакомое пропускается', () => {
+  assert.equal(parseClanRequirements([]), null)
+  assert.equal(parseClanRequirements({ type: 'and' }), null)
+  assert.deepEqual(
+    parseClanRequirements({
+      ranks: {
+        rank_Tank: { type: 'rank', rank: 7, count: 1, unitType: 'Tank' },
+        rank_Bad: { type: 'rank', rank: -1, count: 1, unitType: 'Tank' },
+        rank_Odd: { type: 'rank', rank: 5, count: 1, unitType: '<script>' },
+        type: 'and',
+      },
+      battles_arcade: { type: 'battles', difficulty: 'arcade', count: '10' },
+      type: 'and',
+    }),
+    { ranks: { mode: 'and', items: [{ unitType: 'Tank', rank: 7, count: 1 }] }, battles: [] },
+  )
 })

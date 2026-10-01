@@ -6,9 +6,11 @@ import {
   PLAYER_EXTERNAL_SNAPSHOT_STATUSES,
   PLAYER_IDENTITY_MATCH_CONFIDENCES,
   PLAYER_IDENTITY_MATCH_METHODS,
+  type NormalizedPlayerExternalCountry,
   type NormalizedPlayerExternalTotal,
   type NormalizedPlayerExternalVehicle,
   type NormalizedPlayerStats,
+  type PlayerExternalCountry,
   type PlayerExternalStats,
   type PlayerExternalSnapshot,
   type PlayerExternalSnapshotInput,
@@ -254,6 +256,22 @@ function addColumnIfMissing(
   if (tableColumns(database, table).has(column.toLowerCase())) return
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
+
+/** Техника и медали игрока по нациям из профиля warthunder.com. */
+const PLAYER_EXTERNAL_COUNTRIES_DDL = `
+    CREATE TABLE IF NOT EXISTS player_external_countries (
+      snapshot_id    INTEGER NOT NULL REFERENCES player_external_snapshots(id) ON DELETE CASCADE,
+      country        TEXT    NOT NULL,
+      vehicles       INTEGER,
+      elite_vehicles INTEGER,
+      medals         INTEGER,
+      PRIMARY KEY (snapshot_id, country),
+      CHECK (country <> ''),
+      CHECK (vehicles IS NULL OR vehicles >= 0),
+      CHECK (elite_vehicles IS NULL OR elite_vehicles >= 0),
+      CHECK (medals IS NULL OR medals >= 0)
+    );
+`
 
 const DB_MIGRATIONS: readonly DbMigration[] = [
   {
@@ -597,6 +615,35 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       `)
     },
   },
+  {
+    version: 15,
+    apply(database) {
+      // Сборщик данных warthunder.com: из лидерборда — номер клана, описание,
+      // объявление, условия вступления, приём, тег без украшений и украшение
+      // за прошлый сезон; из claninfo — роль, дата вступления и активность
+      // участника; из профиля игрока — техника и медали по нациям.
+      for (const [column, definition] of [
+        ['clan_id', 'INTEGER'],
+        ['description', 'TEXT'],
+        ['announcement', 'TEXT'],
+        ['requirements', 'TEXT'],
+        ['status', 'TEXT'],
+        ['auto_accept', 'INTEGER'],
+        ['plain_tag', 'TEXT'],
+        ['regalia', 'TEXT'],
+      ] as const) {
+        addColumnIfMissing(database, 'clans', column, definition)
+      }
+      for (const [column, definition] of [
+        ['role', 'TEXT'],
+        ['joined_at', 'INTEGER'],
+        ['activity', 'INTEGER'],
+      ] as const) {
+        addColumnIfMissing(database, 'clan_roster', column, definition)
+      }
+      database.exec(PLAYER_EXTERNAL_COUNTRIES_DDL)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -702,7 +749,15 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       clan_type    TEXT,
       founded_at   INTEGER,
       slogan       TEXT,
-      rewards      TEXT
+      rewards      TEXT,
+      clan_id      INTEGER,
+      description  TEXT,
+      announcement TEXT,
+      requirements TEXT,
+      status       TEXT,
+      auto_accept  INTEGER,
+      plain_tag    TEXT,
+      regalia      TEXT
     );
 
     -- История официальной статистики по ядру тега (без украшений): строка
@@ -771,6 +826,9 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       clan_core       TEXT    NOT NULL,
       nick            TEXT    NOT NULL,
       last_present_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      role            TEXT,
+      joined_at       INTEGER,
+      activity        INTEGER,
       PRIMARY KEY (clan_core, nick)
     );
 
@@ -932,6 +990,8 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       );
     CREATE INDEX IF NOT EXISTS idx_player_external_vehicles_snapshot
       ON player_external_vehicles (snapshot_id);
+
+${PLAYER_EXTERNAL_COUNTRIES_DDL}
 
     -- Кто сейчас сидит в голосовых каналах Discord: пишет бот
     -- (voice-tracker), читает дашборд. Строка удаляется при выходе.
@@ -2293,6 +2353,27 @@ export interface ClanLeaderboardEntry {
   foundedAt?: number | null
   slogan?: string | null
   rewards?: ClanSeasonRewards | null
+  /** Постоянный номер клана на сайте: не меняется вместе с тегом. */
+  clanId?: number | null
+  /** Описание клана: чистый текст, переносы строк сохранены. */
+  description?: string | null
+  announcement?: string | null
+  requirements?: ClanRequirements | null
+  /** open — приём заявок открыт. */
+  status?: string | null
+  autoAccept?: boolean | null
+  /** Тег с обычными символами, без сезонного украшения. */
+  plainTag?: string | null
+  /** Украшение тега за прошлый сезон (place2, top10…). */
+  regalia?: string | null
+}
+
+/** Условия вступления в клан (membership_req лидерборда). */
+export interface ClanRequirements {
+  /** Минимальный ранг техники по веткам; and — все ветки, or — любая. */
+  ranks: { mode: 'and' | 'or'; items: { unitType: string; rank: number; count: number }[] } | null
+  /** Минимум боёв по режиму: historical — РБ. */
+  battles: { difficulty: string; count: number }[]
 }
 
 /**
@@ -2311,9 +2392,10 @@ export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], ca
   const upsertStats = database.prepare(`
     INSERT INTO clans (
       tag, name, rating, position, members, battles, wins, rating_at,
-      air_kills, ground_kills, deaths, flight_time, activity, region, clan_type, founded_at, slogan, rewards
+      air_kills, ground_kills, deaths, flight_time, activity, region, clan_type, founded_at, slogan, rewards,
+      clan_id, description, announcement, requirements, status, auto_accept, plain_tag, regalia
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (tag) DO UPDATE SET
       name = excluded.name,
       rating = excluded.rating,
@@ -2332,6 +2414,14 @@ export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], ca
       founded_at = excluded.founded_at,
       slogan = excluded.slogan,
       rewards = excluded.rewards,
+      clan_id = excluded.clan_id,
+      description = excluded.description,
+      announcement = excluded.announcement,
+      requirements = excluded.requirements,
+      status = excluded.status,
+      auto_accept = excluded.auto_accept,
+      plain_tag = excluded.plain_tag,
+      regalia = excluded.regalia,
       updated_at = unixepoch()
   `)
   const upsertName = database.prepare(`
@@ -2389,6 +2479,14 @@ export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], ca
         entry.foundedAt ?? null,
         entry.slogan ?? null,
         entry.rewards ? JSON.stringify(entry.rewards) : null,
+        entry.clanId ?? null,
+        entry.description ?? null,
+        entry.announcement ?? null,
+        entry.requirements ? JSON.stringify(entry.requirements) : null,
+        entry.status ?? null,
+        entry.autoAccept === undefined || entry.autoAccept === null ? null : Number(entry.autoAccept),
+        entry.plainTag ?? null,
+        entry.regalia ?? null,
       )
       const core = clanCoreOf(entry.tag)
       if (!core) continue
@@ -2440,7 +2538,17 @@ export function getOfficialClanSeason(): OfficialClanSeason | null {
  * Снимок ПКР участников клана: строка добавляется только если рейтинг ника
  * изменился с прошлого снимка (или ника ещё не было) — история не пухнет.
  */
-export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string; rating: number }[]): void {
+/** Участник клана со страницы claninfo; поля после ПКР необязательны. */
+export interface ClanMemberSnapshot {
+  nick: string
+  rating: number
+  activity?: number | null
+  role?: string | null
+  /** Дата вступления, Unix-секунды. */
+  joinedAt?: number | null
+}
+
+export function saveClanRatingSnapshots(clanTag: string, ratings: readonly ClanMemberSnapshot[]): void {
   const database = getDb()
   const seasonStart = currentClanSeasonStart()
   const lastStmt = database.prepare(`
@@ -2452,8 +2560,12 @@ export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string
     'INSERT INTO clan_rating_snapshots (clan_tag, nick, nick_base, rating) VALUES (?, ?, ?, ?)',
   )
   const presenceStmt = database.prepare(`
-    INSERT INTO clan_roster (clan_core, nick, last_present_at) VALUES (?, ?, ?)
-    ON CONFLICT (clan_core, nick) DO UPDATE SET last_present_at = excluded.last_present_at
+    INSERT INTO clan_roster (clan_core, nick, last_present_at, role, joined_at, activity) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (clan_core, nick) DO UPDATE SET
+      last_present_at = excluded.last_present_at,
+      role = excluded.role,
+      joined_at = excluded.joined_at,
+      activity = excluded.activity
   `)
   const clanCore = clanCoreOf(clanTag)
   const now = Math.floor(Date.now() / 1_000)
@@ -2464,7 +2576,7 @@ export function saveClanRatingSnapshots(clanTag: string, ratings: { nick: string
       if (last === undefined || last.rating !== r.rating) {
         insertStmt.run(clanTag, r.nick, normalizeWtNick(r.nick), r.rating)
       }
-      if (clanCore) presenceStmt.run(clanCore, r.nick, now)
+      if (clanCore) presenceStmt.run(clanCore, r.nick, now, r.role ?? null, r.joinedAt ?? null, r.activity ?? null)
     }
     // Полный ростер приходит каждым обходом: кого нет в списке — покинул.
     // Ключ — ядро тега, поэтому смена украшений не «воскрешает» ушедших.
@@ -2617,6 +2729,14 @@ interface PlayerExternalTotalRow {
   naval_kills: number | null
 }
 
+interface PlayerExternalCountryRow {
+  snapshot_id: number
+  country: string
+  vehicles: number | null
+  elite_vehicles: number | null
+  medals: number | null
+}
+
 interface PlayerExternalVehicleRow {
   snapshot_id: number
   game_type: string | null
@@ -2759,6 +2879,16 @@ function toPlayerExternalTotal(row: PlayerExternalTotalRow): PlayerExternalTotal
     airKills: row.air_kills,
     groundKills: row.ground_kills,
     navalKills: row.naval_kills,
+  }
+}
+
+function toPlayerExternalCountry(row: PlayerExternalCountryRow): PlayerExternalCountry {
+  return {
+    snapshotId: row.snapshot_id,
+    country: row.country,
+    vehicles: row.vehicles,
+    eliteVehicles: row.elite_vehicles,
+    medals: row.medals,
   }
 }
 
@@ -3079,12 +3209,21 @@ function selectPlayerExternalSnapshotById(
     .get(snapshotId) as PlayerExternalSnapshotRow | undefined
 }
 
+interface ValidatedPlayerStats {
+  totals: NormalizedPlayerExternalTotal[]
+  vehicles: NormalizedPlayerExternalVehicle[]
+  countries: NormalizedPlayerExternalCountry[]
+}
+
 function validateNormalizedPlayerStats(
   input: NormalizedPlayerStats | null | undefined,
-): { totals: NormalizedPlayerExternalTotal[]; vehicles: NormalizedPlayerExternalVehicle[] } | undefined {
+): ValidatedPlayerStats | undefined {
   if (input === null || input === undefined) return undefined
   if (!Array.isArray(input.totals) || !Array.isArray(input.vehicles)) {
     throw new Error('Нормализованный snapshot должен содержать массивы totals и vehicles')
+  }
+  if (input.countries !== undefined && !Array.isArray(input.countries)) {
+    throw new Error('countries нормализованного snapshot должен быть массивом')
   }
 
   const totalKeys = new Set<string>()
@@ -3129,16 +3268,38 @@ function validateNormalizedPlayerStats(
     vehicleKeys.add(key)
     return normalized
   })
-  return { totals, vehicles }
+
+  const countryKeys = new Set<string>()
+  const countries = (input.countries ?? []).map((row, index) => {
+    const normalized: NormalizedPlayerExternalCountry = {
+      country: requiredPlayerStatsText(row.country, `countries[${index}].country`),
+      vehicles: playerStatsMetric(row.vehicles, `countries[${index}].vehicles`),
+      eliteVehicles: playerStatsMetric(row.eliteVehicles, `countries[${index}].eliteVehicles`),
+      medals: playerStatsMetric(row.medals, `countries[${index}].medals`),
+    }
+    if (countryKeys.has(normalized.country)) throw new Error(`Дублирующийся ключ countries[${index}]`)
+    countryKeys.add(normalized.country)
+    return normalized
+  })
+  return { totals, vehicles, countries }
 }
 
 function replacePlayerExternalMetrics(
   database: DatabaseSync,
   snapshotId: number,
-  normalized: { totals: NormalizedPlayerExternalTotal[]; vehicles: NormalizedPlayerExternalVehicle[] },
+  normalized: ValidatedPlayerStats,
 ): void {
   database.prepare('DELETE FROM player_external_totals WHERE snapshot_id = ?').run(snapshotId)
   database.prepare('DELETE FROM player_external_vehicles WHERE snapshot_id = ?').run(snapshotId)
+  database.prepare('DELETE FROM player_external_countries WHERE snapshot_id = ?').run(snapshotId)
+
+  const insertCountry = database.prepare(`
+    INSERT INTO player_external_countries (snapshot_id, country, vehicles, elite_vehicles, medals)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const row of normalized.countries) {
+    insertCountry.run(snapshotId, row.country, row.vehicles, row.eliteVehicles, row.medals)
+  }
 
   const insertTotal = database.prepare(`
     INSERT INTO player_external_totals (
@@ -3404,10 +3565,19 @@ function loadPlayerExternalStats(row: PlayerExternalSnapshotMetaRow): PlayerExte
       ORDER BY ifnull(game_type, ''), ifnull(mode, ''), vehicle_id
     `)
     .all(row.id) as unknown as PlayerExternalVehicleRow[]
+  const countries = getDb()
+    .prepare(`
+      SELECT snapshot_id, country, vehicles, elite_vehicles, medals
+      FROM player_external_countries
+      WHERE snapshot_id = ?
+      ORDER BY rowid
+    `)
+    .all(row.id) as unknown as PlayerExternalCountryRow[]
   return {
     snapshot: toPlayerExternalSnapshotMeta(row),
     totals: totals.map(toPlayerExternalTotal),
     vehicles: vehicles.map(toPlayerExternalVehicle),
+    countries: countries.map(toPlayerExternalCountry),
   }
 }
 
@@ -4719,6 +4889,14 @@ export const SITE_SQL = {
   clanRosterAll: `
     SELECT clan_core, nick, last_present_at FROM clan_roster
   `,
+  clanRosterDetails: `
+    SELECT nick, role, joined_at, activity FROM clan_roster WHERE clan_core = ?
+  `,
+  clanProfile: `
+    SELECT clan_id, description, announcement, requirements, status, auto_accept, plain_tag, regalia
+    FROM clans
+    WHERE tag = ?
+  `,
   clanBattleTeams: `
     SELECT
       b.session_id, b.start_time, b.team_won, bp.team,
@@ -5304,6 +5482,68 @@ export function getSiteClanRatingBaseline(
 }
 
 /** Полный ростер всех кланов для фильтрации и отсечения устаревших участников. */
+export interface SiteClanRosterDetails {
+  role: string | null
+  /** Дата вступления, Unix-секунды. */
+  joinedAt: number | null
+  activity: number | null
+}
+
+/** Роль, дата вступления и активность участников клана со страницы claninfo. */
+export function getSiteClanRosterDetails(clanCore: string): Map<string, SiteClanRosterDetails> {
+  const rows = siteStatement('clanRosterDetails').all(clanCore) as unknown as {
+    nick: string
+    role: string | null
+    joined_at: number | null
+    activity: number | null
+  }[]
+  return new Map(rows.map((row) => [row.nick, { role: row.role, joinedAt: row.joined_at, activity: row.activity }]))
+}
+
+/** Описание, условия вступления и прочий профиль клана из лидерборда. */
+export interface SiteClanProfile {
+  clanId: number | null
+  description: string | null
+  announcement: string | null
+  requirements: ClanRequirements | null
+  status: string | null
+  autoAccept: boolean | null
+  plainTag: string | null
+  regalia: string | null
+}
+
+export function getSiteClanProfile(tag: string): SiteClanProfile | null {
+  const row = siteStatement('clanProfile').get(tag) as {
+    clan_id: number | null
+    description: string | null
+    announcement: string | null
+    requirements: string | null
+    status: string | null
+    auto_accept: number | null
+    plain_tag: string | null
+    regalia: string | null
+  } | undefined
+  if (row === undefined) return null
+  let requirements: ClanRequirements | null = null
+  if (row.requirements !== null) {
+    try {
+      requirements = JSON.parse(row.requirements) as ClanRequirements
+    } catch {
+      requirements = null
+    }
+  }
+  return {
+    clanId: row.clan_id,
+    description: row.description,
+    announcement: row.announcement,
+    requirements,
+    status: row.status,
+    autoAccept: row.auto_accept === null ? null : row.auto_accept !== 0,
+    plainTag: row.plain_tag,
+    regalia: row.regalia,
+  }
+}
+
 export function getSiteClanRosterAll(): { clanCore: string; nick: string; lastPresentAt: number }[] {
   const rows = siteStatement('clanRosterAll').all() as unknown as {
     clan_core: string

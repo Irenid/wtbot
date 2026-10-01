@@ -1,4 +1,5 @@
 import type {
+  ProfileCountryScore,
   ProfileStatMode,
   ProfileStatSection,
 } from '../parsers/sources/wt-profile-stats.js'
@@ -23,7 +24,7 @@ import type {
  */
 
 /** v2: итог ветки не перетирается незнакомыми строками, win rate — по согласованным режимам. */
-export const OFFICIAL_PROFILE_PARSER_VERSION = 'wt-official-profile-v2'
+export const OFFICIAL_PROFILE_PARSER_VERSION = 'wt-official-profile-v3'
 export const OFFICIAL_PROFILE_SOURCE = 'official-profile'
 
 /** Профиль не публикует длительность точнее двух значащих цифр для крупных единиц. */
@@ -299,6 +300,8 @@ export interface OfficialProfilePayload {
   level: number | null
   registrationDate: string | null
   sections: readonly ProfileStatSection[]
+  /** Блок «Vehicles and rewards»; в snapshot до v3 его нет. */
+  countries?: readonly ProfileCountryScore[]
 }
 
 /**
@@ -379,5 +382,11 @@ export function normalizeOfficialProfile(payload: OfficialProfilePayload): Norma
     navalKills: sumMetric(modes.map((values) => values.navalKills)),
   })
 
-  return { totals, vehicles: [] }
+  const countries = (payload.countries ?? []).map((score) => ({
+    country: score.country,
+    vehicles: score.vehicles,
+    eliteVehicles: score.eliteVehicles,
+    medals: score.medals,
+  }))
+  return { totals, vehicles: [], countries }
 }

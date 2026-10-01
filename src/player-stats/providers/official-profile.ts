@@ -7,8 +7,10 @@ import {
 } from '../../parsers/sources/wt-player.js'
 import { WtRequestError } from '../../parsers/sources/wt-request.js'
 import {
+  parseProfileCountryScores,
   parseProfileStatSections,
   ProfileStatsLayoutError,
+  type ProfileCountryScore,
   type ProfileStatSection,
 } from '../../parsers/sources/wt-profile-stats.js'
 import {
@@ -48,6 +50,7 @@ interface ProfileDocument {
   level: number | null
   registrationDate: string | null
   sections: ProfileStatSection[]
+  countries: ProfileCountryScore[]
 }
 
 function errorMessage(error: unknown): string {
@@ -186,6 +189,7 @@ export class OfficialProfileProvider implements PlayerStatsProvider {
       level: parsed.profile.level,
       registrationDate: parsed.profile.registrationDate,
       sections: parseProfileStatSections(page.html),
+      countries: parseProfileCountryScores(page.html),
     }
   }
 }

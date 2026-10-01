@@ -6,6 +6,7 @@ import {
   saveOfficialClanSeason,
   setBotState,
   type ClanLeaderboardEntry,
+  type ClanRequirements,
   type ClanSeasonRewards,
   type OfficialClanSeason,
 } from '../../db/index.js'
@@ -42,7 +43,10 @@ const FULL_CRAWL_INTERVAL_SEC = 12 * 60 * 60
 const FULL_CRAWL_STATE_KEY = 'wt-clans:full-crawl-at'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_TEXT_LENGTH = 256
+const MAX_DESCRIPTION_LENGTH = 2_048
 const MAX_REWARDS = 100
+const MAX_REQUIREMENTS = 8
+const GAME_MARKUP = /<\/?(?:color|b|i|u|size)(?:=[^<>]*)?>/gi
 /**
  * Ростер и ПКР участников со страницы claninfo раньше читались только для
  * кланов из нарисованных боёв: у лидера, не игравшего при боте, страница
@@ -102,10 +106,62 @@ export function leaderboardText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = decodeHtmlEntities(value)
     .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/?(?:color|b|i|u|size)(?:=[^<>]*)?>/gi, '')
+    .replace(GAME_MARKUP, '')
     .replace(/\s+/g, ' ')
     .trim()
   return text === '' ? null : text.slice(0, MAX_TEXT_LENGTH)
+}
+
+/**
+ * Многострочный текст лидерборда (описание, объявление): как leaderboardText,
+ * но переносы строк остаются, пустые строки подряд схлопываются в одну.
+ */
+export function leaderboardMultilineText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = decodeHtmlEntities(value)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(GAME_MARKUP, '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return text === '' ? null : text.slice(0, MAX_DESCRIPTION_LENGTH)
+}
+
+function boundedCount(value: unknown, max: number): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= max ? value : null
+}
+
+/**
+ * Условия вступления (membership_req). Пустой массив — условий нет.
+ * Украшение, а не схема: незнакомые ключи и элементы пропускаются.
+ */
+export function parseClanRequirements(value: unknown): ClanRequirements | null {
+  if (!isRecord(value)) return null
+  let ranks: ClanRequirements['ranks'] = null
+  const rawRanks = value['ranks']
+  if (isRecord(rawRanks)) {
+    const items: { unitType: string; rank: number; count: number }[] = []
+    for (const item of Object.values(rawRanks)) {
+      if (!isRecord(item) || item['type'] !== 'rank') continue
+      const unitType = item['unitType']
+      const rank = boundedCount(item['rank'], 100)
+      const count = boundedCount(item['count'], 1_000)
+      if (typeof unitType !== 'string' || !/^[A-Za-z_]{1,32}$/.test(unitType) || rank === null || count === null) continue
+      if (items.length < MAX_REQUIREMENTS) items.push({ unitType, rank, count })
+    }
+    if (items.length > 0) ranks = { mode: rawRanks['type'] === 'or' ? 'or' : 'and', items }
+  }
+  const battles: ClanRequirements['battles'] = []
+  for (const [key, item] of Object.entries(value)) {
+    if (!key.startsWith('battles_') || !isRecord(item) || item['type'] !== 'battles') continue
+    const difficulty = item['difficulty']
+    const count = boundedCount(item['count'], 10_000_000)
+    if (typeof difficulty !== 'string' || !/^[a-z_]{1,32}$/.test(difficulty) || count === null) continue
+    if (battles.length < MAX_REQUIREMENTS) battles.push({ difficulty, count })
+  }
+  return ranks === null && battles.length === 0 ? null : { ranks, battles }
 }
 
 /** Дата лидерборда вида {"$date": мс} → Unix-секунды; иное — null. */
@@ -213,6 +269,14 @@ export function parseLeaderboardPage(raw: string, page: number): LeaderboardPage
       foundedAt: mongoDateSec(rawClan['cdate']),
       slogan: leaderboardText(rawClan['slogan']),
       rewards: parseRewards(rawClan['clanBestRewards'], rawClan['clanRewardLog']),
+      clanId: boundedCount(rawClan['_id'], Number.MAX_SAFE_INTEGER),
+      description: leaderboardMultilineText(rawClan['desc']),
+      announcement: leaderboardMultilineText(rawClan['announcement']),
+      requirements: parseClanRequirements(rawClan['membership_req']),
+      status: leaderboardText(rawClan['status']),
+      autoAccept: typeof rawClan['autoaccept'] === 'boolean' ? rawClan['autoaccept'] : null,
+      plainTag: leaderboardText(rawClan['lastPaidTag']),
+      regalia: leaderboardText(rawClan['currentTagRegalia']),
     })
   }
   return { status: value['status'], size: value['data'].length, clans, hasActive, season }

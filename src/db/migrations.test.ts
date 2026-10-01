@@ -447,3 +447,44 @@ test('миграция v14 переразбирает бои без исхода
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('миграция v15 добавляет поля сборщика: профиль клана, детали ростера и нации игрока', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v15-'))
+  const dbPath = path.join(root, 'v15.db')
+  const clanColumns = ['clan_id', 'description', 'announcement', 'requirements', 'status', 'auto_accept', 'plain_tag', 'regalia']
+  const rosterColumns = ['role', 'joined_at', 'activity']
+  const columns = (database: DatabaseSync, table: string) =>
+    (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((row) => row.name)
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    // Схема v14: без новых колонок и без таблицы наций.
+    const database = new DatabaseSync(dbPath)
+    for (const column of clanColumns) database.exec(`ALTER TABLE clans DROP COLUMN ${column}`)
+    for (const column of rosterColumns) database.exec(`ALTER TABLE clan_roster DROP COLUMN ${column}`)
+    database.exec('DROP TABLE player_external_countries')
+    database.exec("INSERT INTO clan_roster (clan_core, nick, last_present_at) VALUES ('avr', 'One', 1)")
+    database.exec('PRAGMA user_version = 14')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      for (const column of clanColumns) assert.ok(columns(migrated, 'clans').includes(column), column)
+      for (const column of rosterColumns) assert.ok(columns(migrated, 'clan_roster').includes(column), column)
+      assert.deepEqual(columns(migrated, 'player_external_countries'), [
+        'snapshot_id', 'country', 'vehicles', 'elite_vehicles', 'medals',
+      ])
+      assert.deepEqual(migrated.prepare('SELECT nick, role FROM clan_roster').all().map((row) => ({ ...row })), [
+        { nick: 'One', role: null },
+      ])
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

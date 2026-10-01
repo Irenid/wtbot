@@ -26,7 +26,9 @@ import {
   getSiteClanOfficialRatingEvents,
   getSiteClanRatingBaseline,
   getSiteClanRatingEvents,
+  getSiteClanProfile,
   getSiteClanRosterAll,
+  getSiteClanRosterDetails,
   getSiteExternalAggregateHistory,
   getSiteRatingHistory,
   getSiteReplayNick,
@@ -977,9 +979,11 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       }
     }
 
+    const rosterDetails = getSiteClanRosterDetails(group.coreTag)
     const roster = group.members
       .map((member) => {
         const link = byBase.get(normalizeWtNick(member.nick)) ?? null
+        const details = rosterDetails.get(member.nick)
         return {
           nick: member.nick,
           rating: member.rating,
@@ -987,6 +991,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
           seenAt: member.seenAt,
           identityId: link?.identityId ?? null,
           wtUserId: link?.wtUserId ?? null,
+          role: details?.role ?? null,
+          joinedAt: details?.joinedAt ?? null,
+          activity: details?.activity ?? null,
         }
       })
       .sort((a, b) => b.rating - a.rating)
@@ -1047,6 +1054,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         foundedAt: group.official?.foundedAt ?? null,
         slogan: group.official?.slogan ?? null,
         rewards: group.official?.rewards ?? null,
+        profile: group.official === null ? null : getSiteClanProfile(group.official.tag),
         totalRating: group.totalRating,
         lastSeenAt: group.lastSeenAt,
         rank: group.rank,

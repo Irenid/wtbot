@@ -79,8 +79,47 @@ export function resetClanInfoState(queue: WtRequestQueue = sharedRequestQueue): 
   requestQueue = queue
 }
 
-/** Участники клана с ПКР со страницы claninfo */
-export async function fetchClanMembers(clanName: string): Promise<{ nick: string; rating: number }[]> {
+/** Участник со страницы claninfo; поля после ПКР — null, если вёрстка их не дала. */
+export interface ClanPageMember {
+  nick: string
+  rating: number
+  activity?: number | null
+  /** Commander, Deputy, Officer, Sergeant, Private — как на английской странице. */
+  role?: string | null
+  /** Дата вступления, Unix-секунды (полночь UTC). */
+  joinedAt?: number | null
+}
+
+const MEMBER_CELL_RE = /<div class="squadrons-members__grid-item[^"]*">\s*([^<]*?)\s*<\/div>/g
+
+/** «26.05.2021» → Unix-секунды полуночи UTC; иное — null. */
+export function parseClanEntryDate(value: string): number | null {
+  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(value)
+  if (match === null) return null
+  const [day, month, year] = [Number(match[1]), Number(match[2]), Number(match[3])]
+  const ms = Date.UTC(year, month - 1, day)
+  const date = new Date(ms)
+  if (year < 2012 || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null
+  return ms / 1_000
+}
+
+/**
+ * Ячейки строки участника после ПКР: активность, роль, дата вступления. Ищутся
+ * до ссылки следующего участника; незнакомое значение — null, а не ошибка:
+ * ростер и ПКР от них не зависят.
+ */
+function memberDetails(tail: string): Pick<ClanPageMember, 'activity' | 'role' | 'joinedAt'> {
+  const cells = [...tail.matchAll(MEMBER_CELL_RE)].slice(0, 3).map((cell) => decodeHtmlEntities(cell[1]!).trim())
+  const [activity = '', role = '', joined = ''] = cells
+  return {
+    activity: /^\d{1,9}$/.test(activity) ? Number(activity) : null,
+    role: /^[A-Za-z][A-Za-z ]{0,31}$/.test(role) ? role : null,
+    joinedAt: parseClanEntryDate(joined),
+  }
+}
+
+/** Участники клана с ПКР, активностью, ролью и датой вступления со страницы claninfo */
+export async function fetchClanMembers(clanName: string): Promise<ClanPageMember[]> {
   await requestQueue.wait()
   const res = await fetch(`https://warthunder.com/en/community/claninfo/${encodeURIComponent(clanName)}`, {
     headers: { accept: 'text/html', 'user-agent': UA },
@@ -96,11 +135,14 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
 
   // Между ссылкой участника и ячейкой ПКР у офицеров могут быть обёртки
   // noindex/robots-nocontent, которых нет у обычных участников.
-  const members: { nick: string; rating: number }[] = []
+  const members: ClanPageMember[] = []
   const rowRe =
     /userinfo\/\?nick=[^"]*"\s*>\s*([^<]+?)\s*<\/a>(?:(?!userinfo\/\?nick=)[\s\S]){0,1024}?<div class="squadrons-members__grid-item">\s*(\d+)\s*<\/div>/g
   for (const m of html.matchAll(rowRe)) {
-    members.push({ nick: decodeHtmlEntities(m[1]!), rating: Number(m[2]) })
+    const tailStart = m.index + m[0].length
+    const next = html.indexOf('userinfo/?nick=', tailStart)
+    const tail = html.slice(tailStart, next < 0 ? tailStart + 2_048 : Math.min(next, tailStart + 2_048))
+    members.push({ nick: decodeHtmlEntities(m[1]!), rating: Number(m[2]), ...memberDetails(tail) })
   }
   if (members.length === 0) throw new Error(`на странице клана ${clanName} не нашлась таблица участников`)
   // Список используется как ПОЛНЫЙ ростер (clan_roster): неполный парс молча

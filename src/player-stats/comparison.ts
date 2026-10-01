@@ -14,6 +14,7 @@ import {
 import { OFFICIAL_PROFILE_SOURCE } from './normalizer.js'
 import type { PlayerStatsService } from './service.js'
 import type {
+  NormalizedPlayerExternalCountry,
   NormalizedPlayerExternalTotal,
   NormalizedPlayerExternalVehicle,
   PlayerExternalSnapshotStatus,
@@ -106,6 +107,8 @@ export interface PlayerAccountStatsView {
   vehicles: NormalizedPlayerExternalVehicle[]
   vehicleCount: number
   vehiclesTruncated: boolean
+  /** Техника и медали по нациям (профиль warthunder.com). */
+  countries: NormalizedPlayerExternalCountry[]
   delta: PlayerExternalDelta | null
 }
 
@@ -488,6 +491,12 @@ function accountProjection(context: ComparisonContext): AccountProjection {
       vehicles,
       vehicleCount: allVehicles.length,
       vehiclesTruncated: allVehicles.length > vehicles.length,
+      countries: (current?.countries ?? []).map(({ country, vehicles: owned, eliteVehicles, medals }) => ({
+        country,
+        vehicles: owned,
+        eliteVehicles,
+        medals,
+      })),
       delta: externalDelta(current, previous),
     },
   }

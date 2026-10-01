@@ -139,3 +139,60 @@ export function parseProfileStatSections(html: string): ProfileStatSection[] {
   })
   return sections
 }
+
+/** Техника и награды игрока по нации из блока «Vehicles and rewards». */
+export interface ProfileCountryScore {
+  /** Нация, как подписана на странице (USA, USSR…). */
+  country: string
+  vehicles: number | null
+  eliteVehicles: number | null
+  medals: number | null
+}
+
+const MAX_COUNTRIES = 20
+/** Столбцы блока различаются только иконкой: класс первого элемента списка. */
+const SCORE_COLUMNS = {
+  plane: 'vehicles',
+  elitplanes: 'eliteVehicles',
+  orderlevel: 'medals',
+} as const satisfies Record<string, keyof Omit<ProfileCountryScore, 'country'>>
+
+function scoreNumber(value: string | null): number | null {
+  if (value === null || !/^\d{1,3}(?:[,\s]?\d{3})*$/.test(value)) return null
+  const number = Number(value.replace(/[,\s]/g, ''))
+  return Number.isSafeInteger(number) ? number : null
+}
+
+/**
+ * Блок «Vehicles and rewards»: по нациям — сколько техники, сколько элитной и
+ * медалей. Дополнение к статистике, а не её схема: блока нет или вёрстка
+ * незнакома — пустой список, snapshot профиля от этого не падает.
+ */
+export function parseProfileCountryScores(html: string): ProfileCountryScore[] {
+  const $ = load(html)
+  const block = $('.user-profile__score.user-score').first()
+  if (block.length === 0) return []
+  // Первый элемент заголовков — подпись блока, дальше нации.
+  const countries = listItems($, block.find('ul.user-score__list-title').first()).slice(1)
+  if (countries.length === 0 || countries.length > MAX_COUNTRIES) return []
+  if (countries.some((country) => country === null || country.length > 32)) return []
+  const scores: ProfileCountryScore[] = countries.map((country) => ({
+    country: country!,
+    vehicles: null,
+    eliteVehicles: null,
+    medals: null,
+  }))
+  block.find('ul.user-score__list-col').each((_, element) => {
+    const list = $(element)
+    const kind = /user-score__list-item--([a-z]+)/.exec(list.children('li').first().attr('class') ?? '')?.[1]
+    const field = kind !== undefined && Object.hasOwn(SCORE_COLUMNS, kind)
+      ? SCORE_COLUMNS[kind as keyof typeof SCORE_COLUMNS]
+      : null
+    if (field === null) return
+    listItems($, list).slice(1).forEach((value, index) => {
+      const score = scores[index]
+      if (score !== undefined) score[field] = scoreNumber(value)
+    })
+  })
+  return scores
+}

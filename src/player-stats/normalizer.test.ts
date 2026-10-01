@@ -349,3 +349,20 @@ test('страница без общего блока считается сме�
     PlayerStatsSchemaError,
   )
 })
+
+test('нации из блока «Vehicles and rewards» проходят в нормализованный snapshot', () => {
+  const normalized = normalizeOfficialProfile({
+    nick: 'Venukbr',
+    clan: null,
+    level: 50,
+    registrationDate: null,
+    sections: [generalSection],
+    countries: [{ country: 'USA', vehicles: 10, eliteVehicles: 2, medals: null }],
+  })
+  assert.deepEqual(normalized.countries, [{ country: 'USA', vehicles: 10, eliteVehicles: 2, medals: null }])
+  // Snapshot до v3 без наций нормализуется как раньше.
+  assert.deepEqual(
+    normalizeOfficialProfile({ nick: 'Venukbr', clan: null, level: 50, registrationDate: null, sections: [generalSection] }).countries,
+    [],
+  )
+})

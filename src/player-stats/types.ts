@@ -89,9 +89,19 @@ export interface NormalizedPlayerExternalVehicle {
   timePlayedSec: number | null
 }
 
+/** Техника и медали игрока по нации (профиль warthunder.com). */
+export interface NormalizedPlayerExternalCountry {
+  country: string
+  vehicles: number | null
+  eliteVehicles: number | null
+  medals: number | null
+}
+
 export interface NormalizedPlayerStats {
   totals: readonly NormalizedPlayerExternalTotal[]
   vehicles: readonly NormalizedPlayerExternalVehicle[]
+  /** Есть только у источников, которые публикуют разбивку по нациям. */
+  countries?: readonly NormalizedPlayerExternalCountry[]
 }
 
 export interface PlayerExternalTotal extends NormalizedPlayerExternalTotal {
@@ -99,6 +109,10 @@ export interface PlayerExternalTotal extends NormalizedPlayerExternalTotal {
 }
 
 export interface PlayerExternalVehicle extends NormalizedPlayerExternalVehicle {
+  snapshotId: number
+}
+
+export interface PlayerExternalCountry extends NormalizedPlayerExternalCountry {
   snapshotId: number
 }
 
@@ -188,6 +202,7 @@ export interface PlayerExternalStats {
   snapshot: PlayerExternalSnapshotMeta
   totals: PlayerExternalTotal[]
   vehicles: PlayerExternalVehicle[]
+  countries: PlayerExternalCountry[]
 }
 
 export interface PlayerStatsCacheResult {
