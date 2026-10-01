@@ -63,12 +63,13 @@ export function SeasonPanel({ context, official = null, compact = false }: {
         <span className="chip accent">{current ? currentText : season.active ? t('season.waiting') : t('season.ended')}</span>
       </div>
       {mismatch && <div className="notice small">{mismatch}</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginTop: 14 }}>
+      {/* Этап и даты — в две строки: в одну они шире колонки и вылезали за плашку. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(190px, 100%), 1fr))', gap: 8, marginTop: 14 }}>
         {context.stages.map((stage) => (
           <div
             key={stage.week}
             className={`chip${current?.week === stage.week ? ' accent' : ''}`}
-            style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '9px 10px' }}
+            style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 10px', borderRadius: 10, whiteSpace: 'normal' }}
           >
             <span>{stageLabel(stage, season.endsAt)}</span>
             <span className="muted">{stageRange(stage)}</span>
