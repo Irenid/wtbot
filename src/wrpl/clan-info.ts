@@ -6,6 +6,7 @@ import {
   type ClanRating,
 } from '../db/index.js'
 import { mapConcurrent } from '../concurrency.js'
+import { decodeHtmlEntities } from '../html-text.js'
 import { readResponseText } from '../http-response.js'
 import { deferRequestSlot, retryAfterMs, waitForRequestSlot } from '../parsers/sources/wt-request.js'
 
@@ -99,7 +100,7 @@ export async function fetchClanMembers(clanName: string): Promise<{ nick: string
   const rowRe =
     /userinfo\/\?nick=[^"]*"\s*>\s*([^<]+?)\s*<\/a>(?:(?!userinfo\/\?nick=)[\s\S]){0,1024}?<div class="squadrons-members__grid-item">\s*(\d+)\s*<\/div>/g
   for (const m of html.matchAll(rowRe)) {
-    members.push({ nick: decodeHtml(m[1]!), rating: Number(m[2]) })
+    members.push({ nick: decodeHtmlEntities(m[1]!), rating: Number(m[2]) })
   }
   if (members.length === 0) throw new Error(`на странице клана ${clanName} не нашлась таблица участников`)
   // Список используется как ПОЛНЫЙ ростер (clan_roster): неполный парс молча
@@ -198,14 +199,4 @@ export async function fetchRatingsForTags(
     for (const [nick, rating] of ratings) result.set(nick, rating)
   }
   return result
-}
-
-/** &amp; &#39; и прочие сущности в никах со страницы */
-function decodeHtml(s: string): string {
-  return s
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
 }

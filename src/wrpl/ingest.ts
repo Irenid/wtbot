@@ -28,9 +28,15 @@ import {
   isReplayByteBudgetSchedulingError,
   replayProcessByteBudgetSnapshot,
 } from './replay-events.js'
-import { listedUserIdsFromItem, realNamesFromItem, resolveReplayPartUrls } from './replay.js'
+import {
+  listedUserIdsFromItem,
+  realNamesFromItem,
+  resolveReplayPartUrls,
+  withUnlistedReplayParts,
+} from './replay.js'
 import {
   ReplayPartWaitList,
+  hasFinalReplayResults,
   shouldContinueIngestImmediately,
   type IngestOutcome,
 } from './ingest-scheduler.js'
@@ -141,26 +147,58 @@ function isMissingReplayPart(err: unknown): boolean {
   return /HTTP (404|410)\b/.test(msg)
 }
 
+/** Разбор не нашёл results-BLK ни в одной части: реплей ещё не дописан. */
+function isIncompleteReplayParse(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.includes('не содержит results-BLK')
+}
+
 function battleEndMs(item: PendingBattleItem): number | null {
   const end = (item.data as { endTime?: unknown } | null)?.endTime
   return typeof end === 'number' && Number.isFinite(end) && end > 0 ? end * 1_000 : null
 }
 
+/** Длительность боя по записи сайта, с; null — в записи нет времени. */
+function listedDurationSec(item: PendingBattleItem): number | null {
+  const data = item.data as { startTime?: unknown; endTime?: unknown } | null
+  const start = data?.startTime
+  const end = data?.endTime
+  return typeof start === 'number' && typeof end === 'number' && Number.isFinite(start) && Number.isFinite(end)
+    && end >= start
+    ? end - start
+    : null
+}
+
+/** Бой, найденный меньше 10 минут назад, качается вне очереди: его ждёт анонс. */
+function replayFetchPriority(item: PendingBattleItem): 'live' | 'background' {
+  return Date.now() - item.firstSeenAt * 1_000 < 10 * 60_000 ? 'live' : 'background'
+}
+
 /**
- * 404/410 части: свежий бой ждёт, пока части доедут до CDN (попытка не
- * расходуется), бой старше окна выкладки помечается expired — повторять бесполезно.
+ * Свежий бой ждёт повтора в памяти, попытка не расходуется: 404/410 части —
+ * она ещё не выложена на CDN; нет итогов боя — реплей ещё не дописан, и его
+ * хвост найдёт withUnlistedReplayParts при повторе. Бой старше окна выкладки
+ * помечается expired — повторять бесполезно.
  */
-function deferOrExpire(item: PendingBattleItem, message: string): 'deferred' | 'expired' {
+function deferOrExpire(
+  item: PendingBattleItem,
+  message: string,
+  reason: 'missing-part' | 'incomplete' = 'missing-part',
+): 'deferred' | 'expired' {
   const delayMs = partWaitList.defer(item.externalId, battleEndMs(item), item.firstSeenAt * 1_000, Date.now())
   if (delayMs !== null) {
     console.warn(
-      `[ingest] бой ${item.externalId}: часть ещё не выложена на CDN (${message}); ` +
+      `[ingest] бой ${item.externalId}: ` +
+        `${reason === 'incomplete' ? 'реплей ещё не дописан' : 'часть ещё не выложена на CDN'} (${message}); ` +
         `повтор через ${Math.round(delayMs / 1_000)} с`,
     )
     return 'deferred'
   }
   markBattleIngest(item.externalId, 'expired', message)
-  console.warn(`[ingest] бой ${item.externalId}: части ушли с CDN — пропускаю`)
+  console.warn(
+    `[ingest] бой ${item.externalId}: ` +
+      `${reason === 'incomplete' ? 'реплей так и не дописан' : 'части ушли с CDN'} — пропускаю`,
+  )
   return 'expired'
 }
 
@@ -218,7 +256,7 @@ async function ingestOne(
           onPhase,
         )
       : await loadBattleData(
-          parts,
+          await withUnlistedReplayParts(parts, { signal, priority: 'background' }),
           realNamesFromItem(data),
           {
             missionName: data.missionName,
@@ -235,6 +273,18 @@ async function ingestOne(
     parseExecTimeouts.clear(item.externalId)
     if (signal.aborted) {
       outcome = 'cancelled'
+      return outcome
+    }
+    // С промежуточными итогами длительность и победитель обрезаны: такой бой
+    // не записываем, а ждём остальные части.
+    const listedSec = listedDurationSec(item)
+    if (!hasFinalReplayResults(loaded.results, listedSec)) {
+      outcome = deferOrExpire(
+        item,
+        `в частях реплея только промежуточные итоги боя (${Math.round(loaded.results.timePlayed)} с` +
+          `${listedSec === null ? '' : ` из ${listedSec} с по записи`})`,
+        'incomplete',
+      )
       return outcome
     }
     const dbPath = ingestDbPath
@@ -342,6 +392,10 @@ async function ingestOne(
       outcome = deferOrExpire(item, message)
       return outcome
     }
+    if (parsing && isIncompleteReplayParse(err)) {
+      outcome = deferOrExpire(item, message, 'incomplete')
+      return outcome
+    }
     markBattleIngest(item.externalId, 'error', message)
     console.warn(`[ingest] бой ${item.externalId}: ${message}`)
     outcome = 'error'
@@ -373,10 +427,11 @@ async function prepareIngest(
   }
   telemetry.startDownload()
   try {
+    const priority = replayFetchPriority(item)
     return {
-      prepared: await prepareBattleData(parts, signal, (event) => {
+      prepared: await prepareBattleData(await withUnlistedReplayParts(parts, { signal, priority }), signal, (event) => {
         if (event.phase === 'replay-ready') telemetry.replayReady(event.replay, event.atMs)
-      }, Date.now() - item.firstSeenAt * 1_000 < 10 * 60_000 ? 'live' : 'background'),
+      }, priority),
     }
   } catch (err) {
     if (err instanceof ReplayPartsFetchError) {

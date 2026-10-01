@@ -22,6 +22,7 @@ import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { closeWorkerPool } from '../workers/pool.js'
 import { buildServer } from '../web/index.js'
 import { spaDistAvailable } from '../web/routes/spa.js'
+import { BATTLE_SCENE_VERSION } from '../wrpl/battle-scene-core.js'
 
 const CLAN_RAW_TAG = '=TST='
 const FORMULA_CLAN_RAW_TAG = '=FORM='
@@ -519,7 +520,7 @@ async function main(): Promise<void> {
       worldBounds: number[]
       endTimeMs: number
     }
-    assert.equal(sceneBody.v, 1)
+    assert.equal(sceneBody.v, BATTLE_SCENE_VERSION)
     assert.equal(sceneBody.units.length, 2)
     const groundUnit = sceneBody.units.find((unit) => unit.source === 'ground')
     assert.ok(groundUnit && groundUnit.path.length >= 2 && groundUnit.path.length < 400,

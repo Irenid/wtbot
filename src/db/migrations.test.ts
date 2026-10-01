@@ -328,3 +328,122 @@ test('миграция v11 возвращает в очередь свежие �
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('миграция v12 переразбирает свежие бои, записанные без финальных итогов', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v12-'))
+  const dbPath = path.join(root, 'v12.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const battle = database.prepare(`
+      INSERT INTO battles (session_id, session_hex, mission_name, level, status, start_time, duration_sec)
+      VALUES (?, ?, 'm', 'l', ?, unixepoch() - ?, ?)
+    `)
+    const ingest = database.prepare(`INSERT INTO battle_ingest (session_id, status, attempts) VALUES (?, ?, 1)`)
+    battle.run('1', '01', null, 86_400, 95); ingest.run('1', 'ok')
+    battle.run('2', '02', '', 3_600, 96); ingest.run('2', 'ok')
+    // Финальные итоги есть — бой верен.
+    battle.run('3', '03', 'success', 3_600, 600); ingest.run('3', 'ok')
+    // Старше двух недель: частей на CDN уже нет, переразбирать нечем.
+    battle.run('4', '04', null, 20 * 86_400, 95); ingest.run('4', 'ok')
+    database.exec('PRAGMA user_version = 11')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const left = (migrated.prepare('SELECT session_id FROM battle_ingest ORDER BY session_id').all() as { session_id: string }[])
+        .map((row) => row.session_id)
+      // 1 и 2 — в очередь; 3 (итоги есть) и 4 (старый) не трогаются.
+      assert.deepEqual(left, ['3', '4'])
+      // Строки боя остаются до переразбора: persist заменит их целиком.
+      assert.equal((migrated.prepare('SELECT COUNT(*) AS n FROM battles').get() as { n: number }).n, 4)
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('миграция v13 возвращает в очередь бои, ошибочно ставшие expired без финальных итогов', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v13-'))
+  const dbPath = path.join(root, 'v13.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const battle = database.prepare(`
+      INSERT INTO battles (session_id, session_hex, mission_name, level, status, start_time, duration_sec)
+      VALUES (?, ?, 'm', 'l', ?, unixepoch() - ?, 95)
+    `)
+    const ingest = database.prepare(`
+      INSERT INTO battle_ingest (session_id, status, attempts, error, updated_at)
+      VALUES (?, ?, 1, ?, unixepoch() - ?)
+    `)
+    const incomplete = 'в частях реплея только промежуточные итоги боя (95 с)'
+    battle.run('1', '01', null, 86_400); ingest.run('1', 'expired', incomplete, 3_600)
+    // Другая причина expired, ok-бой и бой старше двух недель не трогаются.
+    battle.run('2', '02', null, 86_400); ingest.run('2', 'expired', 'HTTP 404 при скачивании cdn/0a/0001.wrpl', 3_600)
+    battle.run('3', '03', 'success', 86_400); ingest.run('3', 'ok', null, 3_600)
+    battle.run('4', '04', null, 20 * 86_400); ingest.run('4', 'expired', incomplete, 19 * 86_400)
+    database.exec('PRAGMA user_version = 12')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const left = (migrated.prepare('SELECT session_id FROM battle_ingest ORDER BY session_id').all() as { session_id: string }[])
+        .map((row) => row.session_id)
+      assert.deepEqual(left, ['2', '3', '4'])
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('миграция v14 переразбирает бои без исхода, отброшенные как недописанные', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v14-'))
+  const dbPath = path.join(root, 'v14.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const ingest = database.prepare(`
+      INSERT INTO battle_ingest (session_id, status, attempts, error, updated_at)
+      VALUES (?, ?, 1, ?, unixepoch() - ?)
+    `)
+    const incomplete = 'в частях реплея только промежуточные итоги боя (1513 с)'
+    ingest.run('1', 'expired', incomplete, 3_600)
+    // Давно отброшенный, другая причина и ok не трогаются.
+    ingest.run('2', 'expired', incomplete, 20 * 86_400)
+    ingest.run('3', 'expired', 'HTTP 404 при скачивании cdn/0a/0001.wrpl', 3_600)
+    ingest.run('4', 'ok', null, 3_600)
+    database.exec('PRAGMA user_version = 13')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const left = (migrated.prepare('SELECT session_id FROM battle_ingest ORDER BY session_id').all() as { session_id: string }[])
+        .map((row) => row.session_id)
+      assert.deepEqual(left, ['2', '3', '4'])
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

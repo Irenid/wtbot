@@ -1,5 +1,6 @@
 import {
   getBotState,
+  getClanRosterRefreshedAt,
   getClanSeasonContext,
   saveClanLeaderboard,
   saveOfficialClanSeason,
@@ -8,7 +9,9 @@ import {
   type ClanSeasonRewards,
   type OfficialClanSeason,
 } from '../../db/index.js'
+import { decodeHtmlEntities } from '../../html-text.js'
 import { readResponseText } from '../../http-response.js'
+import { fetchRatingsForTags } from '../../wrpl/clan-info.js'
 import { fetchWtResponse } from './wt-request.js'
 import type { ParserSource } from '../types.js'
 
@@ -40,6 +43,29 @@ const FULL_CRAWL_STATE_KEY = 'wt-clans:full-crawl-at'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_TEXT_LENGTH = 256
 const MAX_REWARDS = 100
+/**
+ * Ростер и ПКР участников со страницы claninfo раньше читались только для
+ * кланов из нарисованных боёв: у лидера, не игравшего при боте, страница
+ * клана была пустой. Каждый запуск обновляет ростер нескольких лидеров, чей
+ * ростер старше суток: 5 за 20 минут — вся сотня примерно за 7 часов.
+ */
+const ROSTERS_PER_RUN = 5
+const ROSTER_MAX_AGE_SEC = 24 * 60 * 60
+
+/** Лидеры, чей ростер claninfo пора обновить: по месту в лидерборде, не больше limit. */
+export function pickRostersToRefresh(
+  clans: readonly ClanLeaderboardEntry[],
+  refreshedAt: ReadonlyMap<string, number>,
+  nowSec: number,
+  limit = ROSTERS_PER_RUN,
+): string[] {
+  return [...clans]
+    .filter((clan) => clan.rating !== null && clan.rating > 0)
+    .filter((clan) => nowSec - (refreshedAt.get(clan.tag) ?? 0) >= ROSTER_MAX_AGE_SEC)
+    .sort((left, right) => (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, limit)
+    .map((clan) => clan.tag)
+}
 
 export interface LeaderboardPage {
   status: string
@@ -66,10 +92,19 @@ function optionalCount(value: unknown, field: string, page: number, index: numbe
   return value
 }
 
-/** Строка украшения (регион, тип, слоган): обрезанная и ограниченная, пустая — null. */
-function optionalText(value: unknown): string | null {
+/**
+ * Строка украшения (регион, тип, слоган, награда): чистый текст, ограниченный
+ * по длине, пустой — null. Лидерборд отдаёт её экранированной для HTML
+ * (&lt;, &amp;, &#039;) и с разметкой игры (<color=#…>, <b>, <br>); снимаются
+ * только известные теги игры, текст в угловых скобках остаётся.
+ */
+export function leaderboardText(value: unknown): string | null {
   if (typeof value !== 'string') return null
-  const text = value.trim()
+  const text = decodeHtmlEntities(value)
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/?(?:color|b|i|u|size)(?:=[^<>]*)?>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
   return text === '' ? null : text.slice(0, MAX_TEXT_LENGTH)
 }
 
@@ -94,7 +129,7 @@ function parseRewards(best: unknown, log: unknown): ClanSeasonRewards | null {
     for (const item of best.slice(0, MAX_REWARDS)) {
       if (!isRecord(item)) continue
       const season = seasonNumber(item['seasonName'])
-      const title = optionalText(item['title'])
+      const title = leaderboardText(item['title'])
       if (season !== null && title !== null) rewards.best.push([season, title])
     }
   }
@@ -103,7 +138,7 @@ function parseRewards(best: unknown, log: unknown): ClanSeasonRewards | null {
       if (!isRecord(item)) continue
       const season = seasonNumber(key)
       const titles = Array.isArray(item['titles'])
-        ? item['titles'].map(optionalText).filter((title): title is string => title !== null)
+        ? item['titles'].map(leaderboardText).filter((title): title is string => title !== null)
         : []
       if (season !== null && titles.length > 0) rewards.log.push([season, titles])
     }
@@ -173,10 +208,10 @@ export function parseLeaderboardPage(raw: string, page: number): LeaderboardPage
       deaths: optionalCount(astat?.['deaths_hist'], 'deaths_hist', page, index),
       flightTime: optionalCount(astat?.['ftime_hist'], 'ftime_hist', page, index),
       activity: optionalCount(astat?.['activity'], 'activity', page, index),
-      region: optionalText(rawClan['region']),
-      clanType: optionalText(rawClan['type']),
+      region: leaderboardText(rawClan['region']),
+      clanType: leaderboardText(rawClan['type']),
       foundedAt: mongoDateSec(rawClan['cdate']),
-      slogan: optionalText(rawClan['slogan']),
+      slogan: leaderboardText(rawClan['slogan']),
       rewards: parseRewards(rawClan['clanBestRewards'], rawClan['clanRewardLog']),
     })
   }
@@ -241,13 +276,21 @@ export const wtClans: ParserSource = {
     saveClanLeaderboard(entries, capturedAt)
     if (full) setBotState(FULL_CRAWL_STATE_KEY, String(capturedAt))
     if (season) saveOfficialClanSeason(season)
+
+    // Ростеры лидеров: сбой claninfo пишется в лог и не роняет обход лидерборда.
+    signal.throwIfAborted()
+    const leaders = entries.slice(0, TOP_PAGES * PAGE_SIZE)
+    const rosterTags = pickRostersToRefresh(leaders, getClanRosterRefreshedAt(leaders.map((clan) => clan.tag)), capturedAt)
+    if (rosterTags.length > 0) await fetchRatingsForTags(rosterTags)
+    const rosterText = rosterTags.length > 0 ? ` · ростеры claninfo: ${rosterTags.length}` : ''
+
     const leader = entries[0]!
     const leaderText = leader.rating === null ? '' : ` · лидер ${leader.tag} — ${leader.rating}`
     const seasonText = season ? ` · сезон ${season.seasonId}${seasonMismatch(season)}` : ''
     return {
       summary: full
-        ? `Кланов в лидерборде: ${entries.length} (страниц: ${pages}, полный обход)${leaderText}${seasonText}`
-        : `Лидеры обновлены: ${entries.length} кланов (страниц: ${pages})${leaderText}${seasonText}`,
+        ? `Кланов в лидерборде: ${entries.length} (страниц: ${pages}, полный обход)${leaderText}${seasonText}${rosterText}`
+        : `Лидеры обновлены: ${entries.length} кланов (страниц: ${pages})${leaderText}${seasonText}${rosterText}`,
     }
   },
 }

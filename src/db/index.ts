@@ -543,6 +543,60 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       `)
     },
   },
+  {
+    version: 12,
+    apply(database) {
+      // Replay API показывает бой раньше, чем сервер дописал реплей, и
+      // partsCount записи бывает ранним: без последних частей разбор брал
+      // промежуточные итоги (~95 с, без статуса и победителя). Так записались
+      // бои, которые v11 вернула в очередь. Ingest теперь ищет недостающие
+      // части на CDN и не пишет бой без финальных итогов; снятие статуса
+      // переразбирает такие бои, пока их части на CDN, persist заменит строки.
+      database.exec(`
+        DELETE FROM battle_ingest
+        WHERE status = 'ok'
+          AND session_id IN (
+            SELECT session_id FROM battles
+            WHERE (status IS NULL OR status = '')
+              AND start_time > unixepoch() - 14 * 86400
+          );
+      `)
+    },
+  },
+  {
+    version: 13,
+    apply(database) {
+      // Первая версия поиска недостающих частей принимала 429 CDN за конец
+      // списка: переразбор из v12 видел промежуточные итоги и делал бой
+      // expired, хотя хвост реплея лежал на CDN. Поиск теперь повторяет 429,
+      // а иную ошибку считает сбоем попытки; снятие статуса — новый переразбор.
+      database.exec(`
+        DELETE FROM battle_ingest
+        WHERE status = 'expired'
+          AND error LIKE 'в частях реплея только промежуточные итоги%'
+          AND session_id IN (
+            SELECT session_id FROM battles
+            WHERE (status IS NULL OR status = '')
+              AND start_time > unixepoch() - 14 * 86400
+          );
+      `)
+    },
+  },
+  {
+    version: 14,
+    apply(database) {
+      // Бой без исхода (по времени) пишет финальные итоги без статуса, и
+      // проверка v12–v13 принимала их за промежуточные: такой бой становился
+      // expired, хотя реплей полный. Проверка теперь сравнивает время итогов
+      // с длительностью по записи сайта; снятие статуса — новый переразбор.
+      database.exec(`
+        DELETE FROM battle_ingest
+        WHERE status = 'expired'
+          AND error LIKE 'в частях реплея только промежуточные итоги%'
+          AND updated_at > unixepoch() - 14 * 86400;
+      `)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -2463,6 +2517,34 @@ export function normalizePlayerSearchKey(nick: string): string {
  */
 function clanCoreOf(tag: string): string {
   return tag.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
+}
+
+/**
+ * Когда ростер клана последний раз читался со страницы claninfo: каждый обход
+ * обновляет last_present_at всем участникам. Ключ — переданный тег; клана без
+ * ростера в ответе нет.
+ */
+export function getClanRosterRefreshedAt(tags: readonly string[]): Map<string, number> {
+  const tagsByCore = new Map<string, string[]>()
+  for (const tag of tags) {
+    const core = clanCoreOf(tag)
+    if (!core) continue
+    const list = tagsByCore.get(core)
+    if (list) list.push(tag)
+    else tagsByCore.set(core, [tag])
+  }
+  const result = new Map<string, number>()
+  if (tagsByCore.size === 0) return result
+  const rows = getDb().prepare(`
+    SELECT clan_core, MAX(last_present_at) AS refreshed_at
+    FROM clan_roster
+    WHERE clan_core IN (SELECT value FROM json_each(?))
+    GROUP BY clan_core
+  `).all(JSON.stringify([...tagsByCore.keys()])) as { clan_core: string; refreshed_at: number }[]
+  for (const row of rows) {
+    for (const tag of tagsByCore.get(row.clan_core) ?? []) result.set(tag, row.refreshed_at)
+  }
+  return result
 }
 
 // ---------- Идентичности игроков и внешние снимки ----------

@@ -104,10 +104,14 @@ export function assertReplayPartUrl(raw: string): void {
  * Скачивание с ручным следованием перенаправлениям: каждый Location проходит
  * ту же проверку хоста, иначе CDN-редирект увёл бы запрос во внутреннюю сеть.
  */
-export async function fetchReplayUrl(url: string, signal: AbortSignal): Promise<Response> {
+export async function fetchReplayUrl(
+  url: string,
+  signal: AbortSignal,
+  headers?: Record<string, string>,
+): Promise<Response> {
   let current = url
   for (let redirects = 0; ; redirects += 1) {
-    const response = await fetch(current, { signal, redirect: 'manual' })
+    const response = await fetch(current, { signal, redirect: 'manual', ...(headers ? { headers } : {}) })
     if (![301, 302, 303, 307, 308].includes(response.status)) return response
     const location = response.headers.get('location')
     await response.body?.cancel().catch(() => undefined)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseLeaderboardPage } from './wt-clans.js'
+import { leaderboardText, parseLeaderboardPage, pickRostersToRefresh } from './wt-clans.js'
 
 function page(data: unknown[], status = 'ok'): string {
   return JSON.stringify({ status, data })
@@ -119,4 +119,49 @@ test('parseLeaderboardPage отклоняет нечисловую статис�
   )
   assert.throws(() => parseLeaderboardPage('{"status":"ok"}', 1), /схема/)
   assert.throws(() => parseLeaderboardPage('<html>', 1), /JSON/)
+})
+
+test('leaderboardText снимает HTML-экранирование и разметку игры, не трогая прочий текст', () => {
+  assert.equal(
+    leaderboardText('&lt;color=#FF0000&gt;HUN&lt;/color&gt;GA&lt;color=#49BD00&gt;RY&lt;/color&gt;'),
+    'HUNGARY',
+  )
+  assert.equal(leaderboardText('&lt;b&gt;╍https://discord.gg/abc╎&lt;/b&gt;'), '╍https://discord.gg/abc╎')
+  assert.equal(leaderboardText('North America &amp; European Union'), 'North America & European Union')
+  assert.equal(leaderboardText('&quot;Nur wer wagt&quot; L&#039;escadron'), '"Nur wer wagt" L\'escadron')
+  assert.equal(leaderboardText('строка&lt;br&gt;вторая'), 'строка вторая')
+  // Не разметка игры: ссылка в угловых скобках и двойное экранирование остаются текстом.
+  assert.equal(leaderboardText('&lt;https://example.net&gt;'), '<https://example.net>')
+  assert.equal(leaderboardText('&amp;lt;b&amp;gt;'), '&lt;b&gt;')
+  assert.equal(leaderboardText('&#99999999; ok'), '&#99999999; ok')
+  assert.equal(leaderboardText('&lt;color=#fff&gt; &lt;/color&gt;'), null)
+  assert.equal(leaderboardText(7), null)
+})
+
+test('parseLeaderboardPage кладёт регион и слоган чистым текстом', () => {
+  const parsed = parseLeaderboardPage(page([{
+    pos: 0,
+    tag: '╍REIZ╎',
+    name: 'REIZ',
+    region: '&lt;color=#00df01&gt;СНГ (16+)&lt;/color&gt;',
+    slogan: 'BEST&lt;color=#FF4500&gt; ARABIC &lt;/color&gt;SQUADRON',
+    astat: { dr_era5_hist: 43_293 },
+  }]), 1)
+  assert.equal(parsed.clans[0]?.region, 'СНГ (16+)')
+  assert.equal(parsed.clans[0]?.slogan, 'BEST ARABIC SQUADRON')
+  // Тег и имя — ключи сопоставления с боями и URL claninfo: их не меняем.
+  assert.equal(parsed.clans[0]?.tag, '╍REIZ╎')
+})
+
+test('pickRostersToRefresh берёт лидеров с устаревшим ростером по месту, не больше лимита', () => {
+  const clan = (tag: string, position: number, rating: number | null = 1_000) => ({
+    tag, name: tag, rating, position, members: 100, battles: 10, wins: 5, ...EMPTY_EXTRAS,
+  })
+  const now = 2_000_000
+  const clans = [clan('[C]', 3), clan('[A]', 1), clan('[B]', 2), clan('[D]', 4), clan('[Z]', 5, 0), clan('[N]', 6, null)]
+  const refreshed = new Map([['[B]', now - 3_600], ['[D]', now - 25 * 3_600]])
+  // [B] обновлён час назад, [Z] и [N] без рейтинга сезона.
+  assert.deepEqual(pickRostersToRefresh(clans, refreshed, now), ['[A]', '[C]', '[D]'])
+  assert.deepEqual(pickRostersToRefresh(clans, refreshed, now, 2), ['[A]', '[C]'])
+  assert.deepEqual(pickRostersToRefresh([], refreshed, now), [])
 })

@@ -434,6 +434,14 @@ export async function ensureTacticalMap(missionName: string): Promise<Buffer | n
 
 const inflightMaps = new Map<string, Promise<string | null>>()
 
+/** Уже скачанный снимок тактической карты режима миссии, без обращения к сети; null — его нет. */
+export async function loadCachedTacticalMap(missionName: string): Promise<Buffer | null> {
+  const keys = tacticalMapKeys(missionName)
+  if (!keys) return null
+  const data = await readOptional(path.join(MAPS_DIR, `${keys.mapKey}__${keys.modeKey}.png`))
+  return data && isPng(data) && data.length <= 32 * 1024 * 1024 ? data : null
+}
+
 async function fetchTacticalMap(keys: { mapKey: string; modeKey: string }): Promise<string | null> {
   const file = path.join(MAPS_DIR, `${keys.mapKey}__${keys.modeKey}.png`)
   const miss = path.join(MAPS_DIR, `${keys.mapKey}__${keys.modeKey}.miss`)

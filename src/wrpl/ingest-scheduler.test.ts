@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   PART_UPLOAD_GRACE_MS,
   ReplayPartWaitList,
+  hasFinalReplayResults,
   shouldContinueIngestImmediately,
 } from './ingest-scheduler.js'
 
@@ -61,4 +62,14 @@ test('ожидающие бои с прошедшим окном выкладк�
   assert.equal(waitList.waitingCount(now + 61_000), 0)
   assert.equal(waitList.defer('a', now - 59 * MINUTE, now - 59 * MINUTE, now + 61_000), null)
   assert.equal(waitList.defer('b', now, now, now + 61_000), 2 * MINUTE, 'у «b» счёт повторов сохранился')
+})
+
+test('итоги без статуса финальные, только если их время не меньше длительности по записи сайта', () => {
+  assert.equal(hasFinalReplayResults({ status: 'success', timePlayed: 95 }, 600), true)
+  // Промежуточные итоги из части 0001 устаревшей записи.
+  assert.equal(hasFinalReplayResults({ status: '', timePlayed: 95 }, 617), false)
+  // Бой без исхода по времени: финальные итоги без статуса.
+  assert.equal(hasFinalReplayResults({ status: '', timePlayed: 1_513 }, 1_509), true)
+  assert.equal(hasFinalReplayResults({ status: '', timePlayed: 1_500 }, 1_509), true)
+  assert.equal(hasFinalReplayResults({ status: '', timePlayed: 1_513 }, null), false)
 })

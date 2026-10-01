@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test, { beforeEach } from 'node:test'
-import { closeDb, initDb, saveClanRatingSnapshots, upsertClans } from '../db/index.js'
+import { closeDb, getClanRosterRefreshedAt, initDb, saveClanRatingSnapshots, upsertClans } from '../db/index.js'
 import {
   ClanPageHttpError,
   fetchClanMembers,
@@ -209,5 +209,22 @@ test('fetchRatingsForTags ставит страницы кланов на пау
     console.warn = originalWarn
     closeDb()
     globalThis.fetch = originalFetch
+  }
+})
+
+test('getClanRosterRefreshedAt отдаёт время последнего обхода claninfo по ядру тега', () => {
+  initDb(':memory:')
+  try {
+    const before = Math.floor(Date.now() / 1_000)
+    saveClanRatingSnapshots('-AVR-', [{ nick: 'One', rating: 100 }, { nick: 'Two', rating: 90 }])
+    const refreshed = getClanRosterRefreshedAt(['[AVR]', '╍AVR╎', '[NONE]', '***'])
+    // Украшения тега не важны: ростер хранится по ядру.
+    assert.ok((refreshed.get('[AVR]') ?? 0) >= before)
+    assert.equal(refreshed.get('╍AVR╎'), refreshed.get('[AVR]'))
+    assert.equal(refreshed.has('[NONE]'), false)
+    assert.equal(refreshed.has('***'), false)
+    assert.equal(getClanRosterRefreshedAt([]).size, 0)
+  } finally {
+    closeDb()
   }
 })

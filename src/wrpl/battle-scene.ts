@@ -7,7 +7,7 @@ import {
 } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { writeFileAtomic } from '../atomic-file.js'
-import { loadLocalTacticalMap } from './battle-assets.js'
+import { ensureTacticalMap, loadCachedTacticalMap, loadLocalTacticalMap } from './battle-assets.js'
 import { enforceBattleCacheCap } from './battle-media.js'
 import { fetchMissionInfo } from './mission-info.js'
 import { BATTLE_SCENE_VERSION, type ScenePrepareInput } from './battle-scene-core.js'
@@ -75,9 +75,9 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
     const mission = battle.mission_settings
       ? await fetchMissionInfo(battle.mission_settings, 'interactive').catch(() => null)
       : null
-    // Политика этапа 3: карта — только уже скачанный локальный файл; холодный
-    // кэш отдаёт сцену без картинки, плеер рисует сетку и зоны.
-    const mapBuffer = await loadLocalTacticalMap(battle.level).catch(() => null)
+    // Карта ложится на battleArea миссии: без неё карта не нужна, и плеер
+    // рисует сетку и зоны.
+    const mapBuffer = mission?.area ? await sceneMapImage(battle.mission_name, battle.level) : null
 
     const scene: ScenePrepareInput = {
       sessionId: battle.session_id,
@@ -122,9 +122,24 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
   return job
 }
 
-/** Локальная тактическая карта боя для плеера; null — файла нет (без докачки). */
+/**
+ * Подложка сцены — та же, что у наземной хитмапы: снимок тактической карты
+ * режима миссии (wt-tools, покрывает ровно battleArea; скачивается один раз и
+ * лежит в data/maps), иначе старая локальная карта уровня. Раньше сцена брала
+ * только локальную, а она есть у единиц уровней — плеер почти всегда был без карты.
+ */
+async function sceneMapImage(missionName: string, level: string): Promise<Buffer | null> {
+  return (await ensureTacticalMap(missionName).catch(() => null))
+    ?? (await loadLocalTacticalMap(level).catch(() => null))
+}
+
+/**
+ * Карта боя для плеера; null — карты нет. Только с диска: снимок скачивает
+ * сборка сцены, и плеер просит карту, лишь когда сцена её объявила.
+ */
 export async function loadBattleSceneMap(sessionId: string): Promise<Buffer | null> {
   const summary = getSiteBattleSummary(sessionId)
   if (!summary) return null
-  return loadLocalTacticalMap(summary.battle.level).catch(() => null)
+  return (await loadCachedTacticalMap(summary.battle.mission_name).catch(() => null))
+    ?? (await loadLocalTacticalMap(summary.battle.level).catch(() => null))
 }

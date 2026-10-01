@@ -7,7 +7,7 @@ import type { ReplayEvents, SpaceTime } from './replay-events.js'
 // Тяжёлая часть (gunzip events_blob, прореживание траекторий, gzip сцены)
 // выполняется строго в CPU-воркере.
 
-export const BATTLE_SCENE_VERSION = 1
+export const BATTLE_SCENE_VERSION = 2
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000

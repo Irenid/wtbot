@@ -71,3 +71,22 @@ export class ReplayPartWaitList {
     return count
   }
 }
+
+/** Запас на расхождение времени боя по реплею и по записи сайта, с. */
+const FINAL_RESULTS_SLACK_SEC = 10
+
+/**
+ * Финальные ли итоги боя в разобранных частях. Финальные пишутся в последнюю
+ * часть и обычно со статусом, в части 0001 лежат промежуточные (~95 с) без
+ * статуса. Бой без исхода (по времени) пишет финальные итоги тоже без
+ * статуса, но их время не меньше длительности по записи сайта: запись ловит
+ * бой не позже его конца (на 40 тыс. боёв timePlayed больше неё на 2–384 с).
+ * Без длительности по записи итоги без статуса считаются промежуточными.
+ */
+export function hasFinalReplayResults(
+  results: { status: string; timePlayed: number },
+  listedDurationSec: number | null,
+): boolean {
+  if (results.status) return true
+  return listedDurationSec !== null && results.timePlayed >= listedDurationSec - FINAL_RESULTS_SLACK_SEC
+}

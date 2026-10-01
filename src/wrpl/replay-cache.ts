@@ -17,6 +17,7 @@ const REPLAY_CACHE_DAYS = 7
 const REPLAY_CACHE_CLEANUP_CONCURRENCY = 4
 export const REPLAY_FETCH_PAUSE_MS = 150
 const FETCH_TIMEOUT_MS = 30_000
+const PROBE_TIMEOUT_MS = 10_000
 const FETCH_PRIORITY_AGING_MS = 30_000
 export const REPLAY_PART_MAX_BYTES = 96 * 1024 * 1024
 const WRPL_HEADER_BYTES = 1234
@@ -321,6 +322,50 @@ async function doFetchReplayPart(
     } finally {
       timing.attempts.push(attemptTiming)
     }
+  }
+}
+
+/**
+ * Есть ли часть на CDN, без скачивания: GET одного байта (на HEAD CDN отвечает
+ * 404 даже для выложенных частей). 404/410 — части нет. 429, как и при
+ * скачивании, ставит паузу всем запросам к CDN и повторяется; иной ответ —
+ * ошибка. Запрос идёт через общий темп скачивания частей.
+ */
+export async function replayPartExists(
+  url: string,
+  options: { signal?: AbortSignal; priority?: ReplayFetchPrioritySource } = {},
+): Promise<boolean> {
+  assertReplayPartUrl(url)
+  for (let attempt = 1; ; attempt += 1) {
+    await reserveFetchSlot(options.signal, options.priority)
+    throwIfAborted(options.signal)
+    const timeoutSignal = AbortSignal.timeout(PROBE_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetchReplayUrl(
+        url,
+        options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal,
+        { range: 'bytes=0-0' },
+      )
+    } catch (error) {
+      if (options.signal?.aborted) throw abortError()
+      throw error
+    }
+    await response.body?.cancel().catch(() => undefined)
+    if (response.ok || response.status === 404 || response.status === 410) {
+      replayFetchAdmission.recordSuccess()
+      return response.ok
+    }
+    if (response.status === 429) {
+      const delay = retryDelay(response, attempt - 1)
+      replayFetchAdmission.recordRateLimit()
+      fetchNotBeforeAt = Math.max(fetchNotBeforeAt, Date.now() + delay)
+      if (attempt <= 5) {
+        await sleep(delay, options.signal)
+        continue
+      }
+    }
+    throw new Error(`HTTP ${response.status} при проверке ${safeUrlLabel(url)}`)
   }
 }
 

@@ -1,6 +1,6 @@
 import { parseBlk, type BlkMap, type BlkValue } from './blk.js'
 import { MAX_REPLAY_PARTS, replayUrlStructureProblem } from './replay-url-policy.js'
-import { fetchReplayPart } from './replay-cache.js'
+import { fetchReplayPart, replayPartExists, type ReplayFetchPrioritySource } from './replay-cache.js'
 import { runWorkerTask, transferableBuffer, type WorkerPriority } from '../workers/pool.js'
 
 /**
@@ -280,6 +280,43 @@ export function resolveReplayPartUrls(data: ReplayPartUrlSource): ReplayPartsRes
 /** Список проверенных ссылок на части реплея; пустой, если ссылок нет или они отклонены. */
 export function replayPartUrls(data: ReplayPartUrlSource): string[] {
   return resolveReplayPartUrls(data).urls
+}
+
+/** Ссылка на часть номер index по образцу другой части (…/0003.wrpl → …/0007.wrpl); null — образец не по шаблону. */
+export function replayPartUrlAt(sample: string, index: number): string | null {
+  if (!Number.isSafeInteger(index) || index < 0 || index >= MAX_REPLAY_PARTS) return null
+  let url: URL
+  try {
+    url = new URL(sample)
+  } catch {
+    return null
+  }
+  if (!/\/\d{4}\.wrpl$/i.test(url.pathname)) return null
+  url.pathname = url.pathname.replace(/\d{4}(\.wrpl)$/i, `${String(index).padStart(4, '0')}$1`)
+  return url.toString()
+}
+
+/**
+ * Replay API показывает бой раньше, чем сервер дописал реплей: partsCount
+ * записи бывает ранним, и последних частей (с итогами боя) в списке нет —
+ * разбор вышел бы обрезанным. Части после известных ищутся на CDN, пока
+ * очередной нет. Сбой проверки пробрасывается: без ответа CDN неизвестно,
+ * полон ли список, и бой повторяется, как при сбое скачивания, а не
+ * разбирается с неполным списком.
+ */
+export async function withUnlistedReplayParts(
+  urls: readonly string[],
+  options: { signal?: AbortSignal; priority?: ReplayFetchPrioritySource } = {},
+): Promise<string[]> {
+  const result = [...urls]
+  const sample = urls.at(-1)
+  if (sample === undefined) return result
+  // Последовательно: конец списка — первая отсутствующая часть.
+  for (;;) {
+    const next = replayPartUrlAt(sample, result.length)
+    if (next === null || !(await replayPartExists(next, options))) return result
+    result.push(next)
+  }
 }
 
 /**
