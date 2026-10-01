@@ -526,6 +526,23 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       }
     },
   },
+  {
+    version: 11,
+    apply(database) {
+      // 404 части сразу делал бой expired, а свежий бой сайт показывает
+      // раньше, чем все его части выложены на CDN: с 2026-09-29 так терялось
+      // ~2% боёв (их части потом появлялись). Части живут на CDN ~2 недели:
+      // снятие статуса возвращает такие бои в очередь, ушедшие снова станут
+      // expired с первой же попытки.
+      database.exec(`
+        DELETE FROM battle_ingest
+        WHERE status = 'expired'
+          AND (error LIKE 'HTTP 404 %' OR error LIKE 'HTTP 410 %')
+          AND updated_at > unixepoch() - 14 * 86400
+          AND NOT EXISTS (SELECT 1 FROM battles b WHERE b.session_id = battle_ingest.session_id);
+      `)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)

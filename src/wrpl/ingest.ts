@@ -30,6 +30,7 @@ import {
 } from './replay-events.js'
 import { listedUserIdsFromItem, realNamesFromItem, resolveReplayPartUrls } from './replay.js'
 import {
+  ReplayPartWaitList,
   shouldContinueIngestImmediately,
   type IngestOutcome,
 } from './ingest-scheduler.js'
@@ -80,6 +81,8 @@ const READY_QUEUE_LOW_BYTES = 128 * 1024 * 1024
  */
 const PARSE_EXEC_TIMEOUTS_BEFORE_ERROR = 3
 const parseExecTimeouts = new ExecTimeoutBudget(PARSE_EXEC_TIMEOUTS_BEFORE_ERROR)
+/** Свежие бои, чьи части ещё не выложены на CDN (см. ReplayPartWaitList). */
+const partWaitList = new ReplayPartWaitList()
 
 const sleep = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
   if (signal.aborted) {
@@ -132,10 +135,33 @@ async function runSerializedSqliteCommit<T>(work: () => T | Promise<T>): Promise
   }
 }
 
-/** HTTP 404/410 от CDN — части ушли, повторять бесполезно */
-function isExpired(err: unknown): boolean {
+/** HTTP 404/410 от CDN: части ещё не выложены (свежий бой) или уже ушли */
+function isMissingReplayPart(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
   return /HTTP (404|410)\b/.test(msg)
+}
+
+function battleEndMs(item: PendingBattleItem): number | null {
+  const end = (item.data as { endTime?: unknown } | null)?.endTime
+  return typeof end === 'number' && Number.isFinite(end) && end > 0 ? end * 1_000 : null
+}
+
+/**
+ * 404/410 части: свежий бой ждёт, пока части доедут до CDN (попытка не
+ * расходуется), бой старше окна выкладки помечается expired — повторять бесполезно.
+ */
+function deferOrExpire(item: PendingBattleItem, message: string): 'deferred' | 'expired' {
+  const delayMs = partWaitList.defer(item.externalId, battleEndMs(item), item.firstSeenAt * 1_000, Date.now())
+  if (delayMs !== null) {
+    console.warn(
+      `[ingest] бой ${item.externalId}: часть ещё не выложена на CDN (${message}); ` +
+        `повтор через ${Math.round(delayMs / 1_000)} с`,
+    )
+    return 'deferred'
+  }
+  markBattleIngest(item.externalId, 'expired', message)
+  console.warn(`[ingest] бой ${item.externalId}: части ушли с CDN — пропускаю`)
+  return 'expired'
 }
 
 async function ingestOne(
@@ -312,10 +338,8 @@ async function ingestOne(
       outcome = 'deferred'
       return outcome
     }
-    if (isExpired(err)) {
-      markBattleIngest(item.externalId, 'expired', message)
-      console.warn(`[ingest] бой ${item.externalId}: части ушли с CDN — пропускаю`)
-      outcome = 'expired'
+    if (isMissingReplayPart(err)) {
+      outcome = deferOrExpire(item, message)
       return outcome
     }
     markBattleIngest(item.externalId, 'error', message)
@@ -368,10 +392,10 @@ async function prepareIngest(
       telemetry.finish('deferred')
       return { outcome: 'deferred' }
     }
-    if (isExpired(err)) {
-      markBattleIngest(item.externalId, 'expired', message)
-      telemetry.finish('expired')
-      return { outcome: 'expired' }
+    if (isMissingReplayPart(err)) {
+      const outcome = deferOrExpire(item, message)
+      telemetry.finish(outcome)
+      return { outcome }
     }
     markBattleIngest(item.externalId, 'error', message)
     telemetry.finish('error')
@@ -619,7 +643,16 @@ async function tick(): Promise<boolean> {
     const stats = getIngestStats()
     ingestSweep += 1
     const order = ingestSweep % 8 === 0 ? 'oldest' : 'newest'
-    const pending = getPendingBattleItems(INGEST_MAX_ATTEMPTS, selectionLimit, order)
+    // Бои, ждущие выкладки частей на CDN, пропускаются до своего повтора;
+    // выборка берёт столько же строк сверх лимита, чтобы они не вытесняли очередь.
+    const now = Date.now()
+    const pending = getPendingBattleItems(
+      INGEST_MAX_ATTEMPTS,
+      selectionLimit + partWaitList.waitingCount(now),
+      order,
+    )
+      .filter((item) => !partWaitList.isWaiting(item.externalId, now))
+      .slice(0, selectionLimit)
     ingestTelemetry.recordSelection(
       pending.map((item) => item.firstSeenAt),
       selectionLimit,

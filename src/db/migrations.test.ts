@@ -284,3 +284,47 @@ test('миграция v9 удаляет обрезанные бои и фант
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('миграция v11 возвращает в очередь свежие бои, ставшие expired из-за 404 части', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v11-'))
+  const dbPath = path.join(root, 'v11.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const ingest = database.prepare(`
+      INSERT INTO battle_ingest (session_id, status, attempts, error, updated_at)
+      VALUES (?, ?, 1, ?, unixepoch() - ?)
+    `)
+    const part404 = 'HTTP 404 при скачивании wt-game-replays.warthunder.com/0a/0001.wrpl'
+    ingest.run('1', 'expired', part404, 3_600)
+    ingest.run('2', 'expired', 'HTTP 410 при скачивании wt-game-replays.warthunder.com/0b/0002.wrpl', 86_400)
+    // Старше двух недель: части уже ушли с CDN.
+    ingest.run('3', 'expired', part404, 20 * 86_400)
+    ingest.run('4', 'expired', 'реплей разобран не полностью, части ушли с CDN', 3_600)
+    ingest.run('5', 'expired', part404, 3_600)
+    ingest.run('6', 'ok', null, 3_600)
+    database.prepare(`
+      INSERT INTO battles (session_id, session_hex, mission_name, level, start_time, duration_sec)
+      VALUES ('5', '05', 'm', 'l', 1, 1)
+    `).run()
+    database.exec('PRAGMA user_version = 10')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const left = (migrated.prepare('SELECT session_id FROM battle_ingest ORDER BY session_id').all() as { session_id: string }[])
+        .map((row) => row.session_id)
+      // 1 и 2 — в очередь; 3 (старый), 4 (другая причина), 5 (бой есть) и 6 (ok) не трогаются.
+      assert.deepEqual(left, ['3', '4', '5', '6'])
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -13,6 +13,7 @@ dist/
 
 # Application runtime state, downloaded assets, caches, and backups
 /data/
+/backups/
 wt-browser-profile/
 
 # SQLite files outside the default data directory

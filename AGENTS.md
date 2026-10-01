@@ -289,7 +289,11 @@ Scheduler запускает sources сразу, не допускает overlap
 - Все запросы к warthunder.com идут через `fetchWtResponse()` или
   `waitForRequestSlot()`: одна последовательная очередь процесса, интервал
   1500 мс, `Retry-After` и выбор direct/browser transport. Не вызывай прямой
-  `fetch()` для HTML/API сайта.
+  `fetch()` для HTML/API сайта. Исключение — публичная страница claninfo
+  (`clan-info.ts`): Cloudflare её не проверяет, поэтому она читается прямым
+  `fetch` без браузера, но после `waitForRequestSlot()`, а 429 откладывает всю
+  очередь. Если claninfo начнёт отвечать 403 с `cf-mitigated: challenge`,
+  переведи её на `fetchWtResponse()`.
 - Edge запускается обычным process и подключается по CDP. Persistent Playwright
   context и настоящий headless Cloudflare не проходят. Hidden mode использует
   окно вне экрана. CAPTCHA автоматически не обходится. Платформенная часть
@@ -331,6 +335,13 @@ AIMD admission и process byte budget ограничивают давление 
 и RAM. Budget timeout откладывает item без увеличения attempts. После успешного
 commit replay-cache конкретной сессии удаляется, потому что строки и gzip
 `events_blob` позволяют восстановить бой.
+
+Сайт показывает бой раньше, чем все его части выложены на CDN: они появляются
+по одной, примерно раз в 1,3 минуты после конца боя. Поэтому 404/410 части у
+боя моложе часа (от конца боя) значит «ещё не выложена»: бой ждёт повтор в
+памяти (`ReplayPartWaitList`, пауза 1→3 мин) без расхода attempts, а `expired`
+ставится только 404 у боя старше этого окна. Раньше любой 404 сразу давал
+`expired`, и терялось ~2% боёв (миграция v11 вернула их в очередь).
 
 ### Недоверенный бинарный вход
 
@@ -515,13 +526,14 @@ npm run build:web
 `verify:player-board*` и `verify:benchmark-corpus`. Отдельные скрипты можно
 запускать по затронутой подсистеме.
 
-CI (`.github/workflows/ci.yml`) выполняет те же шаги на Linux и Windows,
-`npm audit` и сборку Docker-образа; Dependabot присылает обновления раз в
+CI (`.github/workflows/ci.yml`) выполняет те же шаги на Linux (Node 26, как в
+образе) и Windows (Node 24), `npm audit` и сборку Docker-образа. Меняя `FROM
+node:` в `Dockerfile`, поднимай и Node Linux-job. Dependabot присылает обновления раз в
 неделю. Не добавляй в `npm test` флаг `--test-force-exit`: на Windows с Node 24
 он роняет процесс тестов с fetch (libuv assert), а зависающих тестов нет.
 
-Baseline на **2026-09-29**: `npm run build` и `npm run verify` проходят,
-`npm test` даёт **234 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
+Baseline на **2026-10-01**: `npm run build` и `npm run verify` проходят,
+`npm test` даёт **241 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
 новый count; любое новое падение считай регрессией.
 
 Команды с внешними или локальными side effects не запускай только ради smoke

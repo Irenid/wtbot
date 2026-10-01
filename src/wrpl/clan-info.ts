@@ -7,10 +7,15 @@ import {
 } from '../db/index.js'
 import { mapConcurrent } from '../concurrency.js'
 import { readResponseText } from '../http-response.js'
+import { deferRequestSlot, retryAfterMs, waitForRequestSlot } from '../parsers/sources/wt-request.js'
 
 /**
  * Личный клановый рейтинг (ПКР) участников — со страницы клана
  * warthunder.com/en/community/claninfo/<имя> (публичная, куки не нужны).
+ *
+ * Cloudflare эту страницу не проверяет, поэтому она читается обычным fetch,
+ * без браузерного транспорта и cookie jar. Но интервал между запросами и пауза
+ * после 429 общие для всего warthunder.com: запрос берёт слот общей очереди.
  *
  * Имя клана берётся из словаря clans (его наполняет источник wt-clans
  * по лидерборду), сам рейтинг — из таблицы участников на странице.
@@ -34,10 +39,19 @@ const PAGES_DOWN_THRESHOLD = 3
 const PAGES_DOWN_PAUSE_MS = 60 * 60_000
 const CLAN_FETCH_CONCURRENCY = 4
 
+/** Очередь запросов к warthunder.com: слот перед запросом и пауза после 429. */
+export interface WtRequestQueue {
+  wait(): Promise<void>
+  defer(delayMs: number): void
+}
+
+const sharedRequestQueue: WtRequestQueue = { wait: waitForRequestSlot, defer: deferRequestSlot }
+
 const lastFetch = new Map<string, { at: number; seasonId: string | null }>()
 const lastFailure = new Map<string, number>()
 const notFoundTags = new Set<string>()
 let pagesDownUntil = 0
+let requestQueue = sharedRequestQueue
 
 export type { ClanRating }
 
@@ -52,21 +66,28 @@ export class ClanPageHttpError extends Error {
   }
 }
 
-/** Сбрасывает кулдауны и паузу запросов claninfo (изоляция тестов). */
-export function resetClanInfoState(): void {
+/**
+ * Сбрасывает кулдауны и паузу запросов claninfo (изоляция тестов); `queue`
+ * подменяет общую очередь warthunder.com, чтобы тест не ждал её интервал.
+ */
+export function resetClanInfoState(queue: WtRequestQueue = sharedRequestQueue): void {
   lastFetch.clear()
   lastFailure.clear()
   notFoundTags.clear()
   pagesDownUntil = 0
+  requestQueue = queue
 }
 
 /** Участники клана с ПКР со страницы claninfo */
 export async function fetchClanMembers(clanName: string): Promise<{ nick: string; rating: number }[]> {
+  await requestQueue.wait()
   const res = await fetch(`https://warthunder.com/en/community/claninfo/${encodeURIComponent(clanName)}`, {
     headers: { accept: 'text/html', 'user-agent': UA },
     signal: AbortSignal.timeout(15_000),
   })
   if (!res.ok) {
+    // 429 откладывает всю очередь warthunder.com, а не только страницы кланов.
+    if (res.status === 429) requestQueue.defer(retryAfterMs(res))
     await res.body?.cancel().catch(() => undefined)
     throw new ClanPageHttpError(res.status, clanName)
   }

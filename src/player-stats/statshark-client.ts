@@ -277,7 +277,9 @@ async function fetchOnPage(
   const captureErrors = new Map<StatSharkEndpoint, unknown>()
   const pending = new Set<Promise<void>>()
   const routeHandler = (route: Route): void => {
-    void route.abort('blockedbyclient')
+    // Отказ abort (страницу уже закрыли) не должен стать необработанным
+    // rejection: он запускает аварийный shutdown всего бота (src/index.ts).
+    void route.abort('blockedbyclient').catch(() => undefined)
   }
   const responseHandler = (response: PlaywrightResponse): void => {
     const endpoint = endpointForResponse(response, playerId)

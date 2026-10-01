@@ -1,11 +1,44 @@
 import assert from 'node:assert/strict'
 import test, { beforeEach } from 'node:test'
 import { closeDb, initDb, saveClanRatingSnapshots, upsertClans } from '../db/index.js'
-import { fetchClanMembers, fetchRatingsForTags, resetClanInfoState } from './clan-info.js'
+import {
+  ClanPageHttpError,
+  fetchClanMembers,
+  fetchRatingsForTags,
+  resetClanInfoState,
+} from './clan-info.js'
 
 // Кулдауны и пауза claninfo живут в модуле — каждый тест начинает с чистого листа.
+// Очередь warthunder.com без интервала: иначе каждый запрос теста ждал бы 1,5 с.
 beforeEach(() => {
-  resetClanInfoState()
+  resetClanInfoState({ wait: async () => undefined, defer: () => undefined })
+})
+
+test('fetchClanMembers берёт слот общей очереди warthunder.com, а 429 откладывает её', async () => {
+  const originalFetch = globalThis.fetch
+  const events: string[] = []
+  resetClanInfoState({
+    wait: async () => {
+      events.push('слот')
+    },
+    defer: (delayMs) => {
+      events.push(`пауза ${delayMs}`)
+    },
+  })
+  globalThis.fetch = async () => {
+    events.push('запрос')
+    return new Response('', { status: 429, headers: { 'retry-after': '7' } })
+  }
+
+  try {
+    await assert.rejects(
+      fetchClanMembers('Clan'),
+      (error: unknown) => error instanceof ClanPageHttpError && error.status === 429,
+    )
+    assert.deepEqual(events, ['слот', 'запрос', 'пауза 7000'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('fetchClanMembers читает ПКР участника внутри noindex-обёртки', async () => {
@@ -101,6 +134,8 @@ test('fetchRatingsForTags запускает запросы двух клано�
     ])
 
     const ratingsPromise = fetchRatingsForTags(['A', 'B'])
+    // Запрос стартует после слота очереди; второй клан не ждёт ответа первого.
+    await new Promise<void>((resolve) => setImmediate(resolve))
     assert.equal(calls.length, 2)
     releaseFirst()
     const ratings = await ratingsPromise
