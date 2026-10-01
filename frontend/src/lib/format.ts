@@ -141,3 +141,81 @@ export function vehicleClassLabel(cls: string): string {
     default: return t('vehicleClass.unknown')
   }
 }
+
+/** Режим из данных лидерборда (historical — РБ) в принятое сокращение; неизвестный — как есть. */
+export function difficultyShortLabel(difficulty: string): string {
+  switch (difficulty) {
+    case 'arcade': return t('mode.arcade.short')
+    case 'historical':
+    case 'realistic': return t('mode.realistic.short')
+    case 'simulation':
+    case 'simulator': return t('mode.simulator.short')
+    default: return difficulty
+  }
+}
+
+const ROMAN = [[10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']] as const
+
+/** Ранг техники римскими цифрами, как в игре. */
+export function romanRank(rank: number): string {
+  if (!Number.isSafeInteger(rank) || rank < 1 || rank > 39) return String(rank)
+  let rest = rank
+  let text = ''
+  for (const [value, digit] of ROMAN) {
+    while (rest >= value) {
+      text += digit
+      rest -= value
+    }
+  }
+  return text
+}
+
+/** Ветка техники из условий вступления в клан. */
+export function unitTypeLabel(unitType: string): string {
+  switch (unitType) {
+    case 'Aircraft': return t('unitType.Aircraft')
+    case 'Tank': return t('unitType.Tank')
+    case 'Helicopter': return t('unitType.Helicopter')
+    case 'Ship': return t('unitType.Ship')
+    case 'Boat': return t('unitType.Boat')
+    default: return unitType
+  }
+}
+
+/** Роль участника клана со страницы claninfo; неизвестная — как есть. */
+export function clanRoleLabel(role: string): string {
+  switch (role) {
+    case 'Commander': return t('clan.role.Commander')
+    case 'Deputy': return t('clan.role.Deputy')
+    case 'Officer': return t('clan.role.Officer')
+    case 'Sergeant': return t('clan.role.Sergeant')
+    case 'Private': return t('clan.role.Private')
+    default: return role
+  }
+}
+
+/** Звание за сезон («place3», «top50»), без режима; common и незнакомое — null. */
+export function clanRewardLabel(title: string): string | null {
+  const place = /^place([1-9])$/.exec(title)
+  if (place) return t('clan.reward.place', { n: place[1]! })
+  const top = /^top([1-9]\d{0,3})$/.exec(title)
+  return top ? t('clan.reward.top', { n: top[1]! }) : null
+}
+
+/** Нация, как подписана на английской странице профиля; незнакомая — как есть. */
+export function nationLabel(country: string): string {
+  switch (country.toLowerCase().replace(/[^a-z]/g, '')) {
+    case 'usa': return t('nation.usa')
+    case 'germany': return t('nation.germany')
+    case 'ussr': return t('nation.ussr')
+    case 'greatbritain':
+    case 'britain': return t('nation.britain')
+    case 'japan': return t('nation.japan')
+    case 'china': return t('nation.china')
+    case 'italy': return t('nation.italy')
+    case 'france': return t('nation.france')
+    case 'sweden': return t('nation.sweden')
+    case 'israel': return t('nation.israel')
+    default: return country
+  }
+}

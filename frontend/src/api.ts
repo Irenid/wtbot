@@ -95,6 +95,16 @@ export interface AccountView {
   totals: ExternalTotal[]
   vehicles: ExternalVehicle[]
   vehicleCount: number
+  /** Техника, элитная техника и медали по нациям; есть только у официального профиля. */
+  countries: ExternalCountry[]
+}
+
+export interface ExternalCountry {
+  /** Нация, как подписана на английской странице профиля (USA, USSR…). */
+  country: string
+  vehicles: number | null
+  eliteVehicles: number | null
+  medals: number | null
 }
 
 export interface ReplayStats {
@@ -180,6 +190,10 @@ export interface ClanListEntry {
   /** Бои и победы сезона по официальному лидерборду; null — клана в нём нет. */
   seasonBattles: number | null
   seasonWins: number | null
+  /** Фраги и смерти сезона по лидерборду; null — клана в нём нет. */
+  airKills: number | null
+  groundKills: number | null
+  deaths: number | null
   lastSeenAt: number
   /**
    * Изменение рейтинга с отметки месяц назад внутри сезона; у клана вне
@@ -192,13 +206,27 @@ export interface ClanListEntry {
   rosterKnown: boolean
 }
 
-export function fetchClans(): Promise<{ ok: true; season: ClanSeasonContext; clans: ClanListEntry[] }> {
+/** Сезон по данным игры (лидерборд); даты могут расходиться с расписанием с форума. */
+export interface OfficialClanSeason {
+  seasonId: number
+  startsAt: number
+  /** Исключающая граница, Unix-секунды. */
+  endsAt: number
+}
+
+export function fetchClans(): Promise<{
+  ok: true
+  season: ClanSeasonContext
+  officialSeason: OfficialClanSeason | null
+  clans: ClanListEntry[]
+}> {
   return getJson('/api/clans')
 }
 
 export interface SiteStats {
   ok: true
   season: ClanSeasonContext
+  officialSeason: OfficialClanSeason | null
   players: number
   clans: number
   battlesTotal: number
@@ -211,7 +239,13 @@ export function fetchSiteStats(): Promise<SiteStats> {
   return getJson('/api/site-stats')
 }
 
-export interface ClanHistoryPoint { t: number; total: number }
+export interface ClanHistoryPoint {
+  t: number
+  total: number
+  /** Бои и победы сезона на момент точки — только у официального рейтинга. */
+  battles?: number | null
+  wins?: number | null
+}
 
 export interface ClanHistory {
   ok: true
@@ -250,6 +284,31 @@ export interface BattleListEntry {
   } | null
 }
 
+/** Награды прошлых сезонов: [номер сезона, звания вида «place1@historical»]. */
+export interface ClanSeasonRewards {
+  best: [number, string][]
+  log: [number, string[]][]
+}
+
+/** Условия вступления: ранг техники по веткам и минимум боёв по режиму. */
+export interface ClanRequirements {
+  ranks: { mode: 'and' | 'or'; items: { unitType: string; rank: number; count: number }[] } | null
+  battles: { difficulty: string; count: number }[]
+}
+
+/** Профиль клана из лидерборда. Описание и объявление — недоверенный текст. */
+export interface ClanProfile {
+  clanId: number | null
+  description: string | null
+  announcement: string | null
+  requirements: ClanRequirements | null
+  status: string | null
+  autoAccept: boolean | null
+  plainTag: string | null
+  /** Украшение тега за прошлый сезон: common, top100…top5, place3…place1. */
+  regalia: string | null
+}
+
 export interface ClanDetail {
   ok: true
   season: ClanSeasonContext
@@ -267,6 +326,20 @@ export interface ClanDetail {
     rosterKnown: boolean
     /** true — рейтинг и дельта с официального лидерборда, иначе по снимкам ПКР. */
     official: boolean
+    /** Статистика сезона из лидерборда; null — клана в нём нет. */
+    airKills: number | null
+    groundKills: number | null
+    deaths: number | null
+    /** Налёт участников за сезон, минуты. */
+    flightTimeMin: number | null
+    activity: number | null
+    region: string | null
+    /** normal — полк, battalion — батальон. */
+    clanType: string | null
+    foundedAt: number | null
+    slogan: string | null
+    rewards: ClanSeasonRewards | null
+    profile: ClanProfile | null
   }
   roster: {
     nick: string
@@ -275,6 +348,11 @@ export interface ClanDetail {
     seenAt: number
     identityId: number | null
     wtUserId: string | null
+    /** Commander, Deputy, Officer, Sergeant, Private — со страницы клана. */
+    role: string | null
+    /** Дата вступления, Unix-секунды. */
+    joinedAt: number | null
+    activity: number | null
   }[]
   battles: {
     days: number
@@ -286,6 +364,8 @@ export interface ClanDetail {
     score: number
     kills: number
     deaths: number
+    /** Только при total = 0: первый бой в базе бота; null — боёв нет вовсе. */
+    collectedSince: number | null
   }
   recent: BattleListEntry[]
 }

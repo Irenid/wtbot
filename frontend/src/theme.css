@@ -614,6 +614,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .src-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 10px; }
 .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: none; }
+/* Текст, который пишет клан: переносы строк сохраняются, длинные слова и ссылки не ломают вёрстку. */
+.free-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 10px; font-size: 13px; line-height: 1.5; }
 .row span:last-child { text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
 .row-item {

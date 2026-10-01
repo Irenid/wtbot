@@ -4897,6 +4897,10 @@ export const SITE_SQL = {
     FROM clans
     WHERE tag = ?
   `,
+  firstBattleAt: `
+    SELECT MIN(start_time) AS first_battle_at
+    FROM battles
+  `,
   clanBattleTeams: `
     SELECT
       b.session_id, b.start_time, b.team_won, bp.team,
@@ -5542,6 +5546,12 @@ export function getSiteClanProfile(tag: string): SiteClanProfile | null {
     plainTag: row.plain_tag,
     regalia: row.regalia,
   }
+}
+
+/** Начало собранных боёв: с этого момента в базе есть реплеи. null — боёв нет. */
+export function getSiteFirstBattleAt(): number | null {
+  const row = siteStatement('firstBattleAt').get() as { first_battle_at: number | null } | undefined
+  return row?.first_battle_at ?? null
 }
 
 export function getSiteClanRosterAll(): { clanCore: string; nick: string; lastPresentAt: number }[] {

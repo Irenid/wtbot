@@ -37,7 +37,12 @@ import type { ParserSource } from '../types.js'
 const LB_URL = 'https://warthunder.com/en/community/getclansleaderboard/dif/_hist/page'
 const PAGE_SIZE = 20
 const TOP_PAGES = 5
-const MAX_PAGES = 40
+/**
+ * Предел полного обхода — 2000 кланов. В октябре 2026 кланов с ненулевым
+ * рейтингом было 567; упор в предел виден в статусе источника, иначе хвост
+ * молча выпал бы из словаря «тег → имя».
+ */
+const MAX_PAGES = 100
 const INTERVAL_MS = 20 * 60_000
 const FULL_CRAWL_INTERVAL_SEC = 12 * 60 * 60
 const FULL_CRAWL_STATE_KEY = 'wt-clans:full-crawl-at'
@@ -297,6 +302,7 @@ export const wtClans: ParserSource = {
     const seenTags = new Set<string>()
     let season: OfficialClanSeason | null = null
     let pages = 0
+    let lastPageActive = false
     // Страницы зависимы: конец списка и нулевой рейтинг останавливают обход,
     // а общая очередь warthunder.com всё равно выполняет запросы по одному.
     for (let page = 1; page <= maxPages; page++) {
@@ -331,6 +337,7 @@ export const wtClans: ParserSource = {
         entries.push(clan)
       }
       // страница целиком из кланов с нулевым рейтингом — дальше только неактивные
+      lastPageActive = parsed.hasActive
       if (!parsed.hasActive) break
     }
     if (entries.length === 0) {
@@ -351,9 +358,12 @@ export const wtClans: ParserSource = {
     const leader = entries[0]!
     const leaderText = leader.rating === null ? '' : ` · лидер ${leader.tag} — ${leader.rating}`
     const seasonText = season ? ` · сезон ${season.seasonId}${seasonMismatch(season)}` : ''
+    const capText = full && pages === MAX_PAGES && lastPageActive
+      ? ` · достигнут предел ${MAX_PAGES} страниц, хвост не прочитан`
+      : ''
     return {
       summary: full
-        ? `Кланов в лидерборде: ${entries.length} (страниц: ${pages}, полный обход)${leaderText}${seasonText}${rosterText}`
+        ? `Кланов в лидерборде: ${entries.length} (страниц: ${pages}, полный обход)${capText}${leaderText}${seasonText}${rosterText}`
         : `Лидеры обновлены: ${entries.length} кланов (страниц: ${pages})${leaderText}${seasonText}${rosterText}`,
     }
   },

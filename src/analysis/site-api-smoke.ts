@@ -187,7 +187,7 @@ async function main(): Promise<void> {
     { nick: 'Ghost', rating: 1_999 },
   ])
   saveClanRatingSnapshots(CLAN_RAW_TAG, [
-    { nick: 'PilotOne', rating: 1_520 },
+    { nick: 'PilotOne', rating: 1_520, role: 'Commander', joinedAt: nowSec - 400 * 86_400, activity: 1_234 },
     { nick: 'Wingman', rating: 1_400 },
   ])
   const formulaMembers = Array.from({ length: 130 }, (_, index) => ({
@@ -305,7 +305,7 @@ async function main(): Promise<void> {
       ok: true
       player: { identityId: number | null; nick: string; wtUserId: string | null; aliases: unknown[] }
       rating: { rating: number; delta: number | null } | null
-      accounts: { source: string; totals: unknown[]; vehicles: unknown[] }[]
+      accounts: { source: string; totals: unknown[]; vehicles: unknown[]; countries: unknown[] }[]
       replay: { battles: number; wins: number; losses: number } | null
     }
     assert.equal(profileBody.player.nick, 'PilotOne')
@@ -314,6 +314,7 @@ async function main(): Promise<void> {
     assert.equal(profileBody.rating?.delta, 20)
     assert.equal(profileBody.accounts.length, 1)
     assert.equal(profileBody.accounts[0]?.source, 'statshark')
+    assert.deepEqual(profileBody.accounts[0]?.countries, [], 'нации есть только у официального профиля')
     assert.equal(profileBody.replay?.battles, 4)
     assert.equal(profileBody.replay?.wins, 3)
     assert.equal(profileBody.replay?.losses, 1)
@@ -409,9 +410,25 @@ async function main(): Promise<void> {
     const clanDetail = await app.inject({ method: 'GET', url: '/api/clans/TST' })
     assert.equal(clanDetail.statusCode, 200)
     const clanBody = clanDetail.json() as {
-      clan: { coreTag: string; name: string | null; rank: number; delta30d: number | null; rosterKnown: boolean }
-      roster: { nick: string; rating: number; delta: number | null; wtUserId: string | null; identityId: number | null }[]
-      battles: { total: number; wins: number; losses: number; winRate: number | null }
+      clan: {
+        coreTag: string
+        name: string | null
+        rank: number
+        delta30d: number | null
+        rosterKnown: boolean
+        profile: unknown
+      }
+      roster: {
+        nick: string
+        rating: number
+        delta: number | null
+        wtUserId: string | null
+        identityId: number | null
+        role: string | null
+        joinedAt: number | null
+        activity: number | null
+      }[]
+      battles: { total: number; wins: number; losses: number; winRate: number | null; collectedSince: number | null }
       recent: unknown[]
     }
     assert.equal(clanBody.clan.coreTag, 'tst')
@@ -423,12 +440,26 @@ async function main(): Promise<void> {
     assert.equal(clanBody.roster[0]?.delta, 20)
     assert.equal(clanBody.roster[0]?.wtUserId, '501', 'ростер должен линковаться через алиасы')
     assert.equal(clanBody.roster[1]?.identityId, null, 'без алиаса ссылки быть не должно')
+    // Роль, дата вступления и активность — со страницы клана; у Wingman их нет.
+    assert.equal(clanBody.roster[0]?.role, 'Commander')
+    assert.equal(clanBody.roster[0]?.joinedAt, nowSec - 400 * 86_400)
+    assert.equal(clanBody.roster[0]?.activity, 1_234)
+    assert.equal(clanBody.roster[1]?.role, null)
+    assert.equal(clanBody.clan.profile, null, 'профиль есть только у клана из лидерборда')
     assert.equal(clanBody.roster.length, 2, 'покинувший Ghost не должен быть в ростере')
     assert.equal(clanBody.battles.total, 4)
     assert.equal(clanBody.battles.wins, 3)
     assert.equal(clanBody.battles.losses, 1)
     assert.ok(Math.abs((clanBody.battles.winRate ?? 0) - 3 / 4) < 1e-9)
     assert.equal(clanBody.recent.length, 4)
+    assert.equal(clanBody.battles.collectedSince, null, 'у клана с боями дата начала сбора не нужна')
+    // Клан без боёв в реплеях: страница пишет, с какого дня бот собирает бои.
+    const quietClan = await app.inject({ method: 'GET', url: '/api/clans/var' })
+    assert.equal(quietClan.statusCode, 200)
+    const quietBattles = (quietClan.json() as { battles: { total: number; collectedSince: number | null } }).battles
+    assert.equal(quietBattles.total, 0)
+    assert.ok(quietBattles.collectedSince !== null && quietBattles.collectedSince <= nowSec,
+      'collectedSince — время первого боя в базе')
 
     // --- История суммы ПКР клана: по текущему составу, без Ghost ---
     const clanHistory = await app.inject({ method: 'GET', url: '/api/clans/tst/history?days=90' })

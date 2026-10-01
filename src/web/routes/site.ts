@@ -27,6 +27,7 @@ import {
   getSiteClanRatingBaseline,
   getSiteClanRatingEvents,
   getSiteClanProfile,
+  getSiteFirstBattleAt,
   getSiteClanRosterAll,
   getSiteClanRosterDetails,
   getSiteExternalAggregateHistory,
@@ -402,6 +403,8 @@ interface SiteAccountView {
   totals: unknown[]
   vehicles: unknown[]
   vehicleCount: number
+  /** Техника, элитная техника и медали по нациям (только официальный профиль). */
+  countries: unknown[]
 }
 
 function buildAccountViews(identity: PlayerIdentity): SiteAccountView[] {
@@ -423,6 +426,7 @@ function buildAccountViews(identity: PlayerIdentity): SiteAccountView[] {
       totals: stats ? stats.totals.slice(0, 100) : [],
       vehicles,
       vehicleCount: stats?.vehicles.length ?? 0,
+      countries: stats ? stats.countries.slice(0, 20) : [],
     })
   }
   return views
@@ -1073,6 +1077,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         score,
         kills,
         deaths,
+        // Клан без боёв при боте: страница пишет, с какого дня бот собирает бои.
+        collectedSince: battlesTotal === 0 ? getSiteFirstBattleAt() : null,
       },
       recent: battleListPayload(recent, new Set([group.coreTag])),
     }

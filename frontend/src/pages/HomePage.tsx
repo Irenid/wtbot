@@ -271,7 +271,7 @@ export function HomePage() {
         )}
       </section>
 
-      {stats !== null && <SeasonPanel context={stats.season} compact />}
+      {stats !== null && <SeasonPanel context={stats.season} official={stats.officialSeason} compact />}
 
       {statsError !== null && <ErrorNotice error={statsError} />}
       {stats !== null && (

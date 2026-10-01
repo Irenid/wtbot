@@ -1,10 +1,14 @@
-import type { ClanSeasonContext, ClanSeasonStage } from '../api'
+import type { ClanSeasonContext, ClanSeasonStage, OfficialClanSeason } from '../api'
 import { localeTag, t } from '../i18n'
 
-function stageRange(stage: ClanSeasonStage): string {
+function dayRange(startsAt: number, endsAt: number): string {
   const format = (timestamp: number) =>
     new Date(timestamp * 1000).toLocaleDateString(localeTag(), { dateStyle: 'short', timeZone: 'UTC' })
-  return `${format(stage.startsAt)}–${format(stage.endsAt - 1)}`
+  return `${format(startsAt)}–${format(endsAt - 1)}`
+}
+
+function stageRange(stage: ClanSeasonStage): string {
+  return dayRange(stage.startsAt, stage.endsAt)
 }
 
 function stageLabel(stage: ClanSeasonStage, seasonEndsAt: number): string {
@@ -12,9 +16,21 @@ function stageLabel(stage: ClanSeasonStage, seasonEndsAt: number): string {
   return `${week} · ${t('season.maxBr', { br: stage.maxBr.toFixed(1) })}`
 }
 
-export function SeasonPanel({ context, compact = false }: { context: ClanSeasonContext; compact?: boolean }) {
+/**
+ * Расписание этапов — с форума, номер сезона — из лидерборда игры. Если даты
+ * игры и форума разошлись, этапы могут быть неверны: об этом говорим прямо.
+ */
+export function SeasonPanel({ context, official = null, compact = false }: {
+  context: ClanSeasonContext
+  official?: OfficialClanSeason | null
+  compact?: boolean
+}) {
   const season = context.season
   if (!season) return null
+  const officialText = official ? ` · ${t('season.official', { n: official.seasonId })}` : ''
+  const mismatch = official !== null && (official.startsAt !== season.startsAt || official.endsAt !== season.endsAt)
+    ? t('season.mismatch', { range: dayRange(official.startsAt, official.endsAt) })
+    : null
   const current = context.currentStage
   const currentText = current
     ? `${stageLabel(current, season.endsAt)} · ${stageRange(current)}`
@@ -26,7 +42,8 @@ export function SeasonPanel({ context, compact = false }: { context: ClanSeasonC
     return (
       <div className="notice" style={{ marginBottom: 16 }}>
         <strong>{t('season.title')}: {season.name}</strong>
-        <span className="muted" style={{ marginLeft: 8 }}>{currentText}</span>
+        <span className="muted" style={{ marginLeft: 8 }}>{currentText}{officialText}</span>
+        {mismatch && <div className="small" style={{ marginTop: 4 }}>{mismatch}</div>}
       </div>
     )
   }
@@ -40,10 +57,12 @@ export function SeasonPanel({ context, compact = false }: { context: ClanSeasonC
             {new Date(season.startsAt * 1000).toLocaleDateString(localeTag(), { dateStyle: 'short', timeZone: 'UTC' })}
             {' – '}
             {new Date((season.endsAt - 1) * 1000).toLocaleDateString(localeTag(), { dateStyle: 'short', timeZone: 'UTC' })}
+            {officialText}
           </div>
         </div>
         <span className="chip accent">{current ? currentText : season.active ? t('season.waiting') : t('season.ended')}</span>
       </div>
+      {mismatch && <div className="notice small">{mismatch}</div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginTop: 14 }}>
         {context.stages.map((stage) => (
           <div

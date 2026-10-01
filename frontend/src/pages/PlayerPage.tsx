@@ -24,6 +24,7 @@ import {
   fmtPercent,
   fmtRatio,
   modeLabel,
+  nationLabel,
   sourceLabel,
   stateLabel,
   sumKills,
@@ -189,6 +190,8 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
   const primaryAccount = accounts.find((account) => aggregateOf(account) !== null) ?? null
   const primaryAggregate = primaryAccount ? aggregateOf(primaryAccount) : null
   const vehiclesAccount = accounts.find((account) => account.vehicles.length > 0) ?? null
+  const nationsAccount = accounts.find((account) => account.countries.length > 0) ?? null
+  const topNationVehicles = Math.max(1, ...(nationsAccount?.countries ?? []).map((row) => row.vehicles ?? 0))
 
   // «Любимый класс» — по фрагам аккаунта: честная замена распределения по боям,
   // которого внешние источники не публикуют.
@@ -402,6 +405,41 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
                 </div>
               )
             })}
+          </div>
+        </div>
+      )}
+
+      {nationsAccount && (
+        <div className="card" style={{ padding: 0 }}>
+          <div style={{ padding: '14px 20px 0' }}>
+            <SecHead title={t('player.nations')} hint={t('player.nations.hint')} />
+          </div>
+          <div className="tbl-scroll" style={{ margin: 0 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t('player.nations.col.nation')}</th>
+                  <th style={{ minWidth: 160 }}>{t('player.nations.col.vehicles')}</th>
+                  <th className="num">{t('player.nations.col.elite')}</th>
+                  <th className="num">{t('player.nations.col.medals')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nationsAccount.countries.map((row) => (
+                  <tr key={row.country}>
+                    <td title={row.country}>{nationLabel(row.country)}</td>
+                    <td>
+                      <div className="bar-row" style={{ gridTemplateColumns: '1fr 54px', padding: 0 }}>
+                        <BarTrack fraction={row.vehicles === null ? null : row.vehicles / topNationVehicles} />
+                        <span className="bar-value small">{fmtInt(row.vehicles)}</span>
+                      </div>
+                    </td>
+                    <td className="num">{fmtInt(row.eliteVehicles)}</td>
+                    <td className="num">{fmtInt(row.medals)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
