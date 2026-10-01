@@ -5,11 +5,19 @@ import { resolve } from 'node:path'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
 import { writeFileAtomic } from '../../atomic-file.js'
 import { config } from '../../config.js'
-import { absorbCookieValues, cookieValues, wtCookieSeedHash } from './wt-cookies.js'
+import {
+  absorbCookieValues,
+  cookieValues,
+  isWtAuthCookie,
+  rememberCookieUserAgent,
+  type WtCookieValue,
+} from './wt-cookies.js'
 import {
   freshestCookies,
   isChallengeResponse,
   looksCleared,
+  planBrowserSession,
+  sameCookieValues,
   staleDuplicateCookies,
   type PageSignals,
 } from './wt-challenge.js'
@@ -100,6 +108,18 @@ export interface WtBrowserMetrics {
 }
 
 let state: BrowserState | null = null
+/**
+ * Несёт ли браузер сейчас сессию WT: да, пока Replay API идёт через него.
+ * Признак задаёт wt-request по режимам адресов; без него браузер, как раньше,
+ * считается владельцем сессии.
+ */
+let sessionCarrierProbe: () => boolean = () => true
+/**
+ * Сессия из браузера, которую бот затёр или убрал, потому что она отличалась
+ * от jar (например, вход через VNC). Её можно взять, если сессия jar умрёт.
+ */
+let stashedBrowserSession: WtCookieValue[] | null = null
+let sessionPrepareTail: Promise<void> = Promise.resolve()
 let lastClearanceAt = 0
 let clearanceTail: Promise<void> = Promise.resolve()
 let startupTail: Promise<BrowserState> | null = null
@@ -375,8 +395,14 @@ async function ensureBrowser(): Promise<BrowserState> {
     windowRestored = false
     state = started
     try {
-      await seedBrowserCookies(started.context)
+      await removeDuplicateCookies(started.context)
+      // До первых навигаций пула: копия сессии jar в браузере не должна
+      // уходить на сайт, пока сессию несёт прямой путь.
+      await prepareBrowserSession(started.context, sessionCarrierProbe())
       await ensurePool(started)
+      if (started.userAgent.trim() !== '') {
+        await rememberCookieUserAgent(started.userAgent).catch(() => undefined)
+      }
       return started
     } catch (error) {
       state = null
@@ -402,12 +428,14 @@ async function ensureBrowser(): Promise<BrowserState> {
   }
 }
 
-async function parkPage(page: Page): Promise<void> {
+async function parkPage(page: Page, carrier = sessionCarrierProbe()): Promise<void> {
   if (page.url().startsWith(WT_ORIGIN)) return
   await page.goto(POOL_PARK_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
   if (!page.url().startsWith(WT_ORIGIN)) {
     await page.goto(WARMUP_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
   }
+  // Навигация тоже может ротировать identity_sid, пока сессию несёт браузер.
+  await saveSessionIfCarrier(page.context(), carrier)
 }
 
 async function ensurePool(current: BrowserState): Promise<void> {
@@ -514,69 +542,106 @@ export async function withEdgeBrowserPage<T>(work: (page: Page) => Promise<T>): 
   }
 }
 
-/** В профиле браузера: хэш WT_COOKIE, которой профиль засеян последний раз. */
-const COOKIE_SEED_MARKER = 'wtbot-cookie-seed.json'
 const WT_COOKIE_DOMAIN = /^\.?warthunder\.com$/
 
 /**
- * Сессию warthunder.com ведёт браузер: сервер ротирует identity_sid в ответах
- * и выдаёт identity_* на `.warthunder.com`. Поэтому cookies из jar кладутся в
- * профиль только когда в нём нет живой сессии или в .env новая WT_COOKIE.
+ * Регистрирует признак «сессию WT сейчас несёт браузер». Его задаёт
+ * wt-request: браузеру сессия нужна, только пока Replay API идёт через него.
+ */
+export function setWtBrowserSessionProbe(probe: () => boolean): void {
+  sessionCarrierProbe = probe
+}
+
+/**
  * Раньше seed при каждом старте добавлял host-only копии рядом с доменными:
  * браузер отправлял обе, сервер читал устаревшую и уводил на повторный вход.
  */
-async function seedBrowserCookies(context: BrowserContext): Promise<void> {
+async function removeDuplicateCookies(context: BrowserContext): Promise<void> {
   const existing = await context.cookies(WT_ORIGIN).catch(() => [])
   for (const stale of staleDuplicateCookies(existing)) {
     await context
       .clearCookies({ name: stale.name, domain: stale.domain, path: stale.path })
       .catch(() => undefined)
   }
+}
 
-  const markerFile = resolve(profileDir(), COOKIE_SEED_MARKER)
-  const seed = wtCookieSeedHash()
-  const seededWith = await readFile(markerFile, 'utf8')
-    .then((text) => (JSON.parse(text) as { seedHash?: unknown }).seedHash)
-    .catch(() => null)
-  const nowSec = Date.now() / 1_000
-  const browserHasSession = existing.some((cookie) => cookie.name === 'identity_sid' && cookie.expires > nowSec)
-  // Профиль без маркера, но с живой сессией (обновление с прежней версии) —
-  // тоже доверяем браузеру: его сессия новее jar.
-  if (browserHasSession && (seededWith === null || seededWith === seed)) {
-    if (seededWith === null) await writeFileAtomic(markerFile, JSON.stringify({ seedHash: seed })).catch(() => undefined)
-    return
-  }
+async function browserAuthCookies(context: BrowserContext): Promise<WtCookieValue[]> {
+  const cookies = await context.cookies(WT_ORIGIN).catch(() => [])
+  return freshestCookies(cookies.filter((cookie) => isWtAuthCookie(cookie.name)))
+}
 
-  const values = await cookieValues()
-  // cf_* не переносим: клиренс из Node-jar привязан к другому отпечатку и в
-  // браузере бесполезен, а свой браузер выдаёт себе сам.
-  const authValues = values.filter(({ name }) => !name.startsWith('cf_') && !name.startsWith('__cf'))
-  if (authValues.length === 0) return
-  for (const { name } of authValues) {
-    await context.clearCookies({ name, domain: WT_COOKIE_DOMAIN }).catch(() => undefined)
-  }
-  await context
-    .addCookies(authValues.map(({ name, value }) => ({
-      name,
-      value,
-      domain: '.warthunder.com',
-      path: '/',
-      secure: true,
-      httpOnly: true,
-      sameSite: 'Lax' as const,
-    })))
-    .catch(() => undefined)
-  await writeFileAtomic(markerFile, JSON.stringify({ seedHash: seed })).catch(() => undefined)
+async function jarAuthCookies(): Promise<WtCookieValue[]> {
+  return (await cookieValues()).filter(({ name }) => isWtAuthCookie(name))
 }
 
 /**
- * Переносит cookies браузера в общий jar. cf_clearance сохраняется намеренно:
- * так jar отражает реальное состояние сессии и виден в диагностике.
+ * Готовит cookies авторизации браузера к запросу. Сессию WT ведёт jar: сервер
+ * ротирует identity_sid в ответах, и две копии одной сессии в jar и в браузере
+ * разошлись бы.
+ * - carrier (Replay API идёт через браузер) — в браузер кладётся сессия jar;
+ *   ответы сохраняются обратно (saveSessionIfCarrier).
+ * - иначе браузер ходит анонимно: публичным страницам сессия не нужна.
+ * Сессия браузера, отличная от jar (вход через VNC), не теряется: она
+ * запоминается и берётся adoptBrowserSession, если сессия jar умрёт.
  */
-async function saveBrowserCookies(context: BrowserContext): Promise<void> {
+async function prepareBrowserSession(context: BrowserContext, carrier: boolean): Promise<void> {
+  const run = sessionPrepareTail.then(async () => {
+    const browserAuth = await browserAuthCookies(context)
+    const jarAuth = await jarAuthCookies()
+    const plan = planBrowserSession(carrier, browserAuth, jarAuth)
+    if (plan.stash) stashedBrowserSession = browserAuth
+    if (plan.clear) {
+      await context.clearCookies({ name: /^identity_/, domain: WT_COOKIE_DOMAIN }).catch(() => undefined)
+    }
+    if (!plan.push) return
+    await context
+      .addCookies(jarAuth.map(({ name, value }) => ({
+        name,
+        value,
+        domain: '.warthunder.com',
+        path: '/',
+        secure: true,
+        httpOnly: true,
+        sameSite: 'Lax' as const,
+      })))
+      .catch(() => undefined)
+  })
+  sessionPrepareTail = run.catch(() => undefined)
+  await run
+}
+
+/**
+ * Переносит cookies браузера в общий jar, пока сессию несёт браузер: так jar
+ * видит ротацию identity_sid. Анонимные ответы в jar не попадают.
+ * cf_clearance сохраняется намеренно: jar отражает состояние сессии.
+ */
+async function saveSessionIfCarrier(context: BrowserContext, carrier: boolean): Promise<void> {
+  if (!carrier) return
   const cookies = await context.cookies(WT_ORIGIN).catch(() => [])
   if (cookies.length === 0) return
   await absorbCookieValues(freshestCookies(cookies))
+}
+
+/**
+ * Берёт в jar сессию браузера, отличную от сессии jar: текущую или убранную
+ * prepareBrowserSession (вход через VNC). Вызывается, когда сервер не принял
+ * сессию jar.
+ */
+export async function adoptBrowserSession(): Promise<boolean> {
+  if (!config.wtBrowserEnabled) return false
+  let current: BrowserState
+  try {
+    current = await ensureBrowser()
+  } catch {
+    return false
+  }
+  const jarAuth = await jarAuthCookies()
+  const candidates = [await browserAuthCookies(current.context), stashedBrowserSession ?? []]
+  const adopted = candidates.find((auth) => auth.length > 0 && !sameCookieValues(auth, jarAuth))
+  stashedBrowserSession = null
+  if (adopted === undefined) return false
+  await absorbCookieValues(adopted)
+  return true
 }
 
 function browserHeaders(init: RequestInit): Record<string, string> {
@@ -719,7 +784,7 @@ async function restoreWindow(current: BrowserState, page: Page): Promise<void> {
   }
 }
 
-async function runClearance(reason: string, force: boolean): Promise<boolean> {
+async function runClearance(reason: string, force: boolean, carrier: boolean): Promise<boolean> {
   if (!config.wtBrowserEnabled) return false
   if (!force && Date.now() - lastClearanceAt < CLEARANCE_COOLDOWN_MS) return true
 
@@ -733,6 +798,7 @@ async function runClearance(reason: string, force: boolean): Promise<boolean> {
   const entry = await acquirePage()
   const started = Date.now()
   try {
+    await prepareBrowserSession(current.context, carrier)
     await entry.page.goto(WARMUP_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
     const deadline = started + config.wtBrowserTimeoutMs
     let lastSignals: PageSignals | null = null
@@ -745,7 +811,7 @@ async function runClearance(reason: string, force: boolean): Promise<boolean> {
           .catch(() => null)
         metrics.clearanceProbes += 1
         if (probe !== null && !isChallenge(probe) && probe.status < 400) {
-          await saveBrowserCookies(current.context)
+          await saveSessionIfCarrier(current.context, carrier)
           lastClearanceAt = Date.now()
           metrics.clearances += 1
           metrics.lastClearanceMs = lastClearanceAt - started
@@ -781,11 +847,15 @@ async function runClearance(reason: string, force: boolean): Promise<boolean> {
  * Единственная последовательная попытка получить clearance.
  * Несколько источников, получивших challenge одновременно, не запустят несколько проверок.
  */
-export function refreshWtClearance(reason: string, force = false): Promise<boolean> {
+export function refreshWtClearance(
+  reason: string,
+  force = false,
+  carrier = sessionCarrierProbe(),
+): Promise<boolean> {
   if (!config.wtBrowserEnabled) return Promise.resolve(false)
   const result = clearanceTail.then(
-    () => runClearance(reason, force),
-    () => runClearance(reason, force),
+    () => runClearance(reason, force, carrier),
+    () => runClearance(reason, force, carrier),
   )
   clearanceTail = result.then(() => undefined, () => undefined)
   return result
@@ -808,21 +878,25 @@ function toResponse(result: BrowserFetchResult, maxBytes: number, label: string)
  * Выполняет запрос внутри страницы браузера, где Cloudflare выдала clearance.
  * Тело возвращается как текст, поэтому путь пригоден только для HTML и JSON;
  * бинарные файлы (.wrpl) качаются с CDN обычным fetch без Cloudflare.
+ * `session` — адресу нужна сессия WT: браузер получает её из jar.
  */
 export async function fetchWtResponseInBrowser(
   url: string | URL,
   init: RequestInit,
   maxBytes = 8 * 1024 * 1024,
   label = 'запрос WT',
+  options: { session?: boolean } = {},
 ): Promise<Response> {
   const target = String(url)
+  const carrier = options.session === true || sessionCarrierProbe()
   let challengeRetried = false
   for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
     const entry = await acquirePage()
     let result: BrowserFetchResult | null = null
     let failure: unknown = null
     try {
-      await parkPage(entry.page)
+      await prepareBrowserSession(entry.page.context(), carrier)
+      await parkPage(entry.page, carrier)
       result = await inPageFetch(entry.page, target, init, maxBytes)
       metrics.requests += 1
     } catch (error) {
@@ -831,6 +905,7 @@ export async function fetchWtResponseInBrowser(
       // Вкладка могла остаться на полпути (зависший fetch, навигация), поэтому
       // возвращаем её в известное состояние, прежде чем отдавать в пул.
       await entry.page.goto(POOL_PARK_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
+      await saveSessionIfCarrier(entry.page.context(), carrier)
     } finally {
       releasePage(entry)
     }
@@ -850,15 +925,14 @@ export async function fetchWtResponseInBrowser(
 
     if (result === null) continue
     if (!isChallenge(result)) {
-      const current = state
-      if (current !== null) await saveBrowserCookies(current.context)
+      await saveSessionIfCarrier(entry.page.context(), carrier)
       return toResponse(result, maxBytes, label)
     }
 
     metrics.challenged += 1
     if (challengeRetried) return toResponse(result, maxBytes, label)
     challengeRetried = true
-    const cleared = await refreshWtClearance(label, true)
+    const cleared = await refreshWtClearance(label, true, carrier)
     if (!cleared) return toResponse(result, maxBytes, label)
   }
   throw new WtBrowserError(`${label}: запрос в браузере не выполнен за ${MAX_REQUEST_ATTEMPTS} попытки`)

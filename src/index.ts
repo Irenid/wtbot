@@ -34,11 +34,7 @@ import {
 import { PlayerStatsService } from './player-stats/service.js'
 import { PlayerStatsCoordinator } from './player-stats/comparison.js'
 import { closeWtBrowser } from './parsers/sources/wt-browser.js'
-import {
-  startWtCookieRefresh,
-  stopWtCookieRefresh,
-  warmupWtTransport,
-} from './parsers/sources/wt-request.js'
+import { startWtCookieRefresh, stopWtCookieRefresh } from './parsers/sources/wt-request.js'
 import {
   acquireRecoverableFileLock,
   FileLockTimeoutError,
@@ -384,13 +380,8 @@ async function startServices(): Promise<void> {
     }`)
   })
 
-  // 4. Фоновые парсеры. Дожидаемся прогрева и синхронизации browser-cookies:
-  // иначе немедленный первый запуск источников обгоняет Edge и видит пустой API.
-  await warmupWtTransport().catch((error: unknown) => {
-    console.warn(`[wt-request] Прогрев браузерного транспорта не удался: ${
-      error instanceof Error ? error.message : String(error)
-    }`)
-  })
+  // 4. Фоновые парсеры. Браузер заранее не прогревается: запросы идут напрямую,
+  // а он поднимается при первом адресе, который прямой запрос не пропускает.
   if (shuttingDown) return
   startWtCookieRefresh()
   startParsers()

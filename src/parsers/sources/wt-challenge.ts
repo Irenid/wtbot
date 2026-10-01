@@ -73,6 +73,43 @@ export function freshestCookies(
   return [...byName].map(([name, cookie]) => ({ name, value: cookie.value }))
 }
 
+export interface BrowserSessionPlan {
+  /** Сессия браузера отличалась от jar — запомнить её, прежде чем убрать. */
+  stash: boolean
+  /** Убрать cookies авторизации из браузера. */
+  clear: boolean
+  /** Положить в браузер сессию jar. */
+  push: boolean
+}
+
+/**
+ * Что сделать с cookies авторизации браузера перед запросом. carrier — сессию
+ * сейчас несёт браузер: ему нужна сессия jar. Иначе браузер ходит анонимно.
+ */
+export function planBrowserSession(
+  carrier: boolean,
+  browserAuth: ReadonlyArray<{ name: string; value: string }>,
+  jarAuth: ReadonlyArray<{ name: string; value: string }>,
+): BrowserSessionPlan {
+  const same = sameCookieValues(browserAuth, jarAuth)
+  if (carrier && (same || jarAuth.length === 0)) return { stash: false, clear: false, push: false }
+  return {
+    stash: browserAuth.length > 0 && !same,
+    clear: browserAuth.length > 0,
+    push: carrier,
+  }
+}
+
+/** Одинаковые наборы cookies «имя → значение» (порядок не важен). */
+export function sameCookieValues(
+  left: ReadonlyArray<{ name: string; value: string }>,
+  right: ReadonlyArray<{ name: string; value: string }>,
+): boolean {
+  if (left.length !== right.length) return false
+  const values = new Map(left.map(({ name, value }) => [name, value]))
+  return values.size === left.length && right.every(({ name, value }) => values.get(name) === value)
+}
+
 /**
  * Лишние копии одноимённых cookies: браузер отправляет их все, и сервер может
  * прочитать устаревшую identity_sid. Возвращает всё, кроме самой свежей копии.

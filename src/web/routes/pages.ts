@@ -1046,7 +1046,11 @@ function renderDashboard(data) {
 
   const transport = data.wtTransport;
   document.getElementById('transport-mode').textContent = transport.mode;
-  document.getElementById('transport-detail').replaceChildren(
+  const transportRoutes = Object.keys(transport.routes || {}).map(function (route) {
+    const mode = transport.routes[route];
+    return row(route, mode, mode === 'direct' ? 'ok' : mode === 'browser' ? '' : 'muted');
+  });
+  document.getElementById('transport-detail').replaceChildren.apply(document.getElementById('transport-detail'), transportRoutes.concat([
     row('browser pool', fmtMetric(transport.poolSize)),
     row('запросы', fmtMetric(transport.requests)),
     row('challenge', fmtMetric(transport.challenged), transport.challenged ? 'fail' : 'muted'),
@@ -1054,7 +1058,7 @@ function renderDashboard(data) {
     row('clearance ok / fail', fmtMetric(transport.clearances) + ' / ' + fmtMetric(transport.clearanceFailures)),
     row('clearance probes', fmtMetric(transport.clearanceProbes)),
     row('последний clearance', transport.lastClearanceAt ? fmtTimestamp(Math.floor(transport.lastClearanceAt / 1000)) : '—')
-  );
+  ]));
 
   renderSeason(data.season);
   const voiceList = document.getElementById('voice-list');

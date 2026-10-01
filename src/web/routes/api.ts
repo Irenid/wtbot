@@ -15,7 +15,7 @@ import {
 } from '../../db/index.js'
 import { decorateTag } from '../../wrpl/render-battle.js'
 import { wtBrowserMetrics } from '../../parsers/sources/wt-browser.js'
-import { wtTransportMode } from '../../parsers/sources/wt-request.js'
+import { wtTransportMode, wtTransportRoutes } from '../../parsers/sources/wt-request.js'
 
 const DASHBOARD_SNAPSHOT_TTL_MS = 15_000
 
@@ -112,7 +112,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
       ingest: snapshot.data.ingest,
       announce: snapshot.data.announce,
       season: snapshot.data.season,
-      wtTransport: { mode: wtTransportMode(), ...wtBrowserMetrics() },
+      wtTransport: { mode: wtTransportMode(), routes: wtTransportRoutes(), ...wtBrowserMetrics() },
     }
   })
 
@@ -127,7 +127,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
       refreshAfterMs: DASHBOARD_SNAPSHOT_TTL_MS,
       bot: deps.getBotStatus(),
       runtime: deps.getRuntimeStats?.() ?? null,
-      wtTransport: { mode: wtTransportMode(), ...wtBrowserMetrics() },
+      wtTransport: { mode: wtTransportMode(), routes: wtTransportRoutes(), ...wtBrowserMetrics() },
       ...snapshot.data,
     }
   })

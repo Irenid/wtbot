@@ -59,7 +59,7 @@ warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
 
 Startup: ранние signal/fatal handlers, SQLite и компактный warmup, player stats,
 Discord, player board, voice tracker, Fastify, фоновый SQLite warmup, WT
-transport/cookie refresh, parsers, ingest. Shutdown сначала запрещает новую
+cookie refresh (браузер поднимается по требованию), parsers, ingest. Shutdown сначала запрещает новую
 работу и даёт producers до 10 секунд на drain, затем закрывает browser, Discord,
 CPU pool и последней SQLite. Не закрывай pool до остановки producers worker-задач.
 
@@ -126,9 +126,9 @@ CPU pool и последней SQLite. Не закрывай pool до оста�
 
 - `WT_COOKIE`: чувствительная сессия warthunder.com для `wt-replays` и
   `wt-players`.
-- `WT_BROWSER_*`: основной транспорт warthunder.com через Edge (Windows) или
-  Edge/Chrome/Chromium (Linux). Default `WT_BROWSER_ENABLED=true`; прямой Node
-  fetch блокируется Cloudflare. `WT_BROWSER_NO_SANDBOX=true` только в Docker.
+- `WT_BROWSER_*`: браузер Edge (Windows) или Edge/Chrome/Chromium (Linux) для
+  адресов warthunder.com, которые Cloudflare не пропускает прямым запросом.
+  Default `WT_BROWSER_ENABLED=true`. `WT_BROWSER_NO_SANDBOX=true` только в Docker.
 - `WT_VNC_PASSWORD`: Docker, VNC к Xvfb-дисплею браузера для ручной проверки.
 - `WT_REPLAY_HOSTS`: необязательный allowlist хостов CDN частей реплеев
   (`src/wrpl/replay-url-policy.ts`); структурная SSRF-защита действует всегда.
@@ -283,22 +283,34 @@ Scheduler запускает sources сразу, не допускает overlap
 - `wt-replays` и `wt-players` требуют авторизованную cookie. HTTP 200 с пустым
   списком не доказывает исправность сессии.
 - Общий jar: `data/wt-cookies.json`. Он содержит действующие cookies открытым
-  текстом, обновляется атомарно и защищён межпроцессным lock. User-Agent должен
-  соответствовать браузеру, из которого взята cookie.
-- Сессию ведёт профиль Edge: сервер ротирует `identity_sid` и выдаёт identity_*
-  на `.warthunder.com`. Jar засевается в профиль только при пустой сессии или
-  новой `WT_COOKIE` (маркер `wtbot-cookie-seed.json` в профиле), доменными
-  cookie; одноимённые копии удаляются, в jar уходит самая свежая по сроку.
-  Host-only копия рядом с доменной — прежний баг: сервер читал устаревший
-  `identity_sid` и уводил на повторный вход, Replay API отдавал пустой список.
+  текстом, обновляется атомарно и защищён межпроцессным lock. Рядом с cookies
+  jar хранит User-Agent браузера, выдавшего сессию: прямой запрос с ними
+  представляется тем же браузером.
 - Все запросы к warthunder.com идут через `fetchWtResponse()` или
   `waitForRequestSlot()`: одна последовательная очередь процесса, интервал
-  1500 мс, `Retry-After` и выбор direct/browser transport. Не вызывай прямой
-  `fetch()` для HTML/API сайта. Исключение — публичная страница claninfo
-  (`clan-info.ts`): Cloudflare её не проверяет, поэтому она читается прямым
-  `fetch` без браузера, но после `waitForRequestSlot()`, а 429 откладывает всю
-  очередь. Если claninfo начнёт отвечать 403 с `cf-mitigated: challenge`,
-  переведи её на `fetchWtResponse()`.
+  1500 мс, `Retry-After`. Не вызывай прямой `fetch()` для HTML/API сайта.
+- Cloudflare проверяет отдельные адреса, а не весь сайт: в октябре 2026 прямой
+  запрос получал 403 `cf-mitigated: challenge` только на профиле и поиске
+  игроков, а Replay API, лидерборды, claninfo и WTCS отвечали без браузера.
+  Поэтому способ доступа выбирается для каждого маршрута (первые три сегмента
+  пути): сначала прямой запрос, браузер — после проверки Cloudflare, прямой
+  путь перепроверяется раз в 6 часов. Режимы маршрутов видны в `/api/stats`
+  (`wtTransport.routes`). Сетевой сбой прямого запроса повторяется через
+  браузер один раз, не меняя режим маршрута.
+- Сессию WT (identity_*) ведёт jar, она нужна только Replay API. Публичный
+  прямой запрос идёт без cookies и не трогает jar; cookies Cloudflare прямой
+  запрос не отправляет. Браузер получает сессию из jar, только пока Replay API
+  идёт через него, и тогда же сохраняет её обратно; иначе ходит анонимно:
+  сервер ротирует `identity_sid`, и две живые копии одной сессии разошлись бы.
+  Своя сессия браузера (вход через VNC) запоминается и берётся в jar, если
+  Replay API вернёт пустой список; без неё Replay API на 6 часов уходит в
+  браузер. Host-only копия рядом с доменной — прежний баг: сервер читал
+  устаревший `identity_sid` и уводил на повторный вход, Replay API отдавал
+  пустой список.
+- Публичная страница claninfo (`clan-info.ts`) читается своим прямым `fetch`
+  без cookies, но после `waitForRequestSlot()`, а 429 откладывает всю очередь.
+  Если claninfo начнёт отвечать 403 с `cf-mitigated: challenge`, переведи её на
+  `fetchWtResponse()`.
 - Edge запускается обычным process и подключается по CDP. Persistent Playwright
   context и настоящий headless Cloudflare не проходят. Hidden mode использует
   окно вне экрана. CAPTCHA автоматически не обходится. Платформенная часть
@@ -557,7 +569,7 @@ node:` в `Dockerfile`, поднимай и Node Linux-job. Dependabot прис�
 он роняет процесс тестов с fetch (libuv assert), а зависающих тестов нет.
 
 Baseline на **2026-10-01**: `npm run build` и `npm run verify` проходят,
-`npm test` даёт **254 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
+`npm test` даёт **263 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
 новый count; любое новое падение считай регрессией.
 
 Команды с внешними или локальными side effects не запускай только ради smoke

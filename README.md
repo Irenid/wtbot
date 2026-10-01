@@ -23,9 +23,10 @@ Node.js-процессе. Бот собирает реплеи с warthunder.com
 | Docker на Linux | боевой запуск | `docker compose up -d --build` |
 | Windows | разработка и тесты | `npm run dev`, `npm test`, `npm run verify` |
 
-Сбор данных с warthunder.com идёт через настоящий браузер (Edge/Chromium) в
-обычном окне: Cloudflare не пропускает ни прямые запросы Node, ни headless.
-В Docker окно открывается на виртуальном дисплее Xvfb внутри контейнера.
+Сбор данных с warthunder.com идёт прямыми запросами. Адреса, которые
+Cloudflare проверяет (профиль и поиск игроков), открывает настоящий браузер
+(Edge/Chromium) в обычном окне: headless проверку не проходит. В Docker окно
+открывается на виртуальном дисплее Xvfb внутри контейнера.
 
 ## Требования
 

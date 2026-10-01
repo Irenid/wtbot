@@ -11,17 +11,40 @@ const LOCK_FILE = `${JAR_FILE}.lock`
 const LOCK_TIMEOUT_MS = 5_000
 const LOCK_STALE_MS = 60_000
 const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
+const MAX_USER_AGENT_LENGTH = 512
 
 interface JarFileV2 {
   version: 2
   /** Хэш seed позволяет заметить новую WT_COOKIE, не дублируя секрет на диске. */
   seedHash: string
   cookies: Record<string, string>
+  /**
+   * User-Agent браузера, который выдал сессию: прямой запрос с её cookies
+   * представляется тем же браузером. Поле необязательное — прежние версии бота
+   * его не читают.
+   */
+  userAgent?: string
 }
 
 interface LegacyJarFile {
   seed: string
   cookies: Record<string, string>
+}
+
+interface JarState {
+  map: Map<string, string>
+  userAgent: string | null
+  needsWrite: boolean
+}
+
+/** Cookies Cloudflare привязаны к браузеру и его TLS-отпечатку: прямому запросу они не помогают. */
+export function isCloudflareCookie(name: string): boolean {
+  return name.startsWith('cf_') || name.startsWith('__cf')
+}
+
+/** Cookies авторизации WT (identity_*): сессия, которая нужна Replay API. */
+export function isWtAuthCookie(name: string): boolean {
+  return name.startsWith('identity_')
 }
 
 let refreshLogged = false
@@ -54,20 +77,33 @@ function serialized<T>(task: () => Promise<T>): Promise<T> {
   return result
 }
 
-async function currentJarUnlocked(): Promise<{ map: Map<string, string>; needsWrite: boolean }> {
+async function currentJarUnlocked(): Promise<JarState> {
   try {
     const parsed: unknown = JSON.parse(await readFile(JAR_FILE, 'utf8'))
     if (isV2(parsed) && parsed.seedHash === seedHash()) {
-      return { map: new Map(Object.entries(parsed.cookies)), needsWrite: false }
+      return {
+        map: new Map(Object.entries(parsed.cookies)),
+        userAgent: validUserAgent(parsed.userAgent),
+        needsWrite: false,
+      }
     }
     if (isLegacy(parsed) && parsed.seed === config.wtCookie) {
-      return { map: new Map(Object.entries(parsed.cookies)), needsWrite: true }
+      return { map: new Map(Object.entries(parsed.cookies)), userAgent: null, needsWrite: true }
     }
     console.log('[wt-cookies] В .env новая WT_COOKIE — начинаю сессию с неё')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
   }
-  return { map: parseCookiePairs(config.wtCookie), needsWrite: true }
+  // Браузер, выдавший прежнюю сессию, к новой WT_COOKIE отношения не имеет.
+  return { map: parseCookiePairs(config.wtCookie), userAgent: null, needsWrite: true }
+}
+
+function validUserAgent(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const userAgent = value.trim()
+  return userAgent !== '' && userAgent.length <= MAX_USER_AGENT_LENGTH && !/[\0-\x1f\x7f]/.test(userAgent)
+    ? userAgent
+    : null
 }
 
 function isV2(value: unknown): value is JarFileV2 {
@@ -95,8 +131,13 @@ function isCookiePair(name: string, value: string): boolean {
   return COOKIE_NAME.test(name) && !/[\0\r\n;]/.test(value)
 }
 
-async function persistJarUnlocked(map: Map<string, string>): Promise<void> {
-  const payload: JarFileV2 = { version: 2, seedHash: seedHash(), cookies: Object.fromEntries(map) }
+async function persistJarUnlocked(jar: Pick<JarState, 'map' | 'userAgent'>): Promise<void> {
+  const payload: JarFileV2 = {
+    version: 2,
+    seedHash: seedHash(),
+    cookies: Object.fromEntries(jar.map),
+    ...(jar.userAgent === null ? {} : { userAgent: jar.userAgent }),
+  }
   await writeFileAtomic(JAR_FILE, JSON.stringify(payload, null, 2), {
     fileMode: 0o600,
     directoryMode: 0o700,
@@ -115,12 +156,43 @@ async function withFileLock<T>(task: () => Promise<T>): Promise<T> {
   }, task)
 }
 
-export function cookieHeader(): Promise<string> {
+function readJar(): Promise<JarState> {
   return serialized(() =>
     withFileLock(async () => {
       const current = await currentJarUnlocked()
-      if (current.needsWrite) await persistJarUnlocked(current.map)
-      return [...current.map].map(([name, value]) => `${name}=${value}`).join('; ')
+      if (current.needsWrite) await persistJarUnlocked(current)
+      return current
+    }),
+  )
+}
+
+export async function cookieHeader(): Promise<string> {
+  const { map } = await readJar()
+  return [...map].map(([name, value]) => `${name}=${value}`).join('; ')
+}
+
+/**
+ * Cookies и User-Agent для прямого запроса с сессией. Cookies Cloudflare не
+ * отправляются: они выданы браузеру и с отпечатком Node не совпадут.
+ */
+export async function directSessionHeaders(): Promise<{ cookie: string; userAgent: string | null }> {
+  const { map, userAgent } = await readJar()
+  const cookie = [...map]
+    .filter(([name]) => !isCloudflareCookie(name))
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ')
+  return { cookie, userAgent }
+}
+
+/** Запоминает User-Agent браузера, который ведёт сессию jar. */
+export function rememberCookieUserAgent(value: string): Promise<void> {
+  const userAgent = validUserAgent(value)
+  if (userAgent === null) return Promise.resolve()
+  return serialized(() =>
+    withFileLock(async () => {
+      const current = await currentJarUnlocked()
+      if (current.userAgent === userAgent && !current.needsWrite) return
+      await persistJarUnlocked({ map: current.map, userAgent })
     }),
   )
 }
@@ -156,7 +228,7 @@ export function absorbCookieValues(values: readonly WtCookieValue[]): Promise<vo
           changed = true
         }
       }
-      if (changed) await persistJarUnlocked(next)
+      if (changed) await persistJarUnlocked({ map: next, userAgent: current.userAgent })
       if (changed && !refreshLogged) {
         refreshLogged = true
         console.log('[wt-cookies] Cookies обновлены и сохранены в data/wt-cookies.json')
@@ -187,7 +259,7 @@ export function absorbSetCookies(response: Response): Promise<void> {
           changed = true
         }
       }
-      if (changed) await persistJarUnlocked(next)
+      if (changed) await persistJarUnlocked({ map: next, userAgent: current.userAgent })
       if (changed && !refreshLogged) {
         refreshLogged = true
         console.log('[wt-cookies] Сервер продлил сессию — cookies сохранены в data/wt-cookies.json')

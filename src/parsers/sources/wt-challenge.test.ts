@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { freshestCookies, isChallengeResponse, looksCleared, staleDuplicateCookies } from './wt-challenge.js'
+import {
+  freshestCookies,
+  isChallengeResponse,
+  looksCleared,
+  planBrowserSession,
+  sameCookieValues,
+  staleDuplicateCookies,
+} from './wt-challenge.js'
 
 test('проверкой считается только 403 с признаками Cloudflare', () => {
   assert.equal(
@@ -63,4 +70,28 @@ test('из одноимённых cookie побеждает самая свеж�
     ]),
     [{ name: 'identity_id', value: 'host' }],
   )
+})
+
+test('sameCookieValues сравнивает наборы cookies без учёта порядка', () => {
+  const sid = { name: 'identity_sid', value: 'a' }
+  const id = { name: 'identity_id', value: '1' }
+  assert.equal(sameCookieValues([sid, id], [id, sid]), true)
+  assert.equal(sameCookieValues([], []), true)
+  assert.equal(sameCookieValues([sid], [{ name: 'identity_sid', value: 'b' }]), false)
+  assert.equal(sameCookieValues([sid], [sid, id]), false)
+})
+
+test('planBrowserSession: браузер получает сессию jar, только когда несёт её сам', () => {
+  const jar = [{ name: 'identity_sid', value: 'jar' }]
+  const own = [{ name: 'identity_sid', value: 'vnc' }]
+  // Браузер несёт сессию: та же — ничего не трогаем, чужая — запоминаем и заменяем.
+  assert.deepEqual(planBrowserSession(true, jar, jar), { stash: false, clear: false, push: false })
+  assert.deepEqual(planBrowserSession(true, [], jar), { stash: false, clear: false, push: true })
+  assert.deepEqual(planBrowserSession(true, own, jar), { stash: true, clear: true, push: true })
+  // В jar сессии нет — собственную сессию браузера не стираем.
+  assert.deepEqual(planBrowserSession(true, own, []), { stash: false, clear: false, push: false })
+  // Сессию несёт прямой путь: браузер анонимен, копия jar убирается без запоминания.
+  assert.deepEqual(planBrowserSession(false, jar, jar), { stash: false, clear: true, push: false })
+  assert.deepEqual(planBrowserSession(false, own, jar), { stash: true, clear: true, push: false })
+  assert.deepEqual(planBrowserSession(false, [], jar), { stash: false, clear: false, push: false })
 })

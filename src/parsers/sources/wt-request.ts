@@ -1,8 +1,10 @@
 import { config } from '../../config.js'
-import { absorbSetCookies, cookieHeader } from './wt-cookies.js'
+import { absorbSetCookies, directSessionHeaders } from './wt-cookies.js'
 import {
+  adoptBrowserSession,
   fetchWtResponseInBrowser,
   refreshWtClearance,
+  setWtBrowserSessionProbe,
   warmupWtBrowser,
   wtBrowserUserAgent,
 } from './wt-browser.js'
@@ -16,14 +18,25 @@ export const DEFAULT_RATE_LIMIT_DELAY_MS = 30_000
 export const WT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0'
 const MAX_RETRY_AFTER_MS = 10 * 60_000
+const WT_ORIGIN = 'https://warthunder.com'
 /**
- * Прямой Node-запрос отбрасывается Cloudflare (403 cf-mitigated: challenge)
- * даже со свежим cf_clearance: клиренс привязан к TLS-отпечатку браузера.
- * Поэтому режим определяется один раз пробой и потом изредка перепроверяется,
- * вместо провального запроса перед каждым обращением.
+ * Cloudflare проверяет не весь warthunder.com, а отдельные адреса: в октябре
+ * 2026 профиль и поиск игроков отвечали прямому запросу 403 `cf-mitigated:
+ * challenge`, а Replay API, лидерборды и страницы полков — обычным ответом.
+ * Пройти проверку Node не может даже со свежим cf_clearance: клиренс привязан
+ * к TLS-отпечатку браузера. Поэтому способ доступа выбирается для каждого
+ * маршрута: сначала прямой запрос, браузер — только там, где прямой не
+ * проходит. Режим маршрута изредка перепроверяется, а не пробуется заново
+ * перед каждым обращением.
  */
 const DIRECT_REPROBE_MS = 6 * 60 * 60_000
-/** Поддерживает скользящую browser-сессию даже в периоды без полезных запросов. */
+/**
+ * Маршруты, которым нужна авторизованная сессия WT (identity_*). Сессию ведёт
+ * общий jar: прямой запрос несёт её cookies, а браузер получает её, только
+ * пока такой маршрут идёт через него (prepareBrowserSession в wt-browser.ts).
+ */
+const SESSION_ROUTES: ReadonlySet<string> = new Set(['/en/api/replay'])
+/** Пока адрес идёт через браузер, держит свежими его проверку Cloudflare и сессию, если он её несёт. */
 const COOKIE_REFRESH_INTERVAL_MS = 30 * 60_000
 const COOKIE_REFRESH_RETRY_MS = 5 * 60_000
 
@@ -42,10 +55,30 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 type TransportMode = 'unknown' | 'direct' | 'browser'
 
+interface RouteTransport {
+  mode: TransportMode
+  checkedAt: number
+}
+
+/** Внешние зависимости транспорта; тесты подменяют очередь, браузер и jar. */
+interface WtTransportDeps {
+  waitSlot: () => Promise<void>
+  browserEnabled: () => boolean
+  browserFetch: (
+    url: string | URL,
+    init: RequestInit,
+    maxBytes: number,
+    label: string,
+    options: { session?: boolean },
+  ) => Promise<Response>
+  sessionHeaders: () => Promise<{ cookie: string; userAgent: string | null }>
+  absorbSessionCookies: (response: Response) => Promise<void>
+  now: () => number
+}
+
 let nextRequestAt = 0
 let requestTail: Promise<void> = Promise.resolve()
-let transportMode: TransportMode = 'unknown'
-let transportCheckedAt = 0
+const routeTransports = new Map<string, RouteTransport>()
 let cookieRefreshActive = false
 let cookieRefreshTimer: NodeJS.Timeout | null = null
 let sessionRefreshTail: Promise<boolean> | null = null
@@ -89,6 +122,12 @@ function scheduleCookieRefresh(delayMs: number): void {
 
 async function runCookieRefresh(): Promise<void> {
   if (!cookieRefreshActive) return
+  // Пока ни один адрес не идёт через браузер, держать его проверку Cloudflare
+  // незачем: браузер поднимется при первом адресе, которому он нужен.
+  if (![...routeTransports.values()].some((route) => route.mode === 'browser')) {
+    scheduleCookieRefresh(COOKIE_REFRESH_INTERVAL_MS)
+    return
+  }
   let refreshed = false
   try {
     // Плановое обновление участвует в той же глобальной очереди, что парсеры:
@@ -109,10 +148,11 @@ async function runCookieRefresh(): Promise<void> {
 }
 
 /**
- * Принудительно обновляет browser-сессию после прикладного признака потери
- * авторизации (Replay API маскирует её под HTTP 200 с пустым списком).
- * Параллельные потребители делят одну попытку, а повторные ошибки не заставляют
- * Edge прогреваться каждые 20 секунд.
+ * Восстанавливает сессию после прикладного признака её потери (Replay API
+ * маскирует её под HTTP 200 с пустым списком): берёт собственную сессию
+ * браузера, обновляет сессию, которую несёт браузер, или переводит маршрут
+ * с сессией на браузер. Параллельные потребители делят одну попытку, а
+ * повторные ошибки не заставляют браузер работать каждые 20 секунд.
  */
 async function refreshWtSession(reason: string): Promise<boolean> {
   if (!config.wtBrowserEnabled) return false
@@ -122,10 +162,21 @@ async function refreshWtSession(reason: string): Promise<boolean> {
   if (now < nextSessionRefreshAt) return false
   nextSessionRefreshAt = now + COOKIE_REFRESH_RETRY_MS
 
-  console.warn(`[wt-cookies] ${reason} — пробую автоматически обновить сессию через Edge`)
   const refresh = (async () => {
-    await waitForRequestSlot()
-    return refreshWtClearance(reason, true)
+    // Своя сессия браузера, отличная от jar (вход через VNC), — первая надежда.
+    if (await adoptBrowserSession()) {
+      console.warn(`[wt-cookies] ${reason} — беру сессию из браузера`)
+      return true
+    }
+    if (sessionCarriedByBrowser()) {
+      console.warn(`[wt-cookies] ${reason} — пробую автоматически обновить сессию через браузер`)
+      await waitForRequestSlot()
+      return refreshWtClearance(reason, true, true)
+    }
+    // Сессию нёс прямой путь, и сервер её не принял: та же сессия из браузера
+    // может пройти. Маршрут вернётся к прямому пути после DIRECT_REPROBE_MS.
+    for (const route of SESSION_ROUTES) markTransport(route, 'browser', 'сервер не принял сессию без браузера')
+    return true
   })()
   sessionRefreshTail = refresh
   try {
@@ -152,14 +203,15 @@ export async function retryAfterWtSessionRefresh<T>(
 }
 
 /**
- * Периодически продлевает browser-сессию и переносит актуальные cookies в
- * общий jar. Первый прогрев по-прежнему выполняется отдельно при старте.
+ * Периодически проходит проверку Cloudflare в браузере, пока хоть один адрес
+ * идёт через него; пока браузер несёт сессию WT, заодно продлевает её и
+ * переносит cookies в общий jar.
  */
 export function startWtCookieRefresh(): void {
   if (!config.wtBrowserEnabled || cookieRefreshActive) return
   cookieRefreshActive = true
   scheduleCookieRefresh(COOKIE_REFRESH_INTERVAL_MS)
-  console.log('[wt-cookies] Автообновление включено (каждые 30 минут)')
+  console.log('[wt-cookies] Автообновление включено: каждые 30 минут, пока адресу нужен браузер')
 }
 
 /** Запрещает новые плановые запросы и снимает ожидающий таймер. */
@@ -190,46 +242,101 @@ function isCloudflareChallenge(response: Response): boolean {
   return response.headers.get('cf-mitigated')?.trim().toLowerCase() === 'challenge'
 }
 
-/** Текущий режим транспорта; для диагностики в /api/stats. */
-export function wtTransportMode(): TransportMode {
-  return transportMode
+const defaultTransportDeps: WtTransportDeps = {
+  waitSlot: waitForRequestSlot,
+  browserEnabled: () => config.wtBrowserEnabled,
+  browserFetch: fetchWtResponseInBrowser,
+  sessionHeaders: directSessionHeaders,
+  absorbSessionCookies: absorbSetCookies,
+  now: () => Date.now(),
+}
+let transportDeps = defaultTransportDeps
+
+/** Сбрасывает режимы маршрутов (изоляция тестов); overrides подменяют очередь, браузер и jar. */
+export function resetWtTransportState(overrides: Partial<WtTransportDeps> = {}): void {
+  routeTransports.clear()
+  transportDeps = { ...defaultTransportDeps, ...overrides }
 }
 
-function useBrowserTransport(): boolean {
-  if (!config.wtBrowserEnabled) return false
-  if (transportMode === 'browser') {
-    if (Date.now() - transportCheckedAt < DIRECT_REPROBE_MS) return true
-    // Раз в несколько часов даём прямому пути шанс: вдруг сайт снял защиту.
-    transportMode = 'unknown'
-    return false
+/**
+ * Маршрут запроса — первые три сегмента пути: /en/api/replay,
+ * /en/community/userinfo, /en/community/getclansleaderboard.
+ */
+export function wtRouteOf(url: string | URL): string {
+  const { pathname } = new URL(String(url), WT_ORIGIN)
+  return `/${pathname.split('/').filter(Boolean).slice(0, 3).join('/')}`
+}
+
+/** Сессию WT несёт браузер, пока через него идёт маршрут, которому она нужна. */
+function sessionCarriedByBrowser(): boolean {
+  if (!transportDeps.browserEnabled()) return false
+  for (const route of SESSION_ROUTES) {
+    if (routeTransports.get(route)?.mode === 'browser') return true
   }
   return false
 }
 
-function markTransport(mode: Exclude<TransportMode, 'unknown'>): void {
-  if (transportMode !== mode) {
-    console.log(
-      mode === 'browser'
-        ? '[wt-request] Cloudflare отклоняет прямые запросы — перехожу на браузерный транспорт'
-        : '[wt-request] Прямые запросы к warthunder.com проходят без браузера',
-    )
-  }
-  transportMode = mode
-  transportCheckedAt = Date.now()
+setWtBrowserSessionProbe(sessionCarriedByBrowser)
+
+/** Режимы адресов warthunder.com для /api/stats. */
+export function wtTransportRoutes(): Record<string, TransportMode> {
+  return Object.fromEntries(
+    [...routeTransports]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([route, transport]) => [route, transport.mode]),
+  )
 }
 
-async function directFetch(url: string | URL, init: RequestInit): Promise<Response> {
+/** Сводный режим для /api/stats: mixed — часть адресов идёт через браузер. */
+export function wtTransportMode(): TransportMode | 'mixed' {
+  const modes = new Set([...routeTransports.values()].map((transport) => transport.mode))
+  if (modes.has('browser')) return modes.has('direct') ? 'mixed' : 'browser'
+  return modes.has('direct') ? 'direct' : 'unknown'
+}
+
+function useBrowserTransport(route: string): boolean {
+  if (!transportDeps.browserEnabled()) return false
+  const transport = routeTransports.get(route)
+  if (transport?.mode !== 'browser') return false
+  if (transportDeps.now() - transport.checkedAt < DIRECT_REPROBE_MS) return true
+  // Раз в несколько часов прямой путь получает шанс: вдруг сайт снял защиту.
+  routeTransports.set(route, { mode: 'unknown', checkedAt: transportDeps.now() })
+  return false
+}
+
+function markTransport(route: string, mode: Exclude<TransportMode, 'unknown'>, reason = ''): void {
+  if (routeTransports.get(route)?.mode !== mode) {
+    console.log(
+      mode === 'browser'
+        ? `[wt-request] ${route}: ${reason || 'прямой запрос не проходит'} — адрес идёт через браузер`
+        : `[wt-request] ${route}: прямые запросы проходят без браузера`,
+    )
+  }
+  routeTransports.set(route, { mode, checkedAt: transportDeps.now() })
+}
+
+/**
+ * Прямой запрос. Сессию jar несут только маршруты, которым она нужна:
+ * публичный ответ не может ротировать identity_sid, которым живёт Replay API.
+ */
+async function directFetch(url: string | URL, init: RequestInit, session: boolean): Promise<Response> {
   const headers = Object.fromEntries(new Headers(init.headers).entries())
-  headers['cookie'] = await cookieHeader()
-  // UA должен совпадать с браузером, выдавшим clearance, иначе Cloudflare
-  // отклонит запрос даже с валидной cookie.
-  headers['user-agent'] = wtBrowserUserAgent() ?? headers['user-agent'] ?? WT_USER_AGENT
+  delete headers['cookie']
+  let userAgent = wtBrowserUserAgent()
+  if (session) {
+    const jar = await transportDeps.sessionHeaders()
+    if (jar.cookie !== '') headers['cookie'] = jar.cookie
+    // Сессию выдал браузер: запрос с её cookies представляется тем же браузером.
+    userAgent ??= jar.userAgent
+  }
+  headers['user-agent'] = userAgent ?? headers['user-agent'] ?? WT_USER_AGENT
   return await fetch(url, { ...init, headers, signal: AbortSignal.timeout(20_000) })
 }
 
 /**
- * Выполняет WT-запрос с общим cookie jar, rate limit и выбором транспорта.
- * Браузерный путь сам проходит проверку Cloudflare и повторяет запрос.
+ * Выполняет WT-запрос с общим rate limit: сначала напрямую, через браузер —
+ * только адреса, которые прямой запрос не пропускает. Браузерный путь сам
+ * проходит проверку Cloudflare и повторяет запрос.
  */
 export async function fetchWtResponse(
   url: string | URL,
@@ -237,29 +344,31 @@ export async function fetchWtResponse(
   label: string,
   maxBytes = 8 * 1024 * 1024,
 ): Promise<Response> {
+  const route = wtRouteOf(url)
+  const session = SESSION_ROUTES.has(route)
   let rateAttempt = 0
-  let directRetried = false
+  let networkFallback = false
   for (;;) {
-    const viaBrowser = useBrowserTransport()
-    await waitForRequestSlot()
+    const viaBrowser = networkFallback || useBrowserTransport(route)
+    await transportDeps.waitSlot()
 
     let response: Response
     try {
       response = viaBrowser
-        ? await fetchWtResponseInBrowser(url, init, maxBytes, label)
-        : await directFetch(url, init)
+        ? await transportDeps.browserFetch(url, init, maxBytes, label, { session })
+        : await directFetch(url, init, session)
     } catch (error) {
       const detail = error instanceof Error ? error.message.slice(0, 300) : 'неизвестная ошибка'
-      if (!viaBrowser && config.wtBrowserEnabled && !directRetried) {
-        // Прямой путь мог отвалиться по сети; браузерный транспорт остаётся
-        // единственным рабочим вариантом, поэтому пробуем его один раз.
-        directRetried = true
-        markTransport('browser')
+      if (!viaBrowser && transportDeps.browserEnabled()) {
+        // Сетевой сбой прямого запроса повторяем через браузер один раз, но
+        // маршрут не переводим: разовый таймаут — не повод отдать адрес
+        // браузеру на часы.
+        networkFallback = true
         continue
       }
       throw new WtRequestError(0, false, `${label}: сетевой запрос не выполнен (${detail})`)
     }
-    if (!viaBrowser) await absorbSetCookies(response)
+    if (!viaBrowser && session) await transportDeps.absorbSessionCookies(response)
 
     if (response.status === 429) {
       const delayMs = retryAfterMs(response)
@@ -275,9 +384,8 @@ export async function fetchWtResponse(
     if (response.status === 401 || response.status === 403) {
       const cloudflareChallenge = response.status === 403 && isCloudflareChallenge(response)
       await response.body?.cancel().catch(() => undefined)
-      if (cloudflareChallenge && !viaBrowser && config.wtBrowserEnabled && !directRetried) {
-        directRetried = true
-        markTransport('browser')
+      if (cloudflareChallenge && !viaBrowser && transportDeps.browserEnabled()) {
+        markTransport(route, 'browser', 'Cloudflare требует проверку')
         continue
       }
       if (cloudflareChallenge) {
@@ -295,7 +403,7 @@ export async function fetchWtResponse(
       )
     }
 
-    if (!viaBrowser && response.ok) markTransport('direct')
+    if (!viaBrowser && response.ok) markTransport(route, 'direct')
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined)
@@ -305,10 +413,13 @@ export async function fetchWtResponse(
   }
 }
 
-/** Прогрев браузера при старте, чтобы первый парсер не ждал проверку. */
+/**
+ * Прогрев браузера для ручных smoke-скриптов. Бот при старте его не вызывает:
+ * браузер поднимается при первом адресе, которому он нужен.
+ */
 export async function warmupWtTransport(): Promise<void> {
   if (!config.wtBrowserEnabled) return
-  if (await warmupWtBrowser()) markTransport('browser')
+  await warmupWtBrowser()
 }
 
 export { refreshWtClearance }
