@@ -385,6 +385,12 @@ delta/XOR/RLE.
   остаются чистыми.
 - Winner приходит из events/DB, не из results BLK. Анонимизированные имена
   восстанавливаются по `userId`, не только по display name.
+- Порядок шрифтов Resvg (`src/workers/render-fonts.ts`) — порядок запасного
+  поиска: UI-шрифт без box-drawing (Linux — Noto Sans из `fonts-noto-core`,
+  Windows — Segoe UI), шрифт игры, письменности, символьный запас. UI-шрифт
+  с box-drawing (DejaVu) рисует рамки клан-тегов вместо глифов игры.
+  `map-icons.ttf` в базу Resvg не передаётся: он подменяет цифры и буквы
+  иконками.
 
 Данные и cache:
 
@@ -399,6 +405,9 @@ delta/XOR/RLE.
 - `data/missions/`, `data/maps/`, `data/unit-icons/`, `data/weapons.json`,
   `data/ecshashes.json`, `data/wt-vehicles.json`, `data/fonts/`: локальные
   assets и восстанавливаемые индексы. Не подставляй tactical map другого mode.
+- `data/wt-game/ui/`: копия `fonts.vromfs.bin` и `atlases.vromfs.bin` клиента
+  игры для Docker (`WT_GAME_DIR`); из атласа при каждом старте берутся флаги
+  наций. Ошибка чтения флагов не роняет картинку боя: остаются свои флаги.
 
 ## 8. Discord, web, рейтинги и player stats
 

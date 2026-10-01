@@ -21,7 +21,9 @@ FROM node:26-bookworm-slim AS runtime
 #            поэтому браузер работает в обычном окне на виртуальном дисплее);
 # xvfb     — виртуальный X-дисплей; x11vnc — опциональный доступ к нему для
 #            ручной проверки Cloudflare (включается WT_VNC_PASSWORD);
-# fonts-*  — шрифты, которые ищет src/workers/render-fonts.ts на Linux.
+# fonts-*  — шрифты, которые ищет src/workers/render-fonts.ts на Linux:
+#            Noto Sans (fonts-noto-core) — основной, в нём нет box-drawing,
+#            которыми записаны рамки клан-тегов; DejaVu — запас для символов.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -29,6 +31,7 @@ RUN apt-get update \
     fonts-dejavu-core \
     fonts-noto-cjk \
     fonts-noto-color-emoji \
+    fonts-noto-core \
     tzdata \
     x11vnc \
     xvfb \

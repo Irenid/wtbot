@@ -24,10 +24,19 @@ export interface ResolvedRenderFonts extends WorkerRenderFontProfile {
 
 let cachedUiFontSet: UiFontSet | undefined
 let cachedScriptFontCandidates: ScriptFontCandidate[] | undefined
+let cachedSymbolFallbackFiles: string[] | undefined
 
 /**
  * Resvg создаёт отдельную font database для каждого экземпляра. Передаём ему
  * небольшой известный набор UI-шрифтов вместо повторного сканирования всей ОС.
+ *
+ * Порядок файлов — это порядок поиска запасного шрифта. Resvg раскладывает
+ * весь текстовый фрагмент шрифтом каждого tspan, недостающий символ берёт из
+ * первого шрифта базы, где он есть, и, если тот покрывает весь фрагмент,
+ * заменяет им все глифы. Поэтому свои шрифты (шрифт игры) идут сразу за
+ * UI-шрифтом: рамки клан-тегов и значки в названиях техники остаются игровыми
+ * глифами, а буквы рядом — UI-шрифтом своего начертания. Широкий символьный
+ * запас — последним, чтобы не перехватывать эти символы.
  */
 export function resolveRenderFonts(
   customFontFiles: readonly string[],
@@ -36,8 +45,9 @@ export function resolveRenderFonts(
   const ui = cachedUiFontSet ??= resolveUiFontSet()
   const scripts = resolveScriptFonts(svg)
   const custom = uniquePaths(customFontFiles)
+  const symbols = cachedSymbolFallbackFiles ??= symbolFallbackFiles()
   return {
-    fontFiles: uniquePaths([...ui.files, ...scripts.files, ...custom]),
+    fontFiles: uniquePaths([...ui.files, ...custom, ...scripts.files, ...symbols]),
     loadSystemFonts: ui.files.length === 0 || scripts.missing,
     defaultFamily: ui.defaultFamily,
     source: ui.source,
@@ -98,7 +108,14 @@ function platformCandidates(): UiFontCandidate[] {
   }
 
   if (process.platform === 'linux') {
+    // Noto Sans первым: в нём, как и в Segoe UI, нет box-drawing (U+2500–257F),
+    // которыми в реплее записаны рамки клан-тегов. DejaVu и Liberation их
+    // содержат, и Resvg рисует рамки ими вместо глифов шрифта игры.
     return [
+      candidate('/usr/share/fonts/truetype/noto', 'Noto Sans', 'linux-noto-sans', [
+        'NotoSans-Regular.ttf',
+        'NotoSans-Bold.ttf',
+      ]),
       candidate('/usr/share/fonts/truetype/dejavu', 'DejaVu Sans', 'linux-dejavu-sans', [
         'DejaVuSans.ttf',
         'DejaVuSans-Bold.ttf',
@@ -106,10 +123,6 @@ function platformCandidates(): UiFontCandidate[] {
       candidate('/usr/share/fonts/truetype/liberation2', 'Liberation Sans', 'linux-liberation-sans', [
         'LiberationSans-Regular.ttf',
         'LiberationSans-Bold.ttf',
-      ]),
-      candidate('/usr/share/fonts/truetype/noto', 'Noto Sans', 'linux-noto-sans', [
-        'NotoSans-Regular.ttf',
-        'NotoSans-Bold.ttf',
       ]),
     ]
   }
@@ -161,6 +174,16 @@ function scriptFontCandidates(): ScriptFontCandidate[] {
   }
 
   return []
+}
+
+/**
+ * Символы, которых нет ни в UI-шрифте, ни в шрифте игры (☭ на нарисованном
+ * флаге СССР). На Windows эту роль играет Segoe UI Symbol из UI-набора.
+ */
+function symbolFallbackFiles(): string[] {
+  if (process.platform !== 'linux') return []
+  return joinFiles('/usr/share/fonts/truetype/dejavu', ['DejaVuSans.ttf'])
+    .filter((file) => existsSync(file))
 }
 
 function windowsFontsDirectory(): string {

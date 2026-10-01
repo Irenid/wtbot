@@ -42,7 +42,9 @@ Node.js-процессе. Бот собирает реплеи с warthunder.com
    Windows скопируйте `wtbot.db`, `wt-cookies.json`, `fonts/`, `wt-vehicles.json`,
    `ecshashes.json`, `maps/`, `missions/`. Профиль браузера
    (`wt-browser-profile/`) не переносите: он привязан к Windows, в контейнере
-   создастся новый.
+   создастся новый. Флаги наций бот берёт из клиента игры: скопируйте из
+   установленной War Thunder `ui/fonts.vromfs.bin` и `ui/atlases.vromfs.bin` в
+   `data/wt-game/ui/` и перезапустите бота; без них флаги рисуются упрощёнными.
 3. Запустите: `docker compose up -d --build`. Логи: `docker compose logs -f wtbot`.
 4. Сайт: `http://127.0.0.1:3000/app` на самом сервере. Браузер спросит логин и
    пароль: имя любое, пароль — `WEB_TOKEN`. Для доступа из сети поставьте перед

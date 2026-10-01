@@ -23,7 +23,9 @@ services:
       WT_BROWSER_PROFILE_DIR: /app/data/wt-browser-profile
       WT_BROWSER_EXECUTABLE: /usr/bin/chromium
       WT_BROWSER_NO_SANDBOX: "true"
-      WT_GAME_DIR: ""
+      # Копия ui/fonts.vromfs.bin и ui/atlases.vromfs.bin клиента игры (флаги
+      # наций); нет каталога — флаги рисуются упрощёнными (см. README).
+      WT_GAME_DIR: /app/data/wt-game
       TZ: ${TZ:-UTC}
     ports:
       # Только на loopback хоста. Для доступа из сети поставьте перед ботом

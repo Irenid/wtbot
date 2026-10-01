@@ -19,14 +19,22 @@ export const GAME_FLAG_COUNTRIES = [
 const ATLAS_FILE = 'ui/atlases.vromfs.bin'
 let cachedFlags: Map<string, string> | null = null
 let flagsPromise: Promise<Map<string, string>> | null = null
+let retryAfter = 0
 
 export function ensureGameFlags(priority: WorkerPriority = 'normal'): Promise<Map<string, string>> {
   if (cachedFlags) return Promise.resolve(cachedFlags)
+  if (retryAfter > Date.now()) return Promise.resolve(new Map())
   if (flagsPromise) return flagsPromise
   flagsPromise = loadGameFlags(priority)
     .then((flags) => {
       cachedFlags = flags
       return flags
+    })
+    .catch((error: unknown) => {
+      // Флаги — украшение: без них таблица боя рисуется своими флагами, а не падает.
+      console.warn(`[flags] Не удалось достать флаги из клиента игры: ${error instanceof Error ? error.message : String(error)}`)
+      retryAfter = Date.now() + 60_000
+      return new Map<string, string>()
     })
     .finally(() => {
       flagsPromise = null
