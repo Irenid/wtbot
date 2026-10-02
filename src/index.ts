@@ -400,7 +400,7 @@ async function startServices(): Promise<void> {
     console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
   }
 
-  // 6. Обслуживание базы: перевод блобов событий в zstd, optimize и возврат
+  // 6. Обслуживание базы: починка записанных боёв, optimize и возврат
   // свободных страниц (db/maintenance.ts).
   if (shuttingDown) return
   startDbMaintenance()

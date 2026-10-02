@@ -58,9 +58,11 @@ warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
 Модули связаны напрямую через DB API, поэтому переход с sync SQLite на async
 хранилище затронет вызывающий код, а не только `src/db/`.
 
-Startup: ранние signal/fatal handlers, SQLite и компактный warmup, player stats,
-Discord, player board, voice tracker, Fastify, фоновый SQLite warmup, WT
-cookie refresh (браузер поднимается по требованию), parsers, ingest. Shutdown сначала запрещает новую
+Startup: проверка Discord-токена, process lock, signal/fatal handlers, SQLite
+(без прогрева страниц), player stats, Discord, player board, voice tracker,
+Fastify, фоновый SQLite warmup в worker, WT cookie refresh (браузер
+поднимается по требованию), parsers, ingest, обслуживание базы
+(`db/maintenance.ts`). Shutdown сначала запрещает новую
 работу и даёт producers до 10 секунд на drain, затем закрывает browser, Discord,
 CPU pool и последней SQLite. Не закрывай pool до остановки producers worker-задач.
 
@@ -119,7 +121,7 @@ CPU pool и последней SQLite. Не закрывай pool до оста�
   сервер и добавляют Bearer; в клиентский бандл токен попадать не должен.
 - `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG`: Discord filters.
   Если задан канал боёв, а clan tag пуст, автоанонс охватывает все кланы
-  (~1300 боёв в сутки). `WT_ANNOUNCE_MAX_AGE_HOURS` (default 2): бои старше
+  (~1 800 боёв в сутки). `WT_ANNOUNCE_MAX_AGE_HOURS` (default 2): бои старше
   не публикуются, а помечаются решёнными — после простоя бота канал не
   заваливается историей.
 
@@ -141,7 +143,10 @@ CPU pool и последней SQLite. Не закрывай pool до оста�
 
 - Боевой запуск — Docker на Linux (`Dockerfile`, `docker-compose.yml`,
   `docker/entrypoint.sh`): Chromium под Xvfb, процесс от `node`, данные в
-  томе `./data`, `restart: unless-stopped`. Windows — разработка и тесты.
+  томе `./data`, `restart: unless-stopped`. Разработка и тесты — Linux или
+  Windows (CI проверяет обе). Если рабочая копия — каталог боевого compose,
+  её `data/` — данные работающего бота: запуски из раздела 10 (`npm run dev`,
+  `battle`, backfill) пишут в ту же базу, а бот — с тем же Discord-токеном.
 - `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ`:
   ежедневный `db-backup-schedule` (сервис `backup` в compose).
 - Lock-файлы (process lock, cookie jar, backup) обязаны переживать
@@ -226,11 +231,11 @@ voice tracker и Fastify. Делай запросы короткими, инде
   базы без него (один раз, минуты на гигабайтах, бот в это время не в сети),
   если свободно больше 20% и 256 МиБ. Дальше место возвращает
   `db/maintenance.ts` в worker-задачах (`db-maintenance`,
-  `recompress-events-blobs`), а не main thread: перевод блобов событий в
-  колоночный формат с возвратом освободившихся страниц после каждой пачки,
-  раз в несколько часов `PRAGMA optimize(0x10002)` (у свежего подключения
-  без флага 0x10000 он не видит ни одной таблицы) и `incremental_vacuum`
-  порциями; останавливается до CPU pool.
+  `repair-battle-events`), а не main thread: пачка прохода починки (пункт
+  ниже) сразу возвращает освободившиеся страницы, раз в несколько часов —
+  `PRAGMA optimize(0x10002)` (у свежего подключения без флага 0x10000 он не
+  видит ни одной таблицы) и `incremental_vacuum` порциями; останавливается
+  до CPU pool.
 - Записанные бои чинит фоновый проход `repair-battle-events`
   (`db/maintenance.ts`): правила `events-repair.ts` — те же, что применяет
   ingest, — колоночный формат и пустые `slot`, `title`, `air_unit_count`,
@@ -666,7 +671,8 @@ Baseline на **2026-10-02**: `npm run build` и `npm run verify` проходя
 фоновый процесс там штатно не остановить (`process.kill(pid, 'SIGINT')`
 завершает без обработчиков) — graceful shutdown проверяется Ctrl+C в консоли
 или `docker compose stop`.
-`ExperimentalWarning: SQLite` на поддерживаемой Node version ожидаем.
+`ExperimentalWarning: SQLite` на Node 24 и раньше ожидаем; Node 26 (образ)
+его не печатает.
 
 ## 11. Лицензирование
 

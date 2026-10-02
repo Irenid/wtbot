@@ -2,7 +2,8 @@
 
 Обновлено: 2026-08-01 (замеры на Windows-десктопе; боевой запуск теперь —
 Docker на Linux, профиль под него ещё не снимался). Открытые задачи — в
-[ROADMAP.md](../ROADMAP.md).
+[ROADMAP.md](../ROADMAP.md), замеры и решения по базе данных (октябрь
+2026) — в [database.md](database.md).
 
 Статус: критические bottleneck текущего ingest-профиля измерены и исправлены.
 WRPL parser ускорен примерно на 70%, exact replay reservation устраняет
@@ -38,7 +39,9 @@ run не доказал RSS plateau.
 - `BitReader` читает scalar values без временного `Buffer` на каждый bit/byte.
 - GMSync использует reusable RLE scratch, exact-size XOR patch и packed RLE writes.
 - MPI dispatch и trajectory thinning больше не создают лишние allocations.
-- Профиль parser разделён на header/results, ECS, events, normalize и gzip.
+- Профиль parser разделён на header/results, ECS, events, normalize и
+  transform со сжатием блоба (в логе — `transform+gzip`, хотя с октября
+  2026 блоб — колоночный формат и zstd-19).
 - Binary bounds-check, decompression limits и delta history сохранены.
 
 Fixture `large-mixed-air`, 11.81 МиБ, 1 worker, 10 warm runs:

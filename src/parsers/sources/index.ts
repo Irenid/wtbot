@@ -5,5 +5,5 @@ import { wtPlayers } from './wt-player.js'
 import { wtReplays } from './wt-replays.js'
 
 // Все активные источники: добавил файл с парсером — впиши его сюда.
-// Скелет нового источника — в README, раздел «Как добавить парсер».
+// Контракт нового источника — AGENTS.md, раздел 6.
 export const sources: ParserSource[] = [wtReplays, wtClans, wtPlayers, wtClanSeason]

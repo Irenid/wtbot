@@ -237,7 +237,7 @@ export async function collectFreshReplays(
     throw new RangeError('sinceTs должен быть неотрицательным Unix-временем')
   }
   if (!deps.hasCookie()) {
-    throw new Error('WT_COOKIE не задан в .env — скопируй куки identity_* из браузера (см. README)')
+    throw new Error('WT_COOKIE не задан в .env — скопируй куки identity_* из браузера (см. .env.example)')
   }
 
   const fresh: WtReplay[] = []

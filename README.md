@@ -13,6 +13,7 @@ Node.js-процессе. Бот собирает реплеи с warthunder.com
 | [AGENTS.md](AGENTS.md) | архитектура и контракты для разработчиков и агентов |
 | [ROADMAP.md](ROADMAP.md) | единственный список открытых задач |
 | [docs/performance.md](docs/performance.md) | замеры производительности, gates, rollback |
+| [docs/database.md](docs/database.md) | база: замеры, формат блобов, ошибки в данных, откат миграций |
 | [docs/replay-data-quality.md](docs/replay-data-quality.md) | что можно и нельзя извлечь из реплеев |
 | [LICENSES/](LICENSES/README.md) | лицензии портированного кода |
 
@@ -21,7 +22,7 @@ Node.js-процессе. Бот собирает реплеи с warthunder.com
 | Среда | Назначение | Как |
 | --- | --- | --- |
 | Docker на Linux | боевой запуск | `docker compose up -d --build` |
-| Windows | разработка и тесты | `npm run dev`, `npm test`, `npm run verify` |
+| Linux или Windows | разработка и тесты | `npm run dev`, `npm test`, `npm run verify` |
 
 Сбор данных с warthunder.com идёт прямыми запросами. Адреса, которые
 Cloudflare проверяет (профиль и поиск игроков), открывает настоящий браузер
@@ -66,34 +67,38 @@ Cloudflare проверяет (профиль и поиск игроков), о�
 `apt-get` останется старым): `docker compose build --pull --no-cache` и
 `docker compose up -d`, лучше вне вечерних полковых боёв.
 
-## Разработка на Windows
+## Разработка
 
-```powershell
+```bash
 npm ci
 npm --prefix frontend ci
-copy .env.example .env   # заполните TOKEN, WT_COOKIE, WT_PLAYER_NAMES
+cp .env.example .env     # Windows: copy; заполните TOKEN, WT_COOKIE, WT_PLAYER_NAMES
 npm run dev              # бот + сайт http://127.0.0.1:3000 + парсеры
 ```
 
-Боевая база одна — на сервере с Docker; бот с тем же `TOKEN` локально не
-запускайте, иначе анонсы в Discord задвоятся. SPA на данных сервера без
-локальной БД: задайте в `.env` `WTBOT_API_URL` (адрес сайта за reverse proxy) и
-`WTBOT_API_TOKEN` (его `WEB_TOKEN`), затем `npm run dev:web` →
-`http://127.0.0.1:5173/app/`.
+Боевая база одна — у бота в Docker; бот с тем же `TOKEN` локально не
+запускайте, иначе анонсы в Discord задвоятся. Если рабочая копия — тот же
+каталог, из которого запущен compose, её `data/` — данные работающего бота:
+`npm run dev`, `npm run battle` и backfill в ней пишут в боевую базу.
+SPA на данных сервера без локальной БД: задайте в `.env` `WTBOT_API_URL`
+(адрес сайта за reverse proxy) и `WTBOT_API_TOKEN` (его `WEB_TOKEN`), затем
+`npm run dev:web` → `http://127.0.0.1:5173/app/`.
 Сайт на локальной копии БД без бота: `npm run site` → `http://127.0.0.1:3210/app`.
-Демо на тестовых реплеях без БД: `npx tsx src/analysis/site-preview.ts`.
+Демо на синтетических данных без БД: `npx tsx src/analysis/site-preview.ts`
+(тот же адрес).
 Остановка — `Ctrl+C` в консоли. Макеты дизайн-системы сайта — `frontend/design/`.
 
 ## Проверки
 
-```powershell
+```bash
 npm run build            # backend в dist/ (без тестов)
 npm run verify           # typecheck, npm test и все офлайн-smoke
 npm run verify:workers:dist
 npm run build:web        # SPA в frontend/dist/
 ```
 
-Эти команды не ходят в сеть и не трогают `data/`. То же выполняет CI на Linux и
+Эти команды не ходят в сеть и не пишут в рабочую базу: тесты и smoke
+работают на SQLite `:memory:` и временных файлах. То же выполняет CI на Linux и
 Windows (`.github/workflows/ci.yml`), он же собирает Docker-образ.
 
 ## Бэкап и восстановление
