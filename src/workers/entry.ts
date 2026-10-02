@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { parentPort } from 'node:worker_threads'
 import { formatBattleChat } from '../wrpl/battle-chat.js'
 import { decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
+import { compressEventsJson, inflateEventsBlob, isGzipEventsBlob } from '../wrpl/events-codec.js'
 import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 import { applyRealNames, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
 import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
@@ -244,6 +245,8 @@ async function ingestDatabase(dbPath: string): Promise<IngestDatabaseState> {
   const { DatabaseSync } = await import('node:sqlite')
   const database = new DatabaseSync(dbPath)
   database.exec('PRAGMA busy_timeout = 5000;')
+  // Как у основного подключения: в WAL коммит не ждёт fsync (он — при checkpoint).
+  database.exec('PRAGMA synchronous = NORMAL;')
   // Автоматический checkpoint выполняется внутри COMMIT и продлевает
   // эксклюзивный writer-lock. Делаем PASSIVE checkpoint отдельно после
   // транзакции: диск по-прежнему обслуживает worker, а main connection может
@@ -373,6 +376,68 @@ async function warmSqlite(
   }
 }
 
+/**
+ * Фоновый перевод старых gzip-блобов событий в zstd (events-codec.ts): пачка
+ * по ключу после afterSessionId. Распаковка и сжатие — здесь, в worker;
+ * запись — одной короткой транзакцией. Блоб, который ingest успел переписать
+ * (уже zstd), условие substr(...) = gzip-магия не трогает.
+ */
+async function recompressEventsBlobs(
+  input: Extract<AnyWorkerTask, { kind: 'recompress-events-blobs' }>['input'],
+): Promise<{ value: WorkerTaskResult<'recompress-events-blobs'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`SQLite не найден: ${input.dbPath}`)
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 200) {
+    throw new RangeError('limit перевода блобов — от 1 до 200')
+  }
+  const { DatabaseSync } = await import('node:sqlite')
+  const database = new DatabaseSync(input.dbPath)
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA synchronous = NORMAL;')
+    const rows = database
+      .prepare('SELECT session_id, events_blob FROM battle_events WHERE session_id > ? ORDER BY session_id LIMIT ?')
+      .all(input.afterSessionId, input.limit) as { session_id: string; events_blob: Uint8Array }[]
+    const packed: [string, Buffer][] = []
+    let bytesBefore = 0
+    let bytesAfter = 0
+    for (const row of rows) {
+      if (!isGzipEventsBlob(row.events_blob)) continue
+      const next = compressEventsJson(inflateEventsBlob(row.events_blob))
+      packed.push([row.session_id, next])
+      bytesBefore += row.events_blob.byteLength
+      bytesAfter += next.byteLength
+    }
+    let converted = 0
+    if (packed.length > 0) {
+      const update = database.prepare(
+        "UPDATE battle_events SET events_blob = ? WHERE session_id = ? AND substr(events_blob, 1, 2) = x'1f8b'",
+      )
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        for (const [sessionId, blob] of packed) converted += Number(update.run(blob, sessionId).changes)
+        database.exec('COMMIT')
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    }
+    return {
+      value: {
+        lastSessionId: rows.at(-1)?.session_id ?? null,
+        scanned: rows.length,
+        converted,
+        bytesBefore,
+        bytesAfter,
+        elapsedMs: performance.now() - started,
+      },
+      transfer: [],
+    }
+  } finally {
+    database.close()
+  }
+}
+
 async function readSiteDashboardStats(
   input: Extract<AnyWorkerTask, { kind: 'read-site-dashboard-stats' }>['input'],
 ): Promise<{
@@ -458,7 +523,7 @@ async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-sc
 
 function decodeProfiledEvents(input: MediaRenderInput, profile: MutableRenderProfile) {
   const decoded = decodeEventsBlobProfiled(Buffer.from(input.eventsBlob))
-  addPhase(profile, 'events.gunzip', decoded.profile.gunzipMs)
+  addPhase(profile, 'events.inflate', decoded.profile.inflateMs)
   addPhase(profile, 'events.utf8', decoded.profile.utf8Ms)
   addPhase(profile, 'events.json', decoded.profile.jsonParseMs)
   return decoded.events
@@ -713,6 +778,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return warmSqlite(task.input)
     case 'read-site-dashboard-stats':
       return readSiteDashboardStats(task.input)
+    case 'recompress-events-blobs':
+      return recompressEventsBlobs(task.input)
     case 'render-scoreboard':
       return await renderScoreboard(task.input)
     case 'render-media':

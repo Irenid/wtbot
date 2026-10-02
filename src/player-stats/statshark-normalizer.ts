@@ -1,3 +1,4 @@
+import { statSharkAccount } from './account.js'
 import type { StatSharkBundle } from './statshark-client.js'
 import type {
   NormalizedPlayerExternalTotal,
@@ -6,8 +7,12 @@ import type {
 } from './types.js'
 
 export const STATSHARK_SOURCE = 'statshark'
-/** v2: сводные бои и победы считаются по режимам, где известны оба числа. */
-export const STATSHARK_PARSER_VERSION = 'statshark-v2'
+/**
+ * v2: сводные бои и победы считаются по режимам, где известны оба числа.
+ * v3: уровень, звание, даты, история кланов и ников, места в рейтингах WT —
+ * в account_json.
+ */
+export const STATSHARK_PARSER_VERSION = 'statshark-v3'
 
 const MODE_NAMES = ['arcade', 'realistic', 'simulator'] as const
 const PROFILE_MODE_KEYS = ['arcade', 'rb', 'sim'] as const
@@ -220,9 +225,9 @@ function updatedAt(value: unknown): number | null {
 }
 
 /**
- * Нормализует только опубликованные текущие значения. Истории leaderboard и
- * vehicle diff остаются в raw_json snapshot-а и не складываются с текущими
- * итогами повторно.
+ * Нормализует только опубликованные текущие значения. История vehicle diff
+ * остаётся в raw_json snapshot-а и не складывается с текущими итогами
+ * повторно; из истории leaderboard берутся только места (account).
  */
 export function normalizeStatSharkBundle(bundle: StatSharkBundle): NormalizedStatSharkBundle {
   const profileRoot = record(bundle.profile, 'profile')
@@ -294,6 +299,7 @@ export function normalizeStatSharkBundle(bundle: StatSharkBundle): NormalizedSta
     stats: {
       totals,
       vehicles: vehicleRows(profileRoot, vehicleInfo),
+      account: statSharkAccount(bundle),
     },
   }
 }

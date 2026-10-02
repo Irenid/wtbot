@@ -1,3 +1,4 @@
+import { officialProfileAccount } from './account.js'
 import type {
   ProfileCountryScore,
   ProfileStatMode,
@@ -24,7 +25,8 @@ import type {
  */
 
 /** v2: итог ветки не перетирается незнакомыми строками, win rate — по согласованным режимам. */
-export const OFFICIAL_PROFILE_PARSER_VERSION = 'wt-official-profile-v3'
+/** v4: уровень и дата регистрации из шапки профиля — в account_json. */
+export const OFFICIAL_PROFILE_PARSER_VERSION = 'wt-official-profile-v4'
 export const OFFICIAL_PROFILE_SOURCE = 'official-profile'
 
 /** Профиль не публикует длительность точнее двух значащих цифр для крупных единиц. */
@@ -388,5 +390,5 @@ export function normalizeOfficialProfile(payload: OfficialProfilePayload): Norma
     eliteVehicles: score.eliteVehicles,
     medals: score.medals,
   }))
-  return { totals, vehicles: [], countries }
+  return { totals, vehicles: [], countries, account: officialProfileAccount(payload) }
 }

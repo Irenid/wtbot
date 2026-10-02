@@ -1,3 +1,5 @@
+import type { PlayerAccount } from './account.js'
+
 export const PLAYER_IDENTITY_MATCH_METHODS = ['user_id', 'exact_nick', 'manual'] as const
 export type PlayerIdentityMatchMethod = (typeof PLAYER_IDENTITY_MATCH_METHODS)[number]
 
@@ -102,6 +104,8 @@ export interface NormalizedPlayerStats {
   vehicles: readonly NormalizedPlayerExternalVehicle[]
   /** Есть только у источников, которые публикуют разбивку по нациям. */
   countries?: readonly NormalizedPlayerExternalCountry[]
+  /** Уровень, даты, история кланов и ников, места в рейтингах WT. */
+  account?: PlayerAccount | null
 }
 
 export interface PlayerExternalTotal extends NormalizedPlayerExternalTotal {
@@ -203,6 +207,8 @@ export interface PlayerExternalStats {
   totals: PlayerExternalTotal[]
   vehicles: PlayerExternalVehicle[]
   countries: PlayerExternalCountry[]
+  /** Сведения об аккаунте из account_json; null — источник их не дал. */
+  account: PlayerAccount | null
 }
 
 export interface PlayerStatsCacheResult {

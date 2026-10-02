@@ -25,6 +25,12 @@ import {
   type SavePlayerExternalSnapshotResult,
   type SavePlayerIdentityInput,
 } from '../player-stats/types.js'
+import {
+  officialProfileAccount,
+  sanitizePlayerAccount,
+  statSharkAccount,
+  type PlayerAccount,
+} from '../player-stats/account.js'
 import { CLAN_SEASON_SCHEDULES, stageAt, type ClanSeasonSchedule } from '../clan-season.js'
 import { FORUM_SEASON_ID_PREFIX } from '../clan-season-forum.js'
 
@@ -256,6 +262,61 @@ function addColumnIfMissing(
   if (tableColumns(database, table).has(column.toLowerCase())) return
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
+
+/**
+ * Строка боя без events_blob (с v17). Блоб событий в среднем 140 КБ держал
+ * каждую строку на своей листовой странице среди 1,4 млн overflow-страниц:
+ * любой проход по боям читал гигабайты, а колонки, добавленные после блоба,
+ * читались через всю его overflow-цепочку. Таблица кластеризована по
+ * session_id (WITHOUT ROWID): соединение battle_players → battles по ключу —
+ * один спуск по дереву вместо индекса и таблицы. Замеры — docs/database.md.
+ */
+const BATTLES_COLUMNS = [
+  'session_id', 'session_hex', 'mission_name', 'level', 'game_mode', 'battle_type', 'environment', 'status',
+  'start_time', 'duration_sec', 'end_time_ms', 'team_won', 'game_version', 'player_count', 'kill_count',
+  'air_unit_count', 'chat_count', 'mission_settings', 'ingested_at',
+] as const
+
+function battlesTableDdl(name: string): string {
+  return `
+    CREATE TABLE IF NOT EXISTS ${name} (
+      session_id   TEXT PRIMARY KEY,
+      session_hex  TEXT NOT NULL,
+      mission_name TEXT NOT NULL,
+      level        TEXT NOT NULL,
+      game_mode    TEXT,
+      battle_type  TEXT,
+      environment  TEXT,
+      status       TEXT,
+      start_time   INTEGER NOT NULL,
+      duration_sec INTEGER NOT NULL,
+      end_time_ms  INTEGER NOT NULL DEFAULT 0,
+      team_won     INTEGER NOT NULL DEFAULT 0,
+      game_version TEXT,
+      player_count INTEGER NOT NULL DEFAULT 0,
+      kill_count   INTEGER NOT NULL DEFAULT 0,
+      air_unit_count INTEGER,
+      chat_count   INTEGER,
+      -- путь к файлу миссии из заголовка реплея (для границ карты хитмапа
+      -- при перерисовке из БД, когда самого реплея уже нет)
+      mission_settings TEXT,
+      ingested_at  INTEGER NOT NULL DEFAULT (unixepoch())
+    ) WITHOUT ROWID;
+  `
+}
+
+/**
+ * Сжатый JSON полного ReplayEvents (траектории, зоны, урон, чат) — для
+ * перерисовки картинок и сцены плеера без реплея. Читается только для одного
+ * боя по ключу, поэтому живёт отдельно от battles. Формат определяется по
+ * магическим байтам (events-codec.ts): gzip у старых боёв, zstd у новых.
+ */
+const BATTLE_EVENTS_DDL = `
+    CREATE TABLE IF NOT EXISTS battle_events (
+      session_id  TEXT PRIMARY KEY,
+      events_blob BLOB NOT NULL
+    );
+`
 
 /** Техника и медали игрока по нациям из профиля warthunder.com. */
 const PLAYER_EXTERNAL_COUNTRIES_DDL = `
@@ -644,6 +705,89 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       database.exec(PLAYER_EXTERNAL_COUNTRIES_DDL)
     },
   },
+  {
+    version: 16,
+    apply(database) {
+      // Сведения об аккаунте (уровень, даты, история кланов и ников, места в
+      // рейтингах WT) извлекаются при сохранении снимка. У последних успешных
+      // снимков StatShark и официального профиля их достаём из raw_json сразу,
+      // чтобы страница игрока не ждала суточного обновления. Сначала id, потом
+      // raw_json по одному: таблица не меняется под открытым курсором, а в
+      // памяти не больше одного ответа StatShark (до мегабайта).
+      addColumnIfMissing(database, 'player_external_snapshots', 'account_json', 'TEXT')
+      const latest = database.prepare(`
+        SELECT s.id, s.source
+        FROM player_external_snapshots s
+        WHERE s.status = 'ok'
+          AND s.raw_json IS NOT NULL
+          AND s.account_json IS NULL
+          AND s.source IN ('statshark', 'official-profile')
+          AND s.id = (
+            SELECT t.id FROM player_external_snapshots t
+            WHERE t.identity_id = s.identity_id AND t.source = s.source AND t.status = 'ok'
+            ORDER BY t.last_checked_at DESC, t.id DESC
+            LIMIT 1
+          )
+      `).all() as { id: number; source: string }[]
+      const readRaw = database.prepare('SELECT raw_json FROM player_external_snapshots WHERE id = ?')
+      const update = database.prepare('UPDATE player_external_snapshots SET account_json = ? WHERE id = ?')
+      for (const { id, source } of latest) {
+        const row = readRaw.get(id) as { raw_json: string } | undefined
+        if (row === undefined) continue
+        // raw_json проверяется как JSON при записи снимка.
+        const document = JSON.parse(row.raw_json) as Record<string, unknown>
+        const account = sanitizePlayerAccount(source === 'statshark'
+          ? statSharkAccount({ profile: document['profile'], leaderboardHistory: document['leaderboardHistory'] })
+          : officialProfileAccount(document))
+        if (account !== null) update.run(JSON.stringify(account), id)
+      }
+    },
+  },
+  {
+    version: 17,
+    apply(database) {
+      // Блобы событий — 91% базы — в отдельную battle_events, battles —
+      // компактная и кластеризованная по session_id (см. battlesTableDdl).
+      // Освободившиеся страницы возвращает VACUUM после миграций (initDb).
+      database.exec(BATTLE_EVENTS_DDL)
+      if (tableColumns(database, 'battles').has('events_blob')) {
+        const columns = BATTLES_COLUMNS.join(', ')
+        // session_hex добавлялась старой миграцией через ALTER: пустое значение
+        // восстанавливается так же, как тогда.
+        const source = BATTLES_COLUMNS
+          .map((column) => column === 'session_hex'
+            ? "COALESCE(NULLIF(session_hex, ''), lower(printf('%016x', CAST(session_id AS INTEGER))))"
+            : column)
+          .join(', ')
+        database.exec(`
+          INSERT OR REPLACE INTO battle_events (session_id, events_blob)
+            SELECT session_id, events_blob FROM battles WHERE events_blob IS NOT NULL;
+          ${battlesTableDdl('battles_compact')}
+          INSERT INTO battles_compact (${columns}) SELECT ${source} FROM battles;
+          DROP TABLE battles;
+          ALTER TABLE battles_compact RENAME TO battles;
+        `)
+      }
+      database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_battles_start ON battles (start_time DESC);
+        CREATE INDEX IF NOT EXISTS idx_battles_session_hex ON battles (session_hex);
+        CREATE INDEX IF NOT EXISTS idx_battles_metrics ON battles (duration_sec, player_count, kill_count);
+        -- Ни один запрос не читал: префикс idx_bp_clan_session, а поиск по
+        -- нику идёт через nick_search (nick COLLATE NOCASE не используется).
+        DROP INDEX IF EXISTS idx_bp_clan;
+        DROP INDEX IF EXISTS idx_bp_nick;
+        DROP INDEX IF EXISTS idx_bp_nick_nocase;
+        -- Два почти одинаковых индекса снимков заменяет один покрывающий:
+        -- «последний снимок ника в окне» читается из индекса без таблицы.
+        DROP INDEX IF EXISTS idx_snapshots_clan_nick;
+        DROP INDEX IF EXISTS idx_snapshots_clan_cover;
+        CREATE INDEX IF NOT EXISTS idx_snapshots_clan_latest
+          ON clan_rating_snapshots (clan_tag, nick, id DESC, rating, seen_at);
+      `)
+      // Статистика планировщику: до v17 ANALYZE не запускался ни разу.
+      database.exec('PRAGMA analysis_limit = 1000; ANALYZE;')
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -665,14 +809,23 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
     assertSupportedDbVersion(database, DB_SCHEMA_VERSION)
   // WAL: запись не блокирует чтение — сайт отвечает, пока парсеры пишут
   db.exec('PRAGMA journal_mode = WAL;')
+  // В WAL коммит с synchronous = NORMAL не ждёт fsync — он идёт при
+  // checkpoint. Сбой питания может откатить последние транзакции, но не
+  // повредить базу; потерянный бой ingest разберёт заново.
+  db.exec('PRAGMA synchronous = NORMAL;')
   // SQLite синхронный и живёт в одном потоке с Discord-ботом: холодное чтение
   // случайных страниц (первый просмотр игрока/клана на сайте) блокировало
   // event loop на секунды. mmap переносит чтение на page cache ОС, большой
   // кэш страниц удерживает рабочий набор, busy_timeout защищает от коротких
-  // блокировок при параллельном процессе (backfill/site-real).
-  db.exec('PRAGMA mmap_size = 268435456;')
+  // блокировок при параллельном процессе (backfill/site-real). После выноса
+  // блобов (v17) горячие таблицы и индексы — около 0,5 ГиБ: mmap их покрывает.
+  db.exec('PRAGMA mmap_size = 1073741824;')
   db.exec('PRAGMA cache_size = -65536;')
   db.exec('PRAGMA busy_timeout = 5000;')
+  // После большой транзакции (миграция, VACUUM) WAL-файл не остаётся гигабайтным.
+  db.exec('PRAGMA journal_size_limit = 67108864;')
+  // PRAGMA optimize (runDbMaintenance, closeDb) анализирует выборку, а не всю таблицу.
+  db.exec('PRAGMA analysis_limit = 1000;')
   db.function('wtbot_casefold', { deterministic: true }, (value) =>
     typeof value === 'string' ? normalizePlayerSearchKey(value) : '',
   )
@@ -807,16 +960,14 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       seen_at  INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    CREATE INDEX IF NOT EXISTS idx_snapshots_clan_nick
-      ON clan_rating_snapshots (clan_tag, nick, id DESC);
     -- История суммы ПКР клана: диапазон по времени внутри тега без полного обхода.
     CREATE INDEX IF NOT EXISTS idx_snapshots_clan_seen
       ON clan_rating_snapshots (clan_tag, seen_at, id);
-    -- Покрывающий индекс рейтингов: «последние 2 снимка на ника» читаются из
-    -- компактного диапазона индекса без случайных обращений к таблице —
-    -- иначе холодная страница клана стоила секунды дисковых чтений.
-    CREATE INDEX IF NOT EXISTS idx_snapshots_clan_cover
-      ON clan_rating_snapshots (clan_tag, nick, id DESC, rating);
+    -- Покрывающий индекс рейтингов: последний снимок ника в окне и «последние
+    -- 2 снимка на ника» читаются из индекса без обращений к таблице — иначе
+    -- холодная страница клана стоила секунды дисковых чтений.
+    CREATE INDEX IF NOT EXISTS idx_snapshots_clan_latest
+      ON clan_rating_snapshots (clan_tag, nick, id DESC, rating, seen_at);
 
     -- Текущий состав клана по последнему обходу wt-clans: покинувшие
     -- участники исключаются из сумм, дельт и истории ПКР на сайте.
@@ -905,6 +1056,8 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       content_hash      TEXT,
       parser_version    TEXT    NOT NULL,
       error             TEXT,
+      -- Уровень, даты, история кланов и ников, места в рейтингах WT (account.ts).
+      account_json      TEXT,
       CHECK (source <> '' AND parser_version <> ''),
       CHECK (status IN ('ok', 'private', 'not_found', 'rate_limited', 'schema_error', 'error')),
       CHECK (content_hash IS NULL OR length(content_hash) = 64)
@@ -1063,32 +1216,9 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
     -- и возможность перерисовать картинки, когда части реплея ушли с CDN.
 
     -- Один бой: метаданные + победитель + счётчики. session_id совпадает
-    -- с items.external_id. events_blob — gzip(JSON) полного ReplayEvents
-    -- (траектории, зоны, урон) для перерисовки хитмапов без реплея.
-    CREATE TABLE IF NOT EXISTS battles (
-      session_id   TEXT PRIMARY KEY,
-      session_hex  TEXT NOT NULL,
-      mission_name TEXT NOT NULL,
-      level        TEXT NOT NULL,
-      game_mode    TEXT,
-      battle_type  TEXT,
-      environment  TEXT,
-      status       TEXT,
-      start_time   INTEGER NOT NULL,
-      duration_sec INTEGER NOT NULL,
-      end_time_ms  INTEGER NOT NULL DEFAULT 0,
-      team_won     INTEGER NOT NULL DEFAULT 0,
-      game_version TEXT,
-      player_count INTEGER NOT NULL DEFAULT 0,
-      kill_count   INTEGER NOT NULL DEFAULT 0,
-      air_unit_count INTEGER,
-      chat_count   INTEGER,
-      -- путь к файлу миссии из заголовка реплея (для границ карты хитмапа
-      -- при перерисовке из БД, когда самого реплея уже нет)
-      mission_settings TEXT,
-      events_blob  BLOB,
-      ingested_at  INTEGER NOT NULL DEFAULT (unixepoch())
-    );
+    -- с items.external_id. События боя — в battle_events.
+    ${battlesTableDdl('battles')}
+    ${BATTLE_EVENTS_DDL}
 
     CREATE INDEX IF NOT EXISTS idx_battles_start ON battles (start_time DESC);
 
@@ -1126,9 +1256,6 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
       PRIMARY KEY (session_id, user_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_bp_nick ON battle_players (nick);
-    CREATE INDEX IF NOT EXISTS idx_bp_nick_nocase ON battle_players (nick COLLATE NOCASE, user_id);
-    CREATE INDEX IF NOT EXISTS idx_bp_clan ON battle_players (clan_tag);
     -- Покрывающий индекс клановых выборок сайта: список сессий клана читается
     -- без table lookup на каждую строку battle_players.
     CREATE INDEX IF NOT EXISTS idx_bp_clan_session ON battle_players (clan_tag, session_id);
@@ -1197,6 +1324,10 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
     CREATE INDEX IF NOT EXISTS idx_battles_metrics
       ON battles (duration_sec, player_count, kill_count);
   `)
+  if (!isMemoryDatabase) reclaimFreePages(db)
+  // Временные B-деревья ORDER BY/GROUP BY — в памяти. Только после VACUUM:
+  // его копия базы — тоже временная и в память не поместилась бы.
+  db.exec('PRAGMA temp_store = MEMORY;')
   seedClanSeasons(db)
   seedWtPlayerSnapshots(db)
   dbWorkerPath = isMemoryDatabase ? null : resolvedPath
@@ -1214,6 +1345,13 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
 
 export function closeDb(): void {
   resetPreparedStatements()
+  try {
+    // Рекомендация SQLite перед закрытием: обновить статистику таблиц, которые
+    // заметно изменились за время работы (выборочно, analysis_limit).
+    db?.exec('PRAGMA optimize;')
+  } catch (error) {
+    console.warn(`[db] PRAGMA optimize при закрытии не выполнен: ${error instanceof Error ? error.message : String(error)}`)
+  }
   db?.close()
   db = null
   dbWorkerPath = null
@@ -1221,6 +1359,71 @@ export function closeDb(): void {
 
 export function getDbWorkerPath(): string | null {
   return dbWorkerPath
+}
+
+const VACUUM_MIN_FREE_BYTES = 256 * 1024 * 1024
+const VACUUM_MIN_FREE_SHARE = 0.2
+
+function pragmaNumber(database: DatabaseSync, name: string): number {
+  const row = database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown> | undefined
+  const value = row?.[name]
+  return typeof value === 'number' ? value : Number(value ?? 0)
+}
+
+/**
+ * Файл базы сам не уменьшается: после v17 в нём ~5,6 ГБ свободных страниц от
+ * прежней battles. VACUUM переписывает базу целиком — минуты на гигабайтах,
+ * поэтому только на старте (до Discord и сайта) и только при большой доле
+ * свободного места. Заодно включается auto_vacuum = INCREMENTAL: дальше
+ * свободные страницы понемногу возвращает runDbMaintenance.
+ */
+function reclaimFreePages(database: DatabaseSync): void {
+  const pageSize = pragmaNumber(database, 'page_size')
+  const pageCount = pragmaNumber(database, 'page_count')
+  const freePages = pragmaNumber(database, 'freelist_count')
+  const freeBytes = freePages * pageSize
+  if (freeBytes < VACUUM_MIN_FREE_BYTES || freePages < pageCount * VACUUM_MIN_FREE_SHARE) return
+  const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(0)
+  console.log(
+    `[db] Свободно ${mib(freeBytes)} МиБ из ${mib(pageCount * pageSize)} МиБ — VACUUM; ` +
+      'бот запустится после него (на гигабайтной базе — минуты)',
+  )
+  const started = performance.now()
+  database.exec('PRAGMA auto_vacuum = INCREMENTAL;')
+  database.exec('VACUUM;')
+  database.exec('PRAGMA wal_checkpoint(TRUNCATE);')
+  console.log(
+    `[db] VACUUM за ${((performance.now() - started) / 1_000).toFixed(1)} с: ` +
+      `${mib(pageCount * pageSize)} → ${mib(pragmaNumber(database, 'page_count') * pageSize)} МиБ`,
+  )
+}
+
+export interface DbMaintenanceResult {
+  /** Страниц возвращено ОС через incremental_vacuum. */
+  freedPages: number
+  elapsedMs: number
+}
+
+/**
+ * Периодическое обслуживание (раз в несколько часов): PRAGMA optimize
+ * обновляет статистику планировщика по заметно выросшим таблицам, а
+ * incremental_vacuum возвращает ОС свободные страницы — например, после
+ * фонового перевода блобов событий в zstd. Не больше maxPages за вызов:
+ * короткая транзакция не держит запись дольше десятков миллисекунд.
+ */
+export function runDbMaintenance(maxPages = 8_192): DbMaintenanceResult {
+  const database = getDb()
+  const started = performance.now()
+  database.exec('PRAGMA optimize;')
+  let freedPages = 0
+  if (pragmaNumber(database, 'auto_vacuum') === 2) {
+    const before = pragmaNumber(database, 'freelist_count')
+    if (before > 0) {
+      database.exec(`PRAGMA incremental_vacuum(${Math.max(1, Math.min(maxPages, before))});`)
+      freedPages = before - pragmaNumber(database, 'freelist_count')
+    }
+  }
+  return { freedPages, elapsedMs: performance.now() - started }
 }
 
 // ---------- Статистика команд ----------
@@ -3213,6 +3416,7 @@ interface ValidatedPlayerStats {
   totals: NormalizedPlayerExternalTotal[]
   vehicles: NormalizedPlayerExternalVehicle[]
   countries: NormalizedPlayerExternalCountry[]
+  account: PlayerAccount | null
 }
 
 function validateNormalizedPlayerStats(
@@ -3281,7 +3485,11 @@ function validateNormalizedPlayerStats(
     countryKeys.add(normalized.country)
     return normalized
   })
-  return { totals, vehicles, countries }
+  // Сведения об аккаунте мягкие: битая запись отбрасывается, а не роняет snapshot.
+  const account = input.account === undefined || input.account === null
+    ? null
+    : sanitizePlayerAccount(input.account)
+  return { totals, vehicles, countries, account }
 }
 
 function replacePlayerExternalMetrics(
@@ -3292,6 +3500,9 @@ function replacePlayerExternalMetrics(
   database.prepare('DELETE FROM player_external_totals WHERE snapshot_id = ?').run(snapshotId)
   database.prepare('DELETE FROM player_external_vehicles WHERE snapshot_id = ?').run(snapshotId)
   database.prepare('DELETE FROM player_external_countries WHERE snapshot_id = ?').run(snapshotId)
+  database
+    .prepare('UPDATE player_external_snapshots SET account_json = ? WHERE id = ?')
+    .run(normalized.account === null ? null : JSON.stringify(normalized.account), snapshotId)
 
   const insertCountry = database.prepare(`
     INSERT INTO player_external_countries (snapshot_id, country, vehicles, elite_vehicles, medals)
@@ -3573,11 +3784,25 @@ function loadPlayerExternalStats(row: PlayerExternalSnapshotMetaRow): PlayerExte
       ORDER BY rowid
     `)
     .all(row.id) as unknown as PlayerExternalCountryRow[]
+  const accountRow = getDb()
+    .prepare('SELECT account_json FROM player_external_snapshots WHERE id = ?')
+    .get(row.id) as { account_json: string | null } | undefined
   return {
     snapshot: toPlayerExternalSnapshotMeta(row),
     totals: totals.map(toPlayerExternalTotal),
     vehicles: vehicles.map(toPlayerExternalVehicle),
     countries: countries.map(toPlayerExternalCountry),
+    account: parseStoredAccount(accountRow?.account_json ?? null),
+  }
+}
+
+/** account_json пишется только после проверки, но битую строку не показываем. */
+function parseStoredAccount(raw: string | null): PlayerAccount | null {
+  if (raw === null) return null
+  try {
+    return sanitizePlayerAccount(JSON.parse(raw))
+  } catch {
+    return null
   }
 }
 
@@ -4125,6 +4350,240 @@ export function getPlayerReplayStats(
   }
 }
 
+/** Сколько последних боёв периода разбирает аналитика игрока: страница остаётся быстрой и у завсегдатаев. */
+export const PLAYER_INSIGHT_MAX_SESSIONS = 500
+
+export interface PlayerInsightClan {
+  /** Сырой тег (последний встреченный вариант украшений). */
+  clanTag: string
+  battles: number
+  wins: number
+  losses: number
+}
+
+export interface PlayerInsightPlayer {
+  userId: string
+  /** Последний ник, под которым игрок встречался в этих боях. */
+  nick: string
+  count: number
+}
+
+export interface PlayerReplayInsights {
+  /** Разобранные бои: последние в периоде, не больше PLAYER_INSIGHT_MAX_SESSIONS. */
+  battles: number
+  /** true — боёв в периоде больше, разобраны последние. */
+  capped: boolean
+  maps: { mission: string; battles: number; wins: number; losses: number }[]
+  vehicles: { vehicleId: string; battles: number; wins: number; kills: number; deaths: number }[]
+  /** За какой клан играл: клан игрока в самом бою. */
+  playedFor: PlayerInsightClan[]
+  /** Кланы соперников: доминирующий клан вражеской команды (от двух игроков). */
+  opponents: PlayerInsightClan[]
+  /** Чаще всего в одной команде; count — общие бои, wins — общие победы. */
+  teammates: (PlayerInsightPlayer & { wins: number })[]
+  weapons: { weapon: string; kills: number }[]
+  /** Техника игроков противника, которую он уничтожал чаще всего. */
+  victims: { vehicleId: string; kills: number }[]
+  /** Техника игроков противника, которая чаще всего уничтожала его. */
+  killers: { vehicleId: string; kills: number }[]
+  /** Игроки противника, которых он уничтожал чаще всего. */
+  preys: PlayerInsightPlayer[]
+  /** Игроки противника, которые чаще всего уничтожали его. */
+  nemeses: PlayerInsightPlayer[]
+  /** Начало разобранных боёв, Unix-секунды: часы активности клиент считает в своём поясе. */
+  starts: number[]
+}
+
+/** Модель из battle_kills («tankModels/ussr_t_55») → id словаря техники. */
+function insightVehicleId(model: string): string {
+  return model.startsWith('tankModels/') ? model.slice('tankModels/'.length) : model
+}
+
+function topBy<T>(values: Iterable<T>, score: (value: T) => number, limit: number): T[] {
+  return [...values].sort((left, right) => score(right) - score(left)).slice(0, limit)
+}
+
+function countInto(counts: Map<string, number>, key: string): void {
+  counts.set(key, (counts.get(key) ?? 0) + 1)
+}
+
+/**
+ * Разбор локальных реплеев игрока за период: карты, техника, кланы, напарники,
+ * оружие и соперники. Три индексированных запроса (бои игрока, все игроки этих
+ * боёв, убийства с его участием) и подсчёт в JS; не больше
+ * PLAYER_INSIGHT_MAX_SESSIONS последних боёв.
+ */
+export function getPlayerReplayInsights(userId: string, fromTs: number, toTs: number): PlayerReplayInsights {
+  const id = userId.trim()
+  if (!/^\d{1,20}$/.test(id)) throw new Error('Для аналитики игрока нужен числовой WT user id')
+  const sessions = siteStatement('playerInsightSessions')
+    .all(id, fromTs, toTs, PLAYER_INSIGHT_MAX_SESSIONS + 1) as unknown as {
+      session_id: string
+      start_time: number
+      mission_name: string
+      team_won: number
+      team: number
+      vehicle: string | null
+      vehicles: string
+    }[]
+  const capped = sessions.length > PLAYER_INSIGHT_MAX_SESSIONS
+  if (capped) sessions.length = PLAYER_INSIGHT_MAX_SESSIONS
+
+  const mine = new Map<string, { team: number; won: boolean | null }>()
+  const maps = new Map<string, { mission: string; battles: number; wins: number; losses: number }>()
+  const vehicles = new Map<string, { vehicleId: string; battles: number; wins: number; kills: number; deaths: number }>()
+  const vehicleEntry = (vehicleId: string) => {
+    let entry = vehicles.get(vehicleId)
+    if (!entry) {
+      entry = { vehicleId, battles: 0, wins: 0, kills: 0, deaths: 0 }
+      vehicles.set(vehicleId, entry)
+    }
+    return entry
+  }
+  for (const row of sessions) {
+    const won = row.team_won === 0 ? null : row.team === row.team_won
+    mine.set(row.session_id, { team: row.team, won })
+    const map = maps.get(row.mission_name) ?? { mission: row.mission_name, battles: 0, wins: 0, losses: 0 }
+    map.battles += 1
+    if (won === true) map.wins += 1
+    if (won === false) map.losses += 1
+    maps.set(row.mission_name, map)
+    // Техника боя: первая машина и весь список из реплея.
+    const used = new Set<string>()
+    if (row.vehicle !== null && row.vehicle.trim() !== '') used.add(row.vehicle.trim())
+    try {
+      const list = JSON.parse(row.vehicles) as unknown
+      if (Array.isArray(list)) {
+        for (const item of list) if (typeof item === 'string' && item.trim() !== '') used.add(item.trim())
+      }
+    } catch {
+      // битый список техники — остаётся первая машина
+    }
+    for (const vehicleId of used) {
+      const entry = vehicleEntry(vehicleId)
+      entry.battles += 1
+      if (won === true) entry.wins += 1
+    }
+  }
+
+  const sessionIds = JSON.stringify([...mine.keys()])
+  const playerRows = sessions.length === 0
+    ? []
+    : siteStatement('playerInsightPlayers').all(sessionIds) as unknown as {
+      session_id: string
+      user_id: string
+      nick: string
+      clan_tag: string
+      team: number
+    }[]
+  const bySession = new Map<string, typeof playerRows>()
+  for (const row of playerRows) {
+    const list = bySession.get(row.session_id)
+    if (list) list.push(row)
+    else bySession.set(row.session_id, [row])
+  }
+
+  const nicks = new Map<string, string>()
+  const playedFor = new Map<string, PlayerInsightClan>()
+  const opponents = new Map<string, PlayerInsightClan>()
+  const teammates = new Map<string, { userId: string; count: number; wins: number }>()
+  const clanTally = (target: Map<string, PlayerInsightClan>, tag: string, won: boolean | null) => {
+    const core = tag.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
+    if (core === '') return
+    // Бои идут от новых к старым: первый встреченный тег — последний вариант.
+    const entry = target.get(core) ?? { clanTag: tag, battles: 0, wins: 0, losses: 0 }
+    entry.battles += 1
+    if (won === true) entry.wins += 1
+    if (won === false) entry.losses += 1
+    target.set(core, entry)
+  }
+  // Порядок сессий — от новых к старым: ник игрока берётся из последнего боя.
+  for (const [sessionId, { team, won }] of mine) {
+    const rows = bySession.get(sessionId) ?? []
+    const enemyClans = new Map<string, { tag: string; players: number }>()
+    for (const row of rows) {
+      if (!nicks.has(row.user_id)) nicks.set(row.user_id, row.nick)
+      if (row.user_id === id) {
+        if (row.clan_tag !== '') clanTally(playedFor, row.clan_tag, won)
+        continue
+      }
+      if (row.team === team) {
+        const mate = teammates.get(row.user_id) ?? { userId: row.user_id, count: 0, wins: 0 }
+        mate.count += 1
+        if (won === true) mate.wins += 1
+        teammates.set(row.user_id, mate)
+      } else if (row.clan_tag !== '') {
+        const core = row.clan_tag.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
+        const clan = enemyClans.get(core) ?? { tag: row.clan_tag, players: 0 }
+        clan.players += 1
+        enemyClans.set(core, clan)
+      }
+    }
+    const dominant = topBy(enemyClans.values(), (clan) => clan.players, 1)[0]
+    if (dominant !== undefined && dominant.players >= 2) clanTally(opponents, dominant.tag, won)
+  }
+
+  const weapons = new Map<string, number>()
+  const victims = new Map<string, number>()
+  const killers = new Map<string, number>()
+  const preys = new Map<string, number>()
+  const nemeses = new Map<string, number>()
+  const kills = sessions.length === 0
+    ? []
+    : siteStatement('playerInsightKills').all(sessionIds, id, id) as unknown as {
+      session_id: string
+      killer_id: string
+      killer_model: string
+      victim_id: string
+      victim_model: string
+      weapon: string | null
+    }[]
+  for (const kill of kills) {
+    const own = mine.get(kill.session_id)
+    if (!own) continue
+    const sessionPlayers = bySession.get(kill.session_id) ?? []
+    // Соперник — игрок другой команды: ИИ, дроны и свои в счёт не идут.
+    const enemyTeam = (userId: string) => {
+      const row = sessionPlayers.find((player) => player.user_id === userId)
+      return row !== undefined && row.team !== own.team
+    }
+    if (kill.killer_id === id && kill.victim_id !== id) {
+      if (kill.killer_model !== '') vehicleEntry(insightVehicleId(kill.killer_model)).kills += 1
+      if (kill.weapon) countInto(weapons, kill.weapon)
+      if (enemyTeam(kill.victim_id)) {
+        if (kill.victim_model !== '') countInto(victims, insightVehicleId(kill.victim_model))
+        countInto(preys, kill.victim_id)
+      }
+    } else if (kill.victim_id === id) {
+      if (kill.victim_model !== '') vehicleEntry(insightVehicleId(kill.victim_model)).deaths += 1
+      if (enemyTeam(kill.killer_id)) {
+        if (kill.killer_model !== '') countInto(killers, insightVehicleId(kill.killer_model))
+        countInto(nemeses, kill.killer_id)
+      }
+    }
+  }
+  const players = (counts: Map<string, number>, limit: number): PlayerInsightPlayer[] =>
+    topBy(counts, ([, count]) => count, limit)
+      .map(([userId, count]) => ({ userId, nick: nicks.get(userId) ?? userId, count }))
+
+  return {
+    battles: sessions.length,
+    capped,
+    maps: topBy(maps.values(), (map) => map.battles, 20),
+    vehicles: topBy(vehicles.values(), (vehicle) => vehicle.battles * 1_000 + vehicle.kills, 60),
+    playedFor: topBy(playedFor.values(), (clan) => clan.battles, 10),
+    opponents: topBy(opponents.values(), (clan) => clan.battles, 20),
+    teammates: topBy(teammates.values(), (mate) => mate.count, 20)
+      .map((mate) => ({ ...mate, nick: nicks.get(mate.userId) ?? mate.userId })),
+    weapons: topBy(weapons, ([, count]) => count, 15).map(([weapon, count]) => ({ weapon, kills: count })),
+    victims: topBy(victims, ([, count]) => count, 15).map(([vehicleId, count]) => ({ vehicleId, kills: count })),
+    killers: topBy(killers, ([, count]) => count, 15).map(([vehicleId, count]) => ({ vehicleId, kills: count })),
+    preys: players(preys, 10),
+    nemeses: players(nemeses, 10),
+    starts: sessions.map((row) => row.start_time),
+  }
+}
+
 /** Текущий ПКР и дельта по каждому нику клана (по двум последним снимкам) */
 export function getClanRatingsWithDelta(clanTag: string): Map<string, ClanRating> {
   // Только последние 2 снимка каждого ника через покрывающий индекс
@@ -4264,8 +4723,8 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
           session_id, session_hex, mission_name, level, game_mode, battle_type,
           environment, status, start_time, duration_sec, end_time_ms, team_won,
           game_version, player_count, kill_count, air_unit_count, chat_count,
-          mission_settings, events_blob, ingested_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+          mission_settings, ingested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
         ON CONFLICT (session_id) DO UPDATE SET
           session_hex = excluded.session_hex,
           mission_name = excluded.mission_name,
@@ -4284,7 +4743,6 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
           air_unit_count = excluded.air_unit_count,
           chat_count = excluded.chat_count,
           mission_settings = excluded.mission_settings,
-          events_blob = excluded.events_blob,
           ingested_at = unixepoch()
       `)
       .run(
@@ -4292,8 +4750,14 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
         b.environment, b.status, b.startTime, b.durationSec, b.endTimeMs, b.teamWon,
         b.gameVersion, b.players.length, b.kills.length,
         b.airUnitCount ?? null, b.chatCount ?? b.chat.length,
-        b.missionSettings, b.eventsBlob,
+        b.missionSettings,
       )
+    database
+      .prepare(`
+        INSERT INTO battle_events (session_id, events_blob) VALUES (?, ?)
+        ON CONFLICT (session_id) DO UPDATE SET events_blob = excluded.events_blob
+      `)
+      .run(b.sessionId, b.eventsBlob)
 
     database.prepare('DELETE FROM battle_players WHERE session_id = ?').run(b.sessionId)
     database.prepare('DELETE FROM battle_kills WHERE session_id = ?').run(b.sessionId)
@@ -4402,7 +4866,12 @@ export function isValidBattleChatChannel(channel: number): boolean {
 /** Сжатый blob событий боя (по десятичному id или hex) — null, если боя нет */
 export function getBattleEventsBlob(sessionId: string): Buffer | null {
   const row = getDb()
-    .prepare('SELECT events_blob FROM battles WHERE session_id = ? OR session_hex = ?')
+    .prepare(`
+      SELECT e.events_blob
+      FROM battles b
+      JOIN battle_events e ON e.session_id = b.session_id
+      WHERE b.session_id = ? OR b.session_hex = ?
+    `)
     .get(sessionId, sessionId.toLowerCase()) as { events_blob: Uint8Array | null } | undefined
   return row?.events_blob ? Buffer.from(row.events_blob) : null
 }
@@ -4512,7 +4981,8 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
       SELECT session_id, session_hex, mission_name, level, game_mode, battle_type,
              environment, status, start_time, duration_sec, end_time_ms, team_won,
              CASE WHEN team_won <> 0 THEN 1 ELSE 0 END AS winner_known,
-             game_version, player_count, kill_count, mission_settings, events_blob
+             game_version, player_count, kill_count, mission_settings,
+             (SELECT e.events_blob FROM battle_events e WHERE e.session_id = battles.session_id) AS events_blob
       FROM battles WHERE session_id = ? OR session_hex = ?
     `)
     .get(sessionId, sessionId.toLowerCase()) as (BattleRow & { events_blob: Uint8Array | null }) | undefined
@@ -4875,16 +5345,15 @@ export const SITE_SQL = {
     GROUP BY day
     ORDER BY day
   `,
+  // Последний снимок ника в окне. При единственном MAX() «голые» колонки
+  // SQLite берёт из строки с максимумом — один проход по покрывающему
+  // idx_snapshots_clan_latest без обратного соединения по id (28 тыс.
+  // обращений к таблице на каждую перестройку снимка кланов).
   clanLatestMembers: `
-    SELECT s.clan_tag, s.nick, s.rating, s.seen_at
-    FROM clan_rating_snapshots s
-    JOIN (
-      SELECT clan_tag, nick, MAX(id) AS max_id
-      FROM clan_rating_snapshots
-      WHERE seen_at >= ?
-      GROUP BY clan_tag, nick
-    ) latest ON latest.max_id = s.id
-    WHERE s.seen_at >= ?
+    SELECT clan_tag, nick, rating, seen_at, MAX(id) AS max_id
+    FROM clan_rating_snapshots
+    WHERE seen_at >= ?
+    GROUP BY clan_tag, nick
   `,
   clanRosterAll: `
     SELECT clan_core, nick, last_present_at FROM clan_roster
@@ -4982,7 +5451,7 @@ export const SITE_SQL = {
     LIMIT 1
   `,
   eventsBlobById: `
-    SELECT events_blob FROM battles
+    SELECT events_blob FROM battle_events
     WHERE session_id = ?
   `,
   siteBattleCounts: `
@@ -5013,29 +5482,21 @@ export const SITE_SQL = {
     ORDER BY s.seen_at, s.id
     LIMIT ?
   `,
+  // Фильтр ростера зависит только от ника — его можно применить до
+  // группировки; значения берутся из строки с MAX(id), как в clanLatestMembers.
   clanRatingBaseline: `
-    SELECT s.clan_tag, s.nick, s.rating
+    SELECT s.clan_tag, s.nick, s.rating, MAX(s.id) AS max_id
     FROM clan_rating_snapshots s
-    JOIN (
-      SELECT clan_tag, nick, MAX(id) AS max_id
-      FROM clan_rating_snapshots
-      WHERE clan_tag IN (${siteInSlots(SITE_IN_SLOTS)}) AND seen_at >= ? AND seen_at <= ?
-      GROUP BY clan_tag, nick
-    ) latest ON latest.max_id = s.id
-    WHERE s.seen_at >= ?
+    WHERE s.clan_tag IN (${siteInSlots(SITE_IN_SLOTS)}) AND s.seen_at >= ? AND s.seen_at <= ?
       AND (EXISTS (SELECT 1 FROM clan_roster r WHERE r.clan_core = ? AND r.nick = s.nick)
        OR NOT EXISTS (SELECT 1 FROM clan_roster r2 WHERE r2.clan_core = ?))
+    GROUP BY s.clan_tag, s.nick
   `,
   clanBaselineSumsAll: `
-    SELECT s.clan_tag, s.nick, s.rating
-    FROM clan_rating_snapshots s
-    JOIN (
-      SELECT clan_tag, nick, MAX(id) AS max_id
-      FROM clan_rating_snapshots
-      WHERE seen_at >= ? AND seen_at <= ?
-      GROUP BY clan_tag, nick
-    ) latest ON latest.max_id = s.id
-    WHERE s.seen_at >= ?
+    SELECT clan_tag, nick, rating, MAX(id) AS max_id
+    FROM clan_rating_snapshots
+    WHERE seen_at >= ? AND seen_at <= ?
+    GROUP BY clan_tag, nick
   `,
   clanDictionary: `
     SELECT
@@ -5068,6 +5529,29 @@ export const SITE_SQL = {
     FROM battle_players
     WHERE session_id IN (SELECT value FROM json_each(?))
     GROUP BY session_id, team, clan_tag
+  `,
+  // Аналитика игрока: CROSS JOIN фиксирует порядок — сначала бои игрока по
+  // idx_bp_user_id, а не все бои периода по idx_battles_start.
+  playerInsightSessions: `
+    SELECT b.session_id, b.start_time, b.mission_name, b.team_won, bp.team, bp.vehicle, bp.vehicles
+    FROM battle_players bp
+    CROSS JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.user_id = ? AND bp.nick NOT GLOB 'coop/Bot*'
+      AND b.start_time >= ? AND b.start_time < ?
+    ORDER BY b.start_time DESC
+    LIMIT ?
+  `,
+  playerInsightPlayers: `
+    SELECT session_id, user_id, nick, clan_tag, team
+    FROM battle_players
+    WHERE session_id IN (SELECT value FROM json_each(?))
+      AND user_id <> '' AND nick NOT GLOB 'coop/Bot*'
+  `,
+  playerInsightKills: `
+    SELECT session_id, killer_id, killer_model, victim_id, victim_model, weapon
+    FROM battle_kills
+    WHERE session_id IN (SELECT value FROM json_each(?))
+      AND (killer_id = ? OR victim_id = ?)
   `,
 } as const
 
@@ -5401,7 +5885,7 @@ export interface SiteClanMemberLatest {
  */
 export function getSiteClanLatestMembers(): SiteClanMemberLatest[] {
   const seasonStart = currentClanSeasonStart()
-  const rows = siteStatement('clanLatestMembers').all(seasonStart, seasonStart) as unknown as {
+  const rows = siteStatement('clanLatestMembers').all(seasonStart) as unknown as {
     clan_tag: string
     nick: string
     rating: number
@@ -5474,7 +5958,6 @@ export function getSiteClanRatingBaseline(
       ...padSiteList(filtered.slice(0, SITE_IN_SLOTS), SITE_IN_SLOTS),
       seasonStart,
       atTs,
-      seasonStart,
       clanCore,
       clanCore,
     ) as unknown as {
@@ -5573,7 +6056,7 @@ export function getSiteClanBaselineRatings(atTs: number): { clanTag: string; nic
     throw new RangeError('atTs должен быть неотрицательным Unix-временем')
   }
   const seasonStart = currentClanSeasonStart()
-  const rows = siteStatement('clanBaselineSumsAll').all(seasonStart, atTs, seasonStart) as unknown as {
+  const rows = siteStatement('clanBaselineSumsAll').all(seasonStart, atTs) as unknown as {
     clan_tag: string
     nick: string
     rating: number

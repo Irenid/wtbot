@@ -196,7 +196,18 @@ voice tracker и Fastify. Делай запросы короткими, инде
 - SQL находится в типизированных функциях `src/db/index.ts`, а не внутри
   bot/web/parser. Batch writes выполняются в транзакциях.
 - Для нового или изменённого тяжёлого SELECT запускай `EXPLAIN QUERY PLAN`.
-  `SCAN battles` недопустим: таблица содержит большие `events_blob`.
+  С v17 у планировщика есть статистика (`ANALYZE`, дальше `PRAGMA optimize`):
+  план нового запроса или индекса проверяй и на копии боевой базы, а не
+  только на `:memory:`. Анализ, замеры и решение по PostgreSQL —
+  `docs/database.md`.
+- Блоб событий боя живёт в `battle_events` и читается только по ключу одного
+  боя (`SCAN battle_events` недопустим). `battles` компактна и
+  кластеризована по `session_id` (`WITHOUT ROWID`). Большие значения
+  (блобы, JSON больше ~1 КиБ) не клади в часто читаемые строки: такая строка
+  занимает свою страницу, а колонки после неё читаются через overflow-цепочку.
+- Каждый индекс `battle_players` — ~30 лишних записей на каждый сохранённый
+  бой. Индекс добавляй только под запрос, план которого его использует;
+  неиспользуемые индексы удалены в v17.
 - Для `WHERE session_id = ? OR session_hex = ?` план должен использовать
   multi-index OR и `idx_battles_session_hex`, а не полный scan.
 - `getIngestStats().pending` и `getPendingBattleItems()` должны использовать
@@ -207,6 +218,14 @@ voice tracker и Fastify. Делай запросы короткими, инде
   таблицы, индекса или constraint добавляй новой migration version и одновременно
   обновляй bootstrap. Не скрывай migration errors широким `catch`.
 - База с `user_version > DB_SCHEMA_VERSION` не открывается.
+- Подключения: WAL, `synchronous = NORMAL` (коммит не ждёт fsync, сбой
+  питания откатывает последние транзакции, но не портит базу), mmap 1 ГиБ,
+  `journal_size_limit`, `temp_store = MEMORY` — только после VACUUM. После
+  миграций `initDb()` запускает VACUUM, если свободно больше 20% и 256 МиБ
+  (минуты на гигабайтах, бот в это время не в сети), с
+  `auto_vacuum = INCREMENTAL`. `db/maintenance.ts` в процессе бота переводит
+  старые gzip-блобы в zstd, раз в несколько часов делает `PRAGMA optimize` и
+  возвращает ОС свободные страницы порциями; останавливается до CPU pool.
 - Частые file-backed записи ingest, parser history и player-board publication
   выполняются типизированными worker-задачами
   `persist-ingested-battle`, `record-parse-result` и
@@ -358,8 +377,9 @@ Scheduler запускает sources сразу, не допускает overlap
 
 AIMD admission и process byte budget ограничивают давление на CDN, pool, SQLite
 и RAM. Budget timeout откладывает item без увеличения attempts. После успешного
-commit replay-cache конкретной сессии удаляется, потому что строки и gzip
-`events_blob` позволяют восстановить бой.
+commit replay-cache конкретной сессии удаляется, потому что строки и блоб
+событий (`battle_events`: zstd-19, у старых боёв gzip — `events-codec.ts`)
+позволяют восстановить бой.
 
 Replay API показывает часть боёв (~2%) ещё до их конца: `partsCount` и
 `endTime` такой записи ранние, а бот запоминает запись при первом обнаружении
@@ -579,7 +599,7 @@ node:` в `Dockerfile`, поднимай и Node Linux-job. Dependabot прис�
 он роняет процесс тестов с fetch (libuv assert), а зависающих тестов нет.
 
 Baseline на **2026-10-01**: `npm run build` и `npm run verify` проходят,
-`npm test` даёт **273 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
+`npm test` даёт **284 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
 новый count; любое новое падение считай регрессией.
 
 Команды с внешними или локальными side effects не запускай только ради smoke

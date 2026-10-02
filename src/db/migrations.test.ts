@@ -488,3 +488,138 @@ test('миграция v15 добавляет поля сборщика: про�
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('миграция v16 достаёт сведения об аккаунте из сохранённых снимков', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v16-'))
+  const dbPath = path.join(root, 'v16.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    database.exec('ALTER TABLE player_external_snapshots DROP COLUMN account_json')
+    database.exec("INSERT INTO player_identities (id, wt_user_id, canonical_nick, canonical_nick_search) VALUES (1, '501', 'Pilot', 'pilot')")
+    const snapshot = database.prepare(`
+      INSERT INTO player_external_snapshots (
+        identity_id, source, source_player_id, nick, fetched_at, last_checked_at, status, raw_json, parser_version
+      ) VALUES (1, ?, '501', 'Pilot', ?, ?, 'ok', ?, 'old')
+    `)
+    const statShark = {
+      profile: {
+        Basics: { level: 100, title: 'The Old Guard' },
+        Misc: {
+          registerDay: 1_373_452_206,
+          lastDayOnline: 1_790_650_800,
+          SquadronHistory: [{ ClanID: 1_095_692, ClanTag: '═CH68║', Date: '2026-03-10 02:16:21' }],
+          NameHistory: [{ IGN: 'Pilot', Date: '2026-03-10 02:16:21' }],
+        },
+        Profile: {
+          Leaderboard: {
+            historical: { value_total: { each_player_victories: { value_total: 22_259, idx: 3_777 } } },
+            air_arcade: true,
+          },
+        },
+      },
+    }
+    // Старый снимок и свежий: заполняется только последний успешный.
+    snapshot.run('statshark', 100, 100, JSON.stringify({ profile: { Basics: { level: 1 } } }))
+    snapshot.run('statshark', 200, 200, JSON.stringify(statShark))
+    snapshot.run('official-profile', 200, 200, JSON.stringify({ nick: 'Pilot', level: 99, registrationDate: '10.07.2013', sections: [] }))
+    database.exec('PRAGMA user_version = 15')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const rows = migrated
+        .prepare('SELECT source, fetched_at, account_json FROM player_external_snapshots ORDER BY id')
+        .all() as { source: string; fetched_at: number; account_json: string | null }[]
+      assert.equal(rows[0]?.account_json, null, 'старый снимок не трогаем')
+      const account = JSON.parse(rows[1]?.account_json ?? 'null') as Record<string, unknown>
+      assert.equal(account['level'], 100)
+      assert.equal(account['registeredAt'], 1_373_452_206)
+      assert.deepEqual(account['squadrons'], [{ clanId: 1_095_692, tag: '═CH68║', seenAt: 1_773_108_981 }])
+      assert.deepEqual(account['ranks'], [{ mode: 'historical', metric: 'victories', value: 22_259, place: 3_778 }])
+      const official = JSON.parse(rows[2]?.account_json ?? 'null') as Record<string, unknown>
+      assert.equal(official['level'], 99)
+      assert.equal(official['registeredAt'], 1_373_414_400)
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('миграция v17 выносит блобы событий из battles и чистит индексы', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v17-'))
+  const dbPath = path.join(root, 'v17.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    // Раскладка боевой базы до v17: блоб в середине строки (старые колонки
+    // добавлялись через ALTER после него), rowid-таблица и прежние индексы.
+    const database = new DatabaseSync(dbPath)
+    database.exec(`
+      DROP TABLE battles;
+      DROP TABLE battle_events;
+      CREATE TABLE battles (
+        session_id TEXT PRIMARY KEY, session_hex TEXT NOT NULL, mission_name TEXT NOT NULL, level TEXT NOT NULL,
+        game_mode TEXT, battle_type TEXT, environment TEXT, status TEXT, start_time INTEGER NOT NULL,
+        duration_sec INTEGER NOT NULL, end_time_ms INTEGER NOT NULL DEFAULT 0, team_won INTEGER NOT NULL DEFAULT 0,
+        game_version TEXT, player_count INTEGER NOT NULL DEFAULT 0, kill_count INTEGER NOT NULL DEFAULT 0,
+        events_blob BLOB, ingested_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        mission_settings TEXT, air_unit_count INTEGER, chat_count INTEGER
+      );
+      CREATE INDEX idx_battles_start ON battles (start_time DESC);
+      CREATE INDEX idx_bp_nick ON battle_players (nick);
+      CREATE INDEX idx_bp_nick_nocase ON battle_players (nick COLLATE NOCASE, user_id);
+      CREATE INDEX idx_bp_clan ON battle_players (clan_tag);
+      DROP INDEX idx_snapshots_clan_latest;
+      CREATE INDEX idx_snapshots_clan_nick ON clan_rating_snapshots (clan_tag, nick, id DESC);
+      CREATE INDEX idx_snapshots_clan_cover ON clan_rating_snapshots (clan_tag, nick, id DESC, rating);
+      INSERT INTO battles (
+        session_id, session_hex, mission_name, level, start_time, duration_sec, team_won, kill_count,
+        events_blob, ingested_at, mission_settings, air_unit_count, chat_count
+      ) VALUES
+        ('100', '', 'm1', 'l1', 1000, 600, 1, 7, x'1f8b0102', 5, 'levels/a.blk', 3, 2),
+        ('200', 'c8', 'm2', 'l2', 2000, 700, 2, 0, NULL, 6, NULL, NULL, NULL);
+    `)
+    database.exec('PRAGMA user_version = 16')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const columns = (migrated.prepare('PRAGMA table_info(battles)').all() as { name: string }[]).map((row) => row.name)
+      assert.ok(!columns.includes('events_blob'), 'events_blob ушёл из battles')
+      const ddl = (migrated.prepare("SELECT sql FROM sqlite_master WHERE name = 'battles'").get() as { sql: string }).sql
+      assert.match(ddl, /WITHOUT ROWID/)
+      assert.deepEqual(
+        migrated.prepare('SELECT session_id, session_hex, kill_count, ingested_at, mission_settings, air_unit_count, chat_count FROM battles ORDER BY session_id').all().map((row) => ({ ...row })),
+        [
+          { session_id: '100', session_hex: '0000000000000064', kill_count: 7, ingested_at: 5, mission_settings: 'levels/a.blk', air_unit_count: 3, chat_count: 2 },
+          { session_id: '200', session_hex: 'c8', kill_count: 0, ingested_at: 6, mission_settings: null, air_unit_count: null, chat_count: null },
+        ],
+      )
+      const events = migrated.prepare('SELECT session_id, hex(events_blob) AS blob FROM battle_events').all().map((row) => ({ ...row }))
+      assert.deepEqual(events, [{ session_id: '100', blob: '1F8B0102' }], 'бой без блоба в battle_events не попадает')
+      const indexes = new Set((migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((row) => row.name))
+      for (const name of ['idx_battles_start', 'idx_battles_session_hex', 'idx_battles_metrics', 'idx_snapshots_clan_latest']) {
+        assert.ok(indexes.has(name), `${name} создан`)
+      }
+      for (const name of ['idx_bp_clan', 'idx_bp_nick', 'idx_bp_nick_nocase', 'idx_snapshots_clan_nick', 'idx_snapshots_clan_cover']) {
+        assert.ok(!indexes.has(name), `${name} удалён`)
+      }
+      assert.ok(tableExists(migrated, 'sqlite_stat1'), 'ANALYZE собрал статистику')
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})

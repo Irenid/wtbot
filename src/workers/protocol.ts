@@ -184,6 +184,19 @@ export interface WorkerTaskMap {
     input: { dbPath: string; statements: string[] }
     output: { elapsedMs: number; statements: number }
   }
+  'recompress-events-blobs': {
+    /** Пачка battle_events после afterSessionId в порядке ключа. */
+    input: { dbPath: string; afterSessionId: string; limit: number }
+    output: {
+      /** null — дошли до конца таблицы. */
+      lastSessionId: string | null
+      scanned: number
+      converted: number
+      bytesBefore: number
+      bytesAfter: number
+      elapsedMs: number
+    }
+  }
   'read-site-dashboard-stats': {
     input: { dbPath: string; sinceTs: number; seasonStart: number }
     output: {

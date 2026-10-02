@@ -35,6 +35,7 @@ import { PlayerStatsService } from './player-stats/service.js'
 import { PlayerStatsCoordinator } from './player-stats/comparison.js'
 import { closeWtBrowser } from './parsers/sources/wt-browser.js'
 import { startWtCookieRefresh, stopWtCookieRefresh } from './parsers/sources/wt-request.js'
+import { startDbMaintenance, stopDbMaintenance } from './db/maintenance.js'
 import {
   acquireRecoverableFileLock,
   FileLockTimeoutError,
@@ -398,6 +399,11 @@ async function startServices(): Promise<void> {
   } else {
     console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
   }
+
+  // 6. Обслуживание базы: перевод блобов событий в zstd, optimize и возврат
+  // свободных страниц (db/maintenance.ts).
+  if (shuttingDown) return
+  startDbMaintenance()
 }
 
 await startServices().catch((error: unknown) => {
@@ -416,6 +422,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
   stopWtCookieRefresh()
   const parsersStopped = stopParsers()
   const ingestStopped = stopIngestWorker()
+  const maintenanceStopped = stopDbMaintenance()
   // Все вызовы сначала запрещают новую работу. Общий deadline важен: один
   // voice refresh может последовательно ждать несколько сетевых timeout, а
   // Fastify.close — тот же незавершённый request. После дедлайна process всё
@@ -427,6 +434,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
     voiceTracker?.stop() ?? Promise.resolve(),
     playerStats?.stop() ?? Promise.resolve(),
     ingestStopped,
+    maintenanceStopped,
   ])
   let drainTimer: NodeJS.Timeout | undefined
   const drained = await Promise.race([

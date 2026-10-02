@@ -1,10 +1,10 @@
-import { gunzipSync, gzipSync } from 'node:zlib'
-import { MAX_EVENTS_BLOB_BYTES } from './decompression-limits.js'
+import { gzipSync } from 'node:zlib'
+import { inflateEventsBlob } from './events-codec.js'
 import type { ReplayEvents, SpaceTime } from './replay-events.js'
 
 // Чистое ядро сцены боя для интерактивного плеера: без БД и без Fastify,
 // поэтому файл безопасно импортируется worker-ом (src/workers/entry.ts).
-// Тяжёлая часть (gunzip events_blob, прореживание траекторий, gzip сцены)
+// Тяжёлая часть (распаковка events_blob, прореживание траекторий, gzip сцены)
 // выполняется строго в CPU-воркере.
 
 export const BATTLE_SCENE_VERSION = 2
@@ -219,11 +219,9 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
   }
 }
 
-/** Полный worker-путь: gunzip events_blob → сцена → gzip JSON. */
+/** Полный worker-путь: распаковка events_blob → сцена → gzip JSON для браузера. */
 export function prepareSceneFromBlob(eventsBlob: ArrayBuffer, input: ScenePrepareInput): ArrayBuffer {
-  const events = JSON.parse(
-    gunzipSync(Buffer.from(eventsBlob), { maxOutputLength: MAX_EVENTS_BLOB_BYTES }).toString('utf8'),
-  ) as ReplayEvents
+  const events = JSON.parse(inflateEventsBlob(new Uint8Array(eventsBlob)).toString('utf8')) as ReplayEvents
   const scene = buildBattleScene(events, input)
   const gz = gzipSync(Buffer.from(JSON.stringify(scene), 'utf8'))
   return gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength)

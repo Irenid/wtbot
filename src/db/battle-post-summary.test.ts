@@ -70,7 +70,9 @@ test('battle post summary persists winner, air and chat flags without reading ev
           WHERE session_id = ?
         `)
         .all('1') as { detail: string }[]
-      assert.ok(plan.some((row) => /\bSEARCH battles\b.*\bINDEX\b/i.test(row.detail)))
+      // battles кластеризована по session_id (WITHOUT ROWID): поиск по ключу —
+      // SEARCH ... USING PRIMARY KEY, без отдельного индекса.
+      assert.ok(plan.some((row) => /\bSEARCH battles\b.*\b(?:INDEX|PRIMARY KEY)\b/i.test(row.detail)))
       assert.ok(plan.every((row) => !/\bSCAN battles\b/i.test(row.detail)))
     } finally {
       reader.close()

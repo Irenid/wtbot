@@ -18,10 +18,10 @@ const BIG_TABLES = new Set([
 ])
 
 const ALLOWED_BIG_SCANS: Readonly<Record<string, readonly string[]>> = {
-  clanLatestMembers: ['SCAN clan_rating_snapshots USING INDEX idx_snapshots_clan_nick'],
+  clanLatestMembers: ['SCAN clan_rating_snapshots USING COVERING INDEX idx_snapshots_clan_latest'],
   battlesRecent: ['SCAN battles USING INDEX idx_battles_start'],
   siteReplayPlayerCount: ['SCAN battle_players USING COVERING INDEX idx_bp_user_id'],
-  clanBaselineSumsAll: ['SCAN clan_rating_snapshots USING INDEX idx_snapshots_clan_nick'],
+  clanBaselineSumsAll: ['SCAN clan_rating_snapshots USING COVERING INDEX idx_snapshots_clan_latest'],
 }
 
 function allowedScan(key: string, detail: string): boolean {

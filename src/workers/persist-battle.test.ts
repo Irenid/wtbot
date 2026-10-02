@@ -99,7 +99,11 @@ test('persist-ingested-battle writes battle and ingest state outside the main co
     const database = new DatabaseSync(dbPath, { readOnly: true })
     try {
       const stored = database
-        .prepare('SELECT mission_name, events_blob FROM battles WHERE session_id = ?')
+        .prepare(`
+          SELECT b.mission_name, e.events_blob
+          FROM battles b JOIN battle_events e ON e.session_id = b.session_id
+          WHERE b.session_id = ?
+        `)
         .get(battle.sessionId) as { mission_name: string; events_blob: Uint8Array } | undefined
       assert.equal(stored?.mission_name, battle.missionName)
       assert.deepEqual(Buffer.from(stored?.events_blob ?? []), expectedBlob)
