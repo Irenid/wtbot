@@ -787,9 +787,9 @@ async function main(): Promise<void> {
 
     console.log('[site-api-smoke] OK: поиск, профили, история, кланы, бои, сцена, словарь, SPA и rate limit')
   } finally {
-    // smoke пишет scene-кэш в реальный data/battles — убираем за собой
+    // The scene cache goes to the real data/battles: remove the fixture's file.
     const sceneHex = BigInt('100200304').toString(16).padStart(16, '0')
-    await rm(`./data/battles/${sceneHex}-scene-v1.json.gz`, { force: true }).catch(() => undefined)
+    await rm(`./data/battles/${sceneHex}-scene-v${BATTLE_SCENE_VERSION}.json.gz`, { force: true }).catch(() => undefined)
     await app.close()
     await closeWorkerPool()
     closeDb()
