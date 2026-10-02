@@ -27,9 +27,13 @@ export function SeasonPanel({ context, official = null, compact = false }: {
 }) {
   const season = context.season
   if (!season) return null
-  const officialText = official ? ` · ${t('season.official', { n: official.seasonId })}` : ''
-  const mismatch = official !== null && (official.startsAt !== season.startsAt || official.endsAt !== season.endsAt)
-    ? t('season.mismatch', { range: dayRange(official.startsAt, official.endsAt) })
+  // Название сезона с форума собирается по-русски, поэтому заголовок строится
+  // из дат на языке интерфейса; номер — из игры, если её даты совпадают.
+  const sameDates = official !== null && official.startsAt === season.startsAt && official.endsAt === season.endsAt
+  const heading = sameDates ? t('season.titleNumbered', { n: official.seasonId }) : t('season.title')
+  const range = dayRange(season.startsAt, season.endsAt)
+  const mismatch = official !== null && !sameDates
+    ? t('season.mismatch', { n: official.seasonId, range: dayRange(official.startsAt, official.endsAt) })
     : null
   const current = context.currentStage
   const currentText = current
@@ -41,8 +45,8 @@ export function SeasonPanel({ context, official = null, compact = false }: {
   if (compact) {
     return (
       <div className="notice" style={{ marginBottom: 16 }}>
-        <strong>{t('season.title')}: {season.name}</strong>
-        <span className="muted" style={{ marginLeft: 8 }}>{currentText}{officialText}</span>
+        <strong>{heading}</strong>
+        <span className="muted" style={{ marginLeft: 8 }}>{range} · {currentText}</span>
         {mismatch && <div className="small" style={{ marginTop: 4 }}>{mismatch}</div>}
       </div>
     )
@@ -52,13 +56,8 @@ export function SeasonPanel({ context, official = null, compact = false }: {
     <div className="card" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <h2 style={{ margin: 0 }}>{t('season.title')}: {season.name}</h2>
-          <div className="muted small">
-            {new Date(season.startsAt * 1000).toLocaleDateString(localeTag(), { dateStyle: 'short', timeZone: 'UTC' })}
-            {' – '}
-            {new Date((season.endsAt - 1) * 1000).toLocaleDateString(localeTag(), { dateStyle: 'short', timeZone: 'UTC' })}
-            {officialText}
-          </div>
+          <h2 style={{ margin: 0 }}>{heading}</h2>
+          <div className="muted small">{range}</div>
         </div>
         <span className="chip accent">{current ? currentText : season.active ? t('season.waiting') : t('season.ended')}</span>
       </div>

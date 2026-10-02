@@ -691,11 +691,71 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
   font-size: 12px; color: var(--muted); border-top: 1px solid var(--bg-soft);
 }
 
+/* --- Профиль игрока --- */
+/* Оглавление разделов липнет под стеклянной шапкой (её высота ~56 px). */
+.section-nav {
+  position: sticky; top: 56px; z-index: 40;
+  display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+  margin: 0 -16px 16px; padding: 8px 16px;
+  background: rgba(17, 16, 20, 0.72);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.section-nav::-webkit-scrollbar { display: none; }
+.section-nav button {
+  flex: none; border: 1px solid var(--line); background: var(--bg-soft); color: var(--ink2);
+  border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.section-nav button:hover { color: var(--ink); border-color: var(--line2); }
+.section-nav button:focus-visible { outline: 1px solid var(--accent); }
+/* Раздел после прокрутки не прячется под шапкой и оглавлением. */
+.player-section { scroll-margin-top: 112px; }
+.hero-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
+.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.hero-actions a.btn { color: var(--ink); text-decoration: none; }
+.chip-action {
+  margin-left: 6px; border: none; background: none; color: var(--ink2);
+  cursor: pointer; font: inherit; padding: 0; line-height: 1;
+}
+.chip-action:hover, .chip-action:focus-visible { color: var(--accent); }
+.timeline { list-style: none; margin: 0; padding: 0 0 0 16px; border-left: 2px solid var(--line); }
+.timeline li { position: relative; padding: 5px 0; font-size: 13.5px; }
+.timeline li::before {
+  content: ''; position: absolute; left: -22px; top: 11px;
+  width: 10px; height: 10px; border-radius: 50%; background: var(--line2);
+}
+.timeline li.current::before { background: var(--accent); box-shadow: 0 0 0 3px rgba(245, 188, 74, 0.2); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.toolbar .input { flex: 1 1 220px; width: auto; min-width: 0; }
+.toolbar .select { flex: 0 1 180px; width: auto; min-width: 0; }
+.sort-button {
+  border: none; background: none; color: inherit; cursor: pointer; padding: 0;
+  font: inherit; text-transform: inherit; letter-spacing: inherit;
+}
+.sort-button:hover, .sort-button:focus-visible { color: var(--ink); }
+/* Разбор реплеев: в панелях таблицы — не уже 460 px, иначе столбцы обрезаются. */
+.insights-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); gap: 0 16px; align-items: start; }
+.insights-grid .tbl-scroll { margin: 0 -16px; }
+.insights-grid .tbl-scroll > table { min-width: 0; }
+.insights-grid .tbl th:first-child, .insights-grid .tbl td:first-child { padding-left: 16px; white-space: normal; }
+.insights-grid .tbl th:last-child, .insights-grid .tbl td:last-child { padding-right: 16px; }
+/* Тепловая карта активности: одна шкала яркости акцента, пустые ячейки — линия. */
+.heatmap { display: grid; grid-template-columns: auto repeat(24, minmax(0, 1fr)); gap: 2px; align-items: center; }
+.heatmap-hour { font-size: 9.5px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+.heatmap-day { font-size: 11px; color: var(--ink2); padding-right: 6px; }
+.heatmap-cell { aspect-ratio: 1; border-radius: 3px; background: var(--accent); min-width: 5px; }
+.heatmap-cell[data-empty] { background: var(--line); }
+.heatmap-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.heatmap-legend { display: inline-flex; align-items: center; gap: 4px; }
+.heatmap-legend .heatmap-cell { display: inline-block; width: 10px; height: 10px; min-width: 10px; }
+
 @media (max-width: 1083px) {
   .week-activity-card { grid-column: 1 / -1; }
 }
 
 @media (max-width: 640px) {
+  /* Шапка здесь в две строки (~100 px): липкое оглавление ушло бы под неё. */
+  .section-nav { position: static; }
   .bar-row { grid-template-columns: 96px 1fr 80px; }
   .hero-card .aside { border-left: none; padding-left: 0; margin-left: 0; text-align: left; }
   .tbl-scroll { margin: 0 -16px; }

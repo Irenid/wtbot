@@ -1,6 +1,6 @@
 // Форматирование по текущей локали интерфейса; правила из Discord-борда:
 // null → «—» (не ноль), винрейт с одним знаком.
-import { localeTag, t } from '../i18n'
+import { localeTag, t, tp } from '../i18n'
 
 export function fmtInt(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : value.toLocaleString(localeTag())
@@ -218,4 +218,39 @@ export function nationLabel(country: string): string {
     case 'israel': return t('nation.israel')
     default: return country
   }
+}
+
+/** Место в рейтинге: «#3 778». */
+export function fmtPlace(place: number | null | undefined): string {
+  return place === null || place === undefined ? '—' : `#${fmtInt(place)}`
+}
+
+/** Рейтинг WT StatShark: «Все · РБ», «Танки · АБ». */
+export function rankModeLabel(mode: string): string {
+  const [branch, difficulty] = mode.includes('_') ? mode.split(/_(?=[a-z]+$)/) as [string, string] : ['all', mode]
+  const branchLabel = branch === 'tank' ? t('rankMode.tank')
+    : branch === 'air' ? t('rankMode.air')
+      : branch === 'helicopter' ? t('rankMode.helicopter')
+        : branch === 'test_ship' ? t('rankMode.ship')
+          : t('rankMode.all')
+  return `${branchLabel} · ${difficultyShortLabel(difficulty)}`
+}
+
+export function rankMetricLabel(metric: string): string {
+  switch (metric) {
+    case 'battles': return t('player.rankMetric.battles')
+    case 'victories': return t('player.rankMetric.victories')
+    case 'winRate': return t('player.rankMetric.winRate')
+    case 'score': return t('player.rankMetric.score')
+    case 'airKills': return t('player.rankMetric.airKills')
+    case 'groundKills': return t('player.rankMetric.groundKills')
+    default: return metric
+  }
+}
+
+/** Давность: «13 лет», «3 месяца» (меньше месяца — «0 месяцев»). */
+export function fmtAge(fromTs: number, nowTs: number = Math.floor(Date.now() / 1000)): string {
+  const days = Math.max(0, (nowTs - fromTs) / 86_400)
+  const years = Math.floor(days / 365.25)
+  return years >= 1 ? tp('common.years', years) : tp('common.months', Math.floor(days / 30.44))
 }

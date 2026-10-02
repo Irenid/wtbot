@@ -32,6 +32,8 @@ export const spaRoutes: FastifyPluginAsync = async (app) => {
     },
   })
   app.get('/app', async (_request, reply) => reply.sendFile('index.html'))
+  // Корень префикса: @fastify/static с index: false отдавал на /app/ 403.
+  app.get('/app/', async (_request, reply) => reply.sendFile('index.html'))
   app.setNotFoundHandler(async (request, reply) => {
     if (request.method === 'GET' && request.url.startsWith('/app/')) {
       return reply.sendFile('index.html')

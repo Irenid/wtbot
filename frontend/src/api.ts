@@ -14,14 +14,25 @@ export class SiteApiError extends Error {
   }
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: { accept: 'application/json' } })
+async function readJson<T>(response: Response): Promise<T> {
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) {
     const err = (body ?? {}) as Partial<ApiError>
     throw new SiteApiError(response.status, err.code ?? 'ERROR', err.error ?? `HTTP ${response.status}`)
   }
   return body as T
+}
+
+async function getJson<T>(url: string): Promise<T> {
+  return readJson<T>(await fetch(url, { headers: { accept: 'application/json' } }))
+}
+
+async function postJson<T>(url: string, payload: unknown): Promise<T> {
+  return readJson<T>(await fetch(url, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  }))
 }
 
 export interface PlayerSearchEntry {
@@ -97,6 +108,77 @@ export interface AccountView {
   vehicleCount: number
   /** Техника, элитная техника и медали по нациям; есть только у официального профиля. */
   countries: ExternalCountry[]
+  /** Уровень, даты, история кланов и ников, места в рейтингах WT; null — источник не дал. */
+  account: PlayerAccount | null
+}
+
+export type PlayerRankMetric = 'battles' | 'victories' | 'winRate' | 'score' | 'airKills' | 'groundKills'
+
+export interface PlayerAccount {
+  level: number | null
+  title: string | null
+  registeredAt: number | null
+  /** День последнего входа (точность источника — сутки). */
+  lastOnlineAt: number | null
+  /** Новые первыми; coreTag — ядро тега, если клан есть на сайте. */
+  squadrons: { clanId: number | null; tag: string; seenAt: number; coreTag: string | null }[]
+  /** Новые первыми. */
+  names: { nick: string; seenAt: number }[]
+  /** Места в рейтингах WT; place — с 1. */
+  ranks: { mode: string; metric: PlayerRankMetric; value: number; place: number }[]
+  /** Места во времени, старые первыми. */
+  rankHistory: { at: number; mode: string; metric: PlayerRankMetric; place: number }[]
+}
+
+/** Текущий клан игрока: coreTag null — клана нет в данных сайта. */
+export interface PlayerClan {
+  coreTag: string | null
+  displayTag: string
+  name: string | null
+  rank: number | null
+  totalRating: number | null
+  members: number | null
+  role: string | null
+  joinedAt: number | null
+  activity: number | null
+}
+
+export interface PlayerInsightClan { clanTag: string; battles: number; wins: number; losses: number }
+export interface PlayerInsightPlayer { userId: string; nick: string; count: number }
+
+/** Разбор локальных реплеев игрока за период (до 500 последних боёв). */
+export interface PlayerInsights {
+  battles: number
+  capped: boolean
+  maps: { mission: string; battles: number; wins: number; losses: number }[]
+  vehicles: { vehicleId: string; battles: number; wins: number; kills: number; deaths: number }[]
+  playedFor: PlayerInsightClan[]
+  opponents: PlayerInsightClan[]
+  teammates: (PlayerInsightPlayer & { wins: number })[]
+  weapons: { weapon: string; kills: number }[]
+  victims: { vehicleId: string; kills: number }[]
+  killers: { vehicleId: string; kills: number }[]
+  preys: PlayerInsightPlayer[]
+  nemeses: PlayerInsightPlayer[]
+  /** Начало боёв, Unix-секунды: часы активности считаются в поясе браузера. */
+  starts: number[]
+}
+
+export function fetchPlayerInsights(
+  kind: 'wt' | 'identity',
+  key: string,
+  days: number,
+): Promise<{ ok: true; days: number; insights: PlayerInsights | null }> {
+  const base = kind === 'wt' ? `/api/players/${key}/insights` : `/api/players/identity/${key}/insights`
+  return getJson(`${base}?days=${days}`)
+}
+
+/**
+ * Просит бота обновить внешние источники игрока. Источник с данными младше
+ * суток не перечитывается; ответ приходит сразу, обновление идёт в фоне.
+ */
+export function requestPlayerStatsRefresh(player: string): Promise<{ ok: true }> {
+  return postJson('/api/player-stats', { player })
 }
 
 export interface ExternalCountry {
@@ -139,6 +221,7 @@ export interface PlayerProfile {
     aliases: { source: string; nick: string; firstSeenAt: number; lastSeenAt: number }[]
   }
   rating: { clanTag: string; rating: number; delta: number | null } | null
+  clan: PlayerClan | null
   accounts: AccountView[]
   replay: ReplayStats | null
 }

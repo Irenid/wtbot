@@ -174,7 +174,23 @@ async function main(): Promise<void> {
     rawJson: '{"version":2}',
     parserVersion: 'site-smoke-v1',
     error: null,
-    normalized: aggregateTotals(110, 61),
+    normalized: {
+      ...aggregateTotals(110, 61),
+      // Аккаунт StatShark: клан из истории, известный сайту, получает ядро тега.
+      account: {
+        level: 100,
+        title: 'The Old Guard',
+        registeredAt: 1_373_452_206,
+        lastOnlineAt: nowSec - 86_400,
+        squadrons: [
+          { clanId: 1, tag: CLAN_RAW_TAG, seenAt: nowSec - 3_600 },
+          { clanId: 2, tag: '-NOWHERE-', seenAt: nowSec - 99_999 },
+        ],
+        names: [{ nick: 'PilotOne', seenAt: nowSec - 99_999 }],
+        ranks: [{ mode: 'historical', metric: 'victories', value: 61, place: 3_778 }],
+        rankHistory: [],
+      },
+    },
   })
 
   // Клан: словарь имени + два обхода ПОЛНОГО ростера (контракт clan_roster).
@@ -305,7 +321,18 @@ async function main(): Promise<void> {
       ok: true
       player: { identityId: number | null; nick: string; wtUserId: string | null; aliases: unknown[] }
       rating: { rating: number; delta: number | null } | null
-      accounts: { source: string; totals: unknown[]; vehicles: unknown[]; countries: unknown[] }[]
+      accounts: {
+        source: string
+        totals: unknown[]
+        vehicles: unknown[]
+        countries: unknown[]
+        account: {
+          level: number | null
+          squadrons: { tag: string; coreTag: string | null }[]
+          ranks: { place: number }[]
+        } | null
+      }[]
+      clan: { coreTag: string | null; role: string | null; joinedAt: number | null; rank: number | null } | null
       replay: { battles: number; wins: number; losses: number } | null
     }
     assert.equal(profileBody.player.nick, 'PilotOne')
@@ -315,6 +342,33 @@ async function main(): Promise<void> {
     assert.equal(profileBody.accounts.length, 1)
     assert.equal(profileBody.accounts[0]?.source, 'statshark')
     assert.deepEqual(profileBody.accounts[0]?.countries, [], 'нации есть только у официального профиля')
+    const account = profileBody.accounts[0]?.account
+    assert.equal(account?.level, 100)
+    assert.deepEqual(account?.squadrons.map((squadron) => squadron.coreTag), ['tst', null],
+      'ссылка только на клан, который есть на сайте')
+    assert.equal(account?.ranks[0]?.place, 3_778)
+    // Клан игрока: по снимку ПКР сезона, роль и дата — из ростера claninfo.
+    assert.equal(profileBody.clan?.coreTag, 'tst')
+    assert.equal(profileBody.clan?.role, 'Commander')
+    assert.equal(profileBody.clan?.joinedAt, nowSec - 400 * 86_400)
+    assert.ok((profileBody.clan?.rank ?? 0) >= 1)
+
+    // --- Аналитика по реплеям: та же выборка боёв, что у replay-статистики ---
+    const insights = await app.inject({ method: 'GET', url: '/api/players/501/insights?days=30' })
+    assert.equal(insights.statusCode, 200)
+    const insightsBody = insights.json() as {
+      days: number
+      insights: { battles: number; starts: number[]; maps: { battles: number }[]; teammates: { nick: string }[] } | null
+    }
+    assert.equal(insightsBody.days, 30)
+    assert.equal(insightsBody.insights?.battles, 4)
+    assert.equal(insightsBody.insights?.starts.length, 4)
+    assert.equal(insightsBody.insights?.maps[0]?.battles, 4)
+    assert.deepEqual(insightsBody.insights?.teammates.map((mate) => mate.nick), ['Wingman'])
+    const insightsByIdentity = await app.inject({ method: 'GET', url: `/api/players/identity/${identity.id}/insights` })
+    assert.equal((insightsByIdentity.json() as { insights: { battles: number } | null }).insights?.battles, 4)
+    assert.equal((await app.inject({ method: 'GET', url: '/api/players/999999/insights' })).statusCode, 404)
+    assert.equal((await app.inject({ method: 'GET', url: '/api/players/501/insights?days=1' })).statusCode, 400)
     assert.equal(profileBody.replay?.battles, 4)
     assert.equal(profileBody.replay?.wins, 3)
     assert.equal(profileBody.replay?.losses, 1)
@@ -577,6 +631,9 @@ async function main(): Promise<void> {
       const spaIndex = await app.inject({ method: 'GET', url: '/app' })
       assert.equal(spaIndex.statusCode, 200)
       assert.match(spaIndex.headers['content-type'] ?? '', /text\/html/)
+      const spaRoot = await app.inject({ method: 'GET', url: '/app/' })
+      assert.equal(spaRoot.statusCode, 200, '/app/ со слэшем — тот же index.html')
+      assert.match(spaRoot.headers['content-type'] ?? '', /text\/html/)
       const spaFallback = await app.inject({ method: 'GET', url: '/app/players/12345' })
       assert.equal(spaFallback.statusCode, 200, 'клиентские маршруты должны отдавать index.html')
       assert.match(spaFallback.headers['content-type'] ?? '', /text\/html/)

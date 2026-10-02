@@ -525,6 +525,15 @@ delta/XOR/RLE.
   через явный `WebDeps`, не скрытый global singleton. API должен иметь schema,
   bounded limits и подходящий rate limit.
 
+Страница игрока (`/app/players/…`) читает `/api/players/:key` (профиль, клан
+игрока с ролью из ростера, источники с `account` — уровень, даты, история
+кланов и ников, места в рейтингах WT) и `/api/players/:key/insights?days=`
+— разбор локальных реплеев (карты, техника, кланы, напарники, оружие,
+соперники, часы игры) по последним 500 боям периода. Аналитика читается в
+worker-задаче `read-player-insights` со своим read-only подключением, кэш —
+минута, вес в rate limit — 2. Кнопка «обновить» шлёт POST `/api/player-stats`:
+источники младше суток не перечитываются.
+
 `/api/player-stats` принимает только точный известный nick или стабильный WT
 user id. Каждый включённый external source имеет однослотовую lazy queue, TTL
 24 часа, stale fallback, schema validation и локальный rate limit. Replay и
@@ -599,7 +608,7 @@ node:` в `Dockerfile`, поднимай и Node Linux-job. Dependabot прис�
 он роняет процесс тестов с fetch (libuv assert), а зависающих тестов нет.
 
 Baseline на **2026-10-01**: `npm run build` и `npm run verify` проходят,
-`npm test` даёт **284 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
+`npm test` даёт **285 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
 новый count; любое новое падение считай регрессией.
 
 Команды с внешними или локальными side effects не запускай только ради smoke

@@ -4411,12 +4411,24 @@ function countInto(counts: Map<string, number>, key: string): void {
  * Разбор локальных реплеев игрока за период: карты, техника, кланы, напарники,
  * оружие и соперники. Три индексированных запроса (бои игрока, все игроки этих
  * боёв, убийства с его участием) и подсчёт в JS; не больше
- * PLAYER_INSIGHT_MAX_SESSIONS последних боёв.
+ * PLAYER_INSIGHT_MAX_SESSIONS последних боёв. На холодном кэше у завсегдатая
+ * это ~0,3 с чтений, поэтому сайт зовёт функцию в worker со своим read-only
+ * подключением (database); без него — основное подключение (тесты, :memory:).
  */
-export function getPlayerReplayInsights(userId: string, fromTs: number, toTs: number): PlayerReplayInsights {
+export function getPlayerReplayInsights(
+  userId: string,
+  fromTs: number,
+  toTs: number,
+  database?: DatabaseSync,
+): PlayerReplayInsights {
   const id = userId.trim()
   if (!/^\d{1,20}$/.test(id)) throw new Error('Для аналитики игрока нужен числовой WT user id')
-  const sessions = siteStatement('playerInsightSessions')
+  if (!Number.isSafeInteger(fromTs) || !Number.isSafeInteger(toTs) || fromTs > toTs) {
+    throw new RangeError('Период аналитики игрока задан неверно')
+  }
+  const statement = (key: 'playerInsightSessions' | 'playerInsightPlayers' | 'playerInsightKills') =>
+    database ? database.prepare(SITE_SQL[key]) : siteStatement(key)
+  const sessions = statement('playerInsightSessions')
     .all(id, fromTs, toTs, PLAYER_INSIGHT_MAX_SESSIONS + 1) as unknown as {
       session_id: string
       start_time: number
@@ -4469,7 +4481,7 @@ export function getPlayerReplayInsights(userId: string, fromTs: number, toTs: nu
   const sessionIds = JSON.stringify([...mine.keys()])
   const playerRows = sessions.length === 0
     ? []
-    : siteStatement('playerInsightPlayers').all(sessionIds) as unknown as {
+    : statement('playerInsightPlayers').all(sessionIds) as unknown as {
       session_id: string
       user_id: string
       nick: string
@@ -4530,7 +4542,7 @@ export function getPlayerReplayInsights(userId: string, fromTs: number, toTs: nu
   const nemeses = new Map<string, number>()
   const kills = sessions.length === 0
     ? []
-    : siteStatement('playerInsightKills').all(sessionIds, id, id) as unknown as {
+    : statement('playerInsightKills').all(sessionIds, id, id) as unknown as {
       session_id: string
       killer_id: string
       killer_model: string

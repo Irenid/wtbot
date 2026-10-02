@@ -376,6 +376,29 @@ async function warmSqlite(
   }
 }
 
+/** Аналитика игрока по реплеям (db/index.ts) на отдельном read-only подключении. */
+async function readPlayerInsights(
+  input: Extract<AnyWorkerTask, { kind: 'read-player-insights' }>['input'],
+): Promise<{ value: WorkerTaskResult<'read-player-insights'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`SQLite сайта не найден: ${input.dbPath}`)
+  const [{ DatabaseSync }, { getPlayerReplayInsights }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 1073741824;')
+    database.exec('PRAGMA cache_size = -65536;')
+    database.exec('PRAGMA temp_store = MEMORY;')
+    const insights = getPlayerReplayInsights(input.userId, input.fromTs, input.toTs, database)
+    return { value: { ...insights, elapsedMs: performance.now() - started }, transfer: [] }
+  } finally {
+    database.close()
+  }
+}
+
 /**
  * Фоновый перевод старых gzip-блобов событий в zstd (events-codec.ts): пачка
  * по ключу после afterSessionId. Распаковка и сжатие — здесь, в worker;
@@ -780,6 +803,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return readSiteDashboardStats(task.input)
     case 'recompress-events-blobs':
       return recompressEventsBlobs(task.input)
+    case 'read-player-insights':
+      return readPlayerInsights(task.input)
     case 'render-scoreboard':
       return await renderScoreboard(task.input)
     case 'render-media':

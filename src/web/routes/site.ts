@@ -5,6 +5,7 @@ import {
   getClanRatingsWithDelta,
   getOfficialClanSeason,
   getDbWorkerPath,
+  getPlayerReplayInsights,
   getLatestPlayerExternalCheck,
   getLatestPlayerExternalStats,
   getPlayerIdentityAliases,
@@ -42,7 +43,8 @@ import {
   type SiteBattleListRow,
   type SiteClanMemberLatest,
 } from '../../db/index.js'
-import type { ClanSeasonRewards } from '../../db/index.js'
+import type { ClanSeasonRewards, PlayerReplayInsights, SiteClanRosterDetails } from '../../db/index.js'
+import type { PlayerAccount, PlayerAccountSquadron } from '../../player-stats/account.js'
 import type { PlayerIdentity } from '../../player-stats/types.js'
 import { runWorkerTask } from '../../workers/pool.js'
 import { buildBattleSceneGzip, loadBattleSceneMap } from '../../wrpl/battle-scene.js'
@@ -405,17 +407,31 @@ interface SiteAccountView {
   vehicleCount: number
   /** Техника, элитная техника и медали по нациям (только официальный профиль). */
   countries: unknown[]
+  /** Уровень, даты, история кланов и ников, места в рейтингах WT. */
+  account: SiteAccountProfile | null
 }
 
-function buildAccountViews(identity: PlayerIdentity): SiteAccountView[] {
+/** Аккаунт источника; у клана из истории — ядро тега, если клан есть на сайте. */
+type SiteAccountProfile = Omit<PlayerAccount, 'squadrons'> & {
+  squadrons: (PlayerAccountSquadron & { coreTag: string | null })[]
+}
+
+/** Техники в ответе — до 300 строк по вылетам: таблица сайта фильтрует и сортирует их сама. */
+const SITE_ACCOUNT_VEHICLES = 300
+
+function buildAccountViews(
+  identity: PlayerIdentity,
+  knownClanCore: (tag: string) => string | null,
+): SiteAccountView[] {
   const views: SiteAccountView[] = []
   for (const source of SITE_ACCOUNT_SOURCES) {
     const lastCheck = getLatestPlayerExternalCheck(identity.id, source)
     const stats = getLatestPlayerExternalStats(identity.id, source)
     if (!lastCheck && !stats) continue
     const vehicles = stats
-      ? [...stats.vehicles].sort((a, b) => (b.flyouts ?? 0) - (a.flyouts ?? 0)).slice(0, 100)
+      ? [...stats.vehicles].sort((a, b) => (b.flyouts ?? 0) - (a.flyouts ?? 0)).slice(0, SITE_ACCOUNT_VEHICLES)
       : []
+    const account = stats?.account ?? null
     views.push({
       source,
       status: lastCheck?.status ?? 'ok',
@@ -427,6 +443,12 @@ function buildAccountViews(identity: PlayerIdentity): SiteAccountView[] {
       vehicles,
       vehicleCount: stats?.vehicles.length ?? 0,
       countries: stats ? stats.countries.slice(0, 20) : [],
+      account: account === null
+        ? null
+        : {
+          ...account,
+          squadrons: account.squadrons.map((squadron) => ({ ...squadron, coreTag: knownClanCore(squadron.tag) })),
+        },
     })
   }
   return views
@@ -665,12 +687,20 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         return reply.code(400).send({ ok: false, code: 'INVALID_PERIOD', error: 'from не может быть позже to' })
       }
       const aliases = target.identity ? getPlayerIdentityAliases(target.identity.id) : []
-      const accounts = target.identity ? buildAccountViews(target.identity) : []
+      const groups = clanGroups()
+      const knownClanCore = (tag: string): string | null => {
+        const core = plainClanTag(tag)
+        return core !== '' && groups.has(core) ? core : null
+      }
+      const accounts = target.identity ? buildAccountViews(target.identity, knownClanCore) : []
       let replay: PlayerReplayStats | null = null
       if (target.wtUserId) {
         replay = getPlayerReplayStats({ userId: target.wtUserId }, periodFromQuery(request.query))
       }
       const rating = getPlayerRating(target.nick)
+      // Клан — по снимку ПКР сезона, иначе по последней записи истории StatShark.
+      const latestSquadron = accounts.find((account) => account.source === 'statshark')?.account?.squadrons[0]
+      const clan = playerClanView(target.nick, rating?.clanTag ?? latestSquadron?.tag ?? null)
       return {
         ok: true,
         player: {
@@ -686,9 +716,91 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
           })),
         },
         rating,
+        clan,
         accounts,
         replay,
       }
+    }
+
+  /**
+   * Текущий клан игрока для профиля: место и рейтинг клана из снимка сайта,
+   * роль, дата вступления и активность — из ростера claninfo (ник сверяется
+   * без платформенного суффикса). coreTag null — клана нет в данных сайта.
+   */
+  function playerClanView(nick: string, tag: string | null) {
+    if (tag === null) return null
+    const core = plainClanTag(tag)
+    if (core === '') return null
+    const group = clanGroups().get(core)
+    const base = normalizeWtNick(nick)
+    let details: SiteClanRosterDetails | undefined
+    for (const [rosterNick, entry] of getSiteClanRosterDetails(core)) {
+      if (normalizeWtNick(rosterNick) === base) {
+        details = entry
+        break
+      }
+    }
+    return {
+      coreTag: group ? core : null,
+      displayTag: clanDisplayName(group?.displayTag ?? tag),
+      name: group?.name ?? null,
+      rank: group?.rank ?? null,
+      totalRating: group?.totalRating ?? null,
+      members: group ? group.official?.members ?? group.members.length : null,
+      role: details?.role ?? null,
+      joinedAt: details?.joinedAt ?? null,
+      activity: details?.activity ?? null,
+    }
+  }
+
+  // Аналитика по реплеям игрока: до 500 боёв, на холодном кэше ~0,3 с чтений —
+  // в worker со своим подключением; результат кэшируется на минуту, а
+  // одновременные одинаковые запросы ждут одну задачу.
+  const INSIGHTS_TTL_MS = 60_000
+  const INSIGHTS_CACHE_LIMIT = 200
+  const insightsCache = new Map<string, { builtAt: number; value: Promise<PlayerReplayInsights> }>()
+  function loadPlayerInsights(userId: string, days: number): Promise<PlayerReplayInsights> {
+    const key = `${userId}:${days}`
+    const now = Date.now()
+    const cached = insightsCache.get(key)
+    if (cached && now - cached.builtAt < INSIGHTS_TTL_MS) return cached.value
+    const toTs = Math.floor(now / 1_000) + 1
+    const fromTs = toTs - 1 - days * DAY_SEC
+    const dbPath = getDbWorkerPath()
+    const value: Promise<PlayerReplayInsights> = dbPath === null
+      ? Promise.resolve().then(() => getPlayerReplayInsights(userId, fromTs, toTs))
+      : runWorkerTask(
+        { kind: 'read-player-insights', input: { dbPath, userId, fromTs, toTs } },
+        { priority: 'interactive', timeoutMs: 30_000 },
+      ).then(({ elapsedMs: _elapsedMs, ...insights }) => insights)
+    insightsCache.delete(key)
+    insightsCache.set(key, { builtAt: now, value })
+    // Отказ не кэшируем: следующий запрос попробует снова.
+    value.catch(() => {
+      if (insightsCache.get(key)?.value === value) insightsCache.delete(key)
+    })
+    while (insightsCache.size > INSIGHTS_CACHE_LIMIT) {
+      const oldest = insightsCache.keys().next().value
+      if (oldest === undefined) break
+      insightsCache.delete(oldest)
+    }
+    return value
+  }
+
+  const insightsHandler = (kind: 'wt' | 'identity') =>
+    async (
+      request: FastifyRequest<{ Params: { key: string }; Querystring: { days?: number } }>,
+      reply: FastifyReply,
+    ) => {
+      // Тяжелее обычного запроса сайта — двойной вес в rate limit.
+      if (!passRateLimit(request, reply, 2)) return reply
+      const target = resolveProfileTarget(kind, request.params.key)
+      if (!target || !target.nick) {
+        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Игрок не найден в локальных данных' })
+      }
+      const days = request.query.days ?? 90
+      if (!target.wtUserId) return { ok: true, days, insights: null }
+      return { ok: true, days, insights: await loadPlayerInsights(target.wtUserId, days) }
     }
 
   const profileParamsWt = {
@@ -771,6 +883,16 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     '/api/players/identity/:key/history',
     { schema: { params: profileParamsIdentity, querystring: historyQuerystring } },
     historyHandler('identity'),
+  )
+  app.get<{ Params: { key: string }; Querystring: { days?: number } }>(
+    '/api/players/:key/insights',
+    { schema: { params: profileParamsWt, querystring: historyQuerystring } },
+    insightsHandler('wt'),
+  )
+  app.get<{ Params: { key: string }; Querystring: { days?: number } }>(
+    '/api/players/identity/:key/insights',
+    { schema: { params: profileParamsIdentity, querystring: historyQuerystring } },
+    insightsHandler('identity'),
   )
 
   // Плитки главной пересчитывают агрегаты всей БД — кэшируем как кланы.

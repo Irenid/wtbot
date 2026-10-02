@@ -1,4 +1,4 @@
-import type { BattleInput } from '../db/index.js'
+import type { BattleInput, PlayerReplayInsights } from '../db/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
@@ -183,6 +183,10 @@ export interface WorkerTaskMap {
   'warm-sqlite': {
     input: { dbPath: string; statements: string[] }
     output: { elapsedMs: number; statements: number }
+  }
+  'read-player-insights': {
+    input: { dbPath: string; userId: string; fromTs: number; toTs: number }
+    output: PlayerReplayInsights & { elapsedMs: number }
   }
   'recompress-events-blobs': {
     /** Пачка battle_events после afterSessionId в порядке ключа. */
