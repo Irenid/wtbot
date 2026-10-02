@@ -34,7 +34,7 @@ import {
 import { isBattleHeatmapKind } from '../../wrpl/battle-media-kind.js'
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
 import { fetchRatingsForTags, type ClanRating } from '../../wrpl/clan-info.js'
-import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
+import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 import type { WorkerPriority } from '../../workers/pool.js'
@@ -412,6 +412,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     missionName: data?.missionName ?? item?.title ?? '',
     gameMode: data?.gameMode,
     gameVersion: data?.gameVersion,
+    fakeNames: fakeNamesFromItem(data ?? {}),
   }
   let media: Buffer | null = null
 

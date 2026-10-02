@@ -115,3 +115,20 @@ test('BitReader не сдвигает позицию при обрезанном
     assert.equal(reader.bitOffset, 1)
   }
 })
+
+test('BitReader читает строку с длиной-varint: короткую как раньше, длинную целиком', () => {
+  const short = Buffer.concat([Buffer.from([5]), Buffer.from('hello'), Buffer.from([1])])
+  const reader = new BitReader(short)
+  assert.equal(reader.readVarLenStr(), 'hello')
+  assert.equal(reader.readByte(), 1)
+
+  // 200 байт: длина 0xC8 0x01 (LEB128). Однобайтовая длина прочитала бы 0xC8
+  // байт начиная с 0x01 и потеряла хвост — так ломались длинные сообщения чата.
+  const text = 'ж'.repeat(100)
+  const long = Buffer.concat([Buffer.from([0xc8, 0x01]), Buffer.from(text), Buffer.from([2])])
+  const longReader = new BitReader(long)
+  assert.equal(longReader.readVarLenStr(), text)
+  assert.equal(longReader.readByte(), 2, 'канал — сразу после текста')
+
+  assert.throws(() => new BitReader(Buffer.from([0xc8, 0x01, 1, 2])).readVarLenStr(), EofError)
+})

@@ -6,6 +6,7 @@ import type {
 } from '../db/index.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
 import { decodeEventsPayloadProfiled, encodeEventsJson, type EventsDecodeProfile } from './events-codec.js'
+import { canonicalizeReplayEvents } from './events-repair.js'
 import { parseComponentHashMaps } from './ecs.js'
 import {
   extractReplayEventsProfiled,
@@ -28,6 +29,8 @@ export interface BattleItemMeta {
   gameVersion?: string | undefined
   /** userId состава боя по Replay API; без него игроки results-BLK не отбрасываются. */
   listedUserIds?: string[] | undefined
+  /** Анонимное имя → настоящее (fakeNamesFromItem): отправители чата. */
+  fakeNames?: [string, string][] | undefined
 }
 
 export interface ParsedBattle {
@@ -81,6 +84,7 @@ export async function parseBattleParts(
   const eventsMs = extracted.profile.totalMs
   phaseStarted = performance.now()
   roundEventsInPlace(events)
+  canonicalizeReplayEvents(events, new Map(meta.fakeNames ?? []))
   const slotByUserId = new Map(events.players.map((slot) => [slot.userId, slot]))
   for (const player of results.players) {
     const slot = slotByUserId.get(player.userId)
@@ -155,6 +159,35 @@ export function battleParticipants<T extends { userId: string; vehicles: readonl
   return players.filter((player) => !(player.userId.startsWith('-') && player.vehicles.length === 0 && !listed.has(player.userId)))
 }
 
+/**
+ * Строки battle_kills и battle_chat из событий: общий путь ingest и
+ * фоновой починки записанных боёв (repair-battle-events).
+ */
+export function battleEventRows(events: Pick<ReplayEvents, 'kills' | 'chat'>): {
+  kills: BattleKillInput[]
+  chat: BattleChatInput[]
+} {
+  return {
+    kills: events.kills.map((kill) => ({
+      timeMs: kill.time,
+      killerId: kill.killerId,
+      killerModel: kill.killerModel,
+      victimId: kill.victimId,
+      victimModel: kill.victimModel,
+      weapon: kill.weapon,
+      killerPos: pos(kill.killerPos),
+      victimPos: pos(kill.victimPos),
+    })),
+    chat: events.chat.map((message) => ({
+      timeMs: message.time,
+      sender: message.sender,
+      channel: message.channel,
+      channelValid: message.channelValid ?? isValidReplayChatChannel(message.channel),
+      message: message.message,
+    })),
+  }
+}
+
 function buildBattleInput(
   meta: BattleItemMeta,
   header: WrplHeader,
@@ -195,23 +228,7 @@ function buildBattleInput(
     }
   })
 
-  const kills: BattleKillInput[] = events.kills.map((kill) => ({
-    timeMs: kill.time,
-    killerId: kill.killerId,
-    killerModel: kill.killerModel,
-    victimId: kill.victimId,
-    victimModel: kill.victimModel,
-    weapon: kill.weapon,
-    killerPos: pos(kill.killerPos),
-    victimPos: pos(kill.victimPos),
-  }))
-  const chat: BattleChatInput[] = events.chat.map((message) => ({
-    timeMs: message.time,
-    sender: message.sender,
-    channel: message.channel,
-    channelValid: message.channelValid ?? isValidReplayChatChannel(message.channel),
-    message: message.message,
-  }))
+  const { kills, chat } = battleEventRows(events)
 
   return {
     sessionId: header.sessionId,

@@ -145,6 +145,16 @@ export class BitReader {
     return this.readBytes(l).toString('utf8')
   }
 
+  /**
+   * Строка с длиной-varint (readCompressed): до 127 байт совпадает с
+   * readLenStr, длиннее — длина занимает два байта и больше. Сообщение чата
+   * длиннее 127 байт через readLenStr теряло хвост, а «канал» читался из
+   * середины текста.
+   */
+  readVarLenStr(): string {
+    return this.readBytes(this.readCompressed()).toString('utf8')
+  }
+
   /** LEB128-подобный varint по 7 бит */
   readCompressed(): number {
     let v = 0

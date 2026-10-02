@@ -6,10 +6,12 @@ import { runWorkerTask } from '../workers/pool.js'
  * SQLite — в worker-задачах на своём подключении, main thread только
  * планирует:
  *
- * - перевод блобов событий в колоночный формат (events-codec.ts) пачками:
- *   ~70 → 20 КиБ на бой у zstd-JSON и ~130 → 20 КиБ у gzip; курсор в bot_state
- *   переживает перезапуск, в конце таблицы задача останавливается. Каждая
- *   пачка сразу возвращает ОС освободившиеся страницы;
+ * - проход починки записанных боёв (repair-battle-events): события — в
+ *   канонический вид events-repair.ts и колоночный формат events-codec.ts,
+ *   пустые slot, title и счётчики — из событий. Курсор в bot_state
+ *   переживает перезапуск; в конце таблицы проход отмечается выполненным.
+ *   Новое правило починки — новая REPAIR_VERSION: проход повторяется по всем
+ *   боям. Каждая пачка сразу возвращает ОС освободившиеся страницы;
  * - раз в несколько часов PRAGMA optimize и возврат ОС оставшихся свободных
  *   страниц (incremental_vacuum) порциями, пока они есть.
  *
@@ -17,17 +19,27 @@ import { runWorkerTask } from '../workers/pool.js'
  * CPU pool (shutdown в index.ts).
  */
 
-const RECOMPRESS_CURSOR_KEY = 'db-maintenance:events-columnar-after'
-const RECOMPRESS_DONE_KEY = 'db-maintenance:events-columnar-done'
-/** Курсор прежнего перевода gzip → zstd-JSON: колоночный перевод его заменил. */
-const LEGACY_RECOMPRESS_KEYS = ['db-maintenance:recompress-after', 'db-maintenance:recompress-done'] as const
-/** Пачка ~20 боёв: кодирование с проверкой ~45 мс на бой, пачка держит worker ~1 с. */
-const RECOMPRESS_BATCH = 20
-const RECOMPRESS_PAUSE_MS = 2_000
-const RECOMPRESS_RETRY_MS = 5 * 60_000
-/** Пачка освобождает ~500 страниц; потолок — с запасом, шаги короткие. */
-const RECOMPRESS_VACUUM_PAGES = 4_096
-const RECOMPRESS_PROGRESS_EVERY = 5_000
+/** v1 (2026-10-02): аудит данных — docs/database.md, «Ошибки в данных». */
+const REPAIR_VERSION = 1
+const REPAIR_CURSOR_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-after`
+const REPAIR_DONE_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-done`
+/** Курсоры прежних проходов (gzip → zstd-JSON, перевод в колоночный формат). */
+const LEGACY_REPAIR_KEYS = [
+  'db-maintenance:recompress-after',
+  'db-maintenance:recompress-done',
+  'db-maintenance:events-columnar-after',
+  'db-maintenance:events-columnar-done',
+] as const
+/**
+ * Пачка 50 боёв: распаковка и проверка ~2 мс на бой, перекодирование —
+ * ~45 мс только у починенных; транзакция записи — десятки миллисекунд.
+ */
+const REPAIR_BATCH = 50
+const REPAIR_PAUSE_MS = 500
+const REPAIR_RETRY_MS = 5 * 60_000
+/** Пачка освобождает немного страниц; потолок — с запасом, шаги короткие. */
+const REPAIR_VACUUM_PAGES = 4_096
+const REPAIR_PROGRESS_EVERY = 10_000
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000
 /** Пока свободных страниц больше порции — следующая порция через 2 минуты. */
 const MAINTENANCE_BUSY_INTERVAL_MS = 2 * 60_000
@@ -36,70 +48,103 @@ const MAINTENANCE_FIRST_DELAY_MS = 10 * 60_000
 /** 32 МиБ за задачу — шагами по VACUUM_STEP_PAGES (db/index.ts) с паузами. */
 const MAINTENANCE_MAX_PAGES = 8_192
 
-let recompressTimer: NodeJS.Timeout | null = null
+let repairTimer: NodeJS.Timeout | null = null
 let maintenanceTimer: NodeJS.Timeout | null = null
-let recompressRunning: Promise<void> | null = null
+let repairRunning: Promise<void> | null = null
 let maintenanceRunning: Promise<void> | null = null
 let stopped = true
-let totals = { scanned: 0, converted: 0, kept: 0, bytesBefore: 0, bytesAfter: 0, freedBytes: 0 }
-let nextProgressAt = RECOMPRESS_PROGRESS_EVERY
+
+interface RepairTotals {
+  scanned: number
+  rewritten: number
+  changedMeanwhile: number
+  filledRows: number
+  bytesBefore: number
+  bytesAfter: number
+  freedBytes: number
+  repairs: Record<string, number>
+}
+
+function emptyTotals(): RepairTotals {
+  return { scanned: 0, rewritten: 0, changedMeanwhile: 0, filledRows: 0, bytesBefore: 0, bytesAfter: 0, freedBytes: 0, repairs: {} }
+}
+
+let totals = emptyTotals()
+let nextProgressAt = REPAIR_PROGRESS_EVERY
 
 const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(0)
 
-function recompressSummary(): string {
+const REPAIR_LABELS: Record<string, string> = {
+  chatNames: 'имён в чате',
+  duplicateKills: 'дублей убийств',
+  signedIds: 'id ботов',
+  brokenChat: 'обрезанных сообщений',
+  roundedValues: 'дробных координат',
+}
+
+function repairSummary(): string {
+  const fixes = Object.entries(totals.repairs)
+    .filter(([, count]) => count > 0)
+    .map(([key, count]) => `${REPAIR_LABELS[key] ?? key} ${count}`)
   return (
-    `${totals.converted} боёв, ${mib(totals.bytesBefore)} → ${mib(totals.bytesAfter)} МиБ` +
-    (totals.kept > 0 ? `, ${totals.kept} оставлено в zstd-JSON` : '') +
-    `, возвращено ОС ${mib(totals.freedBytes)} МиБ`
+    `боёв ${totals.scanned}, переписано ${totals.rewritten} ` +
+    `(${mib(totals.bytesBefore)} → ${mib(totals.bytesAfter)} МиБ), заполнено строк ${totals.filledRows}` +
+    (fixes.length > 0 ? `; исправлено: ${fixes.join(', ')}` : '') +
+    (totals.changedMeanwhile > 0 ? `; переразобраны во время прохода ${totals.changedMeanwhile}` : '') +
+    `; возвращено ОС ${mib(totals.freedBytes)} МиБ`
   )
 }
 
-function scheduleRecompress(delayMs: number): void {
+function scheduleRepair(delayMs: number): void {
   if (stopped) return
-  recompressTimer = setTimeout(() => {
-    recompressTimer = null
-    recompressRunning = recompressBatch().finally(() => {
-      recompressRunning = null
+  repairTimer = setTimeout(() => {
+    repairTimer = null
+    repairRunning = repairBatch().finally(() => {
+      repairRunning = null
     })
   }, delayMs)
-  recompressTimer.unref()
+  repairTimer.unref()
 }
 
-async function recompressBatch(): Promise<void> {
+async function repairBatch(): Promise<void> {
   const dbPath = getDbWorkerPath()
   if (stopped || dbPath === null) return
-  const after = getBotState(RECOMPRESS_CURSOR_KEY) ?? ''
+  const after = getBotState(REPAIR_CURSOR_KEY) ?? ''
   try {
     const result = await runWorkerTask(
       {
-        kind: 'recompress-events-blobs',
-        input: { dbPath, afterSessionId: after, limit: RECOMPRESS_BATCH, vacuumPages: RECOMPRESS_VACUUM_PAGES },
+        kind: 'repair-battle-events',
+        input: { dbPath, afterSessionId: after, limit: REPAIR_BATCH, vacuumPages: REPAIR_VACUUM_PAGES },
       },
       { priority: 'background', timeoutMs: 120_000 },
     )
+    const repairs = { ...totals.repairs }
+    for (const [key, count] of Object.entries(result.repairs)) repairs[key] = (repairs[key] ?? 0) + count
     totals = {
       scanned: totals.scanned + result.scanned,
-      converted: totals.converted + result.converted,
-      kept: totals.kept + result.kept,
+      rewritten: totals.rewritten + result.rewritten,
+      changedMeanwhile: totals.changedMeanwhile + result.changedMeanwhile,
+      filledRows: totals.filledRows + result.filledRows,
       bytesBefore: totals.bytesBefore + result.bytesBefore,
       bytesAfter: totals.bytesAfter + result.bytesAfter,
       freedBytes: totals.freedBytes + result.freedBytes,
+      repairs,
     }
     if (result.lastSessionId === null) {
-      setBotState(RECOMPRESS_DONE_KEY, String(Math.floor(Date.now() / 1_000)))
-      if (totals.scanned > 0) console.log(`[db] Блобы событий переведены в колоночный формат: ${recompressSummary()}`)
+      setBotState(REPAIR_DONE_KEY, String(Math.floor(Date.now() / 1_000)))
+      if (totals.scanned > 0) console.log(`[db] Починка записанных боёв v${REPAIR_VERSION} завершена: ${repairSummary()}`)
       return
     }
-    setBotState(RECOMPRESS_CURSOR_KEY, result.lastSessionId)
+    setBotState(REPAIR_CURSOR_KEY, result.lastSessionId)
     if (totals.scanned >= nextProgressAt) {
-      nextProgressAt += RECOMPRESS_PROGRESS_EVERY
-      console.log(`[db] Перевод блобов событий: просмотрено ${totals.scanned}, переведено ${recompressSummary()}`)
+      nextProgressAt += REPAIR_PROGRESS_EVERY
+      console.log(`[db] Починка записанных боёв v${REPAIR_VERSION}: ${repairSummary()}`)
     }
-    scheduleRecompress(RECOMPRESS_PAUSE_MS)
+    scheduleRepair(REPAIR_PAUSE_MS)
   } catch (error) {
     // Сбой пачки (занятая база, timeout пула) не теряет курсор: повтор позже.
-    console.warn(`[db] Перевод блобов событий отложен: ${error instanceof Error ? error.message : String(error)}`)
-    scheduleRecompress(RECOMPRESS_RETRY_MS)
+    console.warn(`[db] Починка записанных боёв отложена: ${error instanceof Error ? error.message : String(error)}`)
+    scheduleRepair(REPAIR_RETRY_MS)
   }
 }
 
@@ -147,19 +192,19 @@ async function runMaintenanceTick(optimize: boolean): Promise<boolean> {
 export function startDbMaintenance(): void {
   if (!stopped) return
   stopped = false
-  totals = { scanned: 0, converted: 0, kept: 0, bytesBefore: 0, bytesAfter: 0, freedBytes: 0 }
-  nextProgressAt = RECOMPRESS_PROGRESS_EVERY
-  for (const key of LEGACY_RECOMPRESS_KEYS) deleteBotState(key)
-  if (getBotState(RECOMPRESS_DONE_KEY) === null) scheduleRecompress(RECOMPRESS_PAUSE_MS)
+  totals = emptyTotals()
+  nextProgressAt = REPAIR_PROGRESS_EVERY
+  for (const key of LEGACY_REPAIR_KEYS) deleteBotState(key)
+  if (getBotState(REPAIR_DONE_KEY) === null) scheduleRepair(REPAIR_PAUSE_MS)
   scheduleMaintenance(MAINTENANCE_FIRST_DELAY_MS, true)
 }
 
 /** Запрещает новые задачи и ждёт текущие: CPU pool закрывается после. */
 export async function stopDbMaintenance(): Promise<void> {
   stopped = true
-  if (recompressTimer) clearTimeout(recompressTimer)
-  recompressTimer = null
+  if (repairTimer) clearTimeout(repairTimer)
+  repairTimer = null
   if (maintenanceTimer) clearTimeout(maintenanceTimer)
   maintenanceTimer = null
-  await Promise.all([recompressRunning, maintenanceRunning])
+  await Promise.all([repairRunning, maintenanceRunning])
 }

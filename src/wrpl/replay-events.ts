@@ -201,7 +201,10 @@ class SlotParser {
     deserializeIdFields255(r, (idx) => {
       switch (idx) {
         case FIELD_UID: {
-          plr.playerId = r.readU64()
+          // Знаковое: у ботов userId отрицательный (как в results-BLK, «-13»),
+          // беззнаковое чтение давало 18446744073709551603, и их убийства,
+          // траектории и урон не связывались с игроком.
+          plr.playerId = BigInt.asIntN(64, r.readU64())
           const raw = r.readBytes(65)
           const end = raw.indexOf(0)
           plr.name = raw.subarray(0, end < 0 ? 65 : end).toString('utf8')
@@ -581,8 +584,10 @@ export function isValidReplayChatChannel(channel: number): boolean {
 
 function parseChat(pk: RawPacket): ReplayChat {
   const r = new BitReader(pk.payload)
-  const sender = r.readLenStr()
-  const message = r.readLenStr()
+  // Длины — varint: сообщение длиннее 127 байт (кириллица, китайский) иначе
+  // обрезалось, а байт канала брался из середины текста.
+  const sender = r.readVarLenStr()
+  const message = r.readVarLenStr()
   const channel = r.readByte()
   return {
     time: pk.time,

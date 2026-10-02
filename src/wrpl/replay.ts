@@ -347,6 +347,25 @@ export function realNamesFromItem(data: { players?: unknown }): Map<string, stri
 }
 
 /**
+ * Анонимное имя игрока в реплее (fakeName из записи Replay API) → настоящее.
+ * Чат реплея подписан анонимными именами, а состав боя — настоящими: без
+ * этой пары отправитель сообщения не совпадает ни с одним игроком боя.
+ */
+export function fakeNamesFromItem(data: { players?: unknown }): [string, string][] {
+  const pairs: [string, string][] = []
+  if (data.players === null || typeof data.players !== 'object') return pairs
+  for (const list of Object.values(data.players)) {
+    if (!Array.isArray(list)) continue
+    for (const raw of list) {
+      const p = raw as { name?: unknown; fakeName?: unknown } | null
+      if (p === null || typeof p.name !== 'string' || typeof p.fakeName !== 'string') continue
+      if (p.fakeName !== '' && p.name !== '' && p.fakeName !== p.name) pairs.push([p.fakeName, p.name])
+    }
+  }
+  return pairs
+}
+
+/**
  * userId всех игроков боя из записи сайта (Replay API), включая ботов:
  * официальный состав, с которым сверяются игроки results-BLK.
  */

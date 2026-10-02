@@ -8,6 +8,7 @@ import {
   DB_SCHEMA_VERSION,
   closeDb,
   initDb,
+  markBattleIngest,
   runDbMigrations,
   type DbMigration,
 } from './index.js'
@@ -343,8 +344,9 @@ test('миграция v12 переразбирает свежие бои, за�
     const ingest = database.prepare(`INSERT INTO battle_ingest (session_id, status, attempts) VALUES (?, ?, 1)`)
     battle.run('1', '01', null, 86_400, 95); ingest.run('1', 'ok')
     battle.run('2', '02', '', 3_600, 96); ingest.run('2', 'ok')
-    // Финальные итоги есть — бой верен.
+    // Финальные итоги и победитель есть — бой верен.
     battle.run('3', '03', 'success', 3_600, 600); ingest.run('3', 'ok')
+    database.prepare("UPDATE battles SET team_won = 1 WHERE session_id = '3'").run()
     // Старше двух недель: частей на CDN уже нет, переразбирать нечем.
     battle.run('4', '04', null, 20 * 86_400, 95); ingest.run('4', 'ok')
     database.exec('PRAGMA user_version = 11')
@@ -390,6 +392,7 @@ test('миграция v13 возвращает в очередь бои, оши
     // Другая причина expired, ok-бой и бой старше двух недель не трогаются.
     battle.run('2', '02', null, 86_400); ingest.run('2', 'expired', 'HTTP 404 при скачивании cdn/0a/0001.wrpl', 3_600)
     battle.run('3', '03', 'success', 86_400); ingest.run('3', 'ok', null, 3_600)
+    database.prepare("UPDATE battles SET team_won = 1 WHERE session_id = '3'").run()
     battle.run('4', '04', null, 20 * 86_400); ingest.run('4', 'expired', incomplete, 19 * 86_400)
     database.exec('PRAGMA user_version = 12')
     database.close()
@@ -617,6 +620,116 @@ test('миграция v17 выносит блобы событий из battles
       assert.ok(tableExists(migrated, 'sqlite_stat1'), 'ANALYZE собрал статистику')
     } finally {
       migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('миграция v18 чинит данные SQL и возвращает в очередь свежие бои, которым поможет разбор заново', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v18-'))
+  const dbPath = path.join(root, 'v18.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const now = Math.floor(Date.now() / 1_000)
+    const day = 86_400
+    database.exec(`
+      CREATE TABLE clan_poll_log (id INTEGER PRIMARY KEY AUTOINCREMENT, clan_tag TEXT NOT NULL, polled_at INTEGER NOT NULL DEFAULT (unixepoch()));
+      CREATE INDEX idx_poll_log_clan ON clan_poll_log (clan_tag, polled_at DESC);
+      INSERT INTO clan_poll_log (clan_tag) VALUES ('=A=');
+      CREATE INDEX idx_items_updated ON items (updated_at DESC, id DESC);
+      INSERT INTO player_identities (id, wt_user_id, canonical_nick, canonical_nick_search) VALUES (1, '5', 'Nick', 'nick');
+    `)
+    const snapshot = database.prepare(`
+      INSERT INTO player_external_snapshots (id, identity_id, source, nick, fetched_at, last_checked_at, status, parser_version)
+      VALUES (?, 1, ?, 'Nick', 1, 1, ?, ?)
+    `)
+    snapshot.run(1, 'thunderinsights', 'error', 'thunderinsights-v1')
+    snapshot.run(2, 'statshark', 'ok', 'statshark-v3')
+    database.prepare('INSERT INTO player_external_totals (snapshot_id, battles) VALUES (?, 10)').run(2)
+    database.prepare('INSERT INTO player_external_totals (snapshot_id, battles) VALUES (?, 1)').run(1)
+
+    const battle = database.prepare(`
+      INSERT INTO battles (session_id, session_hex, mission_name, level, start_time, duration_sec, team_won)
+      VALUES (?, ?, 'm', 'l', ?, ?, ?)
+    `)
+    battle.run('1', '01', now - 70 * day, 177.0424041748047, 1) // дробная длительность, старый
+    battle.run('20', '14', now - 3 * day, 600, 0) // свежий: итоги есть, победителя нет
+    battle.run('24', '18', now - 3 * day, 1_513, 0) // свежая ничья по времени: статуса нет
+    battle.run('21', '15', now - 3 * day, 600, 2) // свежий с обрезанным длинным сообщением
+    battle.run('22', '16', now - 3 * day, 600, 1) // свежий без ошибок
+    battle.run('23', '17', now - 30 * day, 600, 0) // без победителя, но части уже ушли с CDN
+    database.exec("UPDATE battles SET status = 'success' WHERE session_id <> '24'")
+    database.prepare(`INSERT INTO battle_chat (session_id, time_ms, sender, channel, channel_valid, message) VALUES ('21', 1, 's', 102, 0, char(1) || 'x')`).run()
+    const item = database.prepare(`INSERT INTO items (source, external_id, title, data, content_hash) VALUES ('wt-replays', ?, 't', ?, 'h')`)
+    item.run('10', JSON.stringify({ startTime: now - 2 * day }))
+    item.run('11', JSON.stringify({ startTime: now - 30 * day }))
+    const ingest = database.prepare('INSERT INTO battle_ingest (session_id, status, attempts, error) VALUES (?, ?, ?, ?)')
+    ingest.run('1', 'error', 3, 'fetch failed') // бой записан, повторный разбор не скачал части
+    ingest.run('10', 'error', 3, 'The operation was aborted due to timeout') // свежая упавшая загрузка
+    ingest.run('11', 'error', 3, 'fetch failed') // старая — частей уже нет
+    for (const id of ['20', '21', '22', '23', '24']) ingest.run(id, 'ok', 1, null)
+    database.exec('PRAGMA user_version = 17')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      assert.deepEqual({ ...migrated.prepare("SELECT duration_sec, typeof(duration_sec) AS type FROM battles WHERE session_id = '1'").get() }, { duration_sec: 177, type: 'integer' })
+      assert.ok(!tableExists(migrated, 'clan_poll_log'), 'журнал опроса удалён')
+      const indexes = new Set((migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((row) => row.name))
+      assert.ok(!indexes.has('idx_items_updated') && !indexes.has('idx_poll_log_clan'))
+      assert.deepEqual(migrated.prepare('SELECT id, source FROM player_external_snapshots').all().map((row) => ({ ...row })), [{ id: 2, source: 'statshark' }])
+      assert.deepEqual(migrated.prepare('SELECT snapshot_id FROM player_external_totals').all().map((row) => ({ ...row })), [{ snapshot_id: 2 }])
+      assert.deepEqual(
+        migrated.prepare('SELECT session_id, status, error FROM battle_ingest ORDER BY session_id').all().map((row) => ({ ...row })),
+        [
+          { session_id: '1', status: 'ok', error: null },
+          { session_id: '11', status: 'error', error: 'fetch failed' },
+          { session_id: '22', status: 'ok', error: null },
+          { session_id: '23', status: 'ok', error: null },
+          { session_id: '24', status: 'ok', error: null },
+        ],
+        '10, 20 и 21 — в очередь на разбор заново',
+      )
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('повторный разбор записанного боя, ушедшего с CDN, оставляет статус ok и строки', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-ingest-status-'))
+  const dbPath = path.join(root, 'status.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    const database = new DatabaseSync(dbPath)
+    database.prepare(`INSERT INTO battles (session_id, session_hex, mission_name, level, start_time, duration_sec) VALUES ('5', '05', 'm', 'l', 1, 1)`).run()
+    database.close()
+    markBattleIngest('5', 'expired', 'HTTP 404 при скачивании части')
+    markBattleIngest('6', 'expired', 'HTTP 404 при скачивании части')
+    markBattleIngest('7', 'error', 'fetch failed')
+    closeDb()
+    const check = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.deepEqual(
+        check.prepare('SELECT session_id, status, error FROM battle_ingest ORDER BY session_id').all().map((row) => ({ ...row })),
+        [
+          { session_id: '5', status: 'ok', error: 'повторный разбор не удался, оставлен прежний: HTTP 404 при скачивании части' },
+          { session_id: '6', status: 'expired', error: 'HTTP 404 при скачивании части' },
+          { session_id: '7', status: 'error', error: 'fetch failed' },
+        ],
+      )
+    } finally {
+      check.close()
     }
   } finally {
     closeDb()

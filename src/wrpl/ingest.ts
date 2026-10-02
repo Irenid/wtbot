@@ -29,6 +29,7 @@ import {
   replayProcessByteBudgetSnapshot,
 } from './replay-events.js'
 import {
+  fakeNamesFromItem,
   listedUserIdsFromItem,
   realNamesFromItem,
   resolveReplayPartUrls,
@@ -249,6 +250,7 @@ async function ingestOne(
             gameMode: data.gameMode,
             gameVersion: data.gameVersion,
             listedUserIds: listedUserIdsFromItem(data),
+            fakeNames: fakeNamesFromItem(data),
           },
           'background',
           signal,
@@ -263,6 +265,7 @@ async function ingestOne(
             gameMode: data.gameMode,
             gameVersion: data.gameVersion,
             listedUserIds: listedUserIdsFromItem(data),
+            fakeNames: fakeNamesFromItem(data),
           },
           'background',
           signal,

@@ -2,10 +2,12 @@ import { existsSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import { parentPort } from 'node:worker_threads'
 import { formatBattleChat } from '../wrpl/battle-chat.js'
-import { decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
-import { encodeEventsJson, inflateEventsBlob, isColumnarEventsBlob, isZstdEventsBlob } from '../wrpl/events-codec.js'
+import { battleEventRows, decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
+import { decodeEventsPayload, encodeEventsJson, isColumnarEventsBlob, isZstdEventsBlob } from '../wrpl/events-codec.js'
+import { repairStoredEvents, type EventsRepairCounts } from '../wrpl/events-repair.js'
+import type { ReplayEvents } from '../wrpl/replay-events.js'
 import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
-import { applyRealNames, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
+import { applyRealNames, fakeNamesFromItem, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
 import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
 import { buildBattleSvg, plainClanTag } from '../wrpl/render-battle.js'
 import {
@@ -400,81 +402,136 @@ async function readPlayerInsights(
 }
 
 /**
- * Фоновый перевод блобов событий в колоночный формат (events-codec.ts):
- * пачка по ключу после afterSessionId. Распаковка, кодирование и проверка
- * байт в байт — здесь, в worker; запись — одной короткой транзакцией, и
- * только если блоб не изменился с чтения (ingest мог переразобрать бой).
- * Затем incremental_vacuum возвращает ОС освободившиеся страницы, чтобы
- * свободное место не копилось за время перевода.
+ * Фоновая починка записанных боёв (db/maintenance.ts): пачка по ключу после
+ * afterSessionId. Распаковка, правила events-repair.ts, кодирование и сбор
+ * строк — здесь, в worker; запись — одной короткой транзакцией. Блоб и
+ * строки убийств и чата заменяются, только если блоб не изменился с чтения
+ * (ingest мог переразобрать бой); пустые slot, title и счётчики заполняются
+ * из событий без замены готовых значений. Затем incremental_vacuum
+ * возвращает ОС освободившиеся страницы.
  */
-async function recompressEventsBlobs(
-  input: Extract<AnyWorkerTask, { kind: 'recompress-events-blobs' }>['input'],
-): Promise<{ value: WorkerTaskResult<'recompress-events-blobs'>; transfer: [] }> {
+async function repairBattleEvents(
+  input: Extract<AnyWorkerTask, { kind: 'repair-battle-events' }>['input'],
+): Promise<{ value: WorkerTaskResult<'repair-battle-events'>; transfer: [] }> {
   if (!existsSync(input.dbPath)) throw new Error(`SQLite не найден: ${input.dbPath}`)
-  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 200) {
-    throw new RangeError('limit перевода блобов — от 1 до 200')
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 500) {
+    throw new RangeError('limit починки боёв — от 1 до 500')
   }
   if (!Number.isSafeInteger(input.vacuumPages) || input.vacuumPages < 0) {
-    throw new RangeError('vacuumPages перевода блобов — неотрицательное целое')
+    throw new RangeError('vacuumPages починки боёв — неотрицательное целое')
   }
-  const [{ DatabaseSync }, { runDbMaintenance }] = await Promise.all([
-    import('node:sqlite'),
-    import('../db/index.js'),
-  ])
+  const [{ DatabaseSync }, db] = await Promise.all([import('node:sqlite'), import('../db/index.js')])
   const database = new DatabaseSync(input.dbPath)
   const started = performance.now()
   try {
     database.exec('PRAGMA busy_timeout = 5000;')
     database.exec('PRAGMA synchronous = NORMAL;')
     const rows = database
-      .prepare('SELECT session_id, events_blob FROM battle_events WHERE session_id > ? ORDER BY session_id LIMIT ?')
-      .all(input.afterSessionId, input.limit) as { session_id: string; events_blob: Uint8Array }[]
-    const packed: [string, Uint8Array, Buffer][] = []
-    let kept = 0
-    for (const row of rows) {
-      if (isColumnarEventsBlob(row.events_blob)) continue
-      const next = encodeEventsJson(inflateEventsBlob(row.events_blob).toString('utf8'))
-      // Колоночный не подошёл: zstd-JSON остаётся как был, gzip всё равно
-      // переходит в zstd-JSON (тот же JSON, на 47% меньше).
-      if (!isColumnarEventsBlob(next) && isZstdEventsBlob(row.events_blob)) {
-        kept += 1
-        continue
+      .prepare(`
+        SELECT b.session_id, e.events_blob, i.data AS item
+        FROM battles b
+        JOIN battle_events e ON e.session_id = b.session_id
+        LEFT JOIN items i ON i.source = 'wt-replays' AND i.external_id = b.session_id
+        WHERE b.session_id > ? ORDER BY b.session_id LIMIT ?
+      `)
+      .all(input.afterSessionId, input.limit) as { session_id: string; events_blob: Uint8Array; item: string | null }[]
+    const missingSlots = database.prepare(
+      'SELECT user_id, slot, title FROM battle_players WHERE session_id = ? AND (slot IS NULL OR title IS NULL)',
+    )
+    const missingCounts = database.prepare(
+      'SELECT 1 FROM battles WHERE session_id = ? AND (air_unit_count IS NULL OR chat_count IS NULL)',
+    )
+    const repairs: EventsRepairCounts = { chatNames: 0, duplicateKills: 0, signedIds: 0, brokenChat: 0, roundedValues: 0 }
+    const plans = rows.map((row) => {
+      const events = decodeEventsPayload(row.events_blob) as Omit<ReplayEvents, 'errors'>
+      const fakeNames = new Map(row.item ? fakeNamesFromItem(JSON.parse(row.item) as { players?: unknown }) : [])
+      const repair = repairStoredEvents(events, fakeNames)
+      for (const key of Object.keys(repairs) as (keyof EventsRepairCounts)[]) repairs[key] += repair[key]
+      let eventsBlob: Buffer | null = null
+      if (repair.changed || !isColumnarEventsBlob(row.events_blob)) {
+        const next = encodeEventsJson(JSON.stringify(events))
+        // События не менялись, а колоночный формат не подошёл: zstd-JSON
+        // остаётся как был, gzip всё равно переходит в zstd-JSON.
+        if (repair.changed || isColumnarEventsBlob(next) || !isZstdEventsBlob(row.events_blob)) eventsBlob = next
       }
-      packed.push([row.session_id, row.events_blob, next])
-    }
-    let converted = 0
+      const slotByUserId = new Map(events.players.map((player) => [player.userId, player]))
+      // Только строки, где событие действительно знает пустое поле: игрок без
+      // титула остаётся с NULL и не переписывается каждым проходом.
+      const slots = (missingSlots.all(row.session_id) as { user_id: string; slot: number | null; title: string | null }[])
+        .flatMap((player) => {
+          const slot = slotByUserId.get(player.user_id)
+          if (!slot) return []
+          const fillsSlot = player.slot === null && Number.isInteger(slot.slot)
+          const fillsTitle = player.title === null && slot.title !== ''
+          return fillsSlot || fillsTitle ? [{ userId: player.user_id, slot: slot.slot, title: slot.title || null }] : []
+        })
+      return {
+        sessionId: row.session_id,
+        previousBlob: row.events_blob,
+        eventsBlob,
+        eventRows: eventsBlob ? battleEventRows(events) : null,
+        airUnitCount: summarizeEvents({ ...events, errors: [] }).airUnits,
+        chatCount: events.chat.length,
+        slots,
+        fillCounts: missingCounts.get(row.session_id) !== undefined,
+      }
+    })
+    let rewritten = 0
+    let changedMeanwhile = 0
+    let filledRows = 0
     let bytesBefore = 0
     let bytesAfter = 0
-    if (packed.length > 0) {
-      const update = database.prepare(
-        'UPDATE battle_events SET events_blob = ? WHERE session_id = ? AND events_blob = ?',
-      )
-      database.exec('BEGIN IMMEDIATE')
-      try {
-        for (const [sessionId, previous, blob] of packed) {
-          if (Number(update.run(blob, sessionId, previous).changes) === 0) continue
-          converted += 1
-          bytesBefore += previous.byteLength
-          bytesAfter += blob.byteLength
+    const writeStarted = performance.now()
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      for (const plan of plans) {
+        if (plan.eventsBlob && plan.eventRows) {
+          const replaced = db.replaceRepairedBattleEvents(database, {
+            sessionId: plan.sessionId,
+            previousBlob: plan.previousBlob,
+            eventsBlob: plan.eventsBlob,
+            kills: plan.eventRows.kills,
+            chat: plan.eventRows.chat,
+            airUnitCount: plan.airUnitCount,
+          })
+          if (!replaced) {
+            changedMeanwhile += 1
+            continue
+          }
+          rewritten += 1
+          bytesBefore += plan.previousBlob.byteLength
+          bytesAfter += plan.eventsBlob.byteLength
         }
-        database.exec('COMMIT')
-      } catch (error) {
-        database.exec('ROLLBACK')
-        throw error
+        if (plan.slots.length > 0 || plan.fillCounts) {
+          filledRows += db.fillMissingBattleFields(database, {
+            sessionId: plan.sessionId,
+            airUnitCount: plan.airUnitCount,
+            chatCount: plan.chatCount,
+            slots: plan.slots,
+          })
+        }
       }
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
     }
+    const writeMs = performance.now() - writeStarted
     const vacuum = input.vacuumPages > 0
-      ? await runDbMaintenance(database, { maxPages: input.vacuumPages, optimize: false })
+      ? await db.runDbMaintenance(database, { maxPages: input.vacuumPages, optimize: false })
       : null
     return {
       value: {
         lastSessionId: rows.at(-1)?.session_id ?? null,
         scanned: rows.length,
-        converted,
-        kept,
+        rewritten,
+        changedMeanwhile,
+        filledRows,
+        repairs,
         bytesBefore,
         bytesAfter,
         freedBytes: vacuum === null ? 0 : vacuum.freedPages * vacuum.pageSize,
+        writeMs,
         elapsedMs: performance.now() - started,
       },
       transfer: [],
@@ -850,8 +907,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return warmSqlite(task.input)
     case 'read-site-dashboard-stats':
       return readSiteDashboardStats(task.input)
-    case 'recompress-events-blobs':
-      return recompressEventsBlobs(task.input)
+    case 'repair-battle-events':
+      return repairBattleEvents(task.input)
     case 'db-maintenance':
       return runDatabaseMaintenance(task.input)
     case 'read-player-insights':

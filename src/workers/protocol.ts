@@ -7,6 +7,7 @@ import type { VehicleDict } from '../wrpl/vehicles.js'
 import type { BattleItemMeta, BattleParseProfile } from '../wrpl/battle-transform.js'
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
+import type { EventsRepairCounts } from '../wrpl/events-repair.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -188,25 +189,30 @@ export interface WorkerTaskMap {
     input: { dbPath: string; userId: string; fromTs: number; toTs: number }
     output: PlayerReplayInsights & { elapsedMs: number }
   }
-  'recompress-events-blobs': {
+  'repair-battle-events': {
     /**
-     * Пачка battle_events после afterSessionId в порядке ключа: перевод в
-     * колоночный формат events-codec.ts, затем возврат ОС до vacuumPages
-     * освободившихся страниц.
+     * Пачка боёв после afterSessionId в порядке ключа: события — в
+     * канонический вид (events-repair.ts) и колоночный формат, пустые
+     * производные поля — из событий, затем возврат ОС освободившихся страниц.
      */
     input: { dbPath: string; afterSessionId: string; limit: number; vacuumPages: number }
     output: {
       /** null — дошли до конца таблицы. */
       lastSessionId: string | null
       scanned: number
-      /** Переписано: в колоночный формат или, если он не подошёл, gzip → zstd-JSON. */
-      converted: number
-      /** zstd-JSON, которому колоночный формат не подошёл (нет целых траекторий), — оставлен как был. */
-      kept: number
+      /** Боёв с переписанным блобом: починка событий или перевод формата. */
+      rewritten: number
+      /** Блоб изменился с чтения (бой переразобрал ingest) — пропущен. */
+      changedMeanwhile: number
+      /** Заполненных строк: slot и title игроков, счётчики боя. */
+      filledRows: number
+      repairs: EventsRepairCounts
       bytesBefore: number
       bytesAfter: number
       /** Возвращено ОС после пачки (incremental_vacuum). */
       freedBytes: number
+      /** Транзакция записи пачки — столько ждала бы запись main thread. */
+      writeMs: number
       elapsedMs: number
     }
   }

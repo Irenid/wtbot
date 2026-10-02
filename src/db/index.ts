@@ -788,6 +788,57 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       database.exec('PRAGMA analysis_limit = 1000; ANALYZE;')
     },
   },
+  {
+    version: 18,
+    apply(database) {
+      // Ошибки в данных (аудит 2026-10-02, docs/database.md). Здесь — то, что
+      // чинится SQL; поля из блобов событий заполняет и чинит фоновая
+      // worker-задача repair-battle-events (db/maintenance.ts).
+      database.exec(`
+        -- Длительность боя первой версии разбора записана дробной (REAL).
+        UPDATE battles SET duration_sec = CAST(ROUND(duration_sec) AS INTEGER)
+        WHERE typeof(duration_sec) = 'real';
+
+        -- Остатки прежних версий, о которых код не знает: журнал опроса
+        -- кланов июля 2026 и индекс, который не нужен ни одному запросу.
+        DROP TABLE IF EXISTS clan_poll_log;
+        DROP INDEX IF EXISTS idx_items_updated;
+
+        -- Снимки удалённого источника ThunderInsights: только ошибки запроса,
+        -- данных в них нет (внешние ключи не включены — дети вручную).
+        DELETE FROM player_external_totals WHERE snapshot_id IN (
+          SELECT id FROM player_external_snapshots WHERE source = 'thunderinsights');
+        DELETE FROM player_external_vehicles WHERE snapshot_id IN (
+          SELECT id FROM player_external_snapshots WHERE source = 'thunderinsights');
+        DELETE FROM player_external_countries WHERE snapshot_id IN (
+          SELECT id FROM player_external_snapshots WHERE source = 'thunderinsights');
+        DELETE FROM player_external_snapshots WHERE source = 'thunderinsights';
+        DELETE FROM player_identity_aliases WHERE source = 'thunderinsights';
+
+        -- Бой записан, но повторный разбор после старой миграции не скачал
+        -- части: строки прежнего разбора — данные боя, статус ok.
+        UPDATE battle_ingest SET status = 'ok', error = NULL
+        WHERE status <> 'ok' AND session_id IN (SELECT session_id FROM battles);
+
+        -- Повторный разбор, пока части лежат на CDN (~2 недели): разбор
+        -- заново даёт больше, чем починка записанного, — у упавших по
+        -- таймауту загрузок (боя в базе нет), у длинных сообщений чата
+        -- (прежний разбор потерял их хвост) и у боёв с финальными итогами
+        -- без победителя. Без статуса и без победителя — ничья по времени.
+        DELETE FROM battle_ingest WHERE session_id IN (
+          SELECT g.session_id FROM battle_ingest g
+          JOIN items i ON i.source = 'wt-replays' AND i.external_id = g.session_id
+          WHERE g.status = 'error'
+            AND CAST(json_extract(i.data, '$.startTime') AS INTEGER) >= unixepoch() - 12 * 86400
+          UNION
+          SELECT b.session_id FROM battles b
+          WHERE b.start_time >= unixepoch() - 12 * 86400
+            AND ((b.status = 'success' AND b.team_won = 0)
+              OR EXISTS (SELECT 1 FROM battle_chat c WHERE c.session_id = b.session_id AND c.channel_valid = 0))
+        );
+      `)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -4756,7 +4807,7 @@ export interface BattleInput {
   airUnitCount?: number
   /** Старые/сторонние producers могут не знать summary; свежий WRPL ingest заполняет поле. */
   chatCount?: number
-  /** gzip(JSON) полного ReplayEvents — для перерисовки картинок без реплея */
+  /** Блоб полного ReplayEvents (events-codec.ts) — для перерисовки картинок без реплея */
   eventsBlob: Buffer
 }
 
@@ -4847,27 +4898,96 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
       )
     }
 
-    const kStmt = database.prepare(`
-      INSERT INTO battle_kills (
-        session_id, time_ms, killer_id, killer_model, victim_id, victim_model, weapon,
-        killer_x, killer_y, killer_z, victim_x, victim_y, victim_z
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    for (const k of b.kills) {
-      kStmt.run(
-        b.sessionId, k.timeMs, k.killerId, k.killerModel, k.victimId, k.victimModel, k.weapon,
-        k.killerPos?.x ?? null, k.killerPos?.y ?? null, k.killerPos?.z ?? null,
-        k.victimPos?.x ?? null, k.victimPos?.y ?? null, k.victimPos?.z ?? null,
-      )
-    }
+    insertBattleKillRows(database, b.sessionId, b.kills)
+    insertBattleChatRows(database, b.sessionId, b.chat)
+}
 
-    const cStmt = database.prepare(
-      'INSERT INTO battle_chat (session_id, time_ms, sender, channel, channel_valid, message) VALUES (?, ?, ?, ?, ?, ?)',
+function insertBattleKillRows(database: DatabaseSync, sessionId: string, kills: readonly BattleKillInput[]): void {
+  const kStmt = database.prepare(`
+    INSERT INTO battle_kills (
+      session_id, time_ms, killer_id, killer_model, victim_id, victim_model, weapon,
+      killer_x, killer_y, killer_z, victim_x, victim_y, victim_z
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const k of kills) {
+    kStmt.run(
+      sessionId, k.timeMs, k.killerId, k.killerModel, k.victimId, k.victimModel, k.weapon,
+      k.killerPos?.x ?? null, k.killerPos?.y ?? null, k.killerPos?.z ?? null,
+      k.victimPos?.x ?? null, k.victimPos?.y ?? null, k.victimPos?.z ?? null,
     )
-    for (const m of b.chat) {
-      const valid = m.channelValid ?? isValidBattleChatChannel(m.channel)
-      cStmt.run(b.sessionId, m.timeMs, m.sender, m.channel, valid ? 1 : 0, m.message)
-    }
+  }
+}
+
+function insertBattleChatRows(database: DatabaseSync, sessionId: string, chat: readonly BattleChatInput[]): void {
+  const cStmt = database.prepare(
+    'INSERT INTO battle_chat (session_id, time_ms, sender, channel, channel_valid, message) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+  for (const m of chat) {
+    const valid = m.channelValid ?? isValidBattleChatChannel(m.channel)
+    cStmt.run(sessionId, m.timeMs, m.sender, m.channel, valid ? 1 : 0, m.message)
+  }
+}
+
+/**
+ * Починка записанного боя (worker-задача repair-battle-events): заменяет
+ * блоб событий, только если он не изменился с чтения (ingest мог
+ * переразобрать бой), и вместе с ним — строки убийств и чата и счётчики боя.
+ * Вызывать внутри транзакции записи. false — блоб уже другой, ничего не
+ * записано.
+ */
+export function replaceRepairedBattleEvents(
+  database: DatabaseSync,
+  input: {
+    sessionId: string
+    previousBlob: Uint8Array
+    eventsBlob: Uint8Array
+    kills: readonly BattleKillInput[]
+    chat: readonly BattleChatInput[]
+    airUnitCount: number
+  },
+): boolean {
+  const updated = database
+    .prepare('UPDATE battle_events SET events_blob = ? WHERE session_id = ? AND events_blob = ?')
+    .run(input.eventsBlob, input.sessionId, input.previousBlob)
+  if (Number(updated.changes) === 0) return false
+  database.prepare('DELETE FROM battle_kills WHERE session_id = ?').run(input.sessionId)
+  database.prepare('DELETE FROM battle_chat WHERE session_id = ?').run(input.sessionId)
+  insertBattleKillRows(database, input.sessionId, input.kills)
+  insertBattleChatRows(database, input.sessionId, input.chat)
+  database
+    .prepare('UPDATE battles SET kill_count = ?, chat_count = ?, air_unit_count = ? WHERE session_id = ?')
+    .run(input.kills.length, input.chat.length, input.airUnitCount, input.sessionId)
+  return true
+}
+
+/**
+ * Заполняет пустые производные поля боя из его событий (бои первых версий
+ * разбора): air_unit_count и chat_count боя, slot и title игроков. Только
+ * NULL — значения нового разбора не трогаются. Возвращает число строк.
+ */
+export function fillMissingBattleFields(
+  database: DatabaseSync,
+  input: {
+    sessionId: string
+    airUnitCount: number
+    chatCount: number
+    slots: readonly { userId: string; slot: number; title: string | null }[]
+  },
+): number {
+  let rows = Number(database
+    .prepare(`
+      UPDATE battles SET air_unit_count = COALESCE(air_unit_count, ?), chat_count = COALESCE(chat_count, ?)
+      WHERE session_id = ? AND (air_unit_count IS NULL OR chat_count IS NULL)
+    `)
+    .run(input.airUnitCount, input.chatCount, input.sessionId).changes)
+  const slotStmt = database.prepare(`
+    UPDATE battle_players SET slot = COALESCE(slot, ?), title = COALESCE(title, ?)
+    WHERE session_id = ? AND user_id = ? AND (slot IS NULL OR title IS NULL)
+  `)
+  for (const player of input.slots) {
+    rows += Number(slotStmt.run(player.slot, player.title, input.sessionId, player.userId).changes)
+  }
+  return rows
 }
 
 function runImmediateTransaction(database: DatabaseSync, work: () => void): void {
@@ -5082,6 +5202,17 @@ function markBattleIngestRow(
   status: BattleIngestStatus,
   error: string | null,
 ): void {
+  // Повторный разбор уже записанного боя (миграция, ручной перезапуск) не
+  // удался окончательно — части ушли с CDN. Строки прежнего разбора остаются
+  // лучшими данными: статус ok, причина — в error. error (с повторами) не
+  // трогается: следующая попытка может пройти.
+  if (
+    (status === 'expired' || status === 'no_parts') &&
+    database.prepare('SELECT 1 FROM battles WHERE session_id = ?').get(sessionId) !== undefined
+  ) {
+    error = `повторный разбор не удался, оставлен прежний: ${error ?? status}`
+    status = 'ok'
+  }
   database
     .prepare(`
       INSERT INTO battle_ingest (session_id, status, attempts, error, updated_at)
