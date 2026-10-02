@@ -706,6 +706,47 @@ test('миграция v18 чинит данные SQL и возвращает �
   }
 })
 
+test('migration v19 adds the event fact columns of battle_players as unknown', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v19-'))
+  const dbPath = path.join(root, 'v19.db')
+  const columns = (database: DatabaseSync) =>
+    (database.prepare('PRAGMA table_info(battle_players)').all() as { name: string }[]).map((row) => row.name)
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    // Schema v18: no fact columns; a stored row has only its lineup.
+    const database = new DatabaseSync(dbPath)
+    database.exec('ALTER TABLE battle_players DROP COLUMN played_vehicles')
+    database.exec('ALTER TABLE battle_players DROP COLUMN bot_user_id')
+    database.exec(`
+      INSERT INTO battle_players (session_id, user_id, nick, nick_base, team, vehicle, vehicles)
+      VALUES ('1', '501', 'One', 'one', 1, 'tank_a', '["tank_a","tank_b"]')
+    `)
+    database.exec('PRAGMA user_version = 18')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      assert.ok(columns(migrated).includes('played_vehicles'))
+      assert.ok(columns(migrated).includes('bot_user_id'))
+      // NULL until repair pass v2: readers fall back to the lineup
+      assert.deepEqual({ ...migrated.prepare('SELECT vehicle, played_vehicles, bot_user_id FROM battle_players').get() }, {
+        vehicle: 'tank_a',
+        played_vehicles: null,
+        bot_user_id: null,
+      })
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('повторный разбор записанного боя, ушедшего с CDN, оставляет статус ok и строки', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'wtbot-ingest-status-'))
   const dbPath = path.join(root, 'status.db')

@@ -1260,16 +1260,20 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!passRateLimit(request, reply)) return reply
     const sessionId = resolveSiteSessionId(request.params.key)
     if (!sessionId) {
-      return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Ключ боя — decimal session id или 16-символьный hex' })
+      return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Battle key: a decimal session id or a 16-character hex' })
     }
     const summary = getSiteBattleSummary(sessionId)
     if (!summary) {
-      return reply.code(404).send({ ok: false, code: 'BATTLE_NOT_FOUND', error: 'Бой не найден среди разобранных' })
+      return reply.code(404).send({ ok: false, code: 'BATTLE_NOT_FOUND', error: 'Battle not found among parsed replays' })
     }
-    // Скорборд разобранного боя не меняется; короткий срок оставлен на случай переразбора.
+    // A parsed battle's scoreboard does not change; the short lifetime covers re-parsing.
     void reply.header('Cache-Control', 'public, max-age=300')
     const teamsMap = new Map<number, { team: number; totalScore: number; players: unknown[] }>()
+    // A paired bot slot's results row is credited to its player (player-events.ts).
+    const pairedBots = new Set(summary.players.flatMap((player) => (player.bot_user_id ? [player.bot_user_id] : [])))
     for (const player of summary.players) {
+      // Team ≤ 0 is unknown: no card of its own (player-events.ts resolves the squad marker)
+      if (player.team <= 0 || pairedBots.has(player.user_id)) continue
       let team = teamsMap.get(player.team)
       if (!team) {
         team = { team: player.team, totalScore: 0, players: [] }
@@ -1293,8 +1297,10 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         teamKills: player.team_kills,
         squadId: player.squad_id,
         vehicle: player.vehicle,
-        vehicles: parseVehiclesJson(player.vehicles),
+        // Driven vehicles in spawn order; the lineup when the events have no tracks
+        vehicles: parseVehiclesJson(player.played_vehicles ?? player.vehicles),
         disconnected: player.disconnected !== 0,
+        bot: player.bot_user_id !== null,
         autoSquad: player.auto_squad === null ? null : player.auto_squad !== 0,
       })
     }
@@ -1341,12 +1347,12 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!passRateLimit(request, reply)) return reply
     const sessionId = resolveSiteSessionId(request.params.key)
     if (!sessionId) {
-      return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Ключ боя — decimal session id или 16-символьный hex' })
+      return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Battle key: a decimal session id or a 16-character hex' })
     }
     const result = await buildBattleSceneGzip(sessionId)
     switch (result.status) {
       case 'not_found':
-        return reply.code(404).send({ ok: false, code: 'BATTLE_NOT_FOUND', error: 'Бой не найден среди разобранных' })
+        return reply.code(404).send({ ok: false, code: 'BATTLE_NOT_FOUND', error: 'Battle not found among parsed replays' })
       case 'no_events':
         return reply.code(404).send({ ok: false, code: 'SCENE_UNAVAILABLE', error: 'У боя нет сохранённых событий — сцена недоступна' })
       case 'busy':
@@ -1369,7 +1375,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!passRateLimit(request, reply)) return reply
     const sessionId = resolveSiteSessionId(request.params.key)
     if (!sessionId) {
-      return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Ключ боя — decimal session id или 16-символьный hex' })
+      return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Battle key: a decimal session id or a 16-character hex' })
     }
     const map = await loadBattleSceneMap(sessionId)
     if (!map) {

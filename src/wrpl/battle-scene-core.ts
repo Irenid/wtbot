@@ -2,12 +2,13 @@ import { gzipSync } from 'node:zlib'
 import { decodeEventsPayload } from './events-codec.js'
 import type { ReplayEvents, SpaceTime } from './replay-events.js'
 
-// Чистое ядро сцены боя для интерактивного плеера: без БД и без Fastify,
-// поэтому файл безопасно импортируется worker-ом (src/workers/entry.ts).
-// Тяжёлая часть (распаковка events_blob, прореживание траекторий, gzip сцены)
-// выполняется строго в CPU-воркере.
+// The pure core of the battle scene for the interactive player: no database
+// and no Fastify, so a worker imports it safely (src/workers/entry.ts). The
+// heavy part (events_blob decoding, track thinning, scene gzip) runs only in
+// a CPU worker.
 
-export const BATTLE_SCENE_VERSION = 2
+// 3: bot slot tracks and kills credited to their players (player-events.ts).
+export const BATTLE_SCENE_VERSION = 3
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000
@@ -28,13 +29,15 @@ export interface ScenePrepareInput {
   startTime: number
   durationSec: number
   teamWon: number
-  /** battleArea миссии; null — границы считаются по точкам траекторий. */
+  /** The mission's battleArea; null — bounds come from the track points. */
   missionArea: { x0: number; z0: number; x1: number; z1: number } | null
-  /** Есть ли локальная тактическая карта, соответствующая missionArea. */
+  /** Whether a tactical map matching missionArea is available. */
   mapAvailable: boolean
-  /** Ключ уровня для роута map.png (levels/… из заголовка). */
+  /** Level key for the map.png route (levels/… from the header). */
   level: string
   players: ScenePlayerRef[]
+  /** [bot slot userId, player userId]: the slot's tracks and kills go to the player. */
+  botSlots: [string, string][]
 }
 
 export interface BattleSceneUnit {
@@ -130,8 +133,10 @@ function thinByTime(points: SpaceTime[]): SpaceTime[] {
   return result
 }
 
-/** Собирает сцену из уже распакованного ReplayEvents. Чистая функция. */
+/** Builds the scene from decoded ReplayEvents. A pure function. */
 export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput): BattleScene {
+  const botOwners = new Map(input.botSlots)
+  const player = (userId: string): string | null => (userId === '' ? null : botOwners.get(userId) ?? userId)
   let minX = Infinity
   let minZ = Infinity
   let maxX = -Infinity
@@ -148,7 +153,7 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
   let endTimeMs = Math.max(1, events.endTime)
   for (const [index, unit] of events.units.entries()) {
     if (unit.path.length < 2) continue
-    // Размах пути определяет эпсилон упрощения: ~1/1500 диагонали, минимум 2 м.
+    // The path span sets the simplification epsilon: ~1/1500 of it, at least 2 m.
     let spanX0 = Infinity, spanZ0 = Infinity, spanX1 = -Infinity, spanZ1 = -Infinity
     for (const point of unit.path) {
       if (point.x < spanX0) spanX0 = point.x
@@ -168,7 +173,7 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
     if (last.t > endTimeMs) endTimeMs = last.t
     units.push({
       id: index,
-      userId: unit.userId === '' ? null : unit.userId,
+      userId: player(unit.userId),
       model: unit.model.replace(/^.*\//, ''),
       source: unit.source,
       path: path.map((point) => [Math.round(point.t), round(point.x), round(point.z)]),
@@ -180,8 +185,8 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
     if (pos) observe(pos.x, pos.z)
     return {
       t: Math.round(kill.time),
-      killerId: kill.killerId === '' ? null : kill.killerId,
-      victimId: kill.victimId === '' ? null : kill.victimId,
+      killerId: player(kill.killerId),
+      victimId: player(kill.victimId),
       weapon: kill.weapon,
       x: pos ? round(pos.x) : null,
       z: pos ? round(pos.z) : null,
@@ -190,7 +195,7 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
 
   for (const zone of events.zones) observe(zone.x, zone.z)
 
-  // Границы: battleArea миссии, иначе охват точек с полем 6%.
+  // Bounds: the mission's battleArea, otherwise the points' extent with a 6% margin.
   let worldBounds: [number, number, number, number]
   if (input.missionArea) {
     worldBounds = [input.missionArea.x0, input.missionArea.z0, input.missionArea.x1, input.missionArea.z1]

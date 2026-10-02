@@ -186,7 +186,7 @@ export function BattlePage() {
                       <tr
                         key={`${player.userId}:${player.nick}`}
                         style={{
-                          ...(player.disconnected ? { opacity: 0.55 } : {}),
+                          ...(player.disconnected && !player.bot ? { opacity: 0.55 } : {}),
                           ...(isMvp ? { background: 'rgba(245, 188, 74, 0.05)' } : {}),
                         }}
                       >
@@ -199,7 +199,9 @@ export function BattlePage() {
                           )}
                           {player.userId ? <Link to={`/players/${player.userId}`}>{player.nick}</Link> : <span style={{ fontWeight: 600 }}>{player.nick}</span>}
                           {isMvp && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--accent)', fontWeight: 700 }}>{t('battlePage.mvp')}</span>}
-                          {player.disconnected && <span className="muted small" style={{ fontWeight: 400 }}> {t('battlePage.disconnected')}</span>}
+                          {player.bot
+                            ? <span className="muted small" style={{ fontWeight: 400 }}> {t('battlePage.playedByBot')}</span>
+                            : player.disconnected && <span className="muted small" style={{ fontWeight: 400 }}> {t('battlePage.disconnected')}</span>}
                         </td>
                         <td className="muted" style={{ fontWeight: 400 }} title={vehicleTitle(dict, player)}>{vehicleLabel(dict, player)}</td>
                         <td className="num" style={player.airKills > 0 ? { color: 'var(--ok)', fontWeight: 700 } : undefined}>{fmtInt(player.airKills)}</td>

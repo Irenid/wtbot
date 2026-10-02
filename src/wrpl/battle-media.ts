@@ -108,7 +108,7 @@ export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaK
 }
 
 export interface BattleMeta {
-  version?: 42
+  version?: typeof BATTLE_MEDIA_VERSION
   renderOptions?: string
   teamWon: number
   endTimeMs: number
@@ -143,8 +143,9 @@ export async function cachedBattleHeatmap2x(
   }
 }
 
-// 42: реплеи 2.59 (zstd-поток и новый байт ECS) — прежние картинки этих боёв пустые.
-const BATTLE_MEDIA_VERSION = 42
+// 42: 2.59 replays (zstd stream, new ECS byte) — older images of these battles are empty.
+// 43: bot slot tracks, kills and damage credited to their players (player-events.ts).
+const BATTLE_MEDIA_VERSION = 43
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)

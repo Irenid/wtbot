@@ -91,7 +91,7 @@ test('аналитика игрока по реплеям: карты, техн�
     assert.deepEqual(insights.nemeses, [{ userId: '3', nick: 'Rival', count: 2 }])
 
     assert.equal(getPlayerReplayInsights('404', 0, 5_000).battles, 0)
-    assert.throws(() => getPlayerReplayInsights('Pilot', 0, 1), /числовой WT user id/)
+    assert.throws(() => getPlayerReplayInsights('Pilot', 0, 1), /numeric WT user id/)
   } finally {
     closeDb()
   }

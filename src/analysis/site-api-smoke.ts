@@ -261,8 +261,23 @@ async function main(): Promise<void> {
       weapon: 'shell',
       killerPos: { x: 100, y: 10, z: 200 },
       victimPos: { x: 400, y: 10, z: 600 },
+    }, {
+      time: 90_000,
+      killerId: '-7',
+      killerModel: 'tankModels/enemy_tank',
+      victimId: '501',
+      victimModel: 'tankModels/test_tank',
+      weapon: 'shell',
+      killerPos: null,
+      victimPos: { x: 300, y: 10, z: 500 },
     }],
     units: [
+      {
+        userId: '-7',
+        model: 'tankModels/enemy_tank',
+        source: 'ground',
+        path: [{ t: 1_000, x: 600, y: 5, z: 600 }, { t: 9_000, x: 650, y: 5, z: 640 }],
+      },
       {
         userId: '501',
         model: 'tankModels/test_tank',
@@ -280,9 +295,15 @@ async function main(): Promise<void> {
     endTime: 120_000,
     errors: [],
   }
+  // A bot slot (-7) played for Absent, who never loaded in (player-events.ts);
+  // Lost has no known team.
+  const absent = { vehicle: 'enemy_tank', vehicles: [], disconnected: true, score: 300 }
   saveBattle(battle('100200304', nowSec - 1_800, 1, [
     player('501', 'PilotOne', 1, 'test_tank', { clanTag: CLAN_RAW_TAG }),
     player('999', 'EnemyOne', 2, 'enemy_tank'),
+    player('503', 'Absent', 2, 'enemy_tank', { ...absent, playedVehicles: ['enemy_tank'], botUserId: '-7' }),
+    player('-7', 'coop/Bot7', 2, 'enemy_tank', { ...absent, playedVehicles: ['enemy_tank'], score: 0 }),
+    player('504', 'Lost', 0, 'enemy_tank', { vehicle: null, vehicles: [], playedVehicles: [], disconnected: true, score: 0 }),
   ], gzipSync(Buffer.from(JSON.stringify(sceneEvents), 'utf8'))))
 
   const app = buildServer(
@@ -418,7 +439,8 @@ async function main(): Promise<void> {
     assert.equal(siteStatsBody.season.currentStage?.maxBr, expectedSeason.currentStage?.maxBr)
     assert.equal(siteStatsBody.battlesTotal, 5)
     assert.equal(siteStatsBody.battlesWeek, 5)
-    assert.equal(siteStatsBody.players, 6)
+    // Distinct user ids of battle_players: with the bot slot and the team-0 row of 100200304
+    assert.equal(siteStatsBody.players, 9)
     assert.equal(siteStatsBody.clans, 4)
     assert.equal(siteStatsBody.byDay.reduce((sum, dayRow) => sum + dayRow.battles, 0), 5)
 
@@ -577,6 +599,17 @@ async function main(): Promise<void> {
     assert.equal(scoreboardByHex.statusCode, 200)
     assert.equal((scoreboardByHex.json() as { battle: { sessionId: string } }).battle.sessionId, '100200301')
 
+    // No card for team 0; the bot row folds into the player it played for.
+    const botBattle = (await app.inject({ method: 'GET', url: '/api/battles/100200304' })).json() as {
+      teams: { team: number; players: { nick: string; vehicles: string[]; bot: boolean; disconnected: boolean }[] }[]
+    }
+    assert.deepEqual(botBattle.teams.map((team) => team.team).sort(), [1, 2])
+    const botTeam = botBattle.teams.find((team) => team.team === 2)
+    assert.deepEqual(botTeam?.players.map((entry) => entry.nick), ['EnemyOne', 'Absent'])
+    const absentRow = botTeam?.players[1]
+    assert.deepEqual([absentRow?.vehicles, absentRow?.bot, absentRow?.disconnected], [['enemy_tank'], true, true])
+    assert.equal(botTeam?.players[0]?.bot, false)
+
     const missingBattle = await app.inject({ method: 'GET', url: '/api/battles/424242' })
     assert.equal(missingBattle.statusCode, 404)
     const invalidBattle = await app.inject({ method: 'GET', url: '/api/battles/zzz' })
@@ -599,15 +632,19 @@ async function main(): Promise<void> {
       v: number
       units: { userId: string | null; source: string; path: [number, number, number][] }[]
       players: { nick: string }[]
-      kills: { x: number | null }[]
+      kills: { x: number | null; killerId: string | null }[]
       zones: unknown[]
       map: { available: boolean }
       worldBounds: number[]
       endTimeMs: number
     }
     assert.equal(sceneBody.v, BATTLE_SCENE_VERSION)
-    assert.equal(sceneBody.units.length, 2)
-    const groundUnit = sceneBody.units.find((unit) => unit.source === 'ground')
+    assert.equal(sceneBody.units.length, 3)
+    // The bot slot's track and kill belong to the player it played for
+    assert.equal(sceneBody.units[0]?.userId, '503')
+    assert.equal(sceneBody.kills[1]?.killerId, '503')
+    assert.deepEqual(sceneBody.players.map((entry) => entry.nick).sort(), ['Absent', 'EnemyOne', 'PilotOne'])
+    const groundUnit = sceneBody.units.find((unit) => unit.source === 'ground' && unit.userId === '501')
     assert.ok(groundUnit && groundUnit.path.length >= 2 && groundUnit.path.length < 400,
       'траектория должна быть прорежена')
     assert.equal(sceneBody.units.find((unit) => unit.source === 'air')?.userId, null)

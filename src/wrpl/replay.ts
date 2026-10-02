@@ -80,13 +80,13 @@ export function parseWrplHeader(buf: Buffer): WrplHeader {
   }
 }
 
-/** Результаты боя одного игрока из results-BLK */
+/** One player's battle results from the results-BLK. */
 export interface ReplayPlayerResult {
   userId: string
   name: string
   clanTag: string
   team: number
-  /** Воздушные фраги (по людям) */
+  /** Air kills (players). */
   kills: number
   groundKills: number
   navalKills: number
@@ -101,11 +101,15 @@ export interface ReplayPlayerResult {
   teamKills: number
   squadId: number
   autoSquad: boolean
-  /** Данные ECS-слота; отсутствуют в results-BLK. */
+  /** From the ECS slot; the results-BLK lacks them. */
   slot?: number | null
   title?: string | null
-  /** Техника игрока в бою: внутренние имена, в порядке слотов */
+  /** The lineup (matchingInfo crafts_info): internal ids in slot order, not what was driven. */
   vehicles: string[]
+  /** From the events (player-events.ts); undefined — unknown, readers use the lineup. */
+  playedVehicles?: string[] | undefined
+  /** The bot slot that played for this player (player-events.ts). */
+  botUserId?: string | null | undefined
 }
 
 export interface ReplayResults {

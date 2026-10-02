@@ -279,10 +279,10 @@ function main(): void {
       vehicles: [],
       coverageBattles: 0,
     })
-    assert.throws(() => getPlayerReplayStats({ userId: '   ' }), /непустой WT user id/)
+    assert.throws(() => getPlayerReplayStats({ userId: '   ' }), /non-empty WT user id/)
     assert.throws(
       () => getPlayerReplayStats({ userId: '42' }, { from: 2_000, to: 1_000 }),
-      /не может быть позже/,
+      /cannot start after it ends/,
     )
 
     const firstIdentity = savePlayerIdentity({

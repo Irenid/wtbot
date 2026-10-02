@@ -160,10 +160,11 @@ ingest or in the background, not per HTTP request.
 - **Vehicle metastatistics**: win rate and K/D per vehicle, a "who kills whom"
   matrix (`battle_kills.killer_model × victim_model`), weapon efficiency
   (`weapon`), vehicles per map; classes from `data/wt-vehicles.json`.
-- **Battle branch** (`air`/`ground`/`mixed`) from `battle_players.vehicles`
-  and the vehicle dictionary: a `battles.branch` field and a server-side
-  filter. As of 2026-09-28 every battle is ground with aircraft: low value
-  until other modes appear.
+- **Battle branch** (`air`/`ground`/`mixed`) from
+  `battle_players.played_vehicles` (the lineup when NULL) and the vehicle
+  dictionary: a `battles.branch` field and a server-side filter. As of
+  2026-09-28 every battle is ground with aircraft: low value until other
+  modes appear.
 - **Clan vs clan**: meeting history, streaks, average score per opponent
   (`battle_players.clan_tag`, `team`, `battles.team_won`).
 - **Maps**: a `levels/*.bin` dictionary → human-readable names, then win rate

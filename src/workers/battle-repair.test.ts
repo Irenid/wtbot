@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test, { after } from 'node:test'
 import { gzipSync } from 'node:zlib'
-import { closeDb, initDb, replaceRepairedBattleEvents, VACUUM_STEP_PAGES } from '../db/index.js'
+import { closeDb, initDb, replaceRepairedBattleEvents, updateBattlePlayerFacts, VACUUM_STEP_PAGES } from '../db/index.js'
 import {
   compressEventsJson,
   decodeEventsPayload,
@@ -63,14 +63,14 @@ const canonicalEvents = {
 }
 const noTrajectories = { teamWon: 1, players: [], kills: [], damage: [], chat: [], units: [], zones: [], endTime: 900 }
 
-test('починка записанных боёв: события в каноническом виде, пустые поля из событий, без лишних записей', async () => {
+test('stored battle repair: canonical events, empty fields and player facts from the events, no extra writes', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'wtbot-repair-'))
   const dbPath = path.join(directory, 'wtbot.db')
   try {
     initDb(dbPath, { allowCreate: true })
     closeDb()
     const database = new DatabaseSync(dbPath)
-    assert.equal(pragma(database, 'auto_vacuum'), 2, 'новая база сразу с auto_vacuum = INCREMENTAL')
+    assert.equal(pragma(database, 'auto_vacuum'), 2, 'a new database starts with auto_vacuum = INCREMENTAL')
     const legacy = legacyEvents()
     const battle = database.prepare(`
       INSERT INTO battles (session_id, session_hex, mission_name, level, start_time, duration_sec, player_count, kill_count, air_unit_count, chat_count)
@@ -91,6 +91,12 @@ test('починка записанных боёв: события в канон
     player.run('101', '1', 'Pilot', 1, null, null)
     player.run('101', '-13', 'coop/Bot1', 2, null, null)
     player.run('102', '5', 'Done', 1, 0, 't')
+    // No ECS slot: Absent is the only one on team 2, so the bot slot played for
+    // them; Lost has team 0 and the team 1 squad marker.
+    player.run('101', '2', 'Absent', 2, null, null)
+    database.prepare(`
+      INSERT INTO battle_players (session_id, user_id, nick, nick_base, team, squad_id) VALUES ('101', '3', 'Lost', 'Lost', 0, 4096)
+    `).run()
     for (const kill of legacy.kills) {
       database.prepare('INSERT INTO battle_kills (session_id, time_ms, killer_id, victim_id) VALUES (?, ?, ?, ?)')
         .run('101', kill.time, kill.killerId, kill.victimId)
@@ -109,27 +115,29 @@ test('починка записанных боёв: события в канон
     const input = (afterSessionId: string) => ({ dbPath, afterSessionId, limit: 10, vacuumPages: 4_096 })
     const result = await runWorkerTask({ kind: 'repair-battle-events', input: input('') })
     assert.deepEqual(
-      [result.scanned, result.rewritten, result.changedMeanwhile, result.filledRows, result.lastSessionId],
-      [3, 1, 0, 3, '103'],
-      'переписан только бой прежнего разбора; slot и title двух игроков и счётчики боя без событий',
+      [result.scanned, result.rewritten, result.changedMeanwhile, result.filledRows, result.playerRows, result.lastSessionId],
+      [3, 1, 0, 3, 5, '103'],
+      'only the old-parse battle is rewritten; slot and title of two players, counters of the battle without events, facts of every player',
     )
     assert.equal(result.repairs.chatNames, 1)
     assert.equal(result.repairs.duplicateKills, 1)
     assert.equal(result.repairs.brokenChat, 1)
-    assert.ok(result.repairs.signedIds >= 5, `id ботов: ${result.repairs.signedIds}`)
-    assert.ok(result.repairs.roundedValues >= 3, `дробные значения: ${result.repairs.roundedValues}`)
+    assert.ok(result.repairs.signedIds >= 5, `bot ids: ${result.repairs.signedIds}`)
+    assert.ok(result.repairs.roundedValues >= 3, `fractional values: ${result.repairs.roundedValues}`)
     const done = await runWorkerTask({ kind: 'repair-battle-events', input: input('103') })
-    assert.equal(done.lastSessionId, null, 'конец таблицы')
+    assert.equal(done.lastSessionId, null, 'end of the table')
+    const again = await runWorkerTask({ kind: 'repair-battle-events', input: input('') })
+    assert.deepEqual([again.rewritten, again.filledRows, again.playerRows], [0, 0, 0], 'a second pass writes nothing')
 
     const check = new DatabaseSync(dbPath, { readOnly: true })
     try {
       const blobOf = (id: string) => (check.prepare('SELECT events_blob FROM battle_events WHERE session_id = ?').get(id) as { events_blob: Uint8Array }).events_blob
       const repaired = blobOf('101')
-      assert.ok(isColumnarEventsBlob(repaired), 'gzip прежнего разбора → колоночный')
+      assert.ok(isColumnarEventsBlob(repaired), 'old-parse gzip → columnar')
       const events = decodeEventsPayload(repaired) as ReturnType<typeof legacyEvents>
       assert.deepEqual(events.players.map((p) => p.userId), ['1', '-13'])
       assert.deepEqual(events.units.map((u) => u.userId), ['1', '-13'])
-      assert.deepEqual(events.kills.map((k) => [k.killerId, k.victimId]), [['1', '-13'], ['-13', '1']], 'дубль удалён, id знаковые')
+      assert.deepEqual(events.kills.map((k) => [k.killerId, k.victimId]), [['1', '-13'], ['-13', '1']], 'duplicate removed, signed ids')
       assert.equal(events.damage[0]!.offenderId, '-13')
       assert.deepEqual(events.chat.map((m) => [m.sender, m.message]), [['Pilot', 'gg'], ['Pilot', 'длинное сообщение']])
       assert.deepEqual(events.units[0]!.path[0], { t: 1, x: 11, y: 5, z: -3 })
@@ -155,11 +163,25 @@ test('починка записанных боёв: события в канон
         [
           { user_id: '-13', slot: 1, title: null },
           { user_id: '1', slot: 0, title: 'title_ace' },
+          { user_id: '2', slot: null, title: null },
+          { user_id: '3', slot: null, title: null },
           { user_id: '5', slot: 0, title: 't' },
         ],
       )
-      assert.deepEqual(Buffer.from(blobOf('102')), canonicalBlob, 'канонический бой не переписан')
-      assert.ok(isZstdEventsBlob(blobOf('103')), 'zstd-JSON без траекторий остаётся')
+      assert.deepEqual(
+        check.prepare(`
+          SELECT user_id, team, vehicle, played_vehicles, bot_user_id, team_kills FROM battle_players ORDER BY session_id, user_id
+        `).all().map((r) => ({ ...r })),
+        [
+          { user_id: '-13', team: 2, vehicle: 't', played_vehicles: '["t"]', bot_user_id: null, team_kills: 0 },
+          { user_id: '1', team: 1, vehicle: 'f_16', played_vehicles: '["f_16"]', bot_user_id: null, team_kills: 0 },
+          { user_id: '2', team: 2, vehicle: 't', played_vehicles: '["t"]', bot_user_id: '-13', team_kills: 0 },
+          { user_id: '3', team: 1, vehicle: null, played_vehicles: '[]', bot_user_id: null, team_kills: 0 },
+          { user_id: '5', team: 1, vehicle: 'm', played_vehicles: '["m"]', bot_user_id: null, team_kills: 0 },
+        ],
+      )
+      assert.deepEqual(Buffer.from(blobOf('102')), canonicalBlob, 'a canonical battle is not rewritten')
+      assert.ok(isZstdEventsBlob(blobOf('103')), 'zstd-JSON without tracks stays')
       assert.deepEqual(Buffer.from(blobOf('103')), zstdBlob)
     } finally {
       check.close()
@@ -169,7 +191,7 @@ test('починка записанных боёв: события в канон
   }
 })
 
-test('починка не перезаписывает бой, который ingest переразобрал после чтения', () => {
+test('the repair does not overwrite a battle that ingest re-parsed after the read', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'wtbot-repair-guard-'))
   const dbPath = path.join(directory, 'wtbot.db')
   try {
@@ -186,6 +208,13 @@ test('починка не перезаписывает бой, который in
       })
       assert.equal(replaced, false)
       assert.equal((database.prepare("SELECT COUNT(*) AS n FROM battle_kills WHERE session_id = '7'").get() as { n: number }).n, 1)
+      database.prepare(`INSERT INTO battle_players (session_id, user_id, nick, nick_base, team) VALUES ('7', 'a', 'A', 'A', 1)`).run()
+      const facts = { userId: 'a', team: 2, vehicle: 'x', playedVehicles: ['x'], botUserId: null, teamKills: 3 }
+      assert.equal(updateBattlePlayerFacts(database, { sessionId: '7', eventsBlob: Buffer.from('прежний'), players: [facts] }), null)
+      assert.deepEqual(
+        { ...database.prepare("SELECT team, played_vehicles, team_kills FROM battle_players WHERE session_id = '7'").get() },
+        { team: 1, played_vehicles: null, team_kills: 0 },
+      )
       assert.deepEqual(
         Buffer.from((database.prepare("SELECT events_blob FROM battle_events WHERE session_id = '7'").get() as { events_blob: Uint8Array }).events_blob),
         Buffer.from('новый'),

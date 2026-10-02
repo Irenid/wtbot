@@ -7,6 +7,7 @@ import type {
 import type { BattleEventSummary } from '../workers/protocol.js'
 import { decodeEventsPayloadProfiled, encodeEventsJson, type EventsDecodeProfile } from './events-codec.js'
 import { canonicalizeReplayEvents } from './events-repair.js'
+import { applyPlayerEventFacts } from './player-events.js'
 import { parseComponentHashMaps } from './ecs.js'
 import {
   extractReplayEventsProfiled,
@@ -51,7 +52,7 @@ export interface BattleParseProfile {
   totalMs: number
 }
 
-/** CPU-часть полного разбора. Вызывать только внутри worker thread. */
+/** The CPU part of a full parse. Call only inside a worker thread. */
 export async function parseBattleParts(
   parts: Buffer[],
   realNames: Map<string, string>,
@@ -92,6 +93,8 @@ export async function parseBattleParts(
     player.slot = slot.slot
     player.title = slot.title
   }
+  // The stored rows, as the repair pass sees them: its facts must come out the same.
+  applyPlayerEventFacts(battleParticipants(results.players, meta.listedUserIds), events)
   const summary = summarizeEvents(events)
   const normalizeMs = performance.now() - phaseStarted
   phaseStarted = performance.now()
@@ -219,8 +222,10 @@ function buildBattleInput(
       awardDamage: normalized(player.awardDamage),
       teamKills: normalized(player.teamKills),
       squadId: player.squadId,
-      vehicle: player.vehicles[0] ?? null,
+      vehicle: (player.playedVehicles ?? player.vehicles)[0] ?? null,
       vehicles: player.vehicles,
+      playedVehicles: player.playedVehicles ?? null,
+      botUserId: player.botUserId ?? null,
       disconnected,
       slot: slot?.slot ?? player.slot ?? null,
       title: slot?.title || player.title || null,

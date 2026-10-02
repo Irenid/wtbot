@@ -437,6 +437,7 @@ export const ru = {
   'battlePage.col.score': 'Очки',
   'battlePage.mvp': 'MVP',
   'battlePage.disconnected': '(вышел)',
+  'battlePage.playedByBot': '(играл бот)',
 
   // --- Плеер сцены ---
   'scene.play': '▶ Играть',

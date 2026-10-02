@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildBattleSvg } from './render-battle.js'
+import { buildBattleSvg, buildRosters } from './render-battle.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
+import type { VehicleDict } from './vehicles.js'
 
 const header: WrplHeader = {
   version: 1,
@@ -45,7 +46,7 @@ const player: ReplayPlayerResult = {
   vehicles: [],
 }
 
-test('метка победы следует за клановым тегом в одной SVG-строке', () => {
+test('the victory label follows the clan tag in one SVG line', () => {
   const results: ReplayResults = { status: 'success', timePlayed: 60, players: [player] }
   const svg = buildBattleSvg(
     { missionName: '[Domination] Test', header, results, dict: {}, winnerTeam: 1 },
@@ -54,14 +55,14 @@ test('метка победы следует за клановым тегом в
 
   const clanMatch = /<text x="42" y="262"[^>]*>»xGAFx«<\/text>/.exec(svg)
   const victoryMatch =
-    /<text x="42" y="262"[^>]*><tspan fill-opacity="0">»xGAFx«<\/tspan><tspan dx="18" dy="-4"[^>]*>Победа<\/tspan><\/text>/.exec(svg)
+    /<text x="42" y="262"[^>]*><tspan fill-opacity="0">»xGAFx«<\/tspan><tspan dx="18" dy="-4"[^>]*>Victory<\/tspan><\/text>/.exec(svg)
   assert.ok(clanMatch)
   assert.ok(victoryMatch)
   assert.match(svg, /<text x="42" y="304"[^>]*>\(/)
-  assert.doesNotMatch(svg, /<text x="42" y="304"[^>]*>Победа<\/text>/)
+  assert.doesNotMatch(svg, /<text x="42" y="304"[^>]*>Victory<\/text>/)
 })
 
-test('метка победы не накладывается на длинный клановый тег', () => {
+test('the victory label does not overlap a long clan tag', () => {
   const longClanPlayer = { ...player, clanTag: '╔VeryLongClanName╕' }
   const results: ReplayResults = { status: 'success', timePlayed: 60, players: [longClanPlayer] }
   const svg = buildBattleSvg(
@@ -71,7 +72,7 @@ test('метка победы не накладывается на длинны�
 
   assert.match(
     svg,
-    /<text x="42" y="262"[^>]*><tspan fill-opacity="0">»VeryLongClanName«<\/tspan><tspan dx="18" dy="-4"[^>]*>Победа<\/tspan><\/text>/,
+    /<text x="42" y="262"[^>]*><tspan fill-opacity="0">»VeryLongClanName«<\/tspan><tspan dx="18" dy="-4"[^>]*>Victory<\/tspan><\/text>/,
   )
 })
 
@@ -183,4 +184,50 @@ test('SVG сохраняет оригинальные Unicode-символы в 
 
   assert.ok(svg.includes('>Haraldツ</text>'))
   assert.ok(svg.includes('>스트레이 키즈 Maniac</text>'))
+})
+
+const vehicleDict: VehicleDict = {
+  lineup_tank: { name: 'Lineup Tank', cls: 'T', country: 'ussr' },
+  test_tank: { name: 'Test Tank', cls: 'T', country: 'ussr' },
+  test_plane: { name: 'Test Plane', cls: 'F', country: 'ussr' },
+}
+
+function renderPlayers(players: ReplayPlayerResult[]): string {
+  return buildBattleSvg(
+    { missionName: '[Domination] Test', header, results: { status: 'success', timePlayed: 60, players }, dict: vehicleDict },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+}
+
+test('a row shows the driven vehicles, not the lineup', () => {
+  const svg = renderPlayers([{ ...player, vehicles: ['lineup_tank'], playedVehicles: ['test_plane', 'test_tank'] }])
+
+  assert.match(svg, /<text x="144" y="410"[^>]*>Test Plane \+1<\/text>/)
+  assert.doesNotMatch(svg, /Lineup Tank/)
+  assert.match(svg, /<tspan fill="#79c0ff">1F<\/tspan>/)
+})
+
+test('a slot played by a bot shows its vehicle with a bot mark instead of a disconnect', () => {
+  const svg = renderPlayers([{ ...player, vehicles: [], playedVehicles: ['test_tank'], botUserId: '-7' }])
+
+  assert.match(svg, /<text x="144" y="410"[^>]*>Test Tank<tspan fill="#9aa2b1"> · bot<\/tspan><\/text>/)
+  assert.doesNotMatch(svg, /Disconnected/)
+})
+
+test('a player who never spawned gets a dash, a missing lineup stays a disconnect', () => {
+  const idle = renderPlayers([{ ...player, vehicles: ['lineup_tank'], playedVehicles: [] }])
+  assert.match(idle, /<text x="144" y="410"[^>]*>—<\/text>/)
+  assert.doesNotMatch(idle, /Lineup Tank|Disconnected/)
+
+  const absent = renderPlayers([{ ...player, vehicles: [], playedVehicles: [] }])
+  assert.match(absent, /<text x="144" y="410"[^>]*>Disconnected<\/text>/)
+})
+
+test('team 0 makes no roster of its own: it joins the smaller team or is dropped', () => {
+  const p = (userId: string, team: number): ReplayPlayerResult => ({ ...player, userId, name: userId, team })
+  const teamsOf = (players: ReplayPlayerResult[]): string[][] =>
+    buildRosters({ status: 'success', timePlayed: 60, players }).map((roster) => roster.map((r) => r.userId).sort())
+
+  assert.deepEqual(teamsOf([p('a', 1), p('b', 1), p('c', 2), p('lost', 0)]), [['a', 'b'], ['c', 'lost']])
+  assert.deepEqual(teamsOf([p('a', 1), p('c', 2), p('lost', 0)]), [['a'], ['c']])
 })

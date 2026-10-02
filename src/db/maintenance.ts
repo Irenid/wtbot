@@ -2,50 +2,58 @@ import { deleteBotState, getBotState, getDbWorkerPath, setBotState } from './ind
 import { runWorkerTask } from '../workers/pool.js'
 
 /**
- * Фоновое обслуживание базы в долгоживущем процессе бота. Вся работа с
- * SQLite — в worker-задачах на своём подключении, main thread только
- * планирует:
+ * Background database maintenance in the long-running bot process. All SQLite
+ * work runs in worker tasks on their own connection; the main thread only
+ * schedules:
  *
- * - проход починки записанных боёв (repair-battle-events): события — в
- *   канонический вид events-repair.ts и колоночный формат events-codec.ts,
- *   пустые slot, title и счётчики — из событий. Курсор в bot_state
- *   переживает перезапуск; в конце таблицы проход отмечается выполненным.
- *   Новое правило починки — новая REPAIR_VERSION: проход повторяется по всем
- *   боям. Каждая пачка сразу возвращает ОС освободившиеся страницы;
- * - раз в несколько часов PRAGMA optimize и возврат ОС оставшихся свободных
- *   страниц (incremental_vacuum) порциями, пока они есть.
+ * - the repair pass over stored battles (repair-battle-events): events to the
+ *   canonical form of events-repair.ts and the columnar format of
+ *   events-codec.ts, empty slot, title and counters from the events, player
+ *   facts from the events (player-events.ts). The cursor in bot_state survives
+ *   restarts; at the end of the table the pass is marked done. A new repair
+ *   rule is a new REPAIR_VERSION: the pass repeats over every battle. Each
+ *   batch returns freed pages to the OS at once;
+ * - every few hours PRAGMA optimize and returning the remaining free pages to
+ *   the OS (incremental_vacuum) in portions while there are any.
  *
- * Обе работы последовательны (overlap guard) и останавливаются до закрытия
- * CPU pool (shutdown в index.ts).
+ * Both jobs are sequential (overlap guard) and stop before the CPU pool
+ * closes (shutdown in index.ts).
  */
 
-/** v1 (2026-10-02): аудит данных — docs/database.md, "Data errors". */
-const REPAIR_VERSION = 1
+/**
+ * v1 (2026-10-02): data audit — docs/database.md, "Data errors". v2
+ * (2026-10-02): played vehicles, bot slots, team kills from the kill feed and
+ * the team of team-0 players — docs/replay-data-quality.md.
+ */
+const REPAIR_VERSION = 2
 const REPAIR_CURSOR_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-after`
 const REPAIR_DONE_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-done`
-/** Курсоры прежних проходов (gzip → zstd-JSON, перевод в колоночный формат). */
+/** Cursors of earlier passes: gzip → zstd-JSON, the columnar format, repair v1. */
 const LEGACY_REPAIR_KEYS = [
   'db-maintenance:recompress-after',
   'db-maintenance:recompress-done',
   'db-maintenance:events-columnar-after',
   'db-maintenance:events-columnar-done',
+  'db-maintenance:battle-repair-v1-after',
+  'db-maintenance:battle-repair-v1-done',
 ] as const
 /**
- * Пачка 50 боёв: распаковка и проверка ~2 мс на бой, перекодирование —
- * ~45 мс только у починенных; транзакция записи — десятки миллисекунд.
+ * A batch of 50 battles: decoding and checking take ~2 ms per battle,
+ * re-encoding ~45 ms only for repaired ones; the write transaction takes tens
+ * of milliseconds (the first v2 pass rewrites ~16 player rows per battle).
  */
 const REPAIR_BATCH = 50
 const REPAIR_PAUSE_MS = 500
 const REPAIR_RETRY_MS = 5 * 60_000
-/** Пачка освобождает немного страниц; потолок — с запасом, шаги короткие. */
+/** A batch frees few pages; the cap has headroom, the steps are short. */
 const REPAIR_VACUUM_PAGES = 4_096
 const REPAIR_PROGRESS_EVERY = 10_000
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000
-/** Пока свободных страниц больше порции — следующая порция через 2 минуты. */
+/** While more free pages than one portion remain, the next portion runs in 2 minutes. */
 const MAINTENANCE_BUSY_INTERVAL_MS = 2 * 60_000
-/** Первое обслуживание — не сразу: старт и так читает базу (прогрев, парсеры). */
+/** The first maintenance is delayed: startup already reads the database (warmup, parsers). */
 const MAINTENANCE_FIRST_DELAY_MS = 10 * 60_000
-/** 32 МиБ за задачу — шагами по VACUUM_STEP_PAGES (db/index.ts) с паузами. */
+/** 32 MiB per task, in VACUUM_STEP_PAGES steps (db/index.ts) with pauses. */
 const MAINTENANCE_MAX_PAGES = 8_192
 
 let repairTimer: NodeJS.Timeout | null = null
@@ -59,6 +67,7 @@ interface RepairTotals {
   rewritten: number
   changedMeanwhile: number
   filledRows: number
+  playerRows: number
   bytesBefore: number
   bytesAfter: number
   freedBytes: number
@@ -66,7 +75,10 @@ interface RepairTotals {
 }
 
 function emptyTotals(): RepairTotals {
-  return { scanned: 0, rewritten: 0, changedMeanwhile: 0, filledRows: 0, bytesBefore: 0, bytesAfter: 0, freedBytes: 0, repairs: {} }
+  return {
+    scanned: 0, rewritten: 0, changedMeanwhile: 0, filledRows: 0, playerRows: 0,
+    bytesBefore: 0, bytesAfter: 0, freedBytes: 0, repairs: {},
+  }
 }
 
 let totals = emptyTotals()
@@ -75,11 +87,11 @@ let nextProgressAt = REPAIR_PROGRESS_EVERY
 const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(0)
 
 const REPAIR_LABELS: Record<string, string> = {
-  chatNames: 'имён в чате',
-  duplicateKills: 'дублей убийств',
-  signedIds: 'id ботов',
-  brokenChat: 'обрезанных сообщений',
-  roundedValues: 'дробных координат',
+  chatNames: 'chat names',
+  duplicateKills: 'duplicate kills',
+  signedIds: 'bot ids',
+  brokenChat: 'truncated messages',
+  roundedValues: 'fractional coordinates',
 }
 
 function repairSummary(): string {
@@ -87,11 +99,12 @@ function repairSummary(): string {
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${REPAIR_LABELS[key] ?? key} ${count}`)
   return (
-    `боёв ${totals.scanned}, переписано ${totals.rewritten} ` +
-    `(${mib(totals.bytesBefore)} → ${mib(totals.bytesAfter)} МиБ), заполнено строк ${totals.filledRows}` +
-    (fixes.length > 0 ? `; исправлено: ${fixes.join(', ')}` : '') +
-    (totals.changedMeanwhile > 0 ? `; переразобраны во время прохода ${totals.changedMeanwhile}` : '') +
-    `; возвращено ОС ${mib(totals.freedBytes)} МиБ`
+    `battles ${totals.scanned}, rewritten ${totals.rewritten} ` +
+    `(${mib(totals.bytesBefore)} → ${mib(totals.bytesAfter)} MiB), rows filled ${totals.filledRows}, ` +
+    `player rows updated ${totals.playerRows}` +
+    (fixes.length > 0 ? `; fixed: ${fixes.join(', ')}` : '') +
+    (totals.changedMeanwhile > 0 ? `; re-parsed during the pass ${totals.changedMeanwhile}` : '') +
+    `; returned to the OS ${mib(totals.freedBytes)} MiB`
   )
 }
 
@@ -125,6 +138,7 @@ async function repairBatch(): Promise<void> {
       rewritten: totals.rewritten + result.rewritten,
       changedMeanwhile: totals.changedMeanwhile + result.changedMeanwhile,
       filledRows: totals.filledRows + result.filledRows,
+      playerRows: totals.playerRows + result.playerRows,
       bytesBefore: totals.bytesBefore + result.bytesBefore,
       bytesAfter: totals.bytesAfter + result.bytesAfter,
       freedBytes: totals.freedBytes + result.freedBytes,
@@ -132,18 +146,18 @@ async function repairBatch(): Promise<void> {
     }
     if (result.lastSessionId === null) {
       setBotState(REPAIR_DONE_KEY, String(Math.floor(Date.now() / 1_000)))
-      if (totals.scanned > 0) console.log(`[db] Починка записанных боёв v${REPAIR_VERSION} завершена: ${repairSummary()}`)
+      if (totals.scanned > 0) console.log(`[db] Stored battle repair v${REPAIR_VERSION} done: ${repairSummary()}`)
       return
     }
     setBotState(REPAIR_CURSOR_KEY, result.lastSessionId)
     if (totals.scanned >= nextProgressAt) {
       nextProgressAt += REPAIR_PROGRESS_EVERY
-      console.log(`[db] Починка записанных боёв v${REPAIR_VERSION}: ${repairSummary()}`)
+      console.log(`[db] Stored battle repair v${REPAIR_VERSION}: ${repairSummary()}`)
     }
     scheduleRepair(REPAIR_PAUSE_MS)
   } catch (error) {
-    // Сбой пачки (занятая база, timeout пула) не теряет курсор: повтор позже.
-    console.warn(`[db] Починка записанных боёв отложена: ${error instanceof Error ? error.message : String(error)}`)
+    // A failed batch (busy database, pool timeout) keeps the cursor: retried later.
+    console.warn(`[db] Stored battle repair postponed: ${error instanceof Error ? error.message : String(error)}`)
     scheduleRepair(REPAIR_RETRY_MS)
   }
 }

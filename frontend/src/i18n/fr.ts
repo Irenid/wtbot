@@ -317,6 +317,7 @@ export const fr: Partial<Record<MessageKey, string>> = {
   "battlePage.col.score": "Score",
   "battlePage.mvp": "MVP",
   "battlePage.disconnected": "(déconnecté)",
+  "battlePage.playedByBot": "(joué par un bot)",
   "scene.play": "▶ Lecture",
   "scene.pause": "❚❚ Pause",
   "scene.speed.aria": "Vitesse de lecture",

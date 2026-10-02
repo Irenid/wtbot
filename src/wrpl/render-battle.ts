@@ -179,7 +179,7 @@ export async function renderBattleImage(
   const iconIds = rosters
     .flat()
     .filter((p) => !isDisconnected(p))
-    .flatMap((p) => (p.vehicles[0] ? [p.vehicles[0]] : []))
+    .flatMap((p) => shownVehicles(p).slice(0, 1))
   const [unitIcons, mapImage, fontFiles, gameFlags] = await Promise.all([
     ensureUnitIcons(iconIds),
     loadMapBackground(input.header.level),
@@ -211,9 +211,14 @@ export async function renderBattleImage(
   return Buffer.from(png)
 }
 
-/** Отключился: нет строки результатов (пустое имя) или ни одной машины в бою */
+/** No results row (empty name) or no lineup, and no bot played the slot. */
 function isDisconnected(p: ReplayPlayerResult): boolean {
-  return p.name === '' || p.vehicles.length === 0
+  return (p.name === '' || p.vehicles.length === 0) && !p.botUserId
+}
+
+/** What the player drove (player-events.ts); the lineup when the events have no tracks. */
+export function shownVehicles(p: Pick<ReplayPlayerResult, 'vehicles' | 'playedVehicles'>): string[] {
+  return p.playedVehicles ?? p.vehicles
 }
 
 /** Кланы, состав и игроки по командам — для текста рядом с картинкой */
@@ -328,7 +333,7 @@ function renderTeam(
   ratings?: Map<string, ClanRating>,
 ): string {
   const parts: string[] = []
-  // Первая колонка — личный клановый рейтинг (⊛), дальше статистика боя
+  // The first column is the personal squadron rating (⊛), then battle stats
   const ratingX = ox + 490
   const statX = [584, 656, 728, 800, 872].map((v) => ox + v)
   const titleBaseline = contentTop + 52
@@ -336,20 +341,20 @@ function renderTeam(
   const metaIconTop = contentTop + 68
   const flagsTop = titleBaseline - 30
 
-  // Клан-тег: украшения рисует шрифт игры (или юникод-замены без него).
+  // Clan tag: the game font draws the decorations (Unicode stand-ins without it).
   const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
   const teamNo = roster[0]?.team ?? teamIndex + 1
-  const clanText = clan !== undefined ? clan : `Команда ${teamNo}`
+  const clanText = clan !== undefined ? clan : `Team ${teamNo}`
   const clanLabel = tagMarkup(clanText, assets.gameFont)
   parts.push(text(ox + 10, titleBaseline, clanLabel, 46, theme.clan, 'start', 600))
   if (won) {
     const victoryLabel =
       `<tspan fill-opacity="0">${clanLabel}</tspan>` +
-      `<tspan dx="18" dy="-4" fill="#f2cc60" font-size="28" font-weight="700">Победа</tspan>`
+      `<tspan dx="18" dy="-4" fill="#f2cc60" font-size="28" font-weight="700">Victory</tspan>`
     parts.push(text(ox + 10, titleBaseline, victoryLabel, 46, theme.clan, 'start', 600))
   }
 
-  // Состав: (4F/3T/1AA) — по первой машине каждого игрока
+  // Composition (4F/3T/1AA): each player's first driven vehicle
   const counts = classCounts(roster, dict)
   const compo: string[] = []
   for (const cls of CLASS_ORDER) {
@@ -362,8 +367,8 @@ function renderTeam(
     )})</text>`,
   )
 
-  // Флаги наций команды — по машинам игроков, в игровом порядке
-  const nations = [...new Set(roster.map((p) => vehicleInfo(dict, p.vehicles[0] ?? '').country))]
+  // Team nation flags, from the same vehicles, in the game's nation order
+  const nations = [...new Set(roster.map((p) => vehicleInfo(dict, shownVehicles(p)[0] ?? '').country))]
     .filter((c) => c !== '?')
     .sort((a, b) => NATION_ORDER.indexOf(a) - NATION_ORDER.indexOf(b))
     .slice(0, 6)
@@ -380,7 +385,7 @@ function renderTeam(
     )
   })
 
-  // Значки колонок: рейтинг, возд, назем, ассисты, захваты, смерти
+  // Column icons: rating, air, ground, assists, captures, deaths
   parts.push(iconStarCircle(ratingX - 14, metaIconTop, 28, '#e6edf3'))
   const icons = [
     (x: number, y: number, size: number, fill: string) => iconPlane(x, y, size, fill, assets.gameFont),
@@ -394,16 +399,17 @@ function renderTeam(
     parts.push(icon(statX[i]! - size / 2, metaIconTop - (size - 28) / 2, size, '#e6edf3'))
   })
 
-  // Игроки
+  // Players
   roster.forEach((p, row) => {
     const y = contentTop + TEAM_HEADER_H + row * ROW_H
     const disconnected = isDisconnected(p)
-    const firstId = p.vehicles[0] ?? ''
+    const shown = shownVehicles(p)
+    const firstId = shown[0] ?? ''
     const first = vehicleInfo(dict, firstId)
     const color = CLASS_COLOR[first.cls] ?? CLASS_COLOR['?']!
 
-    // Силуэт машины из датамайна; отключившимся — красный значок,
-    // остальным без силуэта — значок класса
+    // The datamine silhouette; a red mark when disconnected, the class icon
+    // without a silhouette, nothing when the player never spawned
     const icon = assets.unitIcons.get(firstId)
     if (disconnected) {
       parts.push(iconDisconnect(ox + 26, y + 10, 46))
@@ -411,7 +417,7 @@ function renderTeam(
       parts.push(
         `<image x="${ox}" y="${y + 6}" width="96" height="56" preserveAspectRatio="xMidYMid meet" href="${icon}"/>`,
       )
-    } else {
+    } else if (firstId !== '') {
       const classIcon =
         first.cls === 'F'
           ? (x: number, y2: number, size: number, fill: string) => iconPlane(x, y2, size, fill, assets.gameFont)
@@ -421,8 +427,8 @@ function renderTeam(
       parts.push(classIcon(ox + 24, y + 12, 48, color))
     }
 
-    // Платформа (@psn/@live) → значок перед ником. Строка техники
-    // сохраняет исходную колонку и не уезжает вслед за значком.
+    // Platform (@psn/@live) → an icon before the nickname. The vehicle line
+    // keeps its column and does not follow the icon.
     const { name, platform } = splitPlatform(p.name)
     const vehicleX = ox + 112
     let nameX = vehicleX
@@ -451,15 +457,19 @@ function renderTeam(
       parts.push(text(nameX, y + 36, displayName, 34, theme.player))
     }
 
-    // Под ником: техника или пометка отключения
+    // Under the nickname: the vehicles, a disconnect note or a dash (never spawned).
+    // A bot slot played for the player: its vehicles, marked "bot".
     if (disconnected) {
       parts.push(text(vehicleX, y + 70, 'Disconnected', 26, '#9aa2b1'))
+    } else if (firstId === '') {
+      parts.push(text(vehicleX, y + 70, '—', 26, '#9aa2b1'))
     } else {
-      const extra = p.vehicles.length > 1 ? ` +${p.vehicles.length - 1}` : ''
-      parts.push(text(vehicleX, y + 70, esc(trimToWidth(first.name, 26)) + extra, 26, color))
+      const extra = shown.length > 1 ? ` +${shown.length - 1}` : ''
+      const bot = p.botUserId ? '<tspan fill="#9aa2b1"> · bot</tspan>' : ''
+      parts.push(text(vehicleX, y + 70, esc(trimToWidth(first.name, bot ? 20 : 26)) + extra + bot, 26, color))
     }
 
-    // Личный клановый рейтинг: дельта за бой сверху, текущее значение снизу
+    // Personal squadron rating: the battle's delta above, the current value below
     const rating = name ? ratings?.get(p.name) ?? ratings?.get(name) : undefined
     if (rating) {
       if (rating.delta !== null && rating.delta !== 0) {
@@ -473,7 +483,7 @@ function renderTeam(
       parts.push(text(ratingX, y + 48, '—', 30, ZERO_COLOR, 'middle'))
     }
 
-    // Статистика: возд, назем, ассисты, захваты, смерти
+    // Stats: air, ground, assists, captures, deaths
     const vals = [p.kills, p.groundKills, p.assists, p.captureZone, p.deaths]
     vals.forEach((v, i) => {
       const c = v > 0 ? STAT_COLORS[i]! : ZERO_COLOR
@@ -484,25 +494,25 @@ function renderTeam(
   return parts.join('\n')
 }
 
-// ---------- общая логика команд ----------
+// ---------- shared team logic ----------
 
 /**
- * Люди без ботов, сгруппированы по командам, внутри — по очкам.
- * Первой (слева, «золотой») идёт команда с большей суммой очков — как у
- * Boris Stats; честного признака победителя в results-BLK нет.
- * Экспортируется для консольной таблицы (battle-summary) — порядок команд
- * всюду одинаковый и совпадает с summarizeTeams.
+ * Humans without bots, grouped by team, sorted by score within a team. The
+ * team with the larger score total goes first (left, "gold"), as in Boris
+ * Stats: results-BLK has no honest winner flag. Exported for the console
+ * table (battle-summary): the team order is the same everywhere and matches
+ * summarizeTeams.
  */
 export function buildRosters(results: ReplayResults): ReplayPlayerResult[][] {
   const humans = results.players.filter((p) => !p.name.startsWith('coop/'))
-  const known = humans.filter((p) => p.team >= 0)
+  const known = humans.filter((p) => p.team > 0)
   const teams = [...new Set(known.map((p) => p.team))].sort()
   const rosters = teams.map((t) => known.filter((p) => p.team === t).sort((a, b) => b.score - a.score))
 
-  // Отключившиеся без строки результатов (team неизвестен): клановые бои
-  // идут 8×8, так что дописываем их в неполную команду; при равных
-  // размерах команду не угадать — такую запись не показываем.
-  for (const ghost of humans.filter((p) => p.team < 0)) {
+  // Team unknown (≤ 0 after player-events.ts): squadron battles are 8×8, so
+  // such a player joins the smaller team; with equal sizes the team cannot be
+  // guessed and the row is not shown.
+  for (const ghost of humans.filter((p) => p.team <= 0)) {
     const sizes = rosters.map((r) => r.length)
     const min = Math.min(...sizes)
     const smaller = rosters.filter((r) => r.length === min)
@@ -516,7 +526,7 @@ export function buildRosters(results: ReplayResults): ReplayPlayerResult[][] {
 function classCounts(roster: ReplayPlayerResult[], dict: VehicleDict): Map<string, number> {
   const counts = new Map<string, number>()
   for (const p of roster) {
-    const cls = vehicleInfo(dict, p.vehicles[0] ?? '').cls
+    const cls = vehicleInfo(dict, shownVehicles(p)[0] ?? '').cls
     counts.set(cls, (counts.get(cls) ?? 0) + 1)
   }
   return counts

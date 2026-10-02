@@ -191,27 +191,30 @@ export interface WorkerTaskMap {
   }
   'repair-battle-events': {
     /**
-     * Пачка боёв после afterSessionId в порядке ключа: события — в
-     * канонический вид (events-repair.ts) и колоночный формат, пустые
-     * производные поля — из событий, затем возврат ОС освободившихся страниц.
+     * Battles after afterSessionId in key order: events to the canonical form
+     * (events-repair.ts) and the columnar format, empty derived fields and
+     * player facts (player-events.ts) from the events, then freed pages back
+     * to the OS.
      */
     input: { dbPath: string; afterSessionId: string; limit: number; vacuumPages: number }
     output: {
-      /** null — дошли до конца таблицы. */
+      /** null — the end of the table. */
       lastSessionId: string | null
       scanned: number
-      /** Боёв с переписанным блобом: починка событий или перевод формата. */
+      /** Battles whose blob was rewritten: an events repair or a format change. */
       rewritten: number
-      /** Блоб изменился с чтения (бой переразобрал ingest) — пропущен. */
+      /** The blob changed since it was read (ingest re-parsed the battle) — skipped. */
       changedMeanwhile: number
-      /** Заполненных строк: slot и title игроков, счётчики боя. */
+      /** Filled rows: players' slot and title, the battle's counters. */
       filledRows: number
+      /** Player rows with new team, vehicle, played vehicles, bot slot or team kills. */
+      playerRows: number
       repairs: EventsRepairCounts
       bytesBefore: number
       bytesAfter: number
-      /** Возвращено ОС после пачки (incremental_vacuum). */
+      /** Returned to the OS after the batch (incremental_vacuum). */
       freedBytes: number
-      /** Транзакция записи пачки — столько ждала бы запись main thread. */
+      /** The batch's write transaction — how long a main-thread write would wait. */
       writeMs: number
       elapsedMs: number
     }

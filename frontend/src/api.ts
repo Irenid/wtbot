@@ -485,9 +485,14 @@ export interface ScoreboardPlayer {
   score: number
   teamKills: number
   squadId: number
+  /** The first driven vehicle; the lineup's first when the battle has no tracks. */
   vehicle: string | null
+  /** Driven vehicles in spawn order; the lineup when the battle has no tracks. */
   vehicles: string[]
+  /** Did not load in: no results row or no lineup. */
   disconnected: boolean
+  /** A bot played the slot; its kills and score are this player's. */
+  bot: boolean
   autoSquad: boolean | null
 }
 

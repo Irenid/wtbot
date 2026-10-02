@@ -182,9 +182,10 @@ parameterized. Measurements, decisions and migration rollback —
   the foreign lock synchronously and the event loop stalls. One 8,192-page
   `incremental_vacuum` portion held the lock for 1.3 s (watchdog, 2026-10-02).
 - Stored battles are fixed by the `repair-battle-events` pass: the rules in
-  `events-repair.ts` are the ingest rules; columnar format and empty `slot`,
-  `title`, `air_unit_count`, `chat_count` come from the events. The blob and
-  the kill and chat rows are replaced together and only if the blob did not
+  `events-repair.ts` and `player-events.ts` are the ingest rules; columnar
+  format, empty `slot`, `title`, `air_unit_count`, `chat_count` and the player
+  facts (section 7, "Ingest") come from the events. The blob with the kill and
+  chat rows, and the player facts, are replaced only if the blob did not
   change since it was read. A new rule is the next `REPAIR_VERSION`, never a
   manual edit of the database; what SQL or a fresh CDN parse can fix is a
   migration (example: v18).
@@ -349,6 +350,18 @@ Access:
   (`ReplayPartWaitList`, 1→3 min) without an attempt; `expired` only after
   that window. A truncated battle in the data: `status` NULL, `team_won = 0`,
   ~95 s (v11–v14 requeued such battles).
+- results-BLK lists each player's lineup (`vehicles`, matchingInfo
+  `crafts_info`), not what was driven; credits a bot slot's kills and score to
+  the player who did not load in (the bot keeps its deaths); has
+  `teamKills` ≈ 0; may give team 0 to a player who never loaded in while
+  `squad_id` keeps the marker. `player-events.ts` (ingest and repair v2)
+  derives from the events: `played_vehicles` in spawn order (`vehicle` is its
+  first; NULL — no tracks, readers use the lineup), `bot_user_id` (only the
+  team's single slotless player and single negative-id slot pair up),
+  `team_kills` from the kill feed, the team from the squad marker. Readers
+  hide a paired bot row, credit its tracks, kills and damage to the player
+  (`creditBotSlots`, scene `botSlots`) and draw no card for team ≤ 0. Audit —
+  `docs/replay-data-quality.md`.
 
 ### Untrusted binary input
 
@@ -551,7 +564,7 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-02**: all
-gates pass, **297 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **310 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

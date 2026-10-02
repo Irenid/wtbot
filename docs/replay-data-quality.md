@@ -43,6 +43,43 @@ found and how they were fixed — [database.md](database.md), "Data errors".
   2026-10-02). 308 such messages keep a lost tail and `channel_valid = 0`: the
   replays are gone from the CDN.
 
+## Results-BLK against the events
+
+An audit of 2026-10-02 compared every `battle_players` row with its slot's
+tracks, kills and damage in the decoded events blob (42,332 battles, 677,634
+rows, on a copy). wtbot errors, fixed by `src/wrpl/player-events.ts` (ingest
+and repair pass v2, migration v19 — `database.md`):
+
+- **Vehicles.** Results list the lineup (matchingInfo `crafts_info`, ~3.8
+  vehicles), not what was driven: 46.2% of spawned players never drove the
+  lineup's first vehicle (38.5% a different class), so the Discord
+  composition and flags were wrong in 94% of team rows and player vehicle
+  statistics counted whole lineups. Now `played_vehicles` holds the unit tracks
+  in spawn order and `vehicle` is its first. One battle without tracks
+  (16 rows) keeps the lineup; 1,156 rows drove nothing (684 players, 472 bots).
+- **Bot slots.** The game hands the slot of a squadron-battle player who did
+  not load in to a `coop/Bot…` slot (negative userId) and credits its kills
+  and score to the player's row (kills agree in 507 of 510 pairs; the bot
+  keeps its deaths). wtbot showed the player as disconnected and credited the
+  log, heatmaps and scene to the bot. 511 pairs (`bot_user_id`); a team with
+  two slotless players or two bot slots stays unpaired — 4 such players have
+  kills and keep the disconnect mark.
+- **Team kills.** Results `teamKills` is non-zero in 57 rows (mostly drone
+  kills); the kill feed has 8,225 teammate kills, now counted from it (a bot
+  slot's go to its player).
+- **Team 0.** 58 players who never loaded in got team 0 (the site drew a
+  phantom "Team 0" card) while `squad_id` keeps the marker 4096/4097: all got
+  their team back, 56 of them played by a bot.
+
+Game-side, not errors:
+
+- score 0 — 2.6% of rows, all explained: idle, a team-kill penalty, never
+  spawned, bot;
+- results freeze once the battle is decided: kills in the last ~5 s of the
+  replay are missing from the results 92% of the time;
+- scout-drone kills count as air kills (50,322);
+- the game credits more kills than enemy deaths in 1,625 team-battles.
+
 ## Completeness
 
 | Metric | July 2026, sample | 2026-10-02, whole database |
@@ -62,15 +99,17 @@ itself has none; one more battle ran out of time without an outcome. Without
 `status`: three battles played to the time limit (~25 minutes) and one
 seven-minute July battle. Without `mission_settings`: battles of the first
 parser version (15–17 July). Disconnected players have no vehicle list in the
-battle results: they left or never appeared (177 scored points, 547 have no
-slot either). A kill without `victim_id` has a non-player victim (scout drones,
-AA guns).
+battle results: they left or never appeared (547 have no slot either); those
+who scored points were played by a bot slot (176 of 181 on 2026-10-02,
+previous section). A kill without `victim_id` has a non-player victim (scout
+drones, AA guns).
 
 ## What is reliable
 
-Team and clan win rates; players' kills/assists/deaths/score; vehicle lineups
-and first-vehicle efficiency; player participation and disconnect rate; the
-kill graph by userId and time; kill positions and distances between
+Team and clan win rates; players' kills/assists/deaths/score (a bot-played
+slot's are the bot's); driven vehicles (`played_vehicles`) and vehicle
+efficiency; team kills from the kill feed; player participation and
+disconnect rate; the kill graph by userId and time; kill positions and distances between
 participants; ground and air heatmaps filtered by `userId != ''`; matching
 battle statistics with clan rating snapshots; parser and ingest quality
 control by how complete IDs, positions and errors are. With caveats — damage,

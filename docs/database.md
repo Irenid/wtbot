@@ -2,7 +2,8 @@
 
 Two optimization passes — 2026-10-01 (table layout, indexes, settings;
 migration v17) and 2026-10-02 (events blob format, maintenance) — an audit
-of data errors (migration v18) and a page-usage check. Measured on
+of data errors (migration v18), results-BLK checked against the events (v19)
+and a page-usage check. Measured on
 page-level copies of the production database (`.backup`) on the home
 server: NVMe behind LUKS, 31 GiB RAM, connection set up as the bot's.
 "Cold" — after `posix_fadvise(DONTNEED)` on the database file (no pages in
@@ -323,7 +324,8 @@ correct data is not rewritten.
   roster (removed by the rule for phantom bots outside the Replay API roster).
 - 888 players without a vehicle list in the battle results (`disconnected`) —
   they left the battle or never appeared: 177 scored points, 547 have no slot,
-  55 no team. That is what the replay itself records.
+  55 no team. Those who scored were mostly played by a bot slot, and the team
+  marker gives the team — v19, next section.
 - `coop/Bot…`: 339 rows with a negative id are bots; 607 with a real userId
   are player slots driven by the AI (0 points, the account has a normal
   nickname in other battles, the site's item shows a random name); player
@@ -335,6 +337,28 @@ correct data is not rewritten.
   correctly.
 - 148 `expired` and 16 `error` downloads older than two weeks — bookkeeping so
   the battle is not downloaded again; they have no data and never will.
+
+## Player facts from the events (2 October, migration v19)
+
+What results-BLK gets wrong and why — `replay-data-quality.md`,
+"Results-BLK against the events". Migration v19 adds two nullable
+`battle_players` columns, `played_vehicles` (JSON, spawn order) and
+`bot_user_id` (2 ms); NULL means "not filled", and readers use the lineup.
+Repair pass v2 (`REPAIR_VERSION` 2) derives the facts with the ingest rules
+(`player-events.ts`) and updates `team` (≤ 0 only), `vehicle`,
+`played_vehicles`, `bot_user_id` and `team_kills` of the rows that differ,
+only if the blob did not change since it was read. Ingest writes the same
+facts, so the pass finds nothing to change in battles parsed by the new code.
+
+- On the copy (42,332 battles): 677,618 rows updated in 55 s without pauses
+  (848 batches of 50; the bot adds 500 ms pauses — ~8 min), the write
+  transaction median 2.8 ms, max 4.7 ms; a second pass writes nothing.
+  Result: 511 bot links, no team ≤ 0 left, 8,225 team kills, 16 rows (the one
+  battle without tracks) keep NULL.
+- Media and scenes have new cache versions (`BATTLE_MEDIA_VERSION` 43,
+  `BATTLE_SCENE_VERSION` 3). A log, heatmap or scene built during the first
+  pass for a battle its batch has not reached yet keeps the bot slot's
+  crediting until the LRU evicts it.
 
 ## Page usage (2 October, evening)
 
@@ -438,6 +462,12 @@ the CDN while their parts are there (~2 weeks).
   did not know. So image 848e01b (v17) opens a v18 database after
   `PRAGMA user_version = 17` with the bot stopped (untested in production); an
   image without the columnar format also needs the reverse conversion above.
+- **v19** only adds two nullable columns, and the v18 image names its columns
+  in SQL: it runs on a v19 database after `PRAGMA user_version = 18` with the
+  bot stopped (its repair pass v1 repeats once and changes nothing). Battles
+  it ingests get no facts; back on v19, delete the `bot_state` keys
+  `db-maintenance:battle-repair-v2-after` and `-v2-done`, and pass v2 fills
+  them.
 
 ## Should we move to PostgreSQL
 
@@ -454,7 +484,7 @@ another disk" in the ROADMAP).
 **What it would cost:** rewriting the data layer — `src/db/index.ts` (~6,700
 lines of synchronous SQL) and every caller (bot, site, parsers, ingest, worker
 tasks) to async, the dialect (`WITHOUT ROWID`, `json_each`, `GLOB`,
-`unixepoch()`, `COLLATE NOCASE`, bare columns with `MAX()`) and 18
+`unixepoch()`, `COLLATE NOCASE`, bare columns with `MAX()`) and 19
 migrations; ~300 tests on `:memory:` SQLite → a test PostgreSQL (a container in
 CI, slower); a data migration with downtime; one more service to run
 (container, `shared_buffers` and `work_mem`, backups and their checks, major

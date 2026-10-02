@@ -832,6 +832,18 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       `)
     },
   },
+  {
+    version: 19,
+    apply(database) {
+      // Facts from the events (src/wrpl/player-events.ts): the vehicles the
+      // slot drove and the bot slot that played for the player. Ingest writes
+      // them; repair pass v2 (db/maintenance.ts) fills stored battles, also
+      // team kills from the kill feed and the team of team-0 players.
+      // NULL — not filled yet: readers use the lineup.
+      addColumnIfMissing(database, 'battle_players', 'played_vehicles', 'TEXT')
+      addColumnIfMissing(database, 'battle_players', 'bot_user_id', 'TEXT')
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -1300,6 +1312,10 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
       title           TEXT,
       -- NULL для старых строк: false и «неизвестно» нельзя смешивать.
       auto_squad      INTEGER,
+      -- JSON array from unit tracks (v19); NULL — unknown, the lineup is in vehicles.
+      played_vehicles TEXT,
+      -- The bot slot that played for this player (v19).
+      bot_user_id     TEXT,
       PRIMARY KEY (session_id, user_id)
     );
 
@@ -4257,20 +4273,20 @@ function replayPeriodBoundary(value: number | undefined, name: 'from' | 'to'): n
 }
 
 /**
- * Статистика только по локально разобранным реплеям для стабильного WT user id.
- * Ники намеренно не участвуют в сопоставлении: они могут меняться или совпадать.
+ * Statistics from locally parsed replays only, for a stable WT user id. Nicks
+ * deliberately take no part in matching: they change and collide.
  */
 export function getPlayerReplayStats(
   playerRef: { userId: string },
   period: PlayerReplayStatsPeriod = {},
 ): PlayerReplayStats {
   const userId = playerRef.userId.trim()
-  if (!userId) throw new Error('Для replay-статистики нужен непустой WT user id')
+  if (!userId) throw new Error('Replay statistics need a non-empty WT user id')
 
   const from = replayPeriodBoundary(period.from, 'from')
   const to = replayPeriodBoundary(period.to, 'to')
   if (from !== null && to !== null && from > to) {
-    throw new RangeError('Начало периода replay-статистики не может быть позже конца')
+    throw new RangeError('The replay statistics period cannot start after it ends')
   }
 
   selectPlayerReplayStatsStatement ??= getDb().prepare(`
@@ -4323,9 +4339,12 @@ export function getPlayerReplayStats(
       MAX(start_time) AS last_battle_at
     FROM observed
   `)
+  // Driven vehicles (unit tracks, v19); the lineup only while played_vehicles
+  // is unknown: before the repair pass fills it, or events without tracks.
+  // `vehicle` is the first of that list; it alone counts when the list is broken.
   selectPlayerReplayVehiclesStatement ??= getDb().prepare(`
     WITH observed AS (
-      SELECT DISTINCT b.session_id, bp.vehicle, bp.vehicles
+      SELECT DISTINCT b.session_id, bp.vehicle, bp.vehicles, bp.played_vehicles
       FROM battle_players bp
       JOIN battles b ON b.session_id = bp.session_id
       WHERE bp.user_id = ?
@@ -4341,7 +4360,11 @@ export function getPlayerReplayStats(
       SELECT observed.session_id, trim(CAST(item.value AS TEXT)) AS vehicle_id
       FROM observed
       CROSS JOIN json_each(
-        CASE WHEN json_valid(observed.vehicles) THEN observed.vehicles ELSE '[]' END
+        CASE
+          WHEN json_valid(observed.played_vehicles) THEN observed.played_vehicles
+          WHEN json_valid(observed.vehicles) THEN observed.vehicles
+          ELSE '[]'
+        END
       ) AS item
       WHERE item.type = 'text' AND trim(CAST(item.value AS TEXT)) <> ''
     )
@@ -4457,12 +4480,12 @@ function countInto(counts: Map<string, number>, key: string): void {
 }
 
 /**
- * Разбор локальных реплеев игрока за период: карты, техника, кланы, напарники,
- * оружие и соперники. Три индексированных запроса (бои игрока, все игроки этих
- * боёв, убийства с его участием) и подсчёт в JS; не больше
- * PLAYER_INSIGHT_MAX_SESSIONS последних боёв. На холодном кэше у завсегдатая
- * это ~0,3 с чтений, поэтому сайт зовёт функцию в worker со своим read-only
- * подключением (database); без него — основное подключение (тесты, :memory:).
+ * A player's local replays over a period: maps, vehicles, clans, teammates,
+ * weapons and opponents. Three indexed queries (the player's battles, all
+ * players of those battles, kills involving him) and counting in JS; at most
+ * the PLAYER_INSIGHT_MAX_SESSIONS latest battles. A regular on a cold cache
+ * reads ~0.3 s, so the site calls it in a worker with its own read-only
+ * connection (database); without one — the main connection (tests, :memory:).
  */
 export function getPlayerReplayInsights(
   userId: string,
@@ -4471,9 +4494,9 @@ export function getPlayerReplayInsights(
   database?: DatabaseSync,
 ): PlayerReplayInsights {
   const id = userId.trim()
-  if (!/^\d{1,20}$/.test(id)) throw new Error('Для аналитики игрока нужен числовой WT user id')
+  if (!/^\d{1,20}$/.test(id)) throw new Error('Player insights need a numeric WT user id')
   if (!Number.isSafeInteger(fromTs) || !Number.isSafeInteger(toTs) || fromTs > toTs) {
-    throw new RangeError('Период аналитики игрока задан неверно')
+    throw new RangeError('Invalid player insights period')
   }
   const statement = (key: 'playerInsightSessions' | 'playerInsightPlayers' | 'playerInsightKills') =>
     database ? database.prepare(SITE_SQL[key]) : siteStatement(key)
@@ -4486,6 +4509,7 @@ export function getPlayerReplayInsights(
       team: number
       vehicle: string | null
       vehicles: string
+      played_vehicles: string | null
     }[]
   const capped = sessions.length > PLAYER_INSIGHT_MAX_SESSIONS
   if (capped) sessions.length = PLAYER_INSIGHT_MAX_SESSIONS
@@ -4509,16 +4533,16 @@ export function getPlayerReplayInsights(
     if (won === true) map.wins += 1
     if (won === false) map.losses += 1
     maps.set(row.mission_name, map)
-    // Техника боя: первая машина и весь список из реплея.
+    // The battle's vehicles: driven ones (unit tracks, v19); the lineup while
+    // they are unknown; the first vehicle if the list is broken.
     const used = new Set<string>()
-    if (row.vehicle !== null && row.vehicle.trim() !== '') used.add(row.vehicle.trim())
     try {
-      const list = JSON.parse(row.vehicles) as unknown
+      const list = JSON.parse(row.played_vehicles ?? row.vehicles) as unknown
       if (Array.isArray(list)) {
         for (const item of list) if (typeof item === 'string' && item.trim() !== '') used.add(item.trim())
       }
     } catch {
-      // битый список техники — остаётся первая машина
+      if (row.vehicle !== null && row.vehicle.trim() !== '') used.add(row.vehicle.trim())
     }
     for (const vehicleId of used) {
       const entry = vehicleEntry(vehicleId)
@@ -4551,14 +4575,14 @@ export function getPlayerReplayInsights(
   const clanTally = (target: Map<string, PlayerInsightClan>, tag: string, won: boolean | null) => {
     const core = tag.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
     if (core === '') return
-    // Бои идут от новых к старым: первый встреченный тег — последний вариант.
+    // Battles go newest first: the first tag seen is the latest variant.
     const entry = target.get(core) ?? { clanTag: tag, battles: 0, wins: 0, losses: 0 }
     entry.battles += 1
     if (won === true) entry.wins += 1
     if (won === false) entry.losses += 1
     target.set(core, entry)
   }
-  // Порядок сессий — от новых к старым: ник игрока берётся из последнего боя.
+  // Sessions go newest first: a player's nick comes from the latest battle.
   for (const [sessionId, { team, won }] of mine) {
     const rows = bySession.get(sessionId) ?? []
     const enemyClans = new Map<string, { tag: string; players: number }>()
@@ -4603,7 +4627,7 @@ export function getPlayerReplayInsights(
     const own = mine.get(kill.session_id)
     if (!own) continue
     const sessionPlayers = bySession.get(kill.session_id) ?? []
-    // Соперник — игрок другой команды: ИИ, дроны и свои в счёт не идут.
+    // An opponent is a player of the other team: AI, drones and teammates do not count.
     const enemyTeam = (userId: string) => {
       const row = sessionPlayers.find((player) => player.user_id === userId)
       return row !== undefined && row.team !== own.team
@@ -4695,10 +4719,14 @@ export interface BattlePlayerInput {
   awardDamage: number
   teamKills: number
   squadId: number
-  /** Первая машина сетапа (null — отключился) */
+  /** The first played vehicle; without playedVehicles — the lineup's first; null — none. */
   vehicle: string | null
-  /** Все машины игрока */
+  /** The lineup (results-BLK crafts_info). */
   vehicles: string[]
+  /** Driven vehicles from unit tracks (player-events.ts); null/absent — unknown. */
+  playedVehicles?: readonly string[] | null | undefined
+  /** The bot slot that played for this player. */
+  botUserId?: string | null | undefined
   disconnected: boolean
   slot: number | null
   title: string | null
@@ -4828,8 +4856,9 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
       INSERT INTO battle_players (
         session_id, user_id, nick, nick_search, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
         ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
-        award_damage, team_kills, squad_id, vehicle, vehicles, disconnected, slot, title, auto_squad
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        award_damage, team_kills, squad_id, vehicle, vehicles, disconnected, slot, title, auto_squad,
+        played_vehicles, bot_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const p of b.players) {
       pStmt.run(
@@ -4838,6 +4867,7 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
         p.aiKills, p.aiGroundKills, p.assists, p.deaths, p.captureZone, p.damageZone, p.score,
         p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
         p.slot, p.title, p.autoSquad === null ? null : (p.autoSquad ? 1 : 0),
+        p.playedVehicles == null ? null : JSON.stringify(p.playedVehicles), p.botUserId ?? null,
       )
     }
 
@@ -4929,6 +4959,47 @@ export function fillMissingBattleFields(
   `)
   for (const player of input.slots) {
     rows += Number(slotStmt.run(player.slot, player.title, input.sessionId, player.userId).changes)
+  }
+  return rows
+}
+
+/**
+ * Facts from the events for stored players (repair pass v2,
+ * src/wrpl/player-events.ts): team, vehicle, played_vehicles, bot_user_id,
+ * team_kills. Only if the events blob is still the one the facts came from
+ * (ingest may have re-parsed the battle) and only rows that differ. Call
+ * inside a write transaction. Returns the rows written; null — the blob
+ * changed, nothing written.
+ */
+export function updateBattlePlayerFacts(
+  database: DatabaseSync,
+  input: {
+    sessionId: string
+    eventsBlob: Uint8Array
+    players: readonly {
+      userId: string
+      team: number
+      vehicle: string | null
+      playedVehicles: readonly string[] | null
+      botUserId: string | null
+      teamKills: number
+    }[]
+  },
+): number | null {
+  const current = database
+    .prepare('SELECT 1 FROM battle_events WHERE session_id = ? AND events_blob = ?')
+    .get(input.sessionId, input.eventsBlob)
+  if (current === undefined) return null
+  const update = database.prepare(`
+    UPDATE battle_players SET team = ?, vehicle = ?, played_vehicles = ?, bot_user_id = ?, team_kills = ?
+    WHERE session_id = ? AND user_id = ?
+      AND (team IS NOT ? OR vehicle IS NOT ? OR played_vehicles IS NOT ? OR bot_user_id IS NOT ? OR team_kills IS NOT ?)
+  `)
+  let rows = 0
+  for (const p of input.players) {
+    const played = p.playedVehicles === null ? null : JSON.stringify(p.playedVehicles)
+    const values = [p.team, p.vehicle, played, p.botUserId, p.teamKills] as const
+    rows += Number(update.run(...values, input.sessionId, p.userId, ...values).changes)
   }
   return rows
 }
@@ -5055,6 +5126,9 @@ export interface BattlePlayerRow {
   slot: number | null
   title: string | null
   auto_squad: number | null
+  /** JSON array; NULL — unknown (v19 column not filled yet), use the lineup. */
+  played_vehicles: string | null
+  bot_user_id: string | null
 }
 
 export interface BattleForRender {
@@ -5086,7 +5160,7 @@ export function getBattleSummaryForRender(sessionId: string): BattleSummaryForRe
       SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
              ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
              award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
-             slot, title, auto_squad
+             slot, title, auto_squad, played_vehicles, bot_user_id
       FROM battle_players WHERE session_id = ?
     `)
     .all(battle.session_id) as unknown as BattlePlayerRow[]
@@ -5123,7 +5197,7 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
       SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
              ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
              award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
-             slot, title, auto_squad
+             slot, title, auto_squad, played_vehicles, bot_user_id
       FROM battle_players WHERE session_id = ?
     `)
     .all(battle.session_id) as unknown as BattlePlayerRow[]
@@ -5575,7 +5649,7 @@ export const SITE_SQL = {
     SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
            ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
            award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
-           slot, title, auto_squad
+           slot, title, auto_squad, played_vehicles, bot_user_id
     FROM battle_players
     WHERE session_id = ?
   `,
@@ -5674,7 +5748,7 @@ export const SITE_SQL = {
   // Аналитика игрока: CROSS JOIN фиксирует порядок — сначала бои игрока по
   // idx_bp_user_id, а не все бои периода по idx_battles_start.
   playerInsightSessions: `
-    SELECT b.session_id, b.start_time, b.mission_name, b.team_won, bp.team, bp.vehicle, bp.vehicles
+    SELECT b.session_id, b.start_time, b.mission_name, b.team_won, bp.team, bp.vehicle, bp.vehicles, bp.played_vehicles
     FROM battle_players bp
     CROSS JOIN battles b ON b.session_id = bp.session_id
     WHERE bp.user_id = ? AND bp.nick NOT GLOB 'coop/Bot*'

@@ -110,9 +110,9 @@ export interface BattlePost {
 }
 
 /**
- * Сообщение с результатами боя по записи БД: картинка, текст с составами
- * и кнопки материалов. Общий код /battle и автоанонса. null — у записи
- * нет ссылок на файлы реплея.
+ * The battle results message for a stored item: the image, the teams text
+ * and the media buttons. Shared by /battle and the announcer. null — the item
+ * has no replay part links.
  */
 export async function renderBattlePost(
   item: StoredItem,
@@ -122,33 +122,33 @@ export async function renderBattlePost(
   const sessionId = item.externalId
   const realNames = realNamesFromItem(data)
 
-  // Бой уже разобран — берём результаты из БД, реплей не качаем. Иначе
-  // скачиваем results-BLK из последней части (parts нужны только тут).
+  // A parsed battle comes from the database without downloading the replay.
+  // Otherwise the results-BLK of the last part (parts are needed only here).
   let header: WrplHeader
   let results: ReplayResults
   let parts: string[] = []
   const recon = reconstructBattleSummary(sessionId)
   if (recon) {
     header = recon.header
-    results = recon.results // ники в БД уже настоящие
+    results = recon.results // stored nicknames are already the real ones
   } else {
     parts = replayPartUrls(data)
     if (parts.length === 0) return null
     const fetched = await fetchReplayResults(parts, priority)
     header = fetched.header
     results = fetched.results
-    // Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
+    // The anonymizer replaces nicknames in the replay: restore the site's ones
     applyRealNames(results, realNames)
   }
   const dict = await ensureVehicleDict(priority)
-  const teams = summarizeTeams(results, dict)
+  let teams = summarizeTeams(results, dict)
   const missionName = data.missionName ?? item.title
-  // До первой сборки точный признак неизвестен: results-BLK перечисляет
-  // доступную технику, а не только реально появившиеся в бою юниты.
+  // Unknown until the first build: results-BLK lists the lineups, not the
+  // units that actually spawned.
   let hasAir = true
 
-  // Для интерактивного /battle сохраняем актуальный ПКР. Background-анонс
-  // сначала рисует прочерки, пока отдельное обновление не получит свежие очки.
+  // Interactive /battle gets the current PSR. A background announcement
+  // first draws dashes until a separate update gets fresh points.
   const clanTags = teams.flatMap((t) => (t.rawTag ? [t.rawTag] : []))
   let ratings: Map<string, ClanRating>
   if (priority === 'background') {
@@ -157,17 +157,20 @@ export async function renderBattlePost(
     ratings = await fetchRatingsForTags(clanTags)
   }
 
-  // Текст рядом с картинкой: Match ID, затем кланы, состав и игроки команд
-  let content =
-    `Match ID: \`${header.sessionId}\`${seasonMaxBrSuffix(getClanSeasonContext(header.startTime))}\n` +
-    teams
-      .map((t, i) => {
-        const clan = escapeMarkdown(t.clan ?? `Команда ${i + 1}`)
-        const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
-        return `**${clan}** (${t.composition}): ${players}`
-      })
-      .join('\n')
-  if (content.length > 1990) content = content.slice(0, 1990) + '…'
+  // The text next to the image: Match ID, then each team's clan, composition and players
+  const buildContent = (): string => {
+    const text =
+      `Match ID: \`${header.sessionId}\`${seasonMaxBrSuffix(getClanSeasonContext(header.startTime))}\n` +
+      teams
+        .map((t, i) => {
+          const clan = escapeMarkdown(t.clan ?? `Team ${i + 1}`)
+          const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
+          return `**${clan}** (${t.composition}): ${players}`
+        })
+        .join('\n')
+    return text.length > 1990 ? text.slice(0, 1990) + '…' : text
+  }
+  let content = buildContent()
 
   const buildComponents = (hasChat: boolean): ActionRowBuilder<ButtonBuilder>[] => {
     const overviewButtons = [
@@ -193,7 +196,7 @@ export async function renderBattlePost(
         : []),
     ]
     const clanButtons = teams.slice(0, 2).flatMap((team, teamIndex) => {
-      const clan = stripClanDecorators(team.rawTag ?? team.clan ?? `Команда ${teamIndex + 1}`)
+      const clan = stripClanDecorators(team.rawTag ?? team.clan ?? `Team ${teamIndex + 1}`)
       return [
         new ButtonBuilder()
           .setCustomId(`battle:heatmap-team-${teamIndex}:${header.sessionId}`)
@@ -228,8 +231,8 @@ export async function renderBattlePost(
     }
   }
 
-  // Победителя в results-BLK нет. Новая read model также хранит дешёвые
-  // has-air/chat flags и никогда не читает events_blob.
+  // results-BLK has no winner. The read model also keeps cheap has-air/chat
+  // flags and never reads events_blob.
   const dbSummary = getBattlePostSummary(sessionId)
   const mediaMeta = await cachedBattleMeta(header.sessionIdHex)
   hasAir = dbSummary?.airUnitCount !== null && dbSummary?.airUnitCount !== undefined
@@ -258,9 +261,17 @@ export async function renderBattlePost(
     ? async (): Promise<BattlePostPayload | null> => {
         const fresh = await waitForBattlePostSummary(sessionId)
         if (!fresh) return null
+        // A post drawn from results-BLK alone: the stored rows add driven
+        // vehicles, bot-played slots and resolved teams (player-events.ts).
+        const stored = recon ? null : reconstructBattleSummary(sessionId)
+        if (stored) {
+          results = stored.results
+          teams = summarizeTeams(results, dict)
+          content = buildContent()
+        }
         const freshHasAir = fresh.airUnitCount === null ? initialHasAir : fresh.airUnitCount > 0
         const freshHasChat = fresh.chatCount === null ? hasBattleChat(sessionId) : fresh.chatCount > 0
-        if (fresh.teamWon <= 0 && freshHasAir === initialHasAir && freshHasChat === initialHasChat) {
+        if (!stored && fresh.teamWon <= 0 && freshHasAir === initialHasAir && freshHasChat === initialHasChat) {
           return null
         }
         hasAir = freshHasAir

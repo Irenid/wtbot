@@ -76,25 +76,25 @@ async function verifyCase(
   corpusCase: CorpusCase,
   ecsHashesJson: string,
 ): Promise<void> {
-  assert.ok(corpusCase.id.length > 0, 'У corpus case нет id')
-  assert.ok(corpusCase.files.length > 0, `${corpusCase.id}: нет replay-файлов`)
+  assert.ok(corpusCase.id.length > 0, 'A corpus case has no id')
+  assert.ok(corpusCase.files.length > 0, `${corpusCase.id}: no replay files`)
   const directory = path.resolve(corpusCase.directory)
   assert.equal(
     isPathInside(runtimeReplayCacheRoot, directory),
     false,
-    `${corpusCase.id}: fixed corpus нельзя хранить в очищаемом data/replays`,
+    `${corpusCase.id}: the fixed corpus must not live in the cleaned data/replays`,
   )
   const actualNames = (await readdir(directory))
     .filter((name) => /\.wrpl$/i.test(name))
     .sort()
   const expectedNames = corpusCase.files.map((file) => file.name)
-  assert.deepEqual(actualNames, expectedNames, `${corpusCase.id}: состав replay-файлов изменился`)
+  assert.deepEqual(actualNames, expectedNames, `${corpusCase.id}: the set of replay files changed`)
 
   const sourceBuffers: Buffer[] = []
   let inputBytes = 0
   for (const expectedFile of corpusCase.files) {
     const file = await readFile(path.join(directory, expectedFile.name))
-    assert.equal(file.byteLength, expectedFile.bytes, `${corpusCase.id}/${expectedFile.name}: размер`)
+    assert.equal(file.byteLength, expectedFile.bytes, `${corpusCase.id}/${expectedFile.name}: size`)
     assert.equal(sha256(file), expectedFile.sha256, `${corpusCase.id}/${expectedFile.name}: SHA-256`)
     inputBytes += file.byteLength
     sourceBuffers.push(file)
@@ -121,7 +121,7 @@ async function verifyCase(
     assert.equal(
       corpusCase.expected.outcome,
       'success',
-      `${corpusCase.id}: ожидалась ошибка, но replay разобран`,
+      `${corpusCase.id}: an error was expected, but the replay parsed`,
     )
     assert.equal(
       parsed.battle.airUnitCount,
@@ -136,14 +136,24 @@ async function verifyCase(
     assert.deepEqual(
       successDescriptor(parsed, inputBytes),
       corpusCase.expected,
-      `${corpusCase.id}: нормализованный результат изменился`,
+      `${corpusCase.id}: the normalized result changed`,
     )
-    // Траектории разбора обязаны ложиться в колоночный формат: иначе блоб
-    // молча станет zstd-JSON в 3,5 раза больше (events-codec.ts).
+    // Parsed tracks must fit the columnar format: otherwise the blob silently
+    // becomes zstd-JSON 3.5× larger (events-codec.ts).
     assert.ok(
       parsed.summary.units === 0 || isColumnarEventsBlob(new Uint8Array(parsed.battle.eventsBlob)),
-      `${corpusCase.id}: блоб событий не в колоночном формате`,
+      `${corpusCase.id}: the events blob is not columnar`,
     )
+    // Facts from the events (player-events.ts): with tracks every row knows what
+    // it drove, and a player who killed or died did spawn.
+    for (const player of parsed.summary.units > 0 ? parsed.battle.players : []) {
+      const played = player.playedVehicles
+      assert.ok(played, `${corpusCase.id}: ${player.userId} has no played vehicles`)
+      assert.equal(player.vehicle, played[0] ?? null, `${corpusCase.id}: ${player.userId} vehicle is not the first played`)
+      if (player.kills + player.groundKills + player.deaths > 0) {
+        assert.ok(played.length > 0, `${corpusCase.id}: ${player.userId} killed or died without a tracked spawn`)
+      }
+    }
     console.log(
       `[corpus] ${corpusCase.id} (${corpusCase.category}): ok · ` +
         `${formatMiB(inputBytes)} · ${parsed.summary.units} trajectories`,
@@ -153,7 +163,7 @@ async function verifyCase(
     const message = error instanceof Error ? error.message : String(error)
     assert.ok(
       message.includes(corpusCase.expected.errorIncludes),
-      `${corpusCase.id}: неожиданная ошибка: ${message}`,
+      `${corpusCase.id}: unexpected error: ${message}`,
     )
     console.log(`[corpus] ${corpusCase.id} (${corpusCase.category}): expected error · ${message}`)
   }

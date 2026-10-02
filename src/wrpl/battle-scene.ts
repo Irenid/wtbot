@@ -51,9 +51,10 @@ async function readCachedScene(file: string): Promise<Buffer | null> {
 }
 
 /**
- * Сцена боя для плеера: gzip JSON (см. BattleScene в battle-scene-core.ts).
- * Read-only относительно БД; результат кэшируется в data/battles/ под общим
- * LRU-лимитом. Параллельные запросы одной session дедуплицируются.
+ * The battle scene for the player: gzip JSON (BattleScene in
+ * battle-scene-core.ts). Reads the database only; the result is cached in
+ * data/battles/ under the shared LRU cap. Parallel requests for one session
+ * are merged.
  */
 export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSceneResult> {
   const summary = getSiteBattleSummary(sessionId)
@@ -75,9 +76,12 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
     const mission = battle.mission_settings
       ? await fetchMissionInfo(battle.mission_settings, 'interactive').catch(() => null)
       : null
-    // Карта ложится на battleArea миссии: без неё карта не нужна, и плеер
-    // рисует сетку и зоны.
+    // The map covers the mission's battleArea: without it no map is needed,
+    // and the player draws a grid and zones.
     const mapBuffer = mission?.area ? await sceneMapImage(battle.mission_name, battle.level) : null
+    const botSlots = new Map(
+      summary.players.flatMap((player) => (player.bot_user_id ? [[player.bot_user_id, player.user_id] as const] : [])),
+    )
 
     const scene: ScenePrepareInput = {
       sessionId: battle.session_id,
@@ -89,17 +93,19 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
       missionArea: mission?.area ?? null,
       mapAvailable: mapBuffer !== null,
       level: battle.level,
+      // Team ≤ 0 is unknown; a paired bot slot's tracks belong to its player.
       players: summary.players
-        .filter((player) => player.user_id !== '')
+        .filter((player) => player.user_id !== '' && player.team > 0 && !botSlots.has(player.user_id))
         .map((player) => ({
           userId: player.user_id,
           nick: player.nick,
           team: player.team,
           clanTag: player.clan_tag || null,
         })),
+      botSlots: [...botSlots],
     }
 
-    // Точный ArrayBuffer без SharedArrayBuffer-ветки: копия ровно нужного среза.
+    // An exact ArrayBuffer, no SharedArrayBuffer branch: a copy of just the slice.
     const eventsAb = new ArrayBuffer(blob.byteLength)
     new Uint8Array(eventsAb).set(blob)
     const sceneAb = await runWorkerTask(
@@ -107,8 +113,8 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
       { priority: 'interactive', timeoutMs: SCENE_TIMEOUT_MS, transferList: [eventsAb] },
     )
     const sceneGzip = Buffer.from(sceneAb)
-    // Как и PNG-артефакты: результат сохраняется даже при выключенном кэше
-    // чтения, пишется атомарно и подчиняется общему LRU-лимиту каталога.
+    // Like the PNG artifacts: saved even with the read cache disabled,
+    // written atomically and subject to the directory's shared LRU cap.
     if (sceneGzip.byteLength <= MAX_SCENE_BYTES) {
       await writeFileAtomic(file, sceneGzip).catch(() => undefined)
       await enforceBattleCacheCap(sceneGzip.byteLength).catch(() => undefined)

@@ -5,6 +5,7 @@ import { formatBattleChat } from '../wrpl/battle-chat.js'
 import { battleEventRows, decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
 import { decodeEventsPayload, encodeEventsJson, isColumnarEventsBlob, isZstdEventsBlob } from '../wrpl/events-codec.js'
 import { repairStoredEvents, type EventsRepairCounts } from '../wrpl/events-repair.js'
+import { botSlotOwners, creditBotSlots, derivePlayerEventFacts } from '../wrpl/player-events.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
 import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 import { applyRealNames, fakeNamesFromItem, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
@@ -181,6 +182,7 @@ async function rasterize(
 
 async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayBuffer; transfer: ArrayBuffer[] }> {
   const events = decodeEventsBlob(Buffer.from(input.eventsBlob))
+  creditBotSlots(events, botSlotOwners(input.results.players))
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
   const tacticalMap = input.assets.tacticalMap ? dataUri('image/png', input.assets.tacticalMap) : null
@@ -401,24 +403,53 @@ async function readPlayerInsights(
   }
 }
 
+interface StoredPlayerFacts {
+  user_id: string
+  team: number
+  squad_id: number
+  vehicle: string | null
+  played_vehicles: string | null
+  bot_user_id: string | null
+  team_kills: number
+}
+
+/** Stored players whose facts from the events (player-events.ts) differ from the row. */
+function playerFactUpdates(rows: readonly StoredPlayerFacts[], events: Omit<ReplayEvents, 'errors'>) {
+  const facts = derivePlayerEventFacts(
+    rows.map((row) => ({ userId: row.user_id, team: row.team, squadId: row.squad_id })),
+    events,
+  )
+  return rows.flatMap((row) => {
+    const fact = facts.get(row.user_id)
+    if (!fact) return []
+    // Events without tracks keep the stored vehicle: the lineup's first, as ingest writes it.
+    const vehicle = fact.playedVehicles === null ? row.vehicle : fact.playedVehicles[0] ?? null
+    const played = fact.playedVehicles === null ? null : JSON.stringify(fact.playedVehicles)
+    const same = row.team === fact.team && row.vehicle === vehicle && row.played_vehicles === played &&
+      row.bot_user_id === fact.botUserId && row.team_kills === fact.teamKills
+    return same ? [] : [{ ...fact, userId: row.user_id, vehicle }]
+  })
+}
+
 /**
- * Фоновая починка записанных боёв (db/maintenance.ts): пачка по ключу после
- * afterSessionId. Распаковка, правила events-repair.ts, кодирование и сбор
- * строк — здесь, в worker; запись — одной короткой транзакцией. Блоб и
- * строки убийств и чата заменяются, только если блоб не изменился с чтения
- * (ingest мог переразобрать бой); пустые slot, title и счётчики заполняются
- * из событий без замены готовых значений. Затем incremental_vacuum
- * возвращает ОС освободившиеся страницы.
+ * Background repair of stored battles (db/maintenance.ts): a batch by key
+ * after afterSessionId. Decoding, the events-repair.ts rules, player facts,
+ * encoding and building rows run here in the worker; the write is one short
+ * transaction. The blob with the kill and chat rows, and the player facts,
+ * are replaced only if the blob did not change since it was read (ingest may
+ * have re-parsed the battle); empty slot, title and counters are filled from
+ * the events without replacing set values. Then incremental_vacuum returns
+ * freed pages to the OS.
  */
 async function repairBattleEvents(
   input: Extract<AnyWorkerTask, { kind: 'repair-battle-events' }>['input'],
 ): Promise<{ value: WorkerTaskResult<'repair-battle-events'>; transfer: [] }> {
-  if (!existsSync(input.dbPath)) throw new Error(`SQLite не найден: ${input.dbPath}`)
+  if (!existsSync(input.dbPath)) throw new Error(`SQLite not found: ${input.dbPath}`)
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 500) {
-    throw new RangeError('limit починки боёв — от 1 до 500')
+    throw new RangeError('battle repair limit must be 1–500')
   }
   if (!Number.isSafeInteger(input.vacuumPages) || input.vacuumPages < 0) {
-    throw new RangeError('vacuumPages починки боёв — неотрицательное целое')
+    throw new RangeError('battle repair vacuumPages must be a non-negative integer')
   }
   const [{ DatabaseSync }, db] = await Promise.all([import('node:sqlite'), import('../db/index.js')])
   const database = new DatabaseSync(input.dbPath)
@@ -441,6 +472,9 @@ async function repairBattleEvents(
     const missingCounts = database.prepare(
       'SELECT 1 FROM battles WHERE session_id = ? AND (air_unit_count IS NULL OR chat_count IS NULL)',
     )
+    const storedPlayers = database.prepare(
+      'SELECT user_id, team, squad_id, vehicle, played_vehicles, bot_user_id, team_kills FROM battle_players WHERE session_id = ?',
+    )
     const repairs: EventsRepairCounts = { chatNames: 0, duplicateKills: 0, signedIds: 0, brokenChat: 0, roundedValues: 0 }
     const plans = rows.map((row) => {
       const events = decodeEventsPayload(row.events_blob) as Omit<ReplayEvents, 'errors'>
@@ -450,13 +484,13 @@ async function repairBattleEvents(
       let eventsBlob: Buffer | null = null
       if (repair.changed || !isColumnarEventsBlob(row.events_blob)) {
         const next = encodeEventsJson(JSON.stringify(events))
-        // События не менялись, а колоночный формат не подошёл: zstd-JSON
-        // остаётся как был, gzip всё равно переходит в zstd-JSON.
+        // Unchanged events that do not fit the columnar format keep their
+        // zstd-JSON; gzip still moves to zstd-JSON.
         if (repair.changed || isColumnarEventsBlob(next) || !isZstdEventsBlob(row.events_blob)) eventsBlob = next
       }
       const slotByUserId = new Map(events.players.map((player) => [player.userId, player]))
-      // Только строки, где событие действительно знает пустое поле: игрок без
-      // титула остаётся с NULL и не переписывается каждым проходом.
+      // Only rows whose empty field the event really knows: a player without
+      // a title keeps NULL and is not rewritten by every pass.
       const slots = (missingSlots.all(row.session_id) as { user_id: string; slot: number | null; title: string | null }[])
         .flatMap((player) => {
           const slot = slotByUserId.get(player.user_id)
@@ -474,11 +508,13 @@ async function repairBattleEvents(
         chatCount: events.chat.length,
         slots,
         fillCounts: missingCounts.get(row.session_id) !== undefined,
+        players: playerFactUpdates(storedPlayers.all(row.session_id) as unknown as StoredPlayerFacts[], events),
       }
     })
     let rewritten = 0
     let changedMeanwhile = 0
     let filledRows = 0
+    let playerRows = 0
     let bytesBefore = 0
     let bytesAfter = 0
     const writeStarted = performance.now()
@@ -501,6 +537,18 @@ async function repairBattleEvents(
           rewritten += 1
           bytesBefore += plan.previousBlob.byteLength
           bytesAfter += plan.eventsBlob.byteLength
+        }
+        if (plan.players.length > 0) {
+          const written = db.updateBattlePlayerFacts(database, {
+            sessionId: plan.sessionId,
+            eventsBlob: plan.eventsBlob ?? plan.previousBlob,
+            players: plan.players,
+          })
+          if (written === null) {
+            changedMeanwhile += 1
+            continue
+          }
+          playerRows += written
         }
         if (plan.slots.length > 0 || plan.fillCounts) {
           filledRows += db.fillMissingBattleFields(database, {
@@ -527,6 +575,7 @@ async function repairBattleEvents(
         rewritten,
         changedMeanwhile,
         filledRows,
+        playerRows,
         repairs,
         bytesBefore,
         bytesAfter,
@@ -649,12 +698,14 @@ async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-sc
   return { value: png, transfer: [png] }
 }
 
+/** Events for media: paired bot slots credited to their players, as in the results. */
 function decodeProfiledEvents(input: MediaRenderInput, profile: MutableRenderProfile) {
   const decoded = decodeEventsBlobProfiled(Buffer.from(input.eventsBlob))
   addPhase(profile, 'events.inflate', decoded.profile.inflateMs)
   addPhase(profile, 'events.utf8', decoded.profile.utf8Ms)
   addPhase(profile, 'events.json', decoded.profile.jsonParseMs)
   addPhase(profile, 'events.restore', decoded.profile.restoreMs)
+  creditBotSlots(decoded.events, botSlotOwners(input.results.players))
   return decoded.events
 }
 
