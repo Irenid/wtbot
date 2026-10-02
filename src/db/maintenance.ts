@@ -19,7 +19,7 @@ import { runWorkerTask } from '../workers/pool.js'
  * CPU pool (shutdown в index.ts).
  */
 
-/** v1 (2026-10-02): аудит данных — docs/database.md, «Ошибки в данных». */
+/** v1 (2026-10-02): аудит данных — docs/database.md, "Data errors". */
 const REPAIR_VERSION = 1
 const REPAIR_CURSOR_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-after`
 const REPAIR_DONE_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-done`

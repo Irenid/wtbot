@@ -1,570 +1,608 @@
 # AGENTS.md
 
-Контракты `wtbot` для агентов и разработчиков — то, чего не видно из кода
-сразу. Поведение — по коду и схеме SQLite; команды и env — `package.json`,
-`src/config.ts`, `src/runtime-options.ts`, `.env.example`.
+`wtbot` contracts for agents and developers — what the code does not show at
+a glance. Behavior: the code and the SQLite schema; commands and env:
+`package.json`, `src/config.ts`, `src/runtime-options.ts`, `.env.example`.
 
-## 1. Правила работы
+## 1. Working rules
 
-- Используй все доступные ресурсы и мощности системы, ищи информацию везде —
-  не ограничивай себя.
-- Поиск — целевой (`rg`, `git grep`), не чтение всего репозитория; MCP и
-  shell-wrapper не обязательны.
-- Перед правкой найди затронутые функции и их вызовы, после — оцени влияние
-  на соседние подсистемы. Посторонний рефакторинг не делай.
-- Чужие изменения и untracked-файлы — работа пользователя: не откатывай, не
-  форматируй, не удаляй, не бери в свой коммит
-- Документы: `README.md` — запуск; этот файл — контракты; `ROADMAP.md` —
-  единственный список открытых задач (закрытое удаляется); `docs/` — замеры и
-  заметки (`performance.md`, `database.md`, `replay-data-quality.md`);
-  `LICENSES/` — лицензии портированного кода; скиллы —
-  `.claude/skills/verify/` (проверка, живой бот),
-  `.agents/skills/monorepo-debug/` (диагностика). Новые планы и аудиты в
-  корне не заводи.
-- `.env` не читай и не выводи без прямой необходимости; для диагностики —
-  имя ключа и `set/empty`.
+- Use every available resource and all of the machine's capacity, search
+  everywhere — do not hold back. Model tokens are the exception: estimate a
+  large job first and give the model only what needs it (scripts extract the
+  text, small batches, a fresh session).
+- Search with targeted tools (`rg`, `git grep`) instead of reading the whole
+  repository; no MCP server or shell wrapper is required.
+- Before an edit, find the affected functions and their callers; after it,
+  check the impact on neighbouring subsystems. No unrelated refactoring.
+- Other people's changes and untracked files are the owner's work: do not
+  revert, reformat, delete or include them in your commit.
+- Documents: `README.md` — running; this file — contracts; `ROADMAP.md` — the
+  only list of open tasks (closed items are deleted); `docs/` — measurements
+  and notes (`performance.md`, `database.md`, `replay-data-quality.md`);
+  `LICENSES/` — licenses of ported code; skills — `.claude/skills/verify/`
+  (checks, live bot), `.agents/skills/monorepo-debug/` (diagnostics). Do not
+  add new plans or audits to the repository root.
+- Do not read or print `.env` values without a direct need; for diagnostics
+  print the key name and `set/empty`.
 
-Без явного разрешения пользователя нельзя:
+Never without the owner's explicit permission:
 
-- публиковать токены, cookies, API-ключи, Discord ID, чат боёв, дампы БД;
-- удалять, пересоздавать или публиковать `data/wtbot.db` (Discord ID, голосовое
-  присутствие, игроки, чат) и `data/wt-cookies.json` (живые cookies);
-- чистить `data/replays`, `data/battles`, карты и assets — перед удалением
-  назови путь, объём и цель;
-- запускать команды с внешними эффектами (раздел 10), выкатывать и
-  перезапускать бота.
+- publish tokens, cookies, API keys, Discord IDs, battle chat, DB dumps;
+- delete, recreate or publish `data/wtbot.db` (Discord IDs, voice presence,
+  players, chat) or `data/wt-cookies.json` (live cookies);
+- clean `data/replays`, `data/battles`, maps or assets — before deleting name
+  the path, size and reason;
+- run commands with external effects (section 10), deploy or restart the bot.
 
-## 2. Архитектура
+## 2. Architecture
 
-Модульный монолит на TypeScript. Один Node.js-процесс: Discord, Fastify,
-планировщик парсеров, координация ingest. Ограниченный пул `worker_threads`:
-разбор WRPL, zlib/zstd/gzip, Resvg, часть геометрии, доказанно блокирующие
-записи SQLite. Вход — `src/index.ts`; хранилище — синхронная `node:sqlite`,
-весь SQL — в `src/db/index.ts`, без ORM. Модули связаны через этот API
-напрямую: переход на асинхронное хранилище затронет вызывающих, а не только
-`src/db/`.
+Modular TypeScript monolith. One Node.js process: Discord, Fastify, the parser
+scheduler, ingest coordination. A bounded `worker_threads` pool: WRPL parsing,
+zlib/zstd/gzip, Resvg, part of the geometry, provably blocking SQLite writes.
+Entry point — `src/index.ts`; storage — synchronous `node:sqlite`, all SQL in
+`src/db/index.ts`, no ORM. Modules call this API directly: moving to async
+storage would touch every caller, not only `src/db/`.
 
 ```text
 warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
   -> battles / players / kills / chat -> Discord + web API + media
 ```
 
-`src/`: `index.ts` (запуск, shutdown), `config.ts` и `runtime-options.ts`
-(env, план ресурсов), `db/` (bootstrap, миграции, SQL, обслуживание), `bot/`
-(команды, автоанонс, voice tracker, табло), `web/` (API, дашборд `/`, SPA
-`/app`), `parsers/` (планировщик, источники, cookies, браузер, backfill),
-`wrpl/` (реплеи, ingest, assets, media), `workers/` (пул, протокол),
-`player-stats/` (внешние провайдеры), `analysis/` (ручные CLI, smoke, платный
-AI-анализ). `frontend/` — SPA на React/Vite; `data/` — база, cookies, кэши,
-assets.
+`src/`: `index.ts` (startup, shutdown), `config.ts` and `runtime-options.ts`
+(env, resource plan), `db/` (bootstrap, migrations, SQL, maintenance), `bot/`
+(commands, announcer, voice tracker, player board), `web/` (API, dashboard
+`/`, SPA `/app`), `parsers/` (scheduler, sources, cookies, browser, backfill),
+`wrpl/` (replays, ingest, assets, media), `workers/` (pool, protocol),
+`player-stats/` (external providers), `analysis/` (manual CLIs, smoke checks,
+paid AI analysis). `frontend/` — React/Vite SPA; `data/` — database, cookies,
+caches, assets.
 
-Запуск: проверка Discord-токена → process lock → обработчики сигналов и
-фатальных ошибок → SQLite (без прогрева страниц) → player stats → Discord →
-табло → voice tracker → Fastify → прогрев SQLite в worker → обновление cookies
-WT (браузер — по требованию) → парсеры → ingest → обслуживание базы.
-Остановка: запрет новой работы, до 10 с на drain producers, затем браузер,
-Discord, CPU pool, последней — SQLite. Pool не закрывай, пока producers
-worker-задач не остановлены.
+Startup: Discord token check → process lock → signal and fatal-error handlers
+→ SQLite (no page warmup) → player stats → Discord → player board → voice
+tracker → Fastify → SQLite warmup in a worker → WT cookie refresh (browser on
+demand) → parsers → ingest → database maintenance. Shutdown: refuse new work,
+up to 10 s to drain producers, then the browser, Discord, the CPU pool and
+SQLite last. Do not close the pool before worker-task producers have stopped.
 
-### Параллелизм
+### Concurrency
 
-- Независимый I/O — параллельно: `Promise.all`, если вход ограничен
-  конфигурацией или малой константой; иначе worker-loop с явными concurrency
-  cap, byte budget, timeout и отменой.
-- Последовательный `await` в цикле — только при зависимости результатов,
-  обязательном порядке, rate limit, lock, retry/backoff, short-circuit поиске
-  или общем бюджете; причину пиши рядом с циклом.
-- CPU-работа — только через пул: `Promise.all` не делает её многопоточной.
-- Fan-out ограничен: `WT_WORKER_THREADS`, `WT_INGEST_CONCURRENCY`, пул браузера,
-  rate limits Discord и API, давление записи SQLite, бюджет реплеев.
-- Сериализованы намеренно: транзакции и очередь записи SQLite, общая очередь
-  warthunder.com, пагинация со stop conditions, retry, публикация
-  commit-маркера, упорядоченные потоки Discord.
-- Новый параллельный путь — с тестом: одновременный старт, предел
-  concurrency, частичный сбой и fallback.
+- Independent I/O runs in parallel: `Promise.all` when the input is bounded by
+  configuration or a small constant; otherwise a worker loop with an explicit
+  concurrency cap, byte budget, timeout and cancellation.
+- A sequential `await` in a loop only for dependent results, required order,
+  rate limits, locks, retry/backoff, short-circuit search or a shared budget;
+  write the reason next to the loop.
+- CPU work only through the pool: `Promise.all` does not make it parallel.
+- Fan-out is bounded by `WT_WORKER_THREADS`, `WT_INGEST_CONCURRENCY`, the
+  browser pool, Discord and API rate limits, SQLite write pressure and the
+  replay budget.
+- Deliberately serialized: SQLite transactions and the write queue, the shared
+  warthunder.com queue, paginated fetches with stop conditions, retries,
+  commit-marker publication, ordered Discord flows.
+- A new parallel path comes with a test: simultaneous start, concurrency cap,
+  partial failure and fallback.
 
-## 3. Окружение и эксплуатация
+## 3. Environment and operations
 
-- Node.js ≥ 22.15.0 (`zstdDecompressSync`); npm, установка — `npm ci`;
-  `package-lock.json` меняется только вместе с зависимостями.
-- `.env` локальный, вне Git; полный каталог с defaults — `.env.example`. Новая
-  переменная — сразу в `src/config.ts` или `src/runtime-options.ts`,
-  `.env.example` и, если это контракт, сюда. Реальных значений в tracked-файлах
-  нет.
+- Node.js ≥ 22.15.0 (`zstdDecompressSync`); npm, install with `npm ci`;
+  `package-lock.json` changes only together with dependencies.
+- `.env` is local and outside Git; the full catalogue with defaults is
+  `.env.example`. A new variable goes at once into `src/config.ts` or
+  `src/runtime-options.ts`, `.env.example` and, if it is a contract, here. No
+  real values in tracked files.
 
-| Переменная | Контракт |
+| Variable | Contract |
 |---|---|
-| `TOKEN` | нужен процессу бота и CLI, импортирующим `src/config.ts` (`battle`, `analyze`, `backfill`, `deploy:commands`); автономные CLI (`db:backup`) его не требуют |
-| `CLIENT_ID`, `GUILD_ID` | регистрация slash-команд |
-| `DB_PATH`, `WTBOT_ALLOW_NEW_DB=false` | новая база — только явно |
-| `PORT`, `WEB_HOST=127.0.0.1`, `WEB_TOKEN` | loopback принимает только loopback `Host` (DNS rebinding); не loopback (в Docker всегда `0.0.0.0`) — только с `WEB_TOKEN`: Bearer или пароль HTTP Basic |
-| `WEB_TRUST_PROXY` | `false`/`true`/список IP-CIDR для `X-Forwarded-For`; число hops Fastify 5.12 не умеет |
-| `WTBOT_API_URL`, `WTBOT_API_TOKEN` | только dev-прокси Vite (`frontend/vite.config.ts`): `/api` на боевой сервер с Bearer; бот их не читает, в бандл токен не попадает |
-| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | пустой список голосовых — все каналы; канал боёв без тега клана — анонс всех кланов (~1 800 боёв в сутки); тег фильтрует публикацию, не сбор |
-| `WT_ANNOUNCE_MAX_AGE_HOURS=2` | бои старше не публикуются, а помечаются решёнными: простой бота не заваливает канал историей |
-| `WT_COOKIE` | сессия warthunder.com для `wt-replays` и `wt-players` |
-| `WT_COMPANION_COOKIE` | отдельная сессия `companion-app.warthunder.com`; с `WT_COOKIE` не смешивать |
-| `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) или Edge/Chrome/Chromium (Linux) для адресов за Cloudflare; `NO_SANDBOX=true` только в Docker |
-| `WT_VNC_PASSWORD` | VNC к Xvfb-дисплею браузера в Docker: ручной вход и проверка Cloudflare |
-| `WT_REPLAY_HOSTS` | allowlist хостов CDN частей (`src/wrpl/replay-url-policy.ts`); структурная защита от SSRF действует и без него |
-| `WT_PLAYER_NAMES` | ники для `wt-players`: Replay API и HTML-профиль |
-| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=false`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy-снимки аккаунта: профиль сайта, companion, StatShark (только при известном числовом WT user id) |
-| `WT_WORKER_THREADS=auto` | по CPU, RAM и резервам; предел 8, оценка 320 МиБ на worker |
-| `WT_WORKER_BACKGROUND_RESERVE`, `WT_WORKER_MAX_OLD_SPACE_MB` | резерв слотов под интерактив; old-space одного worker |
-| `WT_INGEST_CONCURRENCY` | предел 32; больше пула — перекрывает I/O с CDN ценой RAM под реплеи |
-| `WT_INGEST_ADAPTIVE_ENABLED=true` | AIMD снижает concurrency при 429/retry/5xx и давлении бюджета реплеев или очереди SQLite |
-| `WT_INGEST_PIPELINE_ENABLED=true` | staged pipeline; `false` — прежний runner (откат) |
-| `WT_REPLAY_PROCESS_BUDGET_MB` | общий предел буферов реплеев, 128–8192 МиБ; auto резервирует его до расчёта числа worker |
-| `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` | резерв по размеру кэша или 1× `Content-Length` вместо worst-case 96 МиБ; выключен до доказанного RSS plateau (`docs/performance.md`) |
-| `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_GAME_DIR`, `WT_HEATMAP_AIR_*` | кэш media, файлы игры, параметры авиакарты |
-| `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ` | ежедневный `db-backup-schedule` (сервис `backup`) |
-| `ANTHROPIC_API_KEY` | только ручной `npm run analyze` |
+| `TOKEN` | required by the bot process and CLIs importing `src/config.ts` (`battle`, `analyze`, `backfill`, `deploy:commands`); standalone CLIs (`db:backup`) do not need it |
+| `CLIENT_ID`, `GUILD_ID` | slash-command registration |
+| `DB_PATH`, `WTBOT_ALLOW_NEW_DB=false` | a new database only when explicitly allowed |
+| `PORT`, `WEB_HOST=127.0.0.1`, `WEB_TOKEN` | loopback accepts only a loopback `Host` (DNS rebinding); non-loopback (always `0.0.0.0` in Docker) only with `WEB_TOKEN`: Bearer or HTTP Basic password |
+| `WEB_TRUST_PROXY` | `false`/`true`/IP-CIDR list for `X-Forwarded-For`; Fastify 5.12 has no hop count |
+| `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer; the bot does not read them, the token never reaches the bundle |
+| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — all channels; a battles channel without a clan tag announces every clan (~1,800 battles a day); the tag filters publishing, not collection |
+| `WT_ANNOUNCE_MAX_AGE_HOURS=2` | older battles are marked done instead of posted: downtime does not flood the channel with history |
+| `WT_COOKIE` | warthunder.com session for `wt-replays` and `wt-players` |
+| `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
+| `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) or Edge/Chrome/Chromium (Linux) for addresses behind Cloudflare; `NO_SANDBOX=true` only in Docker |
+| `WT_VNC_PASSWORD` | VNC to the browser's Xvfb display in Docker: manual login and Cloudflare checks |
+| `WT_REPLAY_HOSTS` | allowlist of CDN hosts for replay parts (`src/wrpl/replay-url-policy.ts`); structural SSRF protection applies without it |
+| `WT_PLAYER_NAMES` | nicknames for `wt-players`: Replay API and HTML profile |
+| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=false`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: site profile, companion, StatShark (only with a known numeric WT user id) |
+| `WT_WORKER_THREADS=auto` | from CPU, RAM and reserves; cap 8, estimate 320 MiB per worker |
+| `WT_WORKER_BACKGROUND_RESERVE`, `WT_WORKER_MAX_OLD_SPACE_MB` | slots reserved for interactive work; old space of one worker |
+| `WT_INGEST_CONCURRENCY` | cap 32; above the pool size it overlaps CDN I/O at the cost of RAM held by replays |
+| `WT_INGEST_ADAPTIVE_ENABLED=true` | AIMD lowers concurrency on 429/retry/5xx and on replay-budget or SQLite-queue pressure |
+| `WT_INGEST_PIPELINE_ENABLED=true` | staged pipeline; `false` — the previous runner (rollback) |
+| `WT_REPLAY_PROCESS_BUDGET_MB` | shared limit for replay buffers, 128–8192 MiB; auto reserves it before sizing the pool |
+| `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` | reserve by cached size or 1× `Content-Length` instead of the 96 MiB worst case; off until an RSS plateau is proven (`docs/performance.md`) |
+| `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_GAME_DIR`, `WT_HEATMAP_AIR_*` | media cache, game files, air heatmap parameters |
+| `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ` | daily `db-backup-schedule` (`backup` service) |
+| `ANTHROPIC_API_KEY` | manual `npm run analyze` only |
 
-- Боевой запуск — Docker на Linux (`Dockerfile`, `docker-compose.yml`,
-  `docker/entrypoint.sh`): Chromium под Xvfb, процесс от `node`, том `./data`,
-  `restart: unless-stopped`. Разработка и тесты — Linux или Windows (CI —
-  обе). Пути `data/*` — от рабочего каталога: в Docker `WORKDIR /app`, локально
-  — корень репозитория. Если рабочая копия — каталог боевого compose, её
-  `data/` — данные работающего бота: `npm run dev`, `battle`, backfill пишут в
-  ту же базу, бот — с тем же Discord-токеном.
-- Выкатка — только с разрешения. До `docker compose build` пометь работающий
-  образ (`docker tag wtbot:latest wtbot:pre-<что>`): после пересоздания
-  контейнера непомеченный образ пропадает. Копию базы снимай отдельным шагом и
-  проверь файл до `up -d`: без неё миграция, меняющая схему, необратима. Откат —
-  `docs/database.md`.
-- Lock-файлы (process lock, cookie jar, backup) переживают перезапуск
-  контейнера: PID нового процесса обычно совпадает с упавшим, поэтому lock с
-  нашим PID и чужим `ownerToken` — от прошлого запуска.
+- Production runs in Docker on Linux (`Dockerfile`, `docker-compose.yml`,
+  `docker/entrypoint.sh`): Chromium under Xvfb, `node` user, `./data` volume,
+  `restart: unless-stopped`. Development and tests — Linux or Windows (CI runs
+  both). `data/*` paths are relative to the working directory: `WORKDIR /app`
+  in Docker, the repository root locally. If your checkout is the production
+  compose directory, its `data/` is the running bot's data: `npm run dev`,
+  `battle` and backfill write to the same database, and a second bot would use
+  the same Discord token.
+- Deploy only with permission. Before `docker compose build`, tag the running
+  image (`docker tag wtbot:latest wtbot:pre-<what>`): an untagged image is gone
+  once the container is recreated. Back up the database as a separate step and
+  check the file before `up -d`: without it a schema-changing migration cannot
+  be undone. Rollback — `docs/database.md`.
+- Lock files (process lock, cookie jar, backup) survive a container restart:
+  the new process usually gets the crashed one's PID, so a lock with our PID
+  and a foreign `ownerToken` is left over from the previous run.
 
 ## 4. SQLite
 
-`node:sqlite` синхронна: запрос на main thread стопорит heartbeat Discord,
-voice tracker и Fastify. Запросы — короткие, индексированные,
-параметризованные. Замеры, решения и откат миграций — `docs/database.md`.
+`node:sqlite` is synchronous: a query on the main thread stalls the Discord
+heartbeat, the voice tracker and Fastify. Queries are short, indexed and
+parameterized. Measurements, decisions and migration rollback —
+`docs/database.md`.
 
-- SQL — только в типизированных функциях `src/db/index.ts`; пакетная запись —
-  в транзакции.
-- Новый или изменённый тяжёлый SELECT — через `EXPLAIN QUERY PLAN`, в том числе
-  на копии боевой базы: с v17 у планировщика статистика (`ANALYZE`, затем
-  `PRAGMA optimize`), и план на `:memory:` бывает другим.
-- Блоб событий живёт в `battle_events` и читается только по ключу одного боя
-  (`SCAN battle_events` недопустим); `battles` — компактная, `WITHOUT ROWID`
-  по `session_id`. Большое значение (блоб, JSON > ~1 КиБ) в часто читаемой
-  строке занимает свою страницу, а колонки после него читаются через
-  overflow-цепочку.
-- Индекс `battle_players` — ~16 записей (игроки боя) на каждый бой: добавляй
-  только под запрос, чей план его использует.
-- `WHERE session_id = ? OR session_hex = ?` — multi-index OR с
-  `idx_battles_session_hex`, не полный scan.
-- `getIngestStats().pending` и `getPendingBattleItems()` — один retryable
-  predicate; агрегат pending не читает `events_blob`.
-- `initDb()` — идемпотентный bootstrap чистой базы, `runDbMigrations()` —
-  версии через `PRAGMA user_version`. Изменение таблицы, индекса или
-  constraint — новая версия миграции и правка bootstrap; ошибки миграции не
-  глушить широким `catch`. Базу с `user_version > DB_SCHEMA_VERSION` код не
-  открывает: прежний образ после миграции — только с бэкапом.
-- Подключение: WAL, `synchronous = NORMAL` (коммит без fsync; сбой питания
-  откатывает последние транзакции, но не портит базу), mmap 1 ГиБ,
-  `journal_size_limit`, `temp_store = MEMORY` после VACUUM. Новая база — с
-  `auto_vacuum = INCREMENTAL`; VACUUM на старте — только у базы без него (один
-  раз, минуты на гигабайты, бот не в сети) при свободных > 20% и 256 МиБ.
-- Обслуживание (`db/maintenance.ts`) — в worker-задачах `db-maintenance` и
-  `repair-battle-events`, не на main thread: пачка починки сразу возвращает
-  освободившиеся страницы; раз в несколько часов — `PRAGMA optimize(0x10002)`
-  (без флага 0x10000 свежее подключение не видит ни одной таблицы) и
-  `incremental_vacuum` шагами `VACUUM_STEP_PAGES` (256 страниц) с паузой;
-  останавливается до CPU pool.
-- Фоновая транзакция записи (worker, обслуживание, разовый скрипт рядом с
-  ботом) — десятки миллисекунд: запись main thread ждёт чужую блокировку
-  синхронно, и event loop стоит. Порция `incremental_vacuum` в 8 192 страницы
-  держала блокировку 1,3 с (watchdog, 2026-10-02).
-- Записанные бои чинит проход `repair-battle-events`: правила
-  `events-repair.ts` — те же, что у ingest; колоночный формат и пустые `slot`,
-  `title`, `air_unit_count`, `chat_count` — из событий. Блоб и строки убийств
-  и чата заменяются вместе и только если блоб не изменился с чтения. Новое
-  правило — следующая `REPAIR_VERSION`, не ручная правка базы; то, что чинит
-  SQL или разбор заново с CDN, — миграция (пример — v18).
-- Окончательный сбой повторного разбора записанного боя (`expired`,
-  `no_parts`) оставляет статус `ok` с причиной в `error`: строки прежнего
-  разбора — данные боя.
-- Частые записи в файл базы (ingest, история парсеров, публикация табло) —
-  worker-задачи `persist-ingested-battle`, `record-parse-result`,
-  `update-player-stat-board-publication`; у `:memory:` в тестах — sync fallback.
-- Запись из worker меняет `PRAGMA data_version`: кэши чтения main thread
-  сбрасываются по нему, а не в расчёте на то, что пишет только main.
-- `primeKnownItemExternalIds('wt-replays')` грузит известные ID из
-  покрывающего unique index до запуска парсеров: попадание — без SQLite,
-  промах — запросом (корректность параллельного backfill).
-- Поиск игроков — по индексированным `canonical_nick_search`, `nick_search`,
-  `battle_players.nick_search`: JS `NFKC` + locale-neutral lowercase, не
+- SQL lives only in typed functions of `src/db/index.ts`; batch writes run in
+  a transaction.
+- Check a new or changed heavy SELECT with `EXPLAIN QUERY PLAN`, also on a
+  copy of the production database: since v17 the planner has statistics
+  (`ANALYZE`, then `PRAGMA optimize`), and the `:memory:` plan may differ.
+- The events blob lives in `battle_events` and is read only by one battle's
+  key (`SCAN battle_events` is forbidden); `battles` is compact,
+  `WITHOUT ROWID` by `session_id`. A large value (blob, JSON > ~1 KiB) in a hot
+  row takes its own page, and the columns after it are read through an
+  overflow chain.
+- Each `battle_players` index costs ~16 entries (the battle's players) per
+  battle: add one only for a query whose plan uses it.
+- `WHERE session_id = ? OR session_hex = ?` uses a multi-index OR with
+  `idx_battles_session_hex`, not a full scan.
+- `getIngestStats().pending` and `getPendingBattleItems()` share one
+  retryable predicate; the pending aggregate does not read `events_blob`.
+- `initDb()` is the idempotent bootstrap of a clean database,
+  `runDbMigrations()` versions via `PRAGMA user_version`. A change to a table,
+  index or constraint is a new migration version plus the matching bootstrap
+  change; never hide migration errors behind a broad `catch`. The code refuses
+  a database with `user_version > DB_SCHEMA_VERSION`, so after a migration the
+  previous image needs a backup.
+- Connection: WAL, `synchronous = NORMAL` (commits skip fsync; a power loss
+  rolls back the last transactions but does not corrupt the file), mmap 1 GiB,
+  `journal_size_limit`, `temp_store = MEMORY` after VACUUM. A new database gets
+  `auto_vacuum = INCREMENTAL`; startup VACUUM runs only for a database without
+  it (once, minutes per gigabytes, bot offline) when free space exceeds 20% and
+  256 MiB.
+- Maintenance (`db/maintenance.ts`) runs in worker tasks `db-maintenance` and
+  `repair-battle-events`, never on the main thread: each repair batch returns
+  freed pages at once; every few hours `PRAGMA optimize(0x10002)` (without flag
+  0x10000 a fresh connection sees no tables) and `incremental_vacuum` in
+  `VACUUM_STEP_PAGES` (256 pages) steps with a pause; it stops before the CPU
+  pool.
+- A background write transaction (worker, maintenance, a one-off script next
+  to the bot) takes tens of milliseconds at most: a main-thread write waits for
+  the foreign lock synchronously and the event loop stalls. One 8,192-page
+  `incremental_vacuum` portion held the lock for 1.3 s (watchdog, 2026-10-02).
+- Stored battles are fixed by the `repair-battle-events` pass: the rules in
+  `events-repair.ts` are the ingest rules; columnar format and empty `slot`,
+  `title`, `air_unit_count`, `chat_count` come from the events. The blob and
+  the kill and chat rows are replaced together and only if the blob did not
+  change since it was read. A new rule is the next `REPAIR_VERSION`, never a
+  manual edit of the database; what SQL or a fresh CDN parse can fix is a
+  migration (example: v18).
+- A final failure to re-parse a stored battle (`expired`, `no_parts`) keeps
+  status `ok` with the reason in `error`: the previous parse's rows are the
+  battle's data.
+- Frequent writes to the database file (ingest, parser history, player board
+  publication) run as worker tasks `persist-ingested-battle`,
+  `record-parse-result`, `update-player-stat-board-publication`; `:memory:`
+  tests use a sync fallback.
+- A worker write changes `PRAGMA data_version`: main-thread read caches are
+  invalidated through it, never on the assumption that only main writes.
+- `primeKnownItemExternalIds('wt-replays')` loads known IDs from a covering
+  unique index before the parsers start: a hit skips SQLite, a miss queries
+  (keeps parallel backfill correct).
+- Player search uses the indexed `canonical_nick_search`, `nick_search`,
+  `battle_players.nick_search`: JS `NFKC` + locale-neutral lowercase, never
   `COLLATE NOCASE`.
-- `items`: запись транзакционная, `UNIQUE(source, external_id)`, изменение —
-  по `content_hash` от title + JSON; новые источники и backfill его сохраняют.
-- `db:backup`: `VACUUM INTO`, lock, проверка свободного места, ротация,
-  read-only `quick_check`. Restore — при остановленном сервисе: проверь бэкап,
-  сохрани текущую базу как `.pre-restore`, проверь временную копию, затем
-  замени `DB_PATH`.
+- `items`: transactional writes, `UNIQUE(source, external_id)`, changes
+  detected by `content_hash` of title + JSON; new sources and backfill keep it.
+- `db:backup`: `VACUUM INTO`, lock, free-space check, rotation, read-only
+  `quick_check`. Restore only with the service stopped: check the backup, save
+  the current database as `.pre-restore`, check a temporary copy, then replace
+  `DB_PATH`.
 
 ## 5. Workers
 
-- В worker — только structured-clone значения и точные transferable
-  `ArrayBuffer`; handles Discord, Fastify и SQLite не передаются.
-- Не на main thread: синхронный разбор WRPL/BLK/VROMFS/ECS, большие
-  JSON-преобразования, сжатие, base64 картинок, Resvg (`@resvg/resvg-js`
-  создаётся только в worker), доказанно долгие записи SQLite.
-- Пул: пределы числа задач и transferable bytes, приоритеты, резерв
-  интерактивных слотов, таймауты очереди и выполнения, замена зависшего worker.
-- Интерактивный запрос повышает приоритет уже общей фоновой задачи, а не
-  запускает дубль.
-- `EXEC_TIMEOUT`, таймаут очереди, сбой запуска или планирования и
-  переполнение очереди не расходуют попытки ingest и анонса — кроме 3
-  таймаутов подряд (`ExecTimeoutBudget`), иначе детерминированно медленная
-  задача повторялась бы вечно. Ошибка уже выполнявшегося разбора — обычная
-  попытка.
-- Обработчики Discord всё равно сразу делают `deferReply`/`deferUpdate`.
+- Only structured-clone values and exact transferable `ArrayBuffer`s go to a
+  worker; Discord, Fastify and SQLite handles never do.
+- Not on the main thread: synchronous WRPL/BLK/VROMFS/ECS parsing, large JSON
+  transforms, compression, base64 images, Resvg (`@resvg/resvg-js` is created
+  only in workers), provably long SQLite writes.
+- Pool: limits on task count and transferable bytes, priorities, reserved
+  interactive slots, queue and execution timeouts, hung-worker replacement.
+- An interactive request raises the priority of the shared background task
+  instead of starting a duplicate.
+- `EXEC_TIMEOUT`, queue timeout, startup or scheduling failure and queue
+  overflow spend no ingest or announcement attempts — except 3 timeouts in a
+  row (`ExecTimeoutBudget`), otherwise a deterministically slow task would
+  repeat forever. A failure of a parse that already ran is a normal attempt.
+- Discord handlers still `deferReply`/`deferUpdate` right away.
 
-## 6. Парсеры и доступ к warthunder.com
+## 6. Parsers and warthunder.com access
 
-Источники (константы — в их файлах `src/parsers/sources/`):
+Sources (constants live in their files under `src/parsers/sources/`):
 
-- `wt-replays` — раз в 20 с, до 50 страниц (`PLANNED_REPLAYS_MAX_PAGES`),
-  `stopAtKnown`, без `fetchDetails`; стоп на известной странице, последней
-  неполной, дате отсечки или пределе.
-- `wt-players` — раз в 30 мин, `WT_PLAYER_NAMES` по очереди, только первая
-  страница Replay API.
-- `wt-clans` — раз в 20 мин 5 страниц лидерборда полков (сотня лидеров), раз в
-  12 ч — дальше, пока рейтинг сезона (`dr_era5_hist`) не ноль, до 100 страниц
-  (упор виден в статусе). Обход пишет `clans` с общим `rating_at`, изменения
-  рейтинга, боёв, побед, фрагов и смертей — change-point в
-  `clan_rating_history`, сезон лидерборда — `bot_state` `wt-clans:season`
-  (расхождение с форумом — в статусе). Регион, тип, слоган и награды приходят
-  экранированными для HTML с разметкой игры (`<color=#…>`, `<b>`) — хранится
-  чистый текст; тег и имя — как есть (ключи боёв и claninfo). Профиль: `_id`
-  (не меняется со сменой тега), описание и объявление (переносы сохраняются,
-  ≤ 2048 символов), `membership_req` `{ranks, battles}`, приём, тег без
-  украшений `lastPaidTag`, украшение прошлого сезона. Затем — ростер claninfo
-  5 лидеров с ростером старше суток (иначе ростер и ПКР были бы лишь у кланов
-  из нарисованных боёв): роль, дата вступления, активность, незнакомая ячейка
-  — `NULL`. Дата основания — `cdate` лидерборда: claninfo показывает
-  «01.01.1970».
-- `wt-clan-season` — раз в 6 ч первый пост темы
-  `forum.warthunder.ru/raw/2509/1` (не warthunder.com: без Cloudflare, обычный
-  bounded fetch) → сезоны `forum-ГГГГ-ММ-ДД` в `clan_seasons`.
+- `wt-replays` — every 20 s, up to 50 pages (`PLANNED_REPLAYS_MAX_PAGES`),
+  `stopAtKnown`, no `fetchDetails`; stops at a known page, the last incomplete
+  page, a date cutoff or the cap.
+- `wt-players` — every 30 min, `WT_PLAYER_NAMES` one by one, only the first
+  Replay API page.
+- `wt-clans` — every 20 min the first 5 pages of the squadron leaderboard (top
+  100), every 12 h further while the season rating (`dr_era5_hist`) is above
+  zero, up to 100 pages (hitting the cap shows in the source status). A crawl
+  writes `clans` with one shared `rating_at`, change points of rating, battles,
+  wins, kills and deaths to `clan_rating_history`, the leaderboard season to
+  `bot_state` `wt-clans:season` (a mismatch with the forum shows in the
+  status). Region, type, slogan and rewards arrive HTML-escaped with game
+  markup (`<color=#…>`, `<b>`) — plain text is stored; tag and name stay as
+  they are (keys of battles and claninfo). Profile: `_id` (survives tag
+  changes), description and announcement (line breaks kept, ≤ 2048 chars),
+  `membership_req` `{ranks, battles}`, auto-accept, undecorated tag
+  `lastPaidTag`, last season's decoration. Then the claninfo roster of 5
+  leaders whose roster is older than a day (otherwise only clans from drawn
+  battles would have rosters and PSR): role, join date, activity; an unknown
+  cell value becomes `NULL`. Founding date — the leaderboard's `cdate`:
+  claninfo shows "01.01.1970".
+- `wt-clan-season` — every 6 h the first post of
+  `forum.warthunder.ru/raw/2509/1` (not warthunder.com: no Cloudflare, a plain
+  bounded fetch) → seasons `forum-YYYY-MM-DD` in `clan_seasons`.
 
-Планировщик запускает источники сразу, не пересекает запуски одного
-источника, хранит результат по источнику, backoff экспоненциальный до 30 мин;
-историю разбора для файловой базы пишет worker-задача. Новый источник —
-`ParserSource` с уникальным `name`, `intervalMs` и
-`run(): Promise<{ summary, items? }>`, регистрация в
-`src/parsers/sources/index.ts`; повтор неизменных items даёт `unchanged`.
+The scheduler starts sources at once, never overlaps runs of one source, keeps
+results per source and backs off exponentially up to 30 min; a worker task
+writes parse history for a file database. A new source is a `ParserSource`
+with a unique `name`, `intervalMs` and `run(): Promise<{ summary, items? }>`,
+registered in `src/parsers/sources/index.ts`; rerunning unchanged items yields
+`unchanged`.
 
-Доступ:
+Access:
 
-- `wt-replays` и `wt-players` требуют авторизованную сессию; HTTP 200 с пустым
-  списком не доказывает её исправность («API вернул пустой список» — протухший
-  `WT_COOKIE`, нужен ручной вход).
-- Все запросы к warthunder.com — через `fetchWtResponse()` или
-  `waitForRequestSlot()`: одна очередь на процесс, интервал 1 500 мс,
-  `Retry-After`. Прямой `fetch()` к HTML и API сайта запрещён.
-- Cloudflare проверяет отдельные адреса: в октябре 2026 403
-  `cf-mitigated: challenge` получали только профиль и поиск игроков, а Replay
-  API, лидерборды, claninfo и WTCS отвечали напрямую. Поэтому транспорт — по
-  маршруту (первые три сегмента пути): сначала прямой запрос, браузер — после
-  проверки Cloudflare, прямой путь перепроверяется раз в 6 ч; режимы —
-  `wtTransport.routes` в `/api/stats`. Сетевой сбой прямого запроса один раз
-  повторяется через браузер без смены режима маршрута.
-- Jar `data/wt-cookies.json`: живые cookies открытым текстом, атомарная
-  запись, межпроцессный lock; рядом — User-Agent браузера, выдавшего сессию
-  (прямой запрос представляется им).
-- Сессию WT (`identity_*`) ведёт jar, нужна она только Replay API. Публичный
-  прямой запрос идёт без cookies и jar не трогает; cookies Cloudflare прямой
-  запрос не шлёт. Браузер получает сессию из jar, только пока Replay API идёт
-  через него, и тогда же пишет её обратно, иначе ходит анонимно: сервер
-  ротирует `identity_sid`, и две живые копии сессии разошлись бы. Своя сессия
-  браузера (вход через VNC) берётся в jar, если Replay API вернул пустой
-  список; без неё Replay API на 6 ч уходит в браузер. Host-only копия cookie
-  рядом с доменной — прежний баг: сервер читал устаревший `identity_sid`,
-  уводил на вход, и Replay API отдавал пустой список.
-- claninfo (`src/wrpl/clan-info.ts`) — свой прямой `fetch` без cookies, но
-  после `waitForRequestSlot()`; 429 откладывает всю очередь. Начнёт отвечать
-  403 `cf-mitigated: challenge` — переведи на `fetchWtResponse()`.
-- Браузер — обычный процесс и CDP: persistent context Playwright и настоящий
-  headless Cloudflare не проходят; hidden mode — окно за экраном; CAPTCHA
-  автоматически не решается. Платформа (пути, флаги Docker, `/proc`,
-  SingletonLock) — `wt-browser-platform.ts`; на Linux без `DISPLAY` браузер не
-  стартует. Пробы clearance: пауза 0,5→4 с, не больше
-  `MAX_FAILED_CLEARANCE_PROBES` неудач за попытку.
-- Части `.wrpl` — обычным bounded `fetch` с CDN: браузерный транспорт
-  декодирует тело как текст.
-- Любой внешний fetch: timeout, предел байт ответа, проверка схемы или формата
-  до постоянного кэша.
-- Пропуск закрывает `npm run backfill -- <days>` (по умолчанию 3 дня, разбор
-  оставляет ingest), пока части лежат на CDN (~2 недели).
+- `wt-replays` and `wt-players` need an authorized session; HTTP 200 with an
+  empty list does not prove it works (source status
+  `API вернул пустой список` — "API returned an empty list": `WT_COOKIE`
+  expired, log in by hand).
+- Every warthunder.com request goes through `fetchWtResponse()` or
+  `waitForRequestSlot()`: one queue per process, 1,500 ms spacing,
+  `Retry-After`. A direct `fetch()` to the site's HTML or API is forbidden.
+- Cloudflare checks individual addresses: in October 2026 only the player
+  profile and player search got 403 `cf-mitigated: challenge`, while the
+  Replay API, leaderboards, claninfo and WTCS answered directly. So the
+  transport is chosen per route (first three path segments): a direct request
+  first, the browser after a Cloudflare check, the direct path re-probed every
+  6 h; modes are in `/api/stats` → `wtTransport.routes`. A network failure of
+  a direct request is retried once through the browser without changing the
+  route's mode.
+- Jar `data/wt-cookies.json`: live cookies in plain text, atomic writes, an
+  inter-process lock; it also keeps the User-Agent of the browser that issued
+  the session (direct requests present themselves as that browser).
+- The jar owns the WT session (`identity_*`); only the Replay API needs it. A
+  public direct request goes without cookies and leaves the jar alone; direct
+  requests never send Cloudflare cookies. The browser gets the jar session
+  only while the Replay API goes through it, and writes it back then;
+  otherwise it browses anonymously: the server rotates `identity_sid`, and two
+  live copies of one session would diverge. The browser's own session (a VNC
+  login) is adopted into the jar when the Replay API returns an empty list;
+  without one the Replay API moves to the browser for 6 h. A host-only cookie
+  copy next to the domain cookie was a past bug: the server read a stale
+  `identity_sid`, redirected to login, and the Replay API returned an empty
+  list.
+- claninfo (`src/wrpl/clan-info.ts`) uses its own direct `fetch` without
+  cookies, but after `waitForRequestSlot()`; a 429 delays the whole queue. If
+  it starts answering 403 `cf-mitigated: challenge`, switch it to
+  `fetchWtResponse()`.
+- The browser is a normal process driven over CDP: a persistent Playwright
+  context and true headless mode fail Cloudflare; hidden mode is an
+  off-screen window; CAPTCHAs are never solved automatically. Platform code
+  (paths, Docker flags, `/proc`, SingletonLock) lives in
+  `wt-browser-platform.ts`; on Linux without `DISPLAY` the browser does not
+  start. Clearance probes: pause 0.5→4 s, at most
+  `MAX_FAILED_CLEARANCE_PROBES` failures per attempt.
+- `.wrpl` parts come from the CDN through a plain bounded `fetch`: the browser
+  transport decodes bodies as text.
+- Every external fetch has a timeout, a response byte limit and a schema or
+  format check before anything is cached permanently.
+- `npm run backfill -- <days>` closes a gap (3 days by default, parsing left to
+  ingest) while the parts are still on the CDN (~2 weeks).
 
-## 7. Ingest, WRPL и media
+## 7. Ingest, WRPL and media
 
 ### Ingest
 
-- Tick берёт до `2 × concurrency` pending items: новые, каждый 8-й проход —
-  старые. Producers (раз в 500 мс) скачивают реплей в bounded ready queue (по
-  числу и байтам) → до 4 consumers → worker `parse-battle` → сериализованная
-  запись `persist-ingested-battle` на своём подключении: одна транзакция
-  обновляет `battles`, `battle_events`, `battle_players`, `battle_kills`,
-  `battle_chat`, `battle_ingest`. Passive checkpoint WAL — раз в 32 коммита
-  или 60 с, при остановке — отдельной worker-задачей.
-- AIMD и byte budget процесса держат нагрузку на CDN, пул, SQLite и RAM;
-  таймаут бюджета откладывает item без попытки.
-- После commit кэш частей сессии и её старые artifacts в `data/battles/`
-  удаляются: бой восстанавливается из строк и блоба событий.
-- Блоб событий (`battle_events`, `events-codec.ts`) — колоночный: траектории
-  (99% событий) массивами разностей, zstd-19, ~20 КиБ на бой. Запись проверяет
-  восстановление байт в байт, иначе пишет zstd-JSON; читаются и zstd-JSON, и
-  gzip. Читай через `decodeEventsPayload`/`decodeEventsBlob`;
-  `inflateEventsBlob` (JSON текстом) — только для хэшей и перевода форматов.
-  Образ без колоночного формата эти блобы не прочитает (откат —
-  `docs/database.md`).
-- Replay API показывает ~2% боёв до их конца: `partsCount` и `endTime` ранние,
-  а запись бот читает один раз. Поэтому перед скачиванием ingest ищет части
-  после известных (`withUnlistedReplayParts`: GET одного байта до первой 404;
-  429 — повтор, иная ошибка — сбой попытки, а не конец списка, иначе старый
-  бой с неполным списком стал бы `expired`). 404/410 у боя моложе часа (от
-  `endTime`) — «ещё не выложена». Промежуточные итоги (часть 0001, ~95 с, без
-  статуса) не пишутся; финальные итоги боя без исхода по времени (тоже без
-  статуса) отличает время не меньше длительности по записи
-  (`hasFinalReplayResults`). Такой бой ждёт в памяти (`ReplayPartWaitList`,
-  1→3 мин) без попытки; `expired` — только после этого окна. Признак
-  обрезанного боя в данных — `status` NULL, `team_won = 0`, ~95 с (v11–v14
-  вернули такие бои на разбор).
+- A tick takes up to `2 × concurrency` pending items: newest first, every 8th
+  sweep oldest first. Producers (every 500 ms) download a replay into a
+  bounded ready queue (by count and bytes) → up to 4 consumers → worker
+  `parse-battle` → serialized `persist-ingested-battle` on its own connection:
+  one transaction updates `battles`, `battle_events`, `battle_players`,
+  `battle_kills`, `battle_chat`, `battle_ingest`. Passive WAL checkpoint every
+  32 commits or 60 s, and a separate worker task on shutdown.
+- AIMD and the process byte budget keep the load on the CDN, the pool, SQLite
+  and RAM in check; a budget timeout defers the item without an attempt.
+- After the commit the session's cached parts and its old artifacts in
+  `data/battles/` are deleted: the battle can be rebuilt from its rows and
+  events blob.
+- The events blob (`battle_events`, `events-codec.ts`) is columnar:
+  trajectories (99% of events) as delta arrays, zstd-19, ~20 KiB per battle.
+  A write verifies a byte-exact round trip, otherwise it stores zstd-JSON;
+  readers also accept zstd-JSON and gzip. Read through
+  `decodeEventsPayload`/`decodeEventsBlob`; `inflateEventsBlob` (JSON text) is
+  only for hashes and format conversion. An image without the columnar format
+  cannot read these blobs (rollback — `docs/database.md`).
+- The Replay API lists ~2% of battles before they end: their `partsCount` and
+  `endTime` are early, and the bot reads an item only once. So before
+  downloading, ingest probes for parts after the known ones
+  (`withUnlistedReplayParts`: a one-byte GET until the first 404; a 429 is
+  retried, any other error fails the attempt instead of ending the list,
+  otherwise an old battle with an incomplete list would become `expired`). A
+  404/410 for a battle younger than an hour (from `endTime`) means "not
+  uploaded yet". Intermediate results (part 0001, ~95 s, no status) are not
+  stored; the final results of a battle that ran out of time (also without a
+  status) are told apart by a duration at least the listed one
+  (`hasFinalReplayResults`). Such a battle waits in memory
+  (`ReplayPartWaitList`, 1→3 min) without an attempt; `expired` only after
+  that window. A truncated battle in the data: `status` NULL, `team_won = 0`,
+  ~95 s (v11–v14 requeued such battles).
 
-### Недоверенный бинарный вход
+### Untrusted binary input
 
-`.wrpl`, BLK, VROMFS, пакеты ECS — недоверенные данные без схемы. В
+`.wrpl`, BLK, VROMFS and ECS packets are untrusted data without a schema. In
 `bit-reader.ts`, `packet-stream.ts`, `lz4.ts`, `ecs.ts`, `gm-sync.ts`,
-`replay-events.ts` и новых декодерах:
+`replay-events.ts` and new decoders:
 
-- длины, счётчики, смещения и диапазоны — проверить до арифметики и выделения
-  памяти; bounds-check varint, LZ4, ECS, FAT BLK, VROMFS, XOR/RLE и полей
-  пакетов не убирать; non-null assertion TypeScript — не runtime guard;
-- у zlib/zstd/gzip — пределы вывода, у worker — таймаут выполнения;
-- после правки разбора — корпус (`npm run verify:benchmark-corpus`: хэш, исход,
-  контракт данных).
+- check lengths, counts, offsets and ranges before arithmetic and allocation;
+  never remove bounds checks of varints, LZ4, ECS, FAT BLK, VROMFS, XOR/RLE or
+  packet fields; a TypeScript non-null assertion is not a runtime guard;
+- zlib/zstd/gzip get output limits, workers an execution timeout;
+- after a parser change run the corpus (`npm run verify:benchmark-corpus`:
+  hash, outcome, data contract).
 
-Формат: поток пакетов — после `1234 + settingsBlkSize`, части склеиваются
-логически. Сжатие — по магии (`packetStreamCodec`): до 2.59 zlib, с 2.59
-(заголовок `101404`) zstd, и construct-сообщение ECS получило байт формата
-перед счётчиком компонентов (`ECS_CONSTRUCT_PREFIX_VERSION`). userId слота —
-знаковый int64 (`BigInt.asIntN`, у ботов отрицательный, как в results-BLK).
-Строки чата — с длиной-varint (`readVarLenStr`: однобайтовая длина обрезала
-сообщения длиннее 127 байт). Чат подписан анонимными `fakeName` записи
-Replay API — ingest заменяет их настоящими (`fakeNamesFromItem`) до записи.
-ECS связывает UID сущности с моделью и игроком; траектории самолётов — из
-пакетов flight model, наземной техники — GMSync (delta/XOR/RLE).
+Format: the packet stream starts after `1234 + settingsBlkSize`, parts are
+concatenated logically. Compression is detected by magic
+(`packetStreamCodec`): zlib before 2.59, zstd since 2.59 (header `101404`),
+when the ECS construct message also gained a format byte before the component
+count (`ECS_CONSTRUCT_PREFIX_VERSION`). A slot userId is a signed int64
+(`BigInt.asIntN`; negative for bots, as in results-BLK). Chat strings have a
+varint length (`readVarLenStr`: a one-byte length truncated messages longer
+than 127 bytes). The chat is signed with the anonymous `fakeName`s of the
+Replay API item — ingest replaces them with real names (`fakeNamesFromItem`)
+before storing. ECS links an entity UID to a model and a player; aircraft
+tracks come from flight-model packets, ground tracks from GMSync
+(delta/XOR/RLE).
 
-Патч игры ломает разбор молча — results-BLK (игроки, очки) читается, события
-нет:
+A game patch breaks parsing silently — results-BLK (players, scores) still
+reads, the events do not:
 
-- часть, которую не распаковал ни один кодек, — ошибка разбора, не пустой бой;
-- сбой одной ECS-сущности не обрывает пакет (граница блока известна):
-  остальные, в том числе техника игроков, разбираются, ошибка — в
-  `events.errors`;
-- признак в данных — `kill_count = 0` и пустые траектории при фрагах в
-  `battle_players`; сверяй по `game_version`;
-- реплей новой версии игры — в `benchmarks/replay-corpus.json`;
-- записанные неверные бои — миграцией, снимающей их статус в `battle_ingest`
-  (пример — v6/v7), пока части на CDN (~2 недели).
+- a part no codec can decompress is a parse error, not an empty battle;
+- one failing ECS entity does not abort the packet (the block boundary is
+  known): the others, player vehicles included, still parse, and the error
+  goes to `events.errors`;
+- the symptom in the data: `kill_count = 0` and empty trajectories while
+  `battle_players` has kills; compare by `game_version`;
+- add a replay of each new game version to `benchmarks/replay-corpus.json`;
+- re-parse stored bad battles with a migration that clears their
+  `battle_ingest` status (example: v6/v7) while the parts are on the CDN
+  (~2 weeks).
 
-`prepareBattleData()` скачивает и резервирует части, `parsePreparedBattleData()`
-отдаёт их worker; прежний `loadBattleData()` — для отката и интерактивных
-путей. `reconstructBattleSummary()` не читает `events_blob`; media передаёт
-worker сжатый блоб.
+`prepareBattleData()` downloads and reserves parts, `parsePreparedBattleData()`
+hands them to a worker; the previous `loadBattleData()` stays for rollback and
+interactive paths. `reconstructBattleSummary()` does not read `events_blob`;
+media hands the compressed blob to a worker.
 
-### Media и кэш
+### Media and cache
 
-- Media собирается из SQLite, с CDN — только при необходимости; параллельные
-  сборки одной сессии объединяются, интерактивный запрос повышает приоритет.
-- `buildBattleMediaKind()` + `render-media-kind` — только запрошенный
-  лог, чат или хитмапа; `buildBattleMedia()` + `render-media` — полный набор
-  для прогрева и CLI; хитмапа 2× — отдельно. Хитмапы ground/air/team
-  переиспользуют `PreparedHeatmapScene`, SVG builders — чистые функции.
-- Подложка сцены на сайте — как у наземной хитмапы: снимок тактической карты
-  режима миссии (wt-tools, ровно battleArea; качается при сборке сцены, только
-  если battleArea известна), иначе локальная карта уровня; карту другого
-  режима не подставлять. `/api/battles/:key/map.png` читает карту только с
-  диска.
-- Победитель — из событий и базы, не из results-BLK; анонимные имена
-  восстанавливаются по `userId`, не только по нику.
-- Порядок шрифтов Resvg (`src/workers/render-fonts.ts`) — порядок запасного
-  поиска: UI-шрифт без box-drawing (Linux — Noto Sans из `fonts-noto-core`,
-  Windows — Segoe UI), шрифт игры, письменности, символы. DejaVu с
-  box-drawing рисует рамки вместо глифов игры в клан-тегах; `map-icons.ttf` в
-  базу Resvg не передаётся: он подменяет цифры и буквы иконками.
+- Media is built from SQLite, from the CDN only when needed; parallel builds of
+  one session are merged, and an interactive request raises the priority.
+- `buildBattleMediaKind()` + `render-media-kind` build only the requested log,
+  chat or heatmap; `buildBattleMedia()` + `render-media` build the full set for
+  warmup and CLI; the 2× heatmap is separate. Ground/air/team heatmaps reuse
+  `PreparedHeatmapScene`; SVG builders are pure functions.
+- The site's scene background matches the ground heatmap: a snapshot of the
+  mission mode's tactical map (wt-tools, exactly battleArea; downloaded while
+  building the scene, only when battleArea is known), otherwise the local
+  level map; never substitute another mode's map. `/api/battles/:key/map.png`
+  reads maps only from disk.
+- The winner comes from events and the database, never from results-BLK;
+  anonymized names are restored by `userId`, not only by nickname.
+- Resvg font order (`src/workers/render-fonts.ts`) is the fallback order: a UI
+  font without box-drawing glyphs (Linux — Noto Sans from `fonts-noto-core`,
+  Windows — Segoe UI), the game font, scripts, symbols. DejaVu with
+  box-drawing draws frames instead of the game's glyphs in clan tags;
+  `map-icons.ttf` is not in the Resvg base set: it replaces digits and letters
+  with icons.
 
-Данные:
+Data:
 
-- `data/wtbot.db` — источник правды и датасет;
-- `data/replays/<sid>/` — TTL-кэш частей;
-- `data/battles/` — LRU готовых artifacts до `WT_BATTLE_CACHE_MB`:
-  `*-meta.json` публикуется последним как commit marker, вытеснение удаляет
-  весь набор сессии; `WT_BATTLE_CACHE_ENABLED=false` отключает reuse, но не
-  сохранение;
-- `benchmarks/fixtures/replays/` — единственный постоянный корпус WRPL;
+- `data/wtbot.db` — the source of truth and the dataset;
+- `data/replays/<sid>/` — TTL cache of replay parts;
+- `data/battles/` — LRU of rendered artifacts up to `WT_BATTLE_CACHE_MB`:
+  `*-meta.json` is published last as the commit marker, eviction removes the
+  whole session set; `WT_BATTLE_CACHE_ENABLED=false` disables reuse, not
+  saving;
+- `benchmarks/fixtures/replays/` — the only permanent WRPL corpus;
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
-  `ecshashes.json`, `wt-vehicles.json` — assets и восстанавливаемые индексы;
-- `data/wt-game/ui/` — копии `fonts.vromfs.bin` и `atlases.vromfs.bin` из
-  игры для Docker (`WT_GAME_DIR`): флаги наций читаются из атласа при каждом
-  старте, при сбое остаются свои флаги, картинка не падает.
+  `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
+- `data/wt-game/ui/` — copies of the game's `fonts.vromfs.bin` and
+  `atlases.vromfs.bin` for Docker (`WT_GAME_DIR`): nation flags are read from
+  the atlas at every start; on failure the built-in flags remain and the image
+  still renders.
 
-## 8. Discord, сайт и статистика игроков
+## 8. Discord, site and player statistics
 
-- Slash-команда: файл в `src/bot/commands/`, регистрация в
-  `src/bot/commands/index.ts`, затем `npm run deploy:commands` — только с
-  разрешения.
-- `/battle` и автоанонс — общий `renderBattlePost()`; кнопки `battle:*` —
-  `src/bot/index.ts`; чат, лог и хитмапы — ephemeral.
-- Автоанонс: попытки и сообщение — `announce_state`, baseline — `bot_state`;
-  первый старт историю не публикует; бои старше `WT_ANNOUNCE_MAX_AGE_HOURS`
-  снимаются одним `skipStaleAnnounce()` (кроме начатых предварительных);
-  одиночный новый бой может получить предварительное сообщение с заменой на
-  полный пост после commit, массовый догон — нет.
-- `/playerboard setup` хранит канал и одно редактируемое сообщение в SQLite;
-  табло показывает текущий voice-снимок и пишет состояние публикации
-  worker-задачей только при смене hash. Ник WT — display name до первой `(`.
-- `POST /api/voice/refresh` — не чаще раза в 5 с (`Retry-After`),
+- Slash command: a file in `src/bot/commands/`, registration in
+  `src/bot/commands/index.ts`, then `npm run deploy:commands` — only with
+  permission.
+- `/battle` and the announcer share `renderBattlePost()`; `battle:*` buttons
+  are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral.
+- Announcer: attempts and message state in `announce_state`, the baseline in
+  `bot_state`; the first start does not publish history; battles older than
+  `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()` (except
+  started preliminary posts); a single new battle may get a preliminary
+  message replaced by the full post after the commit, a bulk catch-up does
+  not.
+- `/playerboard setup` stores the channel and one editable message in SQLite;
+  the board shows the current voice snapshot and writes its publication state
+  through a worker task only when the hash changes. The WT nickname is the
+  display name up to the first `(`.
+- `POST /api/voice/refresh` — at most once per 5 s (`Retry-After`),
   single-flight `refreshVoice()`.
-- Кланы на сайте: рейтинг, место, «за 30 дн.» и график — официальные, из
-  лидерборда (снимки ПКР есть лишь у кланов из нарисованных боёв, и их сумма
-  теряла лидеров). Кланы свежего обхода — выше кланов из прежних обходов
-  сезона; сумма ПКР по снимкам — только у кланов без официальных данных.
-  `clan_roster` — последний непустой ростер; ростер, ПКР участников и их
-  дельты фильтруются по нему.
-- `CLAN_SEASON_SCHEDULES` — UTC `[startsAt, endsAt)`; изменение встроенного
-  расписания — reconciliation или миграция данных, не ручная правка базы.
-  Новые сезоны приносит `wt-clan-season` (`src/clan-season-forum.ts`), не код.
-  Пост форума недоверенный: любая странность валит разбор целиком; сезон
-  форума со сдвинутым началом заменяет прежний, пересечение со встроенным —
-  ошибка.
-- Дашборд `/` — HTML в `src/web/routes/pages.ts`: пользовательские данные —
-  через `textContent`, не `innerHTML`. SPA `/app` — только при `frontend/dist`.
-- Новый маршрут — в `src/web/routes/`, зависимости — через явный `WebDeps`,
-  без скрытых синглтонов; у API — schema, ограниченные лимиты и rate limit.
-- Web по умолчанию на loopback, наружу — только через reverse proxy и
-  `WEB_TOKEN`. POST с чужим `Origin`/`Sec-Fetch-Site` — 403 в любом режиме;
-  без этих заголовков (не браузер) проходит. С токеном хук `onSend` меняет
-  `public` на `private` у защищённых ответов: общий кэш прокси не отдаст их
-  без токена.
-- Страница игрока (`/app/players/…`): `/api/players/:key` — профиль, клан с
-  ролью из ростера, источники с `account` (уровень, даты, история кланов и
-  ников, места в рейтингах WT); `/api/players/:key/insights?days=` — разбор
-  локальных реплеев (карты, техника, кланы, напарники, оружие, соперники,
-  часы) по последним 500 боям периода: worker-задача `read-player-insights` со
-  своим read-only подключением, кэш 1 мин, вес в rate limit 2.
-- `POST /api/player-stats` (кнопка «обновить», форма дашборда) — только
-  точный известный ник или стабильный WT user id. У каждого включённого
-  внешнего источника — однослотовая lazy-очередь, TTL 24 ч (младше — не
-  перечитывается), stale fallback, проверка схемы, свой rate limit. Покрытие
-  реплеев и аккаунта не суммируется; основной снимок — `account`, все —
-  `accountSources`.
+- Squadrons on the site: rating, place, "30 days" delta and chart are
+  official, from the leaderboard (PSR snapshots exist only for clans from drawn
+  battles, and their sum missed the leaders). Clans of the latest crawl rank
+  above clans from earlier crawls of the season; the PSR sum from snapshots is
+  used only for clans without official data. `clan_roster` is the last
+  non-empty roster; the roster, members' PSR and their deltas are filtered by
+  it.
+- `CLAN_SEASON_SCHEDULES` — UTC `[startsAt, endsAt)`; changing a built-in
+  schedule takes reconciliation or a data migration, never a manual database
+  edit. New seasons come from `wt-clan-season` (`src/clan-season-forum.ts`),
+  not code. The forum post is untrusted: any oddity fails the whole parse; a
+  forum season with a shifted start replaces the old one, overlapping a
+  built-in one is an error.
+- Dashboard `/` — HTML in `src/web/routes/pages.ts`: user data goes through
+  `textContent`, never `innerHTML`. SPA `/app` — only when `frontend/dist`
+  exists.
+- A new route goes to `src/web/routes/`, dependencies through an explicit
+  `WebDeps`, no hidden singletons; APIs have a schema, bounded limits and a
+  rate limit.
+- Web listens on loopback by default; outside only through a reverse proxy and
+  `WEB_TOKEN`. A POST with a foreign `Origin`/`Sec-Fetch-Site` gets 403 in
+  every mode; without these headers (not a browser) it passes. With a token,
+  the `onSend` hook turns `public` into `private` on protected responses, so a
+  shared proxy cache never serves them without the token.
+- Player page (`/app/players/…`): `/api/players/:key` — profile, clan with
+  the roster role, sources with `account` (level, dates, clan and nickname
+  history, WT leaderboard places); `/api/players/:key/insights?days=` — a
+  breakdown of local replays (maps, vehicles, clans, teammates, weapons,
+  opponents, hours) over the period's last 500 battles: worker task
+  `read-player-insights` with its own read-only connection, 1 min cache, rate
+  limit weight 2.
+- `POST /api/player-stats` (the refresh button, the dashboard form) accepts
+  only an exact known nickname or a stable WT user id. Every enabled external
+  source has a single-slot lazy queue, 24 h TTL (younger snapshots are not
+  refetched), stale fallback, schema validation and its own rate limit.
+  Replay and account coverage are never summed; the primary snapshot is
+  `account`, all of them `accountSources`.
 
-Инварианты провайдеров:
+Provider invariants:
 
-- Официальный профиль: блоки общий/air/ground/naval по трём режимам; ветки
-  `Air/Ground/Naval battles` — респавны, не бои; `battles` есть только у общей
-  строки; win rate аккаунта — по сумме трёх режимов.
-- `N/A` → `NULL`; поражения = `battles − victories`; в длительности латинская
-  `M` — месяц, `m` — минута; месяц = 30 дней, год = 365 (точность источника).
-- `raw_json` официального профиля — извлечённые строки, не HTML, и
-  `player_external_vehicles` он не создаёт. «Vehicles and rewards» (техника,
-  элитная техника, медали по нациям) → `player_external_countries`; нет блока
-  или вёрстка незнакома — пустой список, не ошибка снимка.
-- Companion — своя официальная сессия, Cloudflare сайта не касается.
-- StatShark — только по числовому user id через общий браузер; токен Turnstile
-  остаётся в `localStorage` браузера (не в Node, SQLite, env, логах),
-  analytics-endpoint блокируется.
+- Official profile: overall/air/ground/naval blocks for three modes; the
+  `Air/Ground/Naval battles` branches are respawns, not battles; `battles`
+  exists only in the overall row; the account win rate uses the sum of three
+  modes.
+- `N/A` → `NULL`; losses = `battles − victories`; in durations a Latin `M` is
+  a month and `m` a minute; month = 30 days, year = 365 (the source's
+  precision).
+- The official profile's `raw_json` holds extracted strings, not HTML, and
+  creates no `player_external_vehicles`. "Vehicles and rewards" (vehicles,
+  elite vehicles, medals per nation) → `player_external_countries`; a missing
+  block or unknown markup gives an empty list, not a snapshot error.
+- Companion uses its own official session and does not touch the site's
+  Cloudflare.
+- StatShark only by a numeric user id through the shared browser; the
+  Turnstile token stays in the browser's `localStorage` (never in Node,
+  SQLite, env or logs), the analytics endpoint is blocked.
 
-`npm run analyze -- <limit>` — ручная платная операция; автоматических вызовов
-модели в парсерах и ingest нет. `analyses.item_id` уникален: на item — не
-больше одного анализа.
+`npm run analyze -- <limit>` is a manual paid operation; parsers and ingest
+never call a model automatically. `analyses.item_id` is unique: at most one
+analysis per item.
 
-## 9. Код и тексты
+## 9. Code and text
 
-- ESM (`"type": "module"`): импорты TypeScript — с `.js`.
-- Strict `tsconfig` не ослаблять; `any` — только при доказанной необходимости.
-- Комментарии, сообщения пользователю, логи, документация — по-русски;
-  коммиты и PR — по-английски, без атрибуции ассистента (`Co-Authored-By`,
-  «Generated with»).
-- Комментарий и документ — максимум информации в минимуме текста: почему,
-  контракт, предел, единицы, дата замера; код не пересказывать. Значение —
-  ссылкой на константу или функцию, а не копией числа; устаревший текст
-  правь или удаляй вместе с кодом.
-- Новая фоновая задача — с overlap guard и обработкой rejection у `void`
-  promise и callback таймера.
+- ESM (`"type": "module"`): TypeScript imports end in `.js`.
+- Never weaken the strict `tsconfig`; `any` only when provably necessary.
+- **English everywhere**: code, comments, logs, error messages, Discord, site,
+  API and image texts, tests, docs, commits and PRs (no assistant attribution:
+  `Co-Authored-By`, "Generated with"). User-facing English uses the official
+  War Thunder terms of `frontend/src/i18n/en.ts` (squadron, PSR, AB/RB/SB).
+  Cyrillic only as data: patterns matching Russian external content (the
+  forum.warthunder.ru season post), test fixtures exercising UTF-8, varint
+  lengths, nicknames or chat, the Russian UI dictionary
+  `frontend/src/i18n/ru.ts` (values), and old stored Russian text the code
+  must still recognize. Code text is still mostly Russian (ROADMAP, "English
+  everywhere"): when you change a function, translate its comments and strings
+  in the same change and check whether the code is still needed — review
+  happens on touch, not as a whole-repo sweep.
+- Comments and docs carry the most information in the fewest words: the why,
+  contract, limit, units, measurement date; never retell the code. Reference a
+  constant or function instead of copying its value; fix or delete stale text
+  in the same change.
+- A new background task has an overlap guard and handles rejections of `void`
+  promises and timer callbacks.
 
-## 10. Команды и проверка
+## 10. Commands and checks
 
-Офлайн-gates (полный список — `package.json`):
+Offline gates (full list — `package.json`):
 
 ```bash
-npm run build                 # dist/ по tsconfig.build.json, без тестов
-npm run verify                # typecheck, npm test, офлайн verify:*, корпус
+npm run build                 # dist/ from tsconfig.build.json, no tests
+npm run verify                # typecheck, npm test, offline verify:*, corpus
 npm run verify:workers:dist
 npm run build:web
 ```
 
-`verify` = `typecheck` (весь `src/` с тестами) + `npm test` (`*.test.ts`,
+`verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-по затронутой подсистеме их можно запускать отдельно. Baseline на
-**2026-10-02**: gates проходят, **297 pass, 0 fail**, корпус — 6 сценариев
-(включая 2.59). Изменилось число тестов — назови новое; любое новое падение —
-регрессия.
+each can run alone for the affected subsystem. Baseline on **2026-10-02**: all
+gates pass, **297 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+the test count changes, state the new one; any new failure is a regression.
 
-CI (`.github/workflows/ci.yml`): те же шаги на Linux (Node 26, как образ) и
-Windows (Node 24), `npm audit`, сборка Docker-образа. Меняя `FROM node:` в
-`Dockerfile`, поднимай Node в Linux-job. `--test-force-exit` в `npm test` не
-добавлять: на Windows с Node 24 он роняет тесты с fetch (libuv assert), а
-зависающих тестов нет. Dependabot — раз в неделю.
+CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the
+image) and Windows (Node 24), `npm audit`, a Docker image build. When changing
+`FROM node:` in the `Dockerfile`, bump the Linux job's Node too. Never add
+`--test-force-exit` to `npm test`: on Windows with Node 24 it crashes tests
+that use fetch (libuv assert), and no test hangs. Dependabot runs weekly.
 
-Только с явного разрешения (внешние или локальные эффекты):
+Only with explicit permission (external or local effects):
 
 - `npm run dev`, `npm start`, `npm run dev:bot`, `npm run start:bot`;
-- `npm run deploy:commands` — меняет slash-команды Discord;
-- `npm run backfill -- <days>` — сеть и запись в БД;
-- `npm run analyze -- <limit>` — платные вызовы API;
-- `npm run battle -- <id>` — может скачать реплей и построить media;
+- `npm run deploy:commands` — changes Discord slash commands;
+- `npm run backfill -- <days>` — network and database writes;
+- `npm run analyze -- <limit>` — paid API calls;
+- `npm run battle -- <id>` — may download a replay and build media;
 - `verify:player-stats-live`, `verify:statshark-live`, `verify:wt-transport`,
-  `benchmark:performance-soak` — внешние сервисы (soak очищает
-  `WT_BATTLES_CHANNEL`, но использует сеть и БД).
+  `benchmark:performance-soak` — external services (soak clears
+  `WT_BATTLES_CHANNEL` but still uses the network and the database).
 
-Разрешённый живой запуск: дождись Discord ready и web listen; проверь
-`/health`, `/api/stats` (статус каждого источника), `/api/items?limit=3`,
-`/api/voice`, логи парсеров и ingest, отсутствие повторной записи неизменных
-items. Строки `[ingest] бой …: убийств N, победитель …`: сплошные «убийств 0,
-победитель ?» — разбор сломан патчем игры (раздел 7). С заданным
-`WT_BATTLES_CHANNEL` очередь анонса уйдёт в настоящий канал — оцени её
-заранее. Работающего бота в Docker проверяй по логам и API (скилл `verify`).
-Windows: после watch-run проверь дочерние node и порт 3000 —
-`process.kill(pid, 'SIGINT')` завершает без обработчиков, graceful shutdown
-проверяется Ctrl+C или `docker compose stop`. `ExperimentalWarning: SQLite` —
-норма на Node ≤ 24, Node 26 его не печатает.
+An allowed live run: wait for Discord ready and web listen; check `/health`,
+`/api/stats` (status of every source), `/api/items?limit=3`, `/api/voice`,
+parser and ingest logs, and that unchanged items are not rewritten. Watch the
+per-battle lines `[ingest] бой …: убийств N, победитель …` (battle: kills N,
+winner): a run of `убийств 0, победитель ?` means a game patch broke parsing
+(section 7). With `WT_BATTLES_CHANNEL` set, the announcement queue goes to the
+real channel — estimate it first. Check the bot running in Docker through logs
+and the API (skill `verify`). Windows: after a watch run check child node
+processes and port 3000 — `process.kill(pid, 'SIGINT')` exits without
+handlers; graceful shutdown is tested with Ctrl+C or `docker compose stop`.
+`ExperimentalWarning: SQLite` is expected on Node ≤ 24; Node 26 does not print
+it.
 
-## 11. Лицензии
+## 11. Licenses
 
-AGPL-3.0-or-later (`LICENSE`, `package.json`). Часть `src/wrpl/*` — порт
-AGPL-3.0 `wrpl-inspector`; GMSync (`gm-sync.ts`) — по BSD-3-Clause
-`WrplReplayParser` и Dagor Engine; происхождение — в SPDX-заголовках. Тексты
-BSD-3-Clause лежат в `LICENSES/` и копируются в Docker-образ (условие
-лицензии). `/` и SPA показывают ссылку на исходный код (AGPL §13). Лицензии
-runtime-пакетов и шрифта SPA — `frontend/public/THIRD_PARTY_NOTICES.txt`: новая
-frontend-зависимость — дополни его.
+AGPL-3.0-or-later (`LICENSE`, `package.json`). Part of `src/wrpl/*` is a port
+of AGPL-3.0 `wrpl-inspector`; GMSync (`gm-sync.ts`) is based on BSD-3-Clause
+`WrplReplayParser` and Dagor Engine; origins are in the SPDX headers. The
+BSD-3-Clause texts live in `LICENSES/` and are copied into the Docker image (a
+license condition). `/` and the SPA link to the source code (AGPL §13).
+Licenses of runtime packages and the SPA font —
+`frontend/public/THIRD_PARTY_NOTICES.txt`: extend it for a new frontend
+dependency.
 
-## 12. Git и сдача
+## 12. Git and handoff
 
-- Добавляй только конкретные файлы (не `git add -A`/`git add .`). В коммит не
-  попадают `data/`, `.env`, `dist/`, `node_modules/`, `.idea/`, архивы,
-  локальные бэкапы, `*.tsbuildinfo`.
-- Перед коммитом: `git status --porcelain -uall`, `git diff --cached`; staged
-  diff — без секретов, БД, cookies, дампов и сгенерированного.
-- Сообщение коммита называет всё, что в нём есть: новый модуль или изменение
-  поведения не прячут за «change test timeout».
-- Сдача: gates зелёные, `git diff --check` чистый, diff — только по запросу;
-  назови живые проверки, которые сознательно не запускались.
+- Stage only specific files (never `git add -A`/`git add .`). Never commit
+  `data/`, `.env`, `dist/`, `node_modules/`, `.idea/`, archives, local backups,
+  `*.tsbuildinfo`.
+- Before a commit: `git status --porcelain -uall`, `git diff --cached`; the
+  staged diff holds no secrets, databases, cookies, dumps or generated files.
+- The commit message names everything in it: a new module or a behavior
+  change never hides behind "change test timeout".
+- Handoff: gates green, `git diff --check` clean, the diff only covers the
+  request; name the live checks you deliberately did not run.

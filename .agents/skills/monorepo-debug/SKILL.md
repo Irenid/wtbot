@@ -1,27 +1,27 @@
 ---
 name: monorepo-debug
-description: Диагностика и минимальное исправление ошибок в большом монорепозитории. Используй, когда пользователь сообщает, что команда, бот, функция, endpoint, обработчик или другая возможность не работает, падает или ведёт себя неправильно.
+description: Diagnose and minimally fix bugs in a large monorepo. Use when the user reports that a command, the bot, a function, an endpoint, a handler or another feature does not work, crashes or misbehaves.
 ---
 
-# Диагностика ошибки
+# Bug diagnosis
 
-Работай по шагам; код меняй только с шага 4.
+Work step by step; change code only from step 4 on.
 
-1. **Исследование.** Проверь состояние Git. Найди точку входа сбоя, связанные
-   файлы, вызывающие и вызываемые функции, обработчики, маршруты,
-   worker-задачи и тесты целевым поиском (`rg`, `git grep`); MCP-индекс кода —
-   только если он есть в окружении. Репозиторий целиком не читай.
-2. **Причина.** Прочитай найденные реализации и сравни ожидаемое поведение с
-   фактическим: конфигурация, регистрация обработчиков, порядок middleware,
-   условия, исключения, тесты. Назови причину и доказательства; пока причина
-   не подтверждена — продолжай диагностику.
-3. **План.** До правки перечисли затрагиваемые модули, файлы, функции, тесты и
-   возможные побочные эффекты.
-4. **Исправление.** Минимальная правка без постороннего рефакторинга и без
-   смены публичных интерфейсов без нужды; минимальный регрессионный тест.
-5. **Проверка.** Сначала связанные тесты, перед сдачей — `npm run verify`
-   (AGENTS.md, разделы 10 и 12); `git diff`; влияние на вызывающие функции,
-   маршруты и worker-задачи — поиском по имени изменённой функции. RTK — если
-   он есть в окружении.
-6. **Итог.** Причина, изменённые файлы, исправление, запущенные тесты и их
-   результат, оставшиеся риски.
+1. **Explore.** Check the Git state. Find the failure's entry point, related
+   files, callers and callees, handlers, routes, worker tasks and tests with
+   targeted search (`rg`, `git grep`); a code-index MCP only if the
+   environment has one. Do not read the whole repository.
+2. **Cause.** Read the implementations you found and compare expected and
+   actual behavior: configuration, handler registration, middleware order,
+   conditions, exceptions, tests. Name the cause and the evidence; until it is
+   confirmed, keep diagnosing.
+3. **Plan.** Before editing, list the affected modules, files, functions,
+   tests and possible side effects.
+4. **Fix.** A minimal change without unrelated refactoring or needless public
+   interface changes; a minimal regression test.
+5. **Check.** Related tests first, `npm run verify` before handing off
+   (AGENTS.md, sections 10 and 12); `git diff`; impact on callers, routes and
+   worker tasks — search by the changed function's name. RTK — if the
+   environment has it.
+6. **Report.** Cause, changed files, the fix, tests run and their results,
+   remaining risks.

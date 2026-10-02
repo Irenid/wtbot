@@ -1,185 +1,186 @@
-# Производительность wtbot
+# wtbot performance
 
-Замеры 2026-08-01 на Windows-десктопе; профиль под Docker на Linux (боевой
-запуск) ещё не снимался. Открытые задачи — [ROADMAP.md](../ROADMAP.md), база
-данных (октябрь 2026) — [database.md](database.md).
+Measured on 2026-08-01 on a Windows desktop; a profile under Docker on Linux
+(production) has not been taken yet. Open tasks — [ROADMAP.md](../ROADMAP.md),
+the database (October 2026) — [database.md](database.md).
 
-Итог: узкие места ingest того профиля измерены и исправлены — разбор WRPL
-быстрее на ~70%, точное резервирование памяти реплеев убирает искусственное
-ожидание бюджета, частые записи SQLite и поиск известных реплеев ушли с main
-thread. Сквозной предел — CDN и сеть. Точное резервирование остаётся opt-in:
-15-минутный живой прогон не доказал plateau RSS.
+Summary: the ingest bottlenecks of that profile were measured and fixed — WRPL
+parsing is ~70% faster, exact reservation of replay memory removes the
+artificial budget wait, frequent SQLite writes and the known-replay lookup left
+the main thread. The end-to-end limit is the CDN and the network. Exact
+reservation stays opt-in: a 15-minute live run did not prove an RSS plateau.
 
-## Цели
+## Goals
 
-1. Разбирать backlog с наибольшей устойчивой скоростью без роста HTTP 429.
-2. Не блокировать Discord, Fastify и voice tracker синхронной работой.
-3. Сохранять семантику retry, bounds-check WRPL, пределы worker и надёжность
-   SQLite.
-4. Оптимизацию по умолчанию — только с живым замером и выключателем для
-   отката.
+1. Work through the backlog at the highest sustainable rate without more
+   HTTP 429.
+2. Never block Discord, Fastify and the voice tracker with synchronous work.
+3. Keep retry semantics, WRPL bounds checks, worker limits and SQLite
+   durability.
+4. An optimization becomes the default only with a live measurement and a
+   switch for rollback.
 
-## Боевой профиль
+## Production profile
 
-| Параметр | Значение | Почему |
+| Parameter | Value | Why |
 | --- | ---: | --- |
-| `WT_WORKER_THREADS` | `5` | проверенный баланс бот/сайт/worker |
-| `WT_WORKER_BACKGROUND_RESERVE` | `1` | слот под интерактив |
-| `WT_INGEST_CONCURRENCY` | `8` | верхняя граница AIMD |
-| `WT_REPLAY_PROCESS_BUDGET_MB` | `384` | жёсткий предел буферов реплеев |
+| `WT_WORKER_THREADS` | `5` | proven bot/site/worker balance |
+| `WT_WORKER_BACKGROUND_RESERVE` | `1` | a slot for interactive work |
+| `WT_INGEST_CONCURRENCY` | `8` | AIMD upper bound |
+| `WT_REPLAY_PROCESS_BUDGET_MB` | `384` | hard limit for replay buffers |
 | `WT_INGEST_PIPELINE_ENABLED` | `true` | download → ready → parse |
-| `WT_INGEST_ADAPTIVE_ENABLED` | `true` | включён после живого A/B |
-| `WT_REPLAY_EXACT_RESERVATION_ENABLED` | `false` | до доказанного plateau RSS |
-| Параллельные части реплея (`DEFAULT_REPLAY_FETCH_CONCURRENCY`) | `2` | баланс CDN и RSS |
+| `WT_INGEST_ADAPTIVE_ENABLED` | `true` | on after a live A/B |
+| `WT_REPLAY_EXACT_RESERVATION_ENABLED` | `false` | until an RSS plateau is proven |
+| Parallel replay parts (`DEFAULT_REPLAY_FETCH_CONCURRENCY`) | `2` | CDN and RSS balance |
 
-## Сделано
+## Done
 
-### Разбор WRPL
+### WRPL parsing
 
-- `BitReader` читает значения без временного `Buffer` на каждый бит или байт.
-- GMSync: переиспользуемый буфер RLE, XOR-патч точного размера, упакованная
-  запись RLE.
-- Диспетчер MPI и прореживание траекторий не создают лишних объектов.
-- Профиль разбора: header/results, ECS, events, normalize, transform со
-  сжатием блоба (в логе — `transform+gzip`, хотя с октября 2026 блоб —
-  колоночный и zstd-19).
-- Bounds-check, пределы распаковки и история delta сохранены.
+- `BitReader` reads values without a temporary `Buffer` per bit or byte.
+- GMSync: a reusable RLE buffer, an exact-size XOR patch, packed RLE writes.
+- The MPI dispatcher and trajectory thinning create no extra objects.
+- Parse profile: header/results, ECS, events, normalize, transform with blob
+  compression (the log still says `transform+gzip`, though since October 2026
+  the blob is columnar and zstd-19).
+- Bounds checks, decompression limits and delta history are kept.
 
-Fixture `large-mixed-air` (11,81 МиБ), 1 worker, 10 тёплых прогонов:
+Fixture `large-mixed-air` (11.81 MiB), 1 worker, 10 warm runs:
 
-| Метрика | До | После | Изменение |
+| Metric | Before | After | Change |
 | --- | ---: | ---: | ---: |
-| Parse p50 | 1246,4 мс | 375,8 мс | −69,9% |
-| Parse p95 | 1321,1 мс | 406,7 мс | −69,2% |
+| Parse p50 | 1246.4 ms | 375.8 ms | −69.9% |
+| Parse p95 | 1321.1 ms | 406.7 ms | −69.2% |
 
-Крупнейшая фаза — по-прежнему декодирование пакетов, но вживую CPU worker не
-насыщены: переписывать её сейчас нет сквозного смысла.
+Packet decoding is still the largest phase, but live CPU workers are not
+saturated: rewriting it now brings nothing end to end.
 
-### Память реплеев и приоритет
+### Replay memory and priority
 
-- Тело с доверенным `Content-Length` (identity) пишется сразу в итоговый буфер.
-- Резерв под сеть — 1× `Content-Length` вместо 2×.
-- Сжатые тела и тела без длины — прежний консервативный bounded fallback.
-- Интерактивный запрос на лету повышает приоритет уже стоящей в очереди общей
-  загрузки.
-- Бюджет байт реплеев освобождается после разбора, ошибки и отмены.
+- A body with a trusted `Content-Length` (identity) goes straight into the
+  final buffer.
+- The network reservation is 1× `Content-Length` instead of 2×.
+- Compressed bodies and bodies without a length keep the conservative bounded
+  fallback.
+- An interactive request raises the priority of an already queued shared
+  download on the fly.
+- The replay byte budget is released after parsing, an error and a cancel.
 
-### SQLite и main thread
+### SQLite and the main thread
 
-CPU-профили нашли три блокирующие операции:
+CPU profiles found three blocking operations:
 
-| Операция | CPU main thread до | Решение |
+| Operation | Main-thread CPU before | Fix |
 | --- | ---: | --- |
-| `recordParseResult()` | 9,402 с за 195 с | запись в worker |
-| `updatePlayerStatBoardPublication()` | 3,823 с за 195 с | запись в worker |
-| повторные `hasItem()` | 1,114 с за 130 с | кэш известных ID реплеев при старте |
+| `recordParseResult()` | 9.402 s per 195 s | write in a worker |
+| `updatePlayerStatBoardPublication()` | 3.823 s per 195 s | write in a worker |
+| repeated `hasItem()` | 1.114 s per 130 s | a cache of known replay IDs at startup |
 
-Кэш грузится один раз из покрывающего индекса до запуска `wt-replays`:
-попадание — без SQLite, промах подтверждается точечным чтением (параллельный
-backfill остаётся корректным). p95 максимума окна event loop: ~1,8–2,1 с до
-исправлений → 97 мс после переноса записи результатов разбора (и одна пауза
-на старте). Итоговый профиль после переноса записи табло и кэша ID —
-2 минуты, 43 коммита, один checkpoint в worker на 3018 мс, максимум окна
-133 мс: долгий checkpoint больше не замораживает Discord и Fastify через
-совпавшую синхронную запись или чтение.
+The cache loads once from a covering index before `wt-replays` starts: a hit
+skips SQLite, a miss is confirmed by a point read (parallel backfill stays
+correct). p95 of the event-loop window maximum: ~1.8–2.1 s before the fixes →
+97 ms after moving the parse-result write (plus one pause at startup). The
+final profile after moving the player board write and the ID cache — 2
+minutes, 43 commits, one 3018 ms checkpoint in a worker, window maximum
+133 ms: a long checkpoint no longer freezes Discord and Fastify through a
+coinciding synchronous write or read.
 
-## Живые замеры
+## Live measurements
 
-Все прогоны: 5 worker, резерв 1, ingest до 8, бюджет реплеев 384 МиБ, web на
-loopback, `WT_BATTLES_CHANNEL` принудительно пуст.
+All runs: 5 workers, reserve 1, ingest up to 8, replay budget 384 MiB, web on
+loopback, `WT_BATTLES_CHANNEL` forced empty.
 
-### Точное резервирование: A/B
+### Exact reservation: A/B
 
-| Режим | Длительность | Коммитов | Боёв/мин | HTTP 429 | Ожидание бюджета, среднее | RSS p95 |
+| Mode | Duration | Commits | Battles/min | HTTP 429 | Budget wait, mean | RSS p95 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AIMD, exact off | 5 мин | 64 | 12,8 | 1,34% | 12,8 с | 624,5 МиБ |
-| AIMD, exact on | 5 мин | 72 | 14,4 | 1,78% | 0,1 мс | 631,0 МиБ |
+| AIMD, exact off | 5 min | 64 | 12.8 | 1.34% | 12.8 s | 624.5 MiB |
+| AIMD, exact on | 5 min | 72 | 14.4 | 1.78% | 0.1 ms | 631.0 MiB |
 
-Exact on — +12,5% к скорости и нет искусственного ожидания бюджета; рост RSS
-p95 в коротком A/B незначим, но для смены default этого мало.
+Exact on — +12.5% throughput and no artificial budget wait; the RSS p95 rise in
+a short A/B is insignificant, but not enough to change the default.
 
-### Exact on, 15 минут
+### Exact on, 15 minutes
 
-196 коммитов, 13,07 боя/мин, backlog 1165 → 969; HTTP 429 — 23 из 1733
-попыток (1,33%); ожидание бюджета ~0, пик бюджета ~107 МиБ; разбор в среднем
-461 мс, транзакция SQLite — 167 мс; API p95 ~39 мс; RSS p95 ~758 МиБ, максимум
-~767 МиБ, тёплый разброс ~271 МиБ — plateau не достигнут; graceful shutdown
-2,14 с, порт 3000 освобождён. Вывод: exact on лучше по допуску и скорости, но
-выключен до объяснения RSS и длинного контрольного прогона exact off.
+196 commits, 13.07 battles/min, backlog 1165 → 969; HTTP 429 — 23 of 1733
+attempts (1.33%); budget wait ~0, budget peak ~107 MiB; parse mean 461 ms,
+SQLite transaction 167 ms; API p95 ~39 ms; RSS p95 ~758 MiB, max ~767 MiB,
+warm range ~271 MiB — no plateau; graceful shutdown 2.14 s, port 3000 freed.
+Conclusion: exact on admits and runs better, but stays off until RSS is
+explained and a long exact-off control run is done.
 
-## Узкие места
+## Bottlenecks
 
-1. **CDN и сеть.** При 429 AIMD стабильно снижает фактическую concurrency до
-   2; очереди ready и worker почти пусты, CPU не насыщен.
-2. **Разложение RSS.** RSS процесса смешивает изоляты worker, буферы реплеев,
-   mmap и page cache SQLite, native-выделения: наклон нельзя считать утечкой
-   без разложения по компонентам.
-3. **Декодирование пакетов WRPL** — крупнейшая фаза CPU офлайн, но не предел
-   вживую.
-4. **Задержка доставки в Discord** — прогоны намеренно ничего не публиковали,
-   так что discovery → preliminary → final edit вживую не измерены.
+1. **CDN and network.** On 429 AIMD reliably drops the actual concurrency to
+   2; the ready and worker queues are nearly empty, CPU is not saturated.
+2. **RSS breakdown.** Process RSS mixes worker isolates, replay buffers, SQLite
+   mmap and page cache, native allocations: a slope is not a leak until it is
+   broken down by component.
+3. **WRPL packet decoding** — the largest offline CPU phase, but not the live
+   limit.
+4. **Discord delivery latency** — the runs deliberately published nothing, so
+   discovery → preliminary → final edit is not measured live.
 
-Больше не узкие места: ожидание worst-case бюджета реплеев,
-`recordParseResult`, запись публикации табло, повторный поиск известных
-реплеев, очереди ready и worker.
+No longer bottlenecks: the worst-case replay budget wait, `recordParseResult`,
+the player board publication write, repeated known-replay lookups, the ready
+and worker queues.
 
-## Как закрыть открытые пункты ROADMAP
+## How to close the ROADMAP items
 
-**P0 — plateau RSS.** Разложить память: удерживаемые байты реплеев, RSS и
-native-память worker, SQLite и page cache. Сопоставимый 15-минутный прогон
-exact off на непустом backlog. Сравнивать не только наклон, но и тёплый
-разброс, external/ArrayBuffer, пики worker и RSS после graceful shutdown.
-Exact on по умолчанию — только при выигрыше скорости ≥ 10%, 429 < 2% и
-доказанном plateau или объяснённом ограниченном RSS.
+**P0 — RSS plateau.** Break memory down: retained replay bytes, worker RSS and
+native memory, SQLite and page cache. A comparable 15-minute exact-off run on a
+non-empty backlog. Compare not only the slope but also the warm range,
+external/ArrayBuffer, worker peaks and RSS after graceful shutdown. Exact on by
+default only with ≥ 10% more throughput, 429 < 2% and a proven plateau or an
+explained bounded RSS.
 
-**P1 — задержка Discord.** Метки времени discovery → preliminary send →
-commit → final edit; короткий прогон только в выделенном тестовом канале.
-Gate: preliminary p95 < 5 с, final edit p95 < 5 с, ни одного дубля после
-перезапуска.
+**P1 — Discord latency.** Timestamps discovery → preliminary send → commit →
+final edit; a short run only in a dedicated test channel. Gate: preliminary p95
+< 5 s, final edit p95 < 5 s, zero duplicates after a restart.
 
-**P2 — разбор, только при нехватке CPU.** GMSync и декодирование пакетов —
-если p95 очереди разбора вживую > 100 мс или CPU worker устойчиво насыщены;
-Rust/napi-rs — только при ≥ 15% сквозного выигрыша или ≥ 2× ускорения
-оставшейся горячей фазы.
+**P2 — parsing, only under CPU pressure.** GMSync and packet decoding — if the
+live parse queue p95 exceeds 100 ms or CPU workers stay saturated;
+Rust/napi-rs — only with ≥ 15% end-to-end gain or ≥ 2× speedup of the
+remaining hot phase.
 
-## Не делать без новых замеров
+## Not without new measurements
 
-- поднимать число worker выше 5 и параллельные части реплея до 3;
-- включать exact reservation по умолчанию, снимать резерв под интерактив;
-- ослаблять retry, bounds-check, пределы вывода и таймауты;
-- переходить на Postgres, переписывать на Rust или GPU без доказанного gate.
+- more than 5 workers, 3 parallel replay parts;
+- exact reservation by default, removing the interactive reserve;
+- weaker retries, bounds checks, output limits or timeouts;
+- a move to Postgres, a Rust or GPU rewrite without a proven gate.
 
 ## Gates
 
-Офлайн — `npm run verify`, `npm run build`, `npm run verify:workers:dist`
-(baseline — AGENTS.md, раздел 10). Живой прогон — только с пустым
-`WT_BATTLES_CHANNEL` и web на loopback.
+Offline — `npm run verify`, `npm run build`, `npm run verify:workers:dist`
+(baseline — AGENTS.md, section 10). A live run only with an empty
+`WT_BATTLES_CHANNEL` and web on loopback.
 
-| Метрика | Gate |
+| Metric | Gate |
 | --- | ---: |
-| Скорость при backlog | ≥ 10 боёв/мин |
-| Доля HTTP 429 | < 2% попыток |
-| p95 очередей ready и worker | < 100 мс |
-| API p95 после прогрева | < 75 мс |
-| p95 максимума окна event loop | < 250 мс |
-| Паузы watchdog после прогрева | 0 событий > 500 мс |
-| Graceful shutdown | < 10 с, удержанный бюджет — 0 |
-| Exact on по умолчанию | только после gate по RSS |
+| Throughput with a backlog | ≥ 10 battles/min |
+| HTTP 429 share | < 2% of attempts |
+| Ready and worker queue p95 | < 100 ms |
+| API p95 after warmup | < 75 ms |
+| Event-loop window maximum p95 | < 250 ms |
+| Watchdog pauses after warmup | 0 events > 500 ms |
+| Graceful shutdown | < 10 s, zero retained budget |
+| Exact on by default | only after the RSS gate |
 
-## Откат
+## Rollback
 
-| Проблема | Действие |
+| Problem | Action |
 | --- | --- |
-| Регресс pipeline | `WT_INGEST_PIPELINE_ENABLED=false` |
-| Регресс AIMD | `WT_INGEST_ADAPTIVE_ENABLED=false` |
-| Рост RSS | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` |
-| Давление на worker | уменьшить `WT_INGEST_CONCURRENCY` |
-| Давление на CDN | оставить общий лимитер, AIMD и `Retry-After` |
-| Риск засыпать Discord | очистить `WT_BATTLES_CHANNEL` |
+| Pipeline regression | `WT_INGEST_PIPELINE_ENABLED=false` |
+| AIMD regression | `WT_INGEST_ADAPTIVE_ENABLED=false` |
+| RSS growth | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` |
+| Worker pressure | lower `WT_INGEST_CONCURRENCY` |
+| CDN pressure | keep the shared limiter, AIMD and `Retry-After` |
+| Risk of flooding Discord | clear `WT_BATTLES_CHANNEL` |
 
-## Артефакты 2026-08-01
+## Artifacts of 2026-08-01
 
-Локально, вне Git, в `data/benchmarks/`:
+Local, outside Git, in `data/benchmarks/`:
 `performance-p2-parser-optimized-20260801.json`,
 `performance-p2-replay-preallocated-20260801.json`,
 `performance-live-audit-{exact-off,exact-on,exact-on-15m,parser-db-worker,final-cpuprof}-20260801.*`,

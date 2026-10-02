@@ -1,340 +1,354 @@
-# База данных: анализ и оптимизация (октябрь 2026)
+# Database: analysis and optimization (October 2026)
 
-Два прохода оптимизации — 2026-10-01 (раскладка таблиц, индексы, настройки;
-миграция v17) и 2026-10-02 (формат блобов событий, обслуживание) — и аудит
-ошибок в данных (миграция v18). Замеры — на постраничных копиях боевой базы
-(`.backup`) на домашнем сервере: NVMe за LUKS, 31 ГиБ RAM, подключение как у
-бота. «Холодный» — после `posix_fadvise(DONTNEED)` на файл базы (страниц нет
-в кэше ОС), «тёплый» — медиана пяти повторов.
+Two optimization passes — 2026-10-01 (table layout, indexes, settings;
+migration v17) and 2026-10-02 (events blob format, maintenance) — and an audit
+of data errors (migration v18). Measured on page-level copies of the
+production database (`.backup`) on the home server: NVMe behind LUKS, 31 GiB
+RAM, connection set up as the bot's. "Cold" — after `posix_fadvise(DONTNEED)`
+on the database file (no pages in the OS cache), "warm" — the median of five
+runs.
 
-## Итог
+## Summary
 
-- `events_blob` вынесен из `battles` в `battle_events`: `battles` — 9 МиБ
-  вместо 5,5 ГиБ, `WITHOUT ROWID` по `session_id`; полный проход по боям на
-  холодном кэше — 10 мс вместо 2,4 с.
-- Траектории (99% блоба) хранятся колонками разностей: 137 → 20 КиБ на бой
-  (−85%), сжатие в worker 230 → 47 мс, чтение 2,7 → 1,1 мс. Файл боевой базы
-  и каждый бэкап — 1 357 МиБ вместо 6 146; рост — ~57 МиБ в сутки вместо ~147
-  у zstd-JSON при ~1 800 боях в сутки.
-- Неиспользуемые и дублирующие индексы удалены (−76 МиБ, меньше работы на
-  каждую запись боя); последние снимки ПКР кланов — один проход по
-  покрывающему индексу: 477 → 37 мс холодный, 51 → 23 мс тёплый.
-- У планировщика есть статистика (`ANALYZE`), её обновляет `PRAGMA optimize`.
-- Подключения: WAL с `synchronous = NORMAL`, `temp_store = MEMORY`,
-  `journal_size_limit`, mmap 1 ГиБ. Место возвращает
-  `auto_vacuum = INCREMENTAL` из worker-задач короткими транзакциями: без пауз
-  main thread и без многоминутного VACUUM при перезапуске.
-- PostgreSQL не нужен: узкие места были в раскладке и формате данных, а не в
-  движке («Перейти ли на PostgreSQL»).
+- `events_blob` moved from `battles` to `battle_events`: `battles` is 9 MiB
+  instead of 5.5 GiB, `WITHOUT ROWID` by `session_id`; a full pass over the
+  battles on a cold cache takes 10 ms instead of 2.4 s.
+- Trajectories (99% of the blob) are stored as delta columns: 137 → 20 KiB per
+  battle (−85%), compression in a worker 230 → 47 ms, reading 2.7 → 1.1 ms. The
+  production database file and every backup are 1,357 MiB instead of 6,146;
+  growth is ~57 MiB a day instead of ~147 with zstd-JSON at ~1,800 battles a
+  day.
+- Unused and duplicate indexes are gone (−76 MiB, less work on every battle
+  write); the latest clan PSR snapshots are one pass over a covering index:
+  477 → 37 ms cold, 51 → 23 ms warm.
+- The planner has statistics (`ANALYZE`), kept fresh by `PRAGMA optimize`.
+- Connections: WAL with `synchronous = NORMAL`, `temp_store = MEMORY`,
+  `journal_size_limit`, mmap 1 GiB. Space is returned by
+  `auto_vacuum = INCREMENTAL` from worker tasks in short transactions: no
+  main-thread pauses and no multi-minute VACUUM on restart.
+- PostgreSQL is not needed: the bottlenecks were the data layout and format,
+  not the engine ("Should we move to PostgreSQL").
 
-## Первый проход (1 октября): раскладка, индексы, настройки
+## First pass (1 October): layout, indexes, settings
 
-Копия: 6,2 ГиБ, 41 385 боёв, `user_version` 15; подключение как у бота тогда
-(mmap 256 МиБ, cache 64 МиБ). Один файл SQLite в WAL, синхронный
-`node:sqlite` в основном потоке (Discord, Fastify, планировщик) и свои
-подключения в `worker_threads` (запись разобранных боёв, тяжёлые чтения
-дашборда, прогрев).
+Copy: 6.2 GiB, 41,385 battles, `user_version` 15; connection as the bot had it
+then (mmap 256 MiB, cache 64 MiB). One SQLite file in WAL, synchronous
+`node:sqlite` on the main thread (Discord, Fastify, scheduler) and separate
+connections in `worker_threads` (writing parsed battles, heavy dashboard
+reads, warmup).
 
-| Объект | Размер | Комментарий |
+| Object | Size | Comment |
 |---|---:|---|
-| `battles` | 5 653 МиБ | из них 1 419 322 overflow-страницы — блобы событий |
-| `battle_players` | 138 МиБ | + 170 МиБ восьми индексов (больше самой таблицы) |
-| `items` | 86 МиБ | JSON записей Replay API, 41,5 тыс. строк по ~1,5 КиБ |
-| `battle_kills` | 63 МиБ | + 19 МиБ индекса |
-| `clan_rating_snapshots` | 9 МиБ | + 33 МиБ шести индексов |
-| остальное | ~25 МиБ | игроки, кланы, сезоны, чат, состояние |
+| `battles` | 5,653 MiB | of which 1,419,322 overflow pages — events blobs |
+| `battle_players` | 138 MiB | + 170 MiB of eight indexes (more than the table) |
+| `items` | 86 MiB | Replay API item JSON, 41.5k rows of ~1.5 KiB |
+| `battle_kills` | 63 MiB | + 19 MiB of index |
+| `clan_rating_snapshots` | 9 MiB | + 33 MiB of six indexes |
+| the rest | ~25 MiB | players, clans, seasons, chat, state |
 
-### Что нашёл анализ
+### What the analysis found
 
-1. **Блоб событий в строке боя.** Средний `events_blob` — 142 КиБ (максимум
-   1,5 МиБ); на листовой странице остаётся только начало строки, поэтому 41
-   тыс. строк занимали 27,8 тыс. листовых страниц (~1,5 строки на страницу)
-   вперемешку с 1,4 млн overflow-страниц. Запрос по многим строкам `battles`
-   читал гигабайты: полный проход — 2,4 с на холодном кэше. Прогрев при старте
-   и индекс `idx_battles_metrics` были обходными путями вокруг этого.
-2. **Колонки после блоба.** `ingested_at`, `mission_settings`,
-   `air_unit_count`, `chat_count` добавлялись `ALTER TABLE` и лежали *после*
-   `events_blob`: чтение любой шло по overflow-цепочке (флаги чата и авиации
-   200 боёв — 93 мс холодный). В bootstrap порядок другой, поэтому тесты на
-   `:memory:` этого не видели.
-3. **Планировщик без статистики:** `ANALYZE` не запускался ни разу (нет
-   `sqlite_stat1`), индексы выбирались эвристикой.
-4. **Индексы.** По `EXPLAIN QUERY PLAN` всех 195 запросов кода `idx_bp_nick`
-   (15 МиБ) и `idx_bp_nick_nocase` (22 МиБ) не нужны ни одному (поиск идёт по
-   `nick_search`), `idx_bp_clan` (14 МиБ) — префикс `idx_bp_clan_session`,
-   `idx_snapshots_clan_nick` и `idx_snapshots_clan_cover` почти совпадают
-   (второй — с рейтингом, но планировщик брал первый). Каждый лишний индекс
-   `battle_players` — ~16 записей в B-дерево на каждый бой.
-5. **«Последние снимки» кланов.** `clanLatestMembers`, `clanBaselineSumsAll`,
-   `clanRatingBaseline` искали `MAX(id)` по (клан, ник) и соединялись обратно
-   по `id` — 28,6 тыс. обращений к таблице на каждую перестройку снимка
-   кланов (раз в минуту при открытом сайте, на main thread).
-6. **Настройки подключения.** `synchronous` не задан — в WAL это FULL, fsync
-   на каждый коммит; временные B-деревья сортировок — в файле; mmap 256 МиБ
-   меньше рабочего набора.
-7. **Сжатие блобов.** gzip — ×6; на 150 боях zstd-3 −13%, zstd-9 −25%,
-   zstd-19 −47% при распаковке 0,4 мс против 0,8 мс у gzip.
-8. **Внешние ключи не работают:** `REFERENCES … ON DELETE CASCADE` объявлены,
-   но `PRAGMA foreign_keys` не включается. Сирот нет: код удаляет дочерние
-   строки сам, до родителя.
-9. **Объекты, о которых код не знает:** `clan_poll_log` (47 строк) и снимки
-   источника `thunderinsights` (4 строки) — удалены в v18.
+1. **Events blob inside the battle row.** The average `events_blob` was
+   142 KiB (max 1.5 MiB); only the start of the row fits on a leaf page, so
+   41k rows took 27.8k leaf pages (~1.5 rows per page) mixed with 1.4M
+   overflow pages. A query over many `battles` rows read gigabytes: a full
+   pass took 2.4 s on a cold cache. The startup warmup and the
+   `idx_battles_metrics` index were workarounds for this.
+2. **Columns after the blob.** `ingested_at`, `mission_settings`,
+   `air_unit_count`, `chat_count` were added by `ALTER TABLE` and lay *after*
+   `events_blob`: reading any of them walked the overflow chain (chat and air
+   flags of 200 battles — 93 ms cold). The bootstrap orders columns
+   differently, so `:memory:` tests never saw it.
+3. **Planner without statistics:** `ANALYZE` had never run (no
+   `sqlite_stat1`), indexes were picked heuristically.
+4. **Indexes.** By `EXPLAIN QUERY PLAN` of all 195 code queries,
+   `idx_bp_nick` (15 MiB) and `idx_bp_nick_nocase` (22 MiB) served none (search
+   uses `nick_search`), `idx_bp_clan` (14 MiB) was a prefix of
+   `idx_bp_clan_session`, and `idx_snapshots_clan_nick` and
+   `idx_snapshots_clan_cover` nearly matched (the second had the rating, but the
+   planner took the first). Every extra `battle_players` index is ~16 B-tree
+   entries per battle.
+5. **"Latest snapshots" of clans.** `clanLatestMembers`, `clanBaselineSumsAll`,
+   `clanRatingBaseline` looked up `MAX(id)` per (clan, nick) and joined back by
+   `id` — 28.6k table lookups per rebuild of the clan snapshot (once a minute
+   while the site is open, on the main thread).
+6. **Connection settings.** `synchronous` was unset — FULL in WAL, an fsync on
+   every commit; sort B-trees went to a file; mmap 256 MiB was below the
+   working set.
+7. **Blob compression.** gzip gives ×6; on 150 battles zstd-3 −13%, zstd-9
+   −25%, zstd-19 −47% with 0.4 ms decompression versus 0.8 ms for gzip.
+8. **Foreign keys do nothing:** `REFERENCES … ON DELETE CASCADE` is declared
+   but `PRAGMA foreign_keys` is never enabled. No orphans: the code deletes
+   child rows itself, before the parent.
+9. **Objects the code does not know:** `clan_poll_log` (47 rows) and snapshots
+   of the `thunderinsights` source (4 rows) — dropped in v18.
 
-### Что сделано (v17)
+### What was done (v17)
 
-**Миграция** (одна транзакция, затем VACUUM на старте): таблица
-`battle_events (session_id PRIMARY KEY, events_blob)` с перенесёнными
-блобами; `battles` пересоздана без блоба, `WITHOUT ROWID` по `session_id`, с
-прежними индексами (`start_time`, `session_hex`, метрики дашборда; пустой
-`session_hex` восстанавливается, как в старой миграции); удалены
-`idx_bp_clan`, `idx_bp_nick`, `idx_bp_nick_nocase`, `idx_snapshots_clan_nick`,
-`idx_snapshots_clan_cover`, добавлен покрывающий
+**Migration** (one transaction, then VACUUM at startup): table
+`battle_events (session_id PRIMARY KEY, events_blob)` with the blobs moved in;
+`battles` rebuilt without the blob, `WITHOUT ROWID` by `session_id`, with the
+previous indexes (`start_time`, `session_hex`, dashboard metrics; an empty
+`session_hex` is restored as in the old migration); dropped `idx_bp_clan`,
+`idx_bp_nick`, `idx_bp_nick_nocase`, `idx_snapshots_clan_nick`,
+`idx_snapshots_clan_cover`, added the covering
 `idx_snapshots_clan_latest (clan_tag, nick, id DESC, rating, seen_at)`;
-`ANALYZE` с `analysis_limit = 1000`.
+`ANALYZE` with `analysis_limit = 1000`.
 
-**Код:** строка в `battles` и блоб в `battle_events` — одной транзакцией;
-блоб — zstd-19 вместо gzip (эталоны корпуса реплеев — SHA-256 JSON событий,
-от кодека не зависят); «последний снимок» — один проход по покрывающему
-индексу (при единственном `MAX()` SQLite берёт «голые» колонки из строки с
-максимумом); `initDb` — `synchronous = NORMAL`, mmap 1 ГиБ,
-`journal_size_limit` 64 МиБ, `analysis_limit`, VACUUM после миграций при
-большом свободном месте и затем `temp_store = MEMORY`.
+**Code:** the `battles` row and the `battle_events` blob in one transaction;
+the blob is zstd-19 instead of gzip (the replay corpus references are SHA-256
+of the events JSON, independent of the codec); the "latest snapshot" is one
+pass over the covering index (with a single `MAX()` SQLite takes the bare
+columns from the row holding the maximum); `initDb` — `synchronous = NORMAL`,
+mmap 1 GiB, `journal_size_limit` 64 MiB, `analysis_limit`, VACUUM after
+migrations when much space is free, then `temp_store = MEMORY`.
 
-### Замеры до и после
+### Before and after
 
-| Запрос | Холодный кэш, мс | Тёплый, мс |
+| Query | Cold cache, ms | Warm, ms |
 |---|---:|---:|
-| Полный проход `battles` (GROUP BY режима) | 2 428 → **10,5** | 27,8 → 4,2 |
-| Флаги чата и авиации 200 последних боёв | 93,0 → **1,4** | 0,73 → 0,10 |
-| ПКР кланов: последние снимки (28,6 тыс. строк) | 476,5 → **37,4** | 50,8 → 22,6 |
-| Бои клана за 30 дней | 90,9 → 37,5 | 3,2 → 1,5 |
-| Бои по дням за 90 дней | 28,7 → 16,9 | 5,1 → 5,0 |
-| Счётчики дашборда | 21,8 → 3,0 | 3,0 → 2,5 |
-| Карточка боя (`mission_settings`) | 1,1 → 0,4 | 0,01 → 0,00 |
-| Игроки боя | 1,4 → 0,9 | 0,04 → 0,03 |
-| Бои игрока, активность, аналитика (до 500 боёв) | ~120 → ~120 | 1,8–6,8 → 1,2–4,6 |
+| Full pass over `battles` (GROUP BY mode) | 2,428 → **10.5** | 27.8 → 4.2 |
+| Chat and air flags of the latest 200 battles | 93.0 → **1.4** | 0.73 → 0.10 |
+| Clan PSR: latest snapshots (28.6k rows) | 476.5 → **37.4** | 50.8 → 22.6 |
+| A clan's battles over 30 days | 90.9 → 37.5 | 3.2 → 1.5 |
+| Battles per day over 90 days | 28.7 → 16.9 | 5.1 → 5.0 |
+| Dashboard counters | 21.8 → 3.0 | 3.0 → 2.5 |
+| Battle card (`mission_settings`) | 1.1 → 0.4 | 0.01 → 0.00 |
+| Battle players | 1.4 → 0.9 | 0.04 → 0.03 |
+| A player's battles, activity, insights (up to 500 battles) | ~120 → ~120 | 1.8–6.8 → 1.2–4.6 |
 
-| Объект | До | После v17 |
+| Object | Before | After v17 |
 |---|---:|---:|
-| `battles` | 5 653 МиБ | 9,3 МиБ |
-| индексы `battle_players` | 170 МиБ | 103 МиБ |
-| индексы снимков ПКР | 33 МиБ | ~24 МиБ |
+| `battles` | 5,653 MiB | 9.3 MiB |
+| `battle_players` indexes | 170 MiB | 103 MiB |
+| PSR snapshot indexes | 33 MiB | ~24 MiB |
 
-Запросы по игроку на холодном кэше остались ~120 мс: их цена — случайные
-чтения строк `battle_players` (по одной на бой), а не блобы; тёплые — 1–5 мс.
-После `ANALYZE` поменялись планы 35 из 192 запросов, регрессий на больших
-таблицах нет. Выкатка v17 на боевой базе — 135 с простоя (VACUUM 81 с, файл
-11 910 → 6 146 МиБ).
+Player queries stayed ~120 ms on a cold cache: their cost is random reads of
+`battle_players` rows (one per battle), not blobs; warm — 1–5 ms. `ANALYZE`
+changed the plans of 35 of 192 queries, with no regressions on large tables.
+Deploying v17 to production took 135 s of downtime (VACUUM 81 s, file
+11,910 → 6,146 MiB).
 
-## Второй проход (2 октября): после v17
+## Second pass (2 October): after v17
 
-Копия: 6 097 МиБ, 41 540 боёв, `user_version` 17, блобы почти все ещё gzip.
-Кроме размеров (`dbstat`) и планов всех 198 запросов — время main thread
-каждого маршрута сайта через `app.inject` (вместе с JS), сборка снимка
-кланов, checkpoint WAL, `quick_check`, `foreign_key_check` и сверка схемы
-боевой базы с чистым bootstrap.
+Copy: 6,097 MiB, 41,540 battles, `user_version` 17, blobs still almost all
+gzip. Besides sizes (`dbstat`) and the plans of all 198 queries: main-thread
+time of every site route via `app.inject` (JS included), the clan snapshot
+build, WAL checkpoints, `quick_check`, `foreign_key_check` and a comparison of
+the production schema with a clean bootstrap.
 
-### Нагрузка втрое выше прежней оценки
+### Load is three times the earlier estimate
 
-С 24 сентября бот собирает бои всех кланов: 1 400–2 470 в сутки, в среднем
-~1 840 за восемь полных дней (прежние ~490 — среднее за 30 дней с
-августовским простоем). Рост при ~1 840 боях в сутки:
+Since 24 September the bot collects every clan's battles: 1,400–2,470 a day,
+~1,840 on average over eight full days (the earlier ~490 was a 30-day average
+including the August downtime). Growth at ~1,840 battles a day:
 
-| | На бой | В сутки | В год |
+| | Per battle | Per day | Per year |
 |---|---:|---:|---:|
-| блоб gzip (до 2 октября) | 137 КиБ | 246 МиБ | ~88 ГиБ |
-| блоб zstd-JSON (v17) | 70 КиБ | 126 МиБ | ~45 ГиБ |
-| блоб колоночный (сейчас) | 20 КиБ | 37 МиБ | ~13 ГиБ |
-| строки и индексы | ~11,6 КиБ | ~21 МиБ | ~7 ГиБ |
+| gzip blob (before 2 October) | 137 KiB | 246 MiB | ~88 GiB |
+| zstd-JSON blob (v17) | 70 KiB | 126 MiB | ~45 GiB |
+| columnar blob (now) | 20 KiB | 37 MiB | ~13 GiB |
+| rows and indexes | ~11.6 KiB | ~21 MiB | ~7 GiB |
 
-Из строк больше всех занимают `battle_players` (~5,7 КиБ на бой с пятью
-индексами), `items` (~2,1 КиБ; 78% записи Replay API — список игроков) и
-`battle_kills` (~1,9 КиБ).
+Among the rows, `battle_players` takes the most (~5.7 KiB per battle with
+five indexes), then `items` (~2.1 KiB; 78% of a Replay API item is the player
+list) and `battle_kills` (~1.9 KiB).
 
-### Слабые места
+### Weak spots
 
-1. **Блобы событий — 92% файла (5 599 МиБ).** 99% JSON событий — траектории:
-   точки `{"t":…,"x":…,"y":…,"z":…}` текстом, у построек одна точка десятки
-   раз подряд; zstd поверх такого текста упирается в ~70 КиБ на бой.
-2. **VACUUM на старте.** Перезапуск при свободных ≥ 20% файла и ≥ 256 МиБ
-   держал бы бота не в сети минуты (выкатка v17 — 135 с), а перевод форматов
-   освобождает гигабайты — перезапуск посреди него повторил бы это.
-3. **Обслуживание на main thread:** возврат 12,5 тыс. страниц — 157 мс
-   блокировки event loop, порции раз в 10 минут, пока идёт перевод.
-4. **`PRAGMA optimize` на свежем подключении ничего не делает:** без флага
-   `0x10000` он смотрит только таблицы из запросов этого подключения
-   (проверено на SQLite 3.53 режимом отладки `0x10003`).
-5. **Новая база создавалась без `auto_vacuum`** — её ждал бы тот же
-   многоминутный VACUUM.
-6. **Снимок кланов сайта** (`buildClanSnapshot`) — 89–103 мс main thread на
-   перестройку раз в минуту, пока сайт открыт: последние снимки ПКР (28,9 тыс.
-   строк) 29 мс, ростер (46,8 тыс.) 24 мс, остальное — JS. В worker на main
-   thread осталось бы ~13 мс приёма снимка (3 МиБ).
-7. **Checkpoint WAL на main thread.** У main-подключения `wal_autocheckpoint`
-   по умолчанию: коммит, переваливший 1 000 кадров, синхронно переносит весь
-   WAL — 1 200 кадров 9 мс, 3 000 — 23 мс, 8 000 — 56 мс. Пока паузы редкие,
-   ~10 мс: ingest делает checkpoint сам (раз в 32 коммита или первым коммитом
-   после 60 с).
-8. **Схема боевой базы расходится с bootstrap:** колонки из `ALTER TABLE` — в
-   конце строк шести таблиц (безвредно: больших значений там нет); индекс
-   `idx_items_updated` (запросам не нужен: `COUNT(*)` берёт любой узкий
-   индекс) и таблица `clan_poll_log` — только в боевой (удалены в v18).
-9. **В порядке:** `quick_check` ok; нарушений внешних ключей и строк без боя
-   нет ни в одной дочерней таблице; все индексы `battle_players` нужны
-   планам, лишние индексы — только у таблиц в десятки строк; 4,8 из 6 ГиБ
-   базы — в кэше ОС; остальные маршруты сайта — единицы миллисекунд main
-   thread на первом запросе (дольше всех `/api/stats` — 25 мс) и меньше 1 мс
-   из кэша ответа.
+1. **Events blobs — 92% of the file (5,599 MiB).** 99% of the events JSON is
+   trajectories: `{"t":…,"x":…,"y":…,"z":…}` points as text, with structures
+   repeating one point dozens of times; zstd over such text stops at ~70 KiB
+   per battle.
+2. **VACUUM at startup.** A restart with ≥ 20% of the file and ≥ 256 MiB free
+   would keep the bot offline for minutes (the v17 deploy — 135 s), and a
+   format conversion frees gigabytes — a restart in the middle would repeat
+   that.
+3. **Maintenance on the main thread:** returning 12.5k pages blocked the event
+   loop for 157 ms, in portions every 10 minutes while a conversion runs.
+4. **`PRAGMA optimize` does nothing on a fresh connection:** without flag
+   `0x10000` it only looks at tables this connection has queried (checked on
+   SQLite 3.53 with debug mode `0x10003`).
+5. **A new database was created without `auto_vacuum`** — the same
+   multi-minute VACUUM awaited it.
+6. **Site clan snapshot** (`buildClanSnapshot`) — 89–103 ms of main thread per
+   rebuild once a minute while the site is open: latest PSR snapshots (28.9k
+   rows) 29 ms, roster (46.8k) 24 ms, the rest is JS. In a worker the main
+   thread would keep ~13 ms of receiving the snapshot (3 MiB).
+7. **WAL checkpoint on the main thread.** The main connection has the default
+   `wal_autocheckpoint`: a commit crossing 1,000 frames synchronously moves the
+   whole WAL — 1,200 frames 9 ms, 3,000 — 23 ms, 8,000 — 56 ms. The pauses are
+   rare so far, ~10 ms: ingest checkpoints by itself (every 32 commits or with
+   the first commit after 60 s).
+8. **The production schema differs from the bootstrap:** columns from
+   `ALTER TABLE` sit at the end of six tables' rows (harmless: no large values
+   there); the `idx_items_updated` index (no query needs it: `COUNT(*)` takes
+   any narrow index) and the `clan_poll_log` table existed only in production
+   (dropped in v18).
+9. **Fine:** `quick_check` ok; no foreign-key violations or rows without a
+   battle in any child table; every `battle_players` index is used by plans,
+   unused indexes only on tables with dozens of rows; 4.8 of 6 GiB of the
+   database was in the OS cache; the other site routes take a few
+   milliseconds of main thread on the first request (`/api/stats` the
+   longest — 25 ms) and under 1 ms from the response cache.
 
-### Решения
+### Decisions
 
-| Кандидат | Выигрыш (замер) | Цена и риск | Решение |
+| Candidate | Gain (measured) | Cost and risk | Decision |
 |---|---|---|---|
-| Колоночные траектории + zstd-19 | блоб −85% по всей базе, сжатие ×5, чтение ×2,5 | новый формат (~200 строк с проверками); образ до него блоб не прочитает | **сделано** |
-| Двоичный формат (varint) вместо JSON-колонок | ещё −4% | свой двоичный парсер с проверкой границ | нет |
-| Колонки на весь бой, а не на юнит | ещё −1,5% | сложнее восстановление | нет |
-| zstd-22, длинное окно | ~0 | медленнее | нет |
-| Прореживание траекторий | больше | потеря данных, другие картинки | нет |
-| Блобы файлами или в отдельной базе | основной файл меньше | нет общей транзакции со строками боя, два места для бэкапа | нет |
-| VACUUM на старте только у базы без `auto_vacuum` | нет многоминутного простоя при перезапуске | — | **сделано** |
-| Обслуживание и перевод в worker, шагами по 256 страниц | нет пауз main thread (ожидание записи ≤ 7 мс против 129 мс — 1,3 с) | возврат места медленнее (~10 МиБ/с) | **сделано** |
-| Снимок кланов в worker | 95 → ~13 мс main thread на перестройку | переписать сборку снимка сайта, два пути (`:memory:` в тестах) | ROADMAP |
-| Main без `wal_autocheckpoint` | нет пауз checkpoint на main | WAL растёт, пока worker не пишут | нет, при росте записи |
-| Покрывающий индекс по игроку | холодные ~120 мс → единицы | +35 МиБ и запись на каждый бой | нет: после перевода база целиком в кэше ОС |
-| INTEGER вместо TEXT для id | −50–70 МиБ | id больше 2^53, переписать запросы и API | нет |
-| Справочник моделей и оружия в `battle_kills` | ~−30% таблицы | десятки запросов | нет |
-| Страница 16 КиБ | −5–10% страниц | полный VACUUM (минуты простоя) | нет |
-| Внешние ключи | только целостность | — | ROADMAP |
+| Columnar trajectories + zstd-19 | blob −85% across the database, compression ×5, reading ×2.5 | new format (~200 lines with checks); older images cannot read the blob | **done** |
+| Binary format (varint) instead of JSON columns | another −4% | an own binary parser with bounds checks | no |
+| Columns per battle instead of per unit | another −1.5% | harder restore | no |
+| zstd-22, long window | ~0 | slower | no |
+| Thinning trajectories | more | data loss, different images | no |
+| Blobs as files or in a separate database | smaller main file | no shared transaction with the battle rows, two things to back up | no |
+| Startup VACUUM only for a database without `auto_vacuum` | no multi-minute downtime on restart | — | **done** |
+| Maintenance and conversion in workers, 256-page steps | no main-thread pauses (write wait ≤ 7 ms versus 129 ms — 1.3 s) | slower space return (~10 MiB/s) | **done** |
+| Clan snapshot in a worker | 95 → ~13 ms of main thread per rebuild | rewrite the site snapshot build, two paths (`:memory:` in tests) | ROADMAP |
+| Main without `wal_autocheckpoint` | no checkpoint pauses on main | the WAL grows while workers do not write | no, unless writes grow |
+| Covering index per player | cold ~120 ms → a few ms | +35 MiB and a write per battle | no: since the conversion the database fits in the OS cache |
+| INTEGER instead of TEXT ids | −50–70 MiB | ids above 2^53, rewrite queries and the API | no |
+| Model and weapon dictionary in `battle_kills` | ~−30% of the table | dozens of queries | no |
+| 16 KiB pages | −5–10% pages | a full VACUUM (minutes of downtime) | no |
+| Foreign keys | integrity only | — | ROADMAP |
 
-### Колоночный формат событий
+### Columnar events format
 
-`events-codec.ts`: блоб — `'WTEV'`, байт версии и zstd-кадр (уровень 19) JSON
-документа событий, где `path` подходящего юнита — объект `{t, x, y, z}` из
-четырёх массивов: первое значение как есть, дальше разности соседних.
-Траектория подходит, если каждая точка — ровно ключи `t, x, y, z` в этом
-порядке и целые `|v| < 2^40` (разности и их суммы тогда точны); остальной
-документ не меняется. Чтение собирает точки обратно в тот же объект, что
-давал `JSON.parse`, без промежуточного JSON траекторий.
+`events-codec.ts`: the blob is `'WTEV'`, a version byte and a zstd frame
+(level 19) of the events JSON document, where a suitable unit's `path` is an
+object `{t, x, y, z}` of four arrays: the first value as is, then the
+differences between neighbours. A trajectory is suitable if every point has
+exactly the keys `t, x, y, z` in this order and integers `|v| < 2^40` (the
+differences and their sums are then exact); the rest of the document is
+unchanged. Reading rebuilds the points into the same object `JSON.parse` used
+to give, without an intermediate trajectory JSON.
 
-Запись проверяет себя: восстановленный JSON обязан совпасть с исходным байт в
-байт, иначе пишется zstd-JSON того же текста — формат не теряет данных ни на
-каком входе. Корпус реплеев проверяет и хэш JSON событий, и то, что блоб
-разбора колоночный.
+The write checks itself: the restored JSON must match the original byte for
+byte, otherwise zstd-JSON of the same text is stored — the format loses no
+data on any input. The replay corpus checks both the events JSON hash and that
+the parsed blob is columnar.
 
-| Выборка | Блоб, КиБ на бой | Сжатие, мс | Чтение, мс |
+| Sample | Blob, KiB per battle | Compression, ms | Reading, ms |
 |---|---:|---:|---:|
-| 500 случайных боёв: zstd-JSON → колоночный | 70,0 → **20,1** | 230 → 35 | 2,7 → 1,1 |
-| вся база, 41 540 боёв (gzip и zstd-JSON → колоночный) | 137,1 → **20,3** | 47 (макс. 490) | — |
+| 500 random battles: zstd-JSON → columnar | 70.0 → **20.1** | 230 → 35 | 2.7 → 1.1 |
+| whole database, 41,540 battles (gzip and zstd-JSON → columnar) | 137.1 → **20.3** | 47 (max 490) | — |
 
-На всей базе байт в байт совпали все 41 540 боёв; zstd-JSON остались у 8:
-семи июльских боёв 2.57.1 с дробными координатами прежнего разбора и боя без
-траекторий (после починки v18 — только у него). Варианты на 120 и 500 боях,
-КиБ на бой: колонки без разностей — 42,8, разности в JSON — 20,0, двоичные
-varint-разности — 19,2, колонки на весь бой — 19,8, вторые разности времени —
-20,5; уровни zstd для колонок: 9 — 22,8 (2 мс), 15 — 20,9 (14 мс), 19 — 20,1
-(33 мс).
+All 41,540 battles of the database matched byte for byte; 8 stayed zstd-JSON:
+seven July 2.57.1 battles with the fractional coordinates of the old parser
+and a battle without trajectories (after the v18 repair only that one).
+Variants on 120 and 500 battles, KiB per battle: columns without deltas —
+42.8, deltas in JSON — 20.0, binary varint deltas — 19.2, columns per battle —
+19.8, second-order time deltas — 20.5; zstd levels for columns: 9 — 22.8
+(2 ms), 15 — 20.9 (14 ms), 19 — 20.1 (33 ms).
 
-### Перевод боевой базы (2 октября)
+### Converting the production database (2 October)
 
-Схема не менялась (`user_version` 17), новые бои сразу пишутся колоночными.
-Старые переводила фоновая задача (с v18 её работу делает проход починки
-`repair-battle-events`): пачки по 20 боёв раз в 2 с (~1 с работы worker на
-пачку, ~2 часа на 41,5 тыс. боёв); блоб заменялся, только если не изменился с
-чтения, а освободившиеся страницы возвращались ОС после каждой пачки, так что
-файл уменьшался по ходу перевода. Обслуживание теперь: раз в 6 часов
-`PRAGMA optimize(0x10002)` и `incremental_vacuum` до 32 МиБ за задачу
-(следующая порция — через 2 минуты, пока есть свободное место), всё в
-worker-задачах, шагами по 256 страниц с паузой 100 мс.
+The schema did not change (`user_version` 17), and new battles were written
+columnar at once. A background task converted the old ones (since v18 the
+`repair-battle-events` pass does its job): batches of 20 battles every 2 s
+(~1 s of worker time per batch, ~2 hours for 41.5k battles); a blob was
+replaced only if it had not changed since it was read, and the freed pages
+went back to the OS after every batch, so the file shrank during the
+conversion. Maintenance now: every 6 hours `PRAGMA optimize(0x10002)` and
+`incremental_vacuum` of up to 32 MiB per task (the next portion in 2 minutes
+while free space remains), all in worker tasks, in 256-page steps with a
+100 ms pause.
 
-На боевой базе: перезапуск — 6 с вместо 135 у v17, VACUUM на старте не
-запускался. Задача бота за 7,5 минуты перевела ~2 860 боёв, остальные 38 603
-— разовый прогон на 26 потоках (кодируют worker, пишет один писатель
-транзакциями по 48 боёв с той же проверкой «блоб не изменился», процесс под
-`nice`): 184 с, блобы 5 138 → 765 МиБ, ошибок и изменившихся блобов нет;
-затем возврат места — файл 5 722 → 1 357 МиБ, `quick_check` ok. Скорость: в
-боте ~6 боёв/с, на всех ядрах ~210.
+In production: the restart took 6 s instead of v17's 135, startup VACUUM did
+not run. The bot's task converted ~2,860 battles in 7.5 minutes, the other
+38,603 a one-off run on 26 threads (workers encode, one writer commits
+transactions of 48 battles with the same "blob unchanged" check, the process
+under `nice`): 184 s, blobs 5,138 → 765 MiB, no errors and no changed blobs;
+then the space return — file 5,722 → 1,357 MiB, `quick_check` ok. Speed:
+~6 battles/s inside the bot, ~210 on all cores.
 
-Во время прогона watchdog бота трижды видел паузу event loop 0,9–1,5 с:
-порция обслуживания в 8 192 страницы держала блокировку записи 1,27 с
-(совпало до миллисекунды), а запись main thread ждёт чужую транзакцию
-синхронно; перенос страницы блоба — 50–150 мкс, под нагрузкой больше.
-Исправлено шагами по 256 страниц с паузой 100 мс (дольше интервала
-busy-ожидания SQLite): на копии с разбросанными свободными страницами запись
-«main thread» каждые 5 мс ждала не больше 6,5 мс (p99 5,4) против 129 мс у
-одной транзакции на 8 192 страницы.
+During the run the bot's watchdog saw event-loop pauses of 0.9–1.5 s three
+times: an 8,192-page maintenance portion held the write lock for 1.27 s (it
+matched to the millisecond), and a main-thread write waits for a foreign
+transaction synchronously; moving one blob page costs 50–150 µs, more under
+load. Fixed with 256-page steps and a 100 ms pause (longer than SQLite's busy
+wait interval): on a copy with scattered free pages a "main-thread" write
+every 5 ms waited at most 6.5 ms (p99 5.4) versus 129 ms with a single
+8,192-page transaction.
 
-## Ошибки в данных (2 октября, миграция v18)
+## Data errors (2 October, migration v18)
 
-Аудит каждой таблицы на копии боевой базы: тип значения против объявленного,
-пустые значения и диапазоны, связи между таблицами, дубли, нормализованные
-колонки против функций кода, сверка всех 41,5 тыс. блобов событий со строками
-базы и записями Replay API (на 26 потоках — 7 с).
+An audit of every table on a copy of the production database: each value's
+type against the declared one, empty values and ranges, links between tables,
+duplicates, normalized columns against the code's functions, and all 41.5k
+events blobs against the database rows and the Replay API items (26 threads —
+7 s).
 
-| Ошибка | Объём | Причина | Исправление |
+| Error | Volume | Cause | Fix |
 |---|---:|---|---|
-| Отправитель чата — анонимное имя реплея (`Hachiro3906`), а не ник из состава боя | 690 сообщений | в разбор передавались только пары `userId → name`, а чат подписан `fakeName` | разбор: пары `fakeName → name` из записи Replay API (`fakeNamesFromItem`); записанные бои — починка |
-| userId ботов беззнаковый (`18446744073709551603` вместо `−13`): их убийства, траектории и урон не связаны с игроком | 1 689 значений в 319 боях | id слота читался `readU64` | разбор: `BigInt.asIntN(64, …)`; записанные — починка |
-| Длинные сообщения чата (> 127 байт) обрезаны, в начале — байт длины, «канал» — буква из середины текста | 486 сообщений в 304 боях | длина строки — varint, читалась одним байтом | разбор: `readVarLenStr`; 116 свежих боёв — разбор заново с CDN, 178 сообщений целиком; у 308 байт длины снят, хвост потерян (`channel_valid` = 0) |
-| Точные дубли убийств (одна зенитка дважды в одну миллисекунду) | 8 | повтор события в реплее | разбор и починка: точный дубль отбрасывается |
-| Не заполнены `air_unit_count` и `chat_count` | 20 334 боя (июль) | ранние версии разбора | из блоба событий |
-| Не заполнены `slot` и `title` игроков | ~110 тыс. строк | ранние версии разбора | из блоба событий (где событие знает значение) |
-| Дробные координаты и время траекторий | 7 боёв, 381 733 значения | первая версия разбора (15–17 июля) | округление, как в нынешнем разборе; блобы стали колоночными |
-| Дробная `duration_sec` в INTEGER-колонке | 1 бой | первая версия разбора | миграция: округление |
-| Бой со строками, но статусом ingest `error` | 1 | повторный разбор старой миграции не скачал части | миграция: `ok`; код: окончательный сбой повторного разбора записанного боя оставляет `ok` с причиной |
-| Упавшие по таймауту/504 загрузки свежих боёв | 4 | сеть, 3 попытки | миграция: в очередь, пока части на CDN; все 4 теперь в базе |
-| Свежие бои с итогами, но без победителя | 7 (+1 без исхода по времени) | у 5 победителя нет в самом реплее | миграция: разбор заново с CDN; у 2 победитель появился, у 5 — нет (в записи Replay API поля исхода тоже нет) |
-| Таблица `clan_poll_log` (47 строк, июль) и индекс `idx_items_updated` | — | остатки прежних версий, код о них не знает | миграция: удалены |
-| Снимки источника ThunderInsights | 4 | источник удалён, в снимках только ошибки запроса | миграция: удалены |
+| Chat sender is the replay's anonymous name (`Hachiro3906`), not the nickname from the battle roster | 690 messages | the parser got only `userId → name` pairs, but the chat is signed with `fakeName` | parser: `fakeName → name` pairs from the Replay API item (`fakeNamesFromItem`); stored battles — repair |
+| Bot userIds unsigned (`18446744073709551603` instead of `−13`): their kills, trajectories and damage are not linked to the player | 1,689 values in 319 battles | the slot id was read with `readU64` | parser: `BigInt.asIntN(64, …)`; stored ones — repair |
+| Long chat messages (> 127 bytes) truncated, a length byte at the start, the "channel" is a letter from the middle of the text | 486 messages in 304 battles | the string length is a varint but was read as one byte | parser: `readVarLenStr`; 116 fresh battles — parsed again from the CDN, 178 messages complete; 308 have the length byte removed and the tail lost (`channel_valid` = 0) |
+| Exact duplicate kills (one AA gun twice in one millisecond) | 8 | a repeated event in the replay | parser and repair: an exact duplicate is dropped |
+| `air_unit_count` and `chat_count` empty | 20,334 battles (July) | early parser versions | from the events blob |
+| Players' `slot` and `title` empty | ~110k rows | early parser versions | from the events blob (where the event knows the value) |
+| Fractional trajectory coordinates and times | 7 battles, 381,733 values | the first parser version (15–17 July) | rounding, as in the current parser; the blobs became columnar |
+| Fractional `duration_sec` in an INTEGER column | 1 battle | the first parser version | migration: rounding |
+| A battle with rows but ingest status `error` | 1 | an old migration's re-parse could not download the parts | migration: `ok`; code: a final failure to re-parse a stored battle keeps `ok` with the reason |
+| Downloads of fresh battles failed on timeout/504 | 4 | network, 3 attempts | migration: requeued while the parts are on the CDN; all 4 are now in the database |
+| Fresh battles with results but no winner | 7 (+1 that ran out of time) | 5 have no winner in the replay itself | migration: parsed again from the CDN; 2 got a winner, 5 did not (the Replay API item has no outcome field either) |
+| Table `clan_poll_log` (47 rows, July) and index `idx_items_updated` | — | leftovers of earlier versions, unknown to the code | migration: dropped |
+| ThunderInsights source snapshots | 4 | the source was removed; the snapshots hold only request errors | migration: deleted |
 
-Миграция v18 делает только то, что чинит SQL (на боевой базе — 0,1–0,2 с).
-Поля и события из блобов чинит фоновый проход `repair-battle-events`
-(`db/maintenance.ts`, `REPAIR_VERSION` 1) по правилам ingest
-(`events-repair.ts`): блоб и строки убийств и чата заменяются вместе и только
-если блоб не изменился с чтения. Новое правило — следующая `REPAIR_VERSION`:
-проход повторится по всем боям, верные данные не переписываются.
+Migration v18 does only what SQL can fix (0.1–0.2 s on the production
+database). Fields and events inside the blobs are fixed by the background
+`repair-battle-events` pass (`db/maintenance.ts`, `REPAIR_VERSION` 1) with the
+ingest rules (`events-repair.ts`): the blob and the kill and chat rows are
+replaced together and only if the blob did not change since it was read. A
+new rule is the next `REPAIR_VERSION`: the pass repeats over all battles, and
+correct data is not rewritten.
 
-- На копии: 106 с без пауз, переписано 1 216 боёв, заполнено 129 736 строк,
-  транзакция записи пачки — медиана 4 мс, максимум 27 мс. Повторный аудит:
-  беззнаковых id, чужих отправителей чата, дублей убийств и пустых счётчиков
-  нет, число убийств и сообщений сходится со строками у всех боёв.
-- В боте 2 октября (08:24–08:33 UTC, с паузами): 41 550 боёв, переписано
-  1 100 — на 116 меньше, чем на копии, потому что эти свежие бои ingest уже
-  разобрал заново новым кодом; заполнено 129 735 строк, пауз event loop нет.
-  Все 127 боёв, возвращённых миграцией в очередь, разобраны заново; повторный
-  аудит боевой базы — как на копии.
+- On the copy: 106 s without pauses, 1,216 battles rewritten, 129,736 rows
+  filled, the batch write transaction — median 4 ms, max 27 ms. The repeated
+  audit: no unsigned ids, foreign chat senders, duplicate kills or empty
+  counters; kill and message counts match the rows for every battle.
+- In the bot on 2 October (08:24–08:33 UTC, with pauses): 41,550 battles,
+  1,100 rewritten — 116 fewer than on the copy, because ingest had already
+  parsed those fresh battles again with the new code; 129,735 rows filled, no
+  event-loop pauses. All 127 battles requeued by the migration were parsed
+  again; the repeated audit of the production database matched the copy.
 
-### Проверено и оставлено как есть
+### Checked and left as is
 
-- Нормализованные колонки (`nick_search`, `nick_base`, `canonical_nick_search`),
-  ядра тегов кланов, связи строк боя, внешние ключи — без расхождений.
-- 5 617 игроков без тега клана — тега нет и в событиях боя.
-- 49 961 убийство без жертвы-игрока (дроны-разведчики, зенитки) и 13 027 без
-  убийцы — настоящие события ленты; 151 убийство ИИ-самолётами вне состава
-  (их отсекает правило фантомных ботов вне состава Replay API).
-- 888 игроков без списка техники в итогах боя (`disconnected`) — вышли из боя
-  или не появились в нём: 177 успели набрать очки, 547 — без слота, 55 — без
-  команды. Так записано в самом реплее.
-- `coop/Bot…`: 339 строк с отрицательным id — боты; 607 с настоящим userId —
-  слот игрока под управлением ИИ (0 очков, в других боях у аккаунта обычный
-  ник, в записи сайта — случайное имя); статистика игрока их исключает.
-- Сообщения чата с табуляцией в начале (игроки PSN) и с ANSI-кодами цвета —
-  содержимое сообщения.
-- 5 июльских боёв без победителя — частей на CDN нет, источника исхода тоже;
-  бой без исхода по времени (сентябрь) записан верно.
-- 148 загрузок `expired` и 16 `error` старше двух недель — учёт, чтобы бой не
-  качался заново; данных у них нет и не будет.
+- Normalized columns (`nick_search`, `nick_base`, `canonical_nick_search`),
+  clan tag cores, battle row links, foreign keys — no mismatches.
+- 5,617 players without a clan tag — the battle events have none either.
+- 49,961 kills without a player victim (scout drones, AA guns) and 13,027
+  without a killer — real feed events; 151 kills by AI aircraft outside the
+  roster (removed by the rule for phantom bots outside the Replay API roster).
+- 888 players without a vehicle list in the battle results (`disconnected`) —
+  they left the battle or never appeared: 177 scored points, 547 have no slot,
+  55 no team. That is what the replay itself records.
+- `coop/Bot…`: 339 rows with a negative id are bots; 607 with a real userId
+  are player slots driven by the AI (0 points, the account has a normal
+  nickname in other battles, the site's item shows a random name); player
+  statistics exclude them.
+- Chat messages starting with a tab (PSN players) or with ANSI color codes —
+  message content.
+- 5 July battles without a winner — no parts on the CDN, no other source of
+  the outcome; the battle that ran out of time (September) is recorded
+  correctly.
+- 148 `expired` and 16 `error` downloads older than two weeks — bookkeeping so
+  the battle is not downloaded again; they have no data and never will.
 
-## Откат
+## Rollback
 
-Базу с `user_version` выше своей схемы код не открывает. Надёжный путь для
-любой версии — бэкап, снятый до выкатки, и прежний образ; бои после бэкапа
-бот соберёт с сайта и CDN заново, пока их части там (~2 недели).
+The code refuses a database whose `user_version` is above its own schema. The
+safe path for any version is the backup taken before the deploy and the
+previous image; battles after the backup are collected again from the site and
+the CDN while their parts are there (~2 weeks).
 
-- **v17** меняет схему необратимо — только бэкап.
-- **Колоночный формат** (схема та же): образ без него читает базу, но сцены,
-  хитмапы и лог переведённых боёв дают «Неизвестный формат events_blob».
-  Совместимость возвращает обратный перевод новым образом при остановленном
-  боте (база вырастет на ~2 ГиБ), затем запуск прежнего образа:
+- **v17** changes the schema irreversibly — backup only.
+- **Columnar format** (same schema): an image without it reads the database,
+  but scenes, heatmaps and logs of converted battles fail with
+  «Неизвестный формат events_blob» ("unknown events_blob format").
+  Compatibility comes back with a reverse conversion by the new image with the
+  bot stopped (the database grows by ~2 GiB), then start the previous image:
 
   ```bash
   docker compose stop wtbot
@@ -349,58 +363,60 @@ busy-ожидания SQLite): на копии с разбросанными с�
   db.close()"
   ```
 
-- **v18** схему не меняет: чинит данные и удаляет объекты, о которых код не
-  знал. Поэтому образ 848e01b (v17) откроет базу v18 после
-  `PRAGMA user_version = 17` при остановленном боте (на боевой не
-  проверялось); образу без колоночного формата нужен ещё обратный перевод
-  выше.
+- **v18** does not change the schema: it fixes data and drops objects the code
+  did not know. So image 848e01b (v17) opens a v18 database after
+  `PRAGMA user_version = 17` with the bot stopped (untested in production); an
+  image without the columnar format also needs the reverse conversion above.
 
-## Перейти ли на PostgreSQL
+## Should we move to PostgreSQL
 
-**Что дал бы:** асинхронный драйвер — запросы не блокируют event loop
-(главная слабость синхронного `node:sqlite` рядом с Discord); конкурентную
-запись (MVCC) из нескольких процессов и машин — например, сайт на VPS и бот
-дома с одной базой; TOAST — большие значения хранятся отдельно и сжимаются
-(блоба в строке не случилось бы, но JSON траекторий сжимался бы общим
-алгоритмом, без колонок); автоматические статистику и VACUUM, параллельные
-запросы, BRIN/GIN; `pg_dump`, WAL-архив, восстановление на момент времени и
-репликацию (закрыли бы «копии БД на другом носителе» из ROADMAP).
+**What it would give:** an async driver — queries do not block the event loop
+(the main weakness of synchronous `node:sqlite` next to Discord); concurrent
+writes (MVCC) from several processes and machines — say, the site on a VPS and
+the bot at home sharing one database; TOAST — large values stored separately
+and compressed (the blob-in-row problem would not have happened, but the
+trajectory JSON would get only generic compression, no columns); automatic
+statistics and VACUUM, parallel queries, BRIN/GIN; `pg_dump`, WAL archiving,
+point-in-time recovery and replication (would close "database copies on
+another disk" in the ROADMAP).
 
-**Чего стоит:** переписать слой данных — `src/db/index.ts` (~6 700 строк
-синхронного SQL) и всех вызывающих (бот, сайт, парсеры, ingest,
-worker-задачи) на async, диалект (`WITHOUT ROWID`, `json_each`, `GLOB`,
-`unixepoch()`, `COLLATE NOCASE`, «голые» колонки при `MAX()`) и 18 миграций;
-~300 тестов на `:memory:` SQLite — на тестовый PostgreSQL (контейнер в CI,
-медленнее); перенос данных с простоем; ещё один сервис в эксплуатации
-(контейнер, `shared_buffers` и `work_mem`, бэкапы и их проверка, мажорные
-обновления через `pg_upgrade`, мониторинг, +200–500 МиБ RAM); круг по сокету
-(~0,05–0,2 мс) на каждый запрос вместо вызова в процессе (микросекунды) —
-многочисленные мелкие запросы замедлятся.
+**What it would cost:** rewriting the data layer — `src/db/index.ts` (~6,700
+lines of synchronous SQL) and every caller (bot, site, parsers, ingest, worker
+tasks) to async, the dialect (`WITHOUT ROWID`, `json_each`, `GLOB`,
+`unixepoch()`, `COLLATE NOCASE`, bare columns with `MAX()`) and 18
+migrations; ~300 tests on `:memory:` SQLite → a test PostgreSQL (a container in
+CI, slower); a data migration with downtime; one more service to run
+(container, `shared_buffers` and `work_mem`, backups and their checks, major
+upgrades via `pg_upgrade`, monitoring, +200–500 MiB RAM); a socket round trip
+(~0.05–0.2 ms) per query instead of an in-process call (microseconds) — the
+many small queries get slower.
 
-**Нагрузка проекта:** один процесс-писатель с worker-потоками, ~1 800 боёв в
-сутки, база ~1,3 ГиБ и ~20 ГиБ прироста в год, один сервер; типичный запрос
-сайта и бота — единицы миллисекунд.
+**The project's load:** one writer process with worker threads, ~1,800 battles
+a day, a ~1.3 GiB database growing ~20 GiB a year, one server; a typical site
+or bot query takes a few milliseconds.
 
-**Рекомендация:** остаться на SQLite. Измеренные узкие места были в
-раскладке, формате, индексах и запросах — PostgreSQL сам по себе их не убрал
-бы; слой данных собран в типизированных функциях `src/db/index.ts`, так что
-переход остаётся возможным. Вернуться к вопросу, если появится одно из:
+**Recommendation:** stay on SQLite. The measured bottlenecks were in the
+layout, format, indexes and queries — PostgreSQL alone would not have removed
+them; the data layer is collected in typed functions of `src/db/index.ts`, so
+a move stays possible. Revisit if one of these appears:
 
-- публичный сайт с реальной конкурентной нагрузкой и тяжёлыми запросами,
-  которые нельзя предрассчитать или вынести в worker;
-- несколько процессов или машин, пишущих в одну базу;
-- требование репликации и восстановления на момент времени (SQLite держит и
-  десятки ГиБ, но ежедневный полный бэкап с ростом станет тяжёлым);
-- блокировки event loop, которые не закрываются worker-задачами.
+- a public site with real concurrent load and heavy queries that cannot be
+  precomputed or moved to a worker;
+- several processes or machines writing to one database;
+- a requirement for replication and point-in-time recovery (SQLite handles
+  tens of GiB, but a full daily backup gets heavy as the data grows);
+- event-loop stalls that worker tasks cannot remove.
 
-Для тяжёлой аналитики (метастатистика техники, «кто кого убивает») вместо
-смены базы подходит DuckDB: колоночный движок читает файл SQLite напрямую и
-считает агрегаты по миллионам строк в разы быстрее — отдельным офлайн-расчётом.
-PostgreSQL в Docker — хорошая практика эксплуатации (бэкапы, репликация на
-VPS, обновления) как учебный стенд, а не как переписывание боевого бота.
+For heavy analytics (vehicle metastatistics, "who kills whom"), DuckDB fits
+better than switching the main database: the columnar engine reads the SQLite
+file directly and aggregates millions of rows many times faster — as a
+separate offline computation. PostgreSQL in Docker is good operations practice
+(backups, replication to a VPS, upgrades) as a learning lab, not as a rewrite
+of the production bot.
 
-## Что ещё можно сделать
+## What else can be done
 
-Открытые пункты по базе — снимок кланов в worker, checkpoint WAL вне main
-thread, покрывающий индекс по игроку, ретенция снимков, внешние ключи — в
-[ROADMAP.md](../ROADMAP.md), раздел «Код», с условиями, когда за них браться.
+Open database items — the clan snapshot in a worker, WAL checkpoints off the
+main thread, a covering index per player, snapshot retention, foreign keys —
+are in [ROADMAP.md](../ROADMAP.md), section "Code", with the conditions for
+taking them on.

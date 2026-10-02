@@ -1,137 +1,141 @@
 # wtbot
 
-Discord-бот, сайт и сборщик статистики клановых боёв War Thunder в одном
-Node.js-процессе. Бот собирает реплеи с warthunder.com, разбирает `.wrpl` и
-хранит бои, игроков, убийства и чат в SQLite. Результаты — в Discord
-(`/battle`, автоанонсы, табло игроков из голосовых каналов) и на сайте `/app`.
+A Discord bot, website and War Thunder squadron battle statistics collector in
+one Node.js process. The bot collects replays from warthunder.com, parses
+`.wrpl` files and stores battles, players, kills and chat in SQLite. Results
+appear in Discord (`/battle`, auto-announcements, a player board built from
+voice channels) and on the `/app` site.
 
-## Документация
+## Documentation
 
-| Файл | Что в нём |
+| File | Contents |
 | --- | --- |
-| [AGENTS.md](AGENTS.md) | архитектура и контракты для разработчиков и агентов |
-| [ROADMAP.md](ROADMAP.md) | единственный список открытых задач |
-| [docs/database.md](docs/database.md) | база: замеры, формат блобов, ошибки в данных, откат миграций |
-| [docs/performance.md](docs/performance.md) | замеры производительности, gates, откат |
-| [docs/replay-data-quality.md](docs/replay-data-quality.md) | что можно и нельзя извлечь из реплеев |
-| [LICENSES/](LICENSES/README.md) | лицензии портированного кода |
+| [AGENTS.md](AGENTS.md) | architecture and contracts for developers and agents |
+| [ROADMAP.md](ROADMAP.md) | the only list of open tasks |
+| [docs/database.md](docs/database.md) | database: measurements, blob format, data errors, migration rollback |
+| [docs/performance.md](docs/performance.md) | performance measurements, gates, rollback |
+| [docs/replay-data-quality.md](docs/replay-data-quality.md) | what replays can and cannot tell |
+| [LICENSES/](LICENSES/README.md) | licenses of ported code |
 
-## Где что запускается
+## Where things run
 
-| Среда | Назначение | Как |
+| Environment | Purpose | How |
 | --- | --- | --- |
-| Docker на Linux | боевой запуск | `docker compose up -d --build` |
-| Linux или Windows | разработка и тесты | `npm run dev`, `npm test`, `npm run verify` |
+| Docker on Linux | production | `docker compose up -d --build` |
+| Linux or Windows | development and tests | `npm run dev`, `npm test`, `npm run verify` |
 
-Warthunder.com опрашивается прямыми запросами. Адреса, которые проверяет
-Cloudflare (профиль и поиск игроков), открывает настоящий браузер
-(Edge/Chromium) в обычном окне — headless проверку не проходит; в Docker окно
-живёт на виртуальном дисплее Xvfb.
+warthunder.com is polled with direct requests. Addresses that Cloudflare
+checks (player profile and player search) are opened by a real browser
+(Edge/Chromium) in a normal window — headless mode fails the check; in Docker
+the window lives on an Xvfb virtual display.
 
-Требования: Docker Engine с Compose (боевой запуск), Node.js ≥ 22.15
-(разработка; CI проверяет 24 на Windows и 26 на Linux, как в образе),
-Discord-бот (токен) и авторизованная сессия warthunder.com (`WT_COOKIE`).
+Requirements: Docker Engine with Compose (production), Node.js ≥ 22.15
+(development; CI tests 24 on Windows and 26 on Linux, as in the image), a
+Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
 
-## Боевой запуск в Docker
+## Production in Docker
 
-1. Скопируйте `.env.example` в `.env` и заполните как минимум `TOKEN`,
-   `WT_COOKIE` и **`WEB_TOKEN`**: в контейнере сервер слушает `0.0.0.0` и без
-   токена не стартует.
-2. Положите данные в `./data` рядом с `docker-compose.yml`; при переезде —
-   `wtbot.db`, `wt-cookies.json`, `fonts/`, `wt-vehicles.json`,
-   `ecshashes.json`, `maps/`, `missions/`. Профиль браузера
-   (`wt-browser-profile/`) не переносите: он привязан к ОС, в контейнере
-   создастся новый. Флаги наций — из клиента игры: скопируйте
-   `ui/fonts.vromfs.bin` и `ui/atlases.vromfs.bin` в `data/wt-game/ui/` и
-   перезапустите бота; без них флаги рисуются упрощёнными.
-3. `docker compose up -d --build`; логи — `docker compose logs -f wtbot`.
-4. Сайт — `http://127.0.0.1:3000/app` на самом сервере: имя любое, пароль —
-   `WEB_TOKEN`. Для доступа из сети поставьте перед ботом reverse proxy с TLS
-   (nginx, caddy) и задайте `WEB_TRUST_PROXY`.
-5. Cloudflare требует ручную проверку или нужен новый вход на warthunder.com —
-   задайте `WT_VNC_PASSWORD`, раскомментируйте порт `5900` в
-   `docker-compose.yml` и подключитесь VNC-клиентом к `127.0.0.1:5900`.
+1. Copy `.env.example` to `.env` and fill in at least `TOKEN`, `WT_COOKIE`
+   and **`WEB_TOKEN`**: inside the container the server listens on `0.0.0.0`
+   and refuses to start without a token.
+2. Put the data in `./data` next to `docker-compose.yml`; when moving hosts,
+   copy `wtbot.db`, `wt-cookies.json`, `fonts/`, `wt-vehicles.json`,
+   `ecshashes.json`, `maps/`, `missions/`. Do not move the browser profile
+   (`wt-browser-profile/`): it is tied to the OS, the container creates a new
+   one. Nation flags come from the game client: copy `ui/fonts.vromfs.bin`
+   and `ui/atlases.vromfs.bin` into `data/wt-game/ui/` and restart the bot;
+   without them flags are drawn simplified.
+3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`.
+4. Site — `http://127.0.0.1:3000/app` on the server itself: any user name,
+   password — `WEB_TOKEN`. For network access put a reverse proxy with TLS
+   (nginx, caddy) in front of the bot and set `WEB_TRUST_PROXY`.
+5. If Cloudflare wants a manual check or warthunder.com needs a new login,
+   set `WT_VNC_PASSWORD`, uncomment port `5900` in `docker-compose.yml` and
+   connect a VNC client to `127.0.0.1:5900`.
 
-`wtbot` перезапускается после падения (`restart: unless-stopped`),
-`docker compose stop` — штатная остановка (SIGTERM). Сервис `backup` каждый
-день в `WTBOT_BACKUP_TIME` (по умолчанию 04:30 по `TZ`, по умолчанию UTC)
-кладёт проверенную копию базы в `./backups` и хранит 3 последние.
+`wtbot` restarts after a crash (`restart: unless-stopped`);
+`docker compose stop` is a clean shutdown (SIGTERM). The `backup` service puts
+a checked copy of the database into `./backups` every day at
+`WTBOT_BACKUP_TIME` (default 04:30 in `TZ`, default UTC) and keeps the last 3.
 
-Обновление: пометьте работающий образ для отката
-(`docker tag wtbot:latest wtbot:pre-<версия>`), снимите разовый бэкап (ниже) и
-убедитесь, что файл на месте, затем `docker compose up -d --build`. Миграция
-схемы необратима: прежний образ новую базу не откроет, откат — бэкапом
-([docs/database.md](docs/database.md)).
+Updating: tag the running image for rollback
+(`docker tag wtbot:latest wtbot:pre-<version>`), take a one-off backup (below)
+and make sure the file is there, then `docker compose up -d --build`. A schema
+migration cannot be undone: the previous image will not open the new
+database, rollback means the backup ([docs/database.md](docs/database.md)).
 
-Образ сам не обновляется, а его Chromium ходит на warthunder.com и StatShark:
-исправления безопасности браузера и Debian приходят только с пересборкой без
-кэша слоёв (иначе слой `apt-get` останется старым) — раз в одну-две недели
-`docker compose build --pull --no-cache` и `docker compose up -d`, лучше вне
-вечерних полковых боёв.
+The image does not update itself, and its Chromium visits warthunder.com and
+StatShark: browser and Debian security fixes arrive only with a rebuild
+without the layer cache (otherwise the `apt-get` layer stays old) — every one
+or two weeks `docker compose build --pull --no-cache` and
+`docker compose up -d`, preferably outside the evening squadron battles.
 
-## Разработка
+## Development
 
 ```bash
 npm ci
 npm --prefix frontend ci
-cp .env.example .env     # Windows: copy; заполните TOKEN, WT_COOKIE, WT_PLAYER_NAMES
-npm run dev              # бот + сайт http://127.0.0.1:3000 + парсеры
+cp .env.example .env     # Windows: copy; fill in TOKEN, WT_COOKIE, WT_PLAYER_NAMES
+npm run dev              # bot + site http://127.0.0.1:3000 + parsers
 ```
 
-Боевая база одна — у бота в Docker; бот с тем же `TOKEN` локально не
-запускайте, иначе анонсы в Discord задвоятся. Если рабочая копия — каталог,
-из которого запущен compose, её `data/` — данные работающего бота: `npm run dev`,
-`npm run battle` и backfill пишут в боевую базу.
+There is one production database — the bot's in Docker; do not run a local
+bot with the same `TOKEN`, or Discord announcements will be doubled. If your
+checkout is the directory the compose project runs from, its `data/` is the
+running bot's data: `npm run dev`, `npm run battle` and backfill write to the
+production database.
 
-- SPA на данных сервера без локальной БД: `WTBOT_API_URL` (адрес сайта за
-  reverse proxy) и `WTBOT_API_TOKEN` (его `WEB_TOKEN`) в `.env`, затем
-  `npm run dev:web` → `http://127.0.0.1:5173/app/`.
-- Сайт на базе `DB_PATH` без бота: `npm run site` → `http://127.0.0.1:3210/app`.
-- Демо на синтетических данных без БД: `npx tsx src/analysis/site-preview.ts`
-  (тот же адрес).
-- Макеты дизайн-системы сайта — `frontend/design/`. Остановка — `Ctrl+C`.
+- SPA on the server's data without a local database: `WTBOT_API_URL` (the
+  site's address behind the reverse proxy) and `WTBOT_API_TOKEN` (its
+  `WEB_TOKEN`) in `.env`, then `npm run dev:web` →
+  `http://127.0.0.1:5173/app/`.
+- Site on the `DB_PATH` database without the bot: `npm run site` →
+  `http://127.0.0.1:3210/app`.
+- Demo on synthetic data without a database:
+  `npx tsx src/analysis/site-preview.ts` (same address).
+- Site design-system mockups — `frontend/design/`. Stop with `Ctrl+C`.
 
-## Проверки
+## Checks
 
 ```bash
-npm run build            # backend в dist/ (без тестов)
-npm run verify           # typecheck, npm test и все офлайн-smoke
+npm run build            # backend into dist/ (no tests)
+npm run verify           # typecheck, npm test and all offline smoke checks
 npm run verify:workers:dist
-npm run build:web        # SPA в frontend/dist/
+npm run build:web        # SPA into frontend/dist/
 ```
 
-Без сети и без записи в рабочую базу: тесты и smoke работают на SQLite
-`:memory:` и временных файлах. То же выполняет CI на Linux и Windows
-(`.github/workflows/ci.yml`), он же собирает Docker-образ.
+No network and no writes to the working database: tests and smoke checks use
+SQLite `:memory:` and temporary files. CI runs the same on Linux and Windows
+(`.github/workflows/ci.yml`) and also builds the Docker image.
 
-## Бэкап и восстановление
+## Backup and restore
 
-- Разовый бэкап: `npm run db:backup` или
+- One-off backup: `npm run db:backup` or
   `docker compose run --rm --no-deps backup node dist/analysis/db-backup.js /backups 3`
-  (без `--no-deps` Compose пересоздаст работающий `wtbot`, если его
-  конфигурация изменилась). Копия — `VACUUM INTO`, проверка
-  `PRAGMA quick_check`, атомарная публикация.
-- Восстановление: остановите бота, проверьте копию `quick_check`, переименуйте
-  текущую `wtbot.db` в `wtbot.db.pre-restore`, положите копию на место
-  `DB_PATH`, запустите бота без `WTBOT_ALLOW_NEW_DB` и проверьте `/health`.
+  (without `--no-deps` Compose recreates the running `wtbot` if its
+  configuration changed). The copy is made with `VACUUM INTO`, checked with
+  `PRAGMA quick_check` and published atomically.
+- Restore: stop the bot, check the copy with `quick_check`, rename the current
+  `wtbot.db` to `wtbot.db.pre-restore`, put the copy at `DB_PATH`, start the
+  bot without `WTBOT_ALLOW_NEW_DB` and check `/health`.
 
-Части реплеев живут на CDN около двух недель: бои за более долгий простой
-уже не собрать.
+Replay parts live on the CDN for about two weeks: battles from a longer
+downtime cannot be collected any more.
 
-## Безопасность
+## Security
 
-- По умолчанию сайт слушает только `127.0.0.1` и отклоняет чужой `Host` (DNS
-  rebinding) и кросс-доменные POST (CSRF); в сетевом режиме нужен `WEB_TOKEN`
-  (Bearer или пароль HTTP Basic).
-- Не публикуйте `.env`, `data/wt-cookies.json` и `data/wtbot.db`: там токены,
-  cookies, Discord ID и чат боёв.
+- By default the site listens only on `127.0.0.1` and rejects a foreign
+  `Host` (DNS rebinding) and cross-origin POSTs (CSRF); network mode needs
+  `WEB_TOKEN` (Bearer or HTTP Basic password).
+- Never publish `.env`, `data/wt-cookies.json` or `data/wtbot.db`: they hold
+  tokens, cookies, Discord IDs and battle chat.
 
-## Лицензия
+## License
 
-GNU AGPL-3.0-or-later, см. [LICENSE](LICENSE). Часть `src/wrpl/*` — порт
-[wrpl-inspector](https://github.com/maxsupermanhd/wrpl-inspector) (AGPL-3.0),
-`src/wrpl/gm-sync.ts` основан на
-[WrplReplayParser](https://github.com/LivingTheDagor/WrplReplayParser) и Dagor
-Engine (BSD-3-Clause); происхождение — в заголовках файлов, тексты лицензий —
-в [LICENSES/](LICENSES/README.md). Сайт и дашборд показывают ссылку на
-исходный код, как требует AGPL для сетевых сервисов.
+GNU AGPL-3.0-or-later, see [LICENSE](LICENSE). Part of `src/wrpl/*` is a port
+of [wrpl-inspector](https://github.com/maxsupermanhd/wrpl-inspector)
+(AGPL-3.0), `src/wrpl/gm-sync.ts` is based on
+[WrplReplayParser](https://github.com/LivingTheDagor/WrplReplayParser) and
+Dagor Engine (BSD-3-Clause); origins are in the file headers, license texts in
+[LICENSES/](LICENSES/README.md). The site and the dashboard link to the source
+code, as the AGPL requires for network services.

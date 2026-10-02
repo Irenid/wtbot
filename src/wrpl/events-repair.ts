@@ -4,7 +4,7 @@ import { isValidReplayChatChannel, type ReplayEvents } from './replay-events.js'
  * Канонический вид событий боя перед записью — общий для ingest
  * (battle-transform.ts) и фоновой починки уже записанных боёв
  * (db/maintenance.ts, задача `repair-battle-events`). Аудит базы
- * 2026-10-02 (docs/database.md, «Ошибки в данных») нашёл в событиях:
+ * 2026-10-02 (docs/database.md, "Data errors") нашёл в событиях:
  *
  * - отправителей чата под анонимными именами реплея (fakeName из записи
  *   Replay API), тогда как состав боя записан настоящими;

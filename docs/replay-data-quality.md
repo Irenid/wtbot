@@ -1,101 +1,103 @@
-# Качество данных реплеев
+# Replay data quality
 
-Что можно и нельзя извлечь из реплеев и насколько заполнены данные. Начато
-заметками июля 2026 (`src/bot/my.md`), сверено с кодом и боевой базой
-2026-10-02: 41 550 боёв с 2026-07-15. Найденные ошибки в данных и их
-исправление — [database.md](database.md), «Ошибки в данных».
+What replays can and cannot tell, and how complete the data is. Started as
+notes in July 2026 (`src/bot/my.md`), checked against the code and the
+production database on 2026-10-02: 41,550 battles since 2026-07-15. Data errors
+found and how they were fixed — [database.md](database.md), "Data errors".
 
-## Ограничения самих реплеев
+## Limits of the replays themselves
 
-- **Траектории прорежены и округлены.** Точка сохраняется, если с прошлой
-  прошло не меньше 500 мс или юнит сместился не меньше чем на 4 м по
-  горизонтали (`thinPath` в `src/wrpl/replay-events.ts`); время и координаты
-  — целые. Точные ускорения, мелкие манёвры и поведение на уровне пакетов не
-  восстановить: траектории годятся для маршрутов, зон активности и хитмап, но
-  не для физики.
-- **Зоны захвата — только точки на карте** (имя и координаты), без журнала
-  захвата: кто начал захват, когда, какая команда держала точку и когда её
-  потеряла. Хитмапа рисует зоны по данным миссии (`mission.zones`), а
-  `events.zones` — запасной путь; в 200 последних боях (2026-10-02) зон в
-  событиях нет вовсе. Временная шкала захвата и разбор атак и обороны вокруг
-  точек из реплея недоступны.
-- **Урон** — только события критических и тяжёлых повреждений
-  (`critical`/`severe`, признак пожара) без величины урона: индикатор
-  давления, а не метрика.
-- **Чат** годится для привязки тактики ко времени; публикация — по отдельной
-  политике приватности.
-- **Победитель** — только из событий боя: в записи Replay API поля исхода
-  нет. `team_won = 0` — «победитель неизвестен», а не поражение.
-- **`battle_players.squad_id`** — маркер команды (4096/4097), а не отряда:
-  аналитика отрядов невозможна.
+- **Trajectories are thinned and rounded.** A point is kept if at least
+  500 ms passed since the previous one or the unit moved at least 4 m
+  horizontally (`thinPath` in `src/wrpl/replay-events.ts`); time and
+  coordinates are integers. Exact accelerations, small maneuvers and
+  packet-level behavior cannot be restored: trajectories suit routes, activity
+  areas and heatmaps, not physics.
+- **Capture zones are only points on the map** (name and coordinates), with no
+  capture log: who started capturing, when, which team held the point and when
+  it lost it. Heatmaps draw zones from mission data (`mission.zones`), and
+  `events.zones` is the fallback; the latest 200 battles (2026-10-02) have no
+  zones in their events at all. A capture timeline and an analysis of attacks
+  and defense around points are not available from replays.
+- **Damage** — only critical and severe damage events (`critical`/`severe`, a
+  fire flag) without the damage amount: a pressure indicator, not a metric.
+- **Chat** suits linking tactics to time; publishing it follows a separate
+  privacy policy.
+- **The winner** comes only from the battle events: the Replay API item has no
+  outcome field. `team_won = 0` means "winner unknown", not a loss.
+- **`battle_players.squad_id`** is a team marker (4096/4097), not a squad:
+  squad analytics are impossible.
 
-## Где что хранится
+## What is stored where
 
-- `slot`, `title` и `auto_squad` — колонки `battle_players` с 2026-07-22.
-  У боёв раньше этой даты `slot` и `title` заполнил из блоба событий проход
-  починки 2026-10-02 (там, где событие их знает); `auto_squad` в блобе нет, и
-  у ~110 тыс. июльских строк он `NULL` навсегда.
-- `game_version` пишется в `battles` и читается при восстановлении боя из
-  базы (`src/wrpl/battle-data.ts`).
-- Канал сообщения чата проверяется при записи (`battle_chat.channel_valid`).
-  Каналы вне 0–3 в прежних данных оказались ошибкой разбора:
-  длина строки сообщения — varint, а читалась одним байтом, и у сообщений
-  длиннее 127 байт канал попадал в середину текста (исправлено 2026-10-02).
-  308 таких сообщений остались с потерянным хвостом и `channel_valid = 0`:
-  реплеев на CDN уже нет.
+- `slot`, `title` and `auto_squad` are `battle_players` columns since
+  2026-07-22. For older battles the repair pass of 2026-10-02 filled `slot`
+  and `title` from the events blob (where the event knows them); `auto_squad`
+  is not in the blob, so ~110k July rows keep `NULL` for good.
+- `game_version` is written to `battles` and read when a battle is rebuilt
+  from the database (`src/wrpl/battle-data.ts`).
+- A chat message's channel is checked on write (`battle_chat.channel_valid`).
+  Channels outside 0–3 in older data turned out to be a parser error: the
+  message string length is a varint but was read as one byte, so in messages
+  longer than 127 bytes the channel came from the middle of the text (fixed on
+  2026-10-02). 308 such messages keep a lost tail and `channel_valid = 0`: the
+  replays are gone from the CDN.
 
-## Заполненность
+## Completeness
 
-| Показатель | Июль 2026, выборка | 2026-10-02, вся база |
+| Metric | July 2026, sample | 2026-10-02, whole database |
 |---|---:|---:|
-| Бои без победителя (`team_won = 0`) | 56 | 11 |
-| Бои без `status` | 53 | 4 |
-| Бои без `mission_settings` | 7 | 7 |
-| Игроки, отмеченные отключившимися | 172 | 888 из 665 115 |
-| Игроки с тегом клана | 99,2% | 99,2% |
-| Убийства с обеими позициями | 97,3% | 97,5% |
-| Убийства без `victim_id` | 10,5% | 9,4% |
-| Убийства без `weapon` | 5,2% | 5,5% |
+| Battles without a winner (`team_won = 0`) | 56 | 11 |
+| Battles without `status` | 53 | 4 |
+| Battles without `mission_settings` | 7 | 7 |
+| Players marked disconnected | 172 | 888 of 665,115 |
+| Players with a clan tag | 99.2% | 99.2% |
+| Kills with both positions | 97.3% | 97.5% |
+| Kills without `victim_id` | 10.5% | 9.4% |
+| Kills without `weapon` | 5.2% | 5.5% |
 
-Из 11 боёв без победителя у 5 июльских частей на CDN уже нет, у 5 свежих
-повторный разбор победителя не дал — его нет в самом реплее; ещё один бой
-закончился по времени без исхода. Без `status` — три боя, сыгранные до
-конца времени (~25 минут), и один семиминутный июльский. Без
-`mission_settings` — бои первой версии разбора (15–17 июля). Отключившиеся —
-игроки без списка техники в итогах боя: вышли из него или не появились
-(177 успели набрать очки, у 547 нет и слота). Убийство без `victim_id` —
-жертва не игрок (дроны-разведчики, зенитки).
+Of the 11 battles without a winner, the 5 July ones have no parts on the CDN
+any more, the 5 fresh ones got no winner from a second parse — the replay
+itself has none; one more battle ran out of time without an outcome. Without
+`status`: three battles played to the time limit (~25 minutes) and one
+seven-minute July battle. Without `mission_settings`: battles of the first
+parser version (15–17 July). Disconnected players have no vehicle list in the
+battle results: they left or never appeared (177 scored points, 547 have no
+slot either). A kill without `victim_id` has a non-player victim (scout drones,
+AA guns).
 
-## Что надёжно
+## What is reliable
 
-Win rate команд и кланов; kills/assists/deaths/score игроков; состав техники и
-эффективность первой машины; участие игрока и доля отключений; граф убийств по
-userId и времени; позиции убийств и расстояния между участниками; наземные и
-воздушные хитмапы с фильтром `userId != ''`; сопоставление статистики боёв со
-снимками рейтинга кланов; контроль качества разбора и ingest по заполненности
-ID, позиций и ошибок. С оговорками — урон, траектории и чат (ограничения выше).
+Team and clan win rates; players' kills/assists/deaths/score; vehicle lineups
+and first-vehicle efficiency; player participation and disconnect rate; the
+kill graph by userId and time; kill positions and distances between
+participants; ground and air heatmaps filtered by `userId != ''`; matching
+battle statistics with clan rating snapshots; parser and ingest quality
+control by how complete IDs, positions and errors are. With caveats — damage,
+trajectories and chat (limits above).
 
-## Сверка сбора 2026-10-01
+## Collection check of 2026-10-01
 
-- **Неполные реплеи.** Replay API показывает ~2% боёв ещё до их конца:
-  `partsCount` и `endTime` такой записи ранние. Разбор без последних частей
-  берёт промежуточные итоги из части 0001: ~95 с, `battles.status` NULL, нет
-  победителя. Пример: в записи 12 частей, на CDN 16; 12 частей дают 95 с без
-  победителя, 16 — 711 с и победителя. С 2026-10-01 ingest ищет недостающие
-  части на CDN и не пишет бой без финальных итогов, миграции v12–v14 вернули
-  такие бои на переразбор. Бой без исхода по времени тоже пишет финальные
-  итоги без статуса (пример: 25 минут, timePlayed 1513 с при 1509 с по
-  записи); от промежуточных их отличает время. Июльские «53 боя без status»
-  из таблицы выше, вероятно, того же происхождения; проверить нельзя, частей
-  на CDN уже нет.
-- **Пропуск 2026-08-02 … 2026-09-23.** Боёв за эти дни нет: бот не работал,
-  а части на CDN живут ~2 недели. Первые три недели сезона 62 (с 2026-09-01)
-  в датасете отсутствуют. Поэтому у клана, игравшего только тогда (лидер
-  сезона AVR, 2545 боёв, официальная статистика без изменений с 2026-09-29),
-  на сайте нет ни одного боя.
-- **История официального рейтинга кланов** начинается 2026-09-29, поэтому
-  дельта «за 30 дн.» появится не раньше 2026-10-29.
-- **Текст лидерборда** (регион, слоган, награды) приходил экранированным для
-  HTML и с разметкой игры (`&lt;color=#…&gt;`). С 2026-10-01 он чистится при
-  сборе; строки кланов, выпавших из обходов, остаются прежними, но сайт их не
-  показывает.
+- **Incomplete replays.** The Replay API lists ~2% of battles before they end:
+  such an item's `partsCount` and `endTime` are early. Parsing without the last
+  parts takes the intermediate results from part 0001: ~95 s,
+  `battles.status` NULL, no winner. Example: the item lists 12 parts, the CDN
+  has 16; 12 parts give 95 s without a winner, 16 — 711 s and a winner. Since
+  2026-10-01 ingest probes the CDN for missing parts and does not store a
+  battle without final results; migrations v12–v14 requeued such battles. A
+  battle that runs out of time also writes final results without a status
+  (example: 25 minutes, timePlayed 1513 s versus 1509 s in the item); the
+  duration tells them from intermediate ones. The July "53 battles without
+  status" in the table above probably have the same origin; it cannot be
+  checked, the parts are gone from the CDN.
+- **Gap 2026-08-02 … 2026-09-23.** No battles for these days: the bot was not
+  running, and parts live on the CDN for ~2 weeks. The first three weeks of
+  season 62 (from 2026-09-01) are missing from the dataset. So a clan that
+  played only then (season leader AVR, 2,545 battles, official statistics
+  unchanged since 2026-09-29) has no battles on the site.
+- **The official clan rating history** starts on 2026-09-29, so the "30 days"
+  delta appears no earlier than 2026-10-29.
+- **Leaderboard text** (region, slogan, rewards) came HTML-escaped with game
+  markup (`&lt;color=#…&gt;`). Since 2026-10-01 it is cleaned on collection;
+  rows of clans that dropped out of the crawls keep the old text, but the site
+  does not show them.
