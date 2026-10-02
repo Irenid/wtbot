@@ -8,7 +8,7 @@ import {
 } from '../workers/pool.js'
 import type { ParsedBattleResult } from '../workers/protocol.js'
 import { readCachedEcsHashesJson } from '../wrpl/ecs.js'
-import { inflateEventsBlob } from '../wrpl/events-codec.js'
+import { inflateEventsBlob, isColumnarEventsBlob } from '../wrpl/events-codec.js'
 
 interface CorpusFile {
   name: string
@@ -137,6 +137,12 @@ async function verifyCase(
       successDescriptor(parsed, inputBytes),
       corpusCase.expected,
       `${corpusCase.id}: нормализованный результат изменился`,
+    )
+    // Траектории разбора обязаны ложиться в колоночный формат: иначе блоб
+    // молча станет zstd-JSON в 3,5 раза больше (events-codec.ts).
+    assert.ok(
+      parsed.summary.units === 0 || isColumnarEventsBlob(new Uint8Array(parsed.battle.eventsBlob)),
+      `${corpusCase.id}: блоб событий не в колоночном формате`,
     )
     console.log(
       `[corpus] ${corpusCase.id} (${corpusCase.category}): ok · ` +

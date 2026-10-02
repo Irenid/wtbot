@@ -5,7 +5,7 @@ import type {
   BattlePlayerInput,
 } from '../db/index.js'
 import type { BattleEventSummary } from '../workers/protocol.js'
-import { compressEventsJson, inflateEventsBlob } from './events-codec.js'
+import { decodeEventsPayloadProfiled, encodeEventsJson, type EventsDecodeProfile } from './events-codec.js'
 import { parseComponentHashMaps } from './ecs.js'
 import {
   extractReplayEventsProfiled,
@@ -237,7 +237,7 @@ function buildBattleInput(
   }
 }
 
-/** Полный ReplayEvents (без диагностических errors) → сжатый JSON (events-codec.ts). */
+/** Полный ReplayEvents (без диагностических errors) → блоб events-codec.ts (колоночный формат). */
 export function encodeEventsBlob(events: ReplayEvents): Buffer {
   const payload: Omit<ReplayEvents, 'errors'> = {
     teamWon: events.teamWon,
@@ -249,40 +249,24 @@ export function encodeEventsBlob(events: ReplayEvents): Buffer {
     zones: events.zones,
     endTime: events.endTime,
   }
-  return compressEventsJson(Buffer.from(JSON.stringify(payload), 'utf8'))
+  return encodeEventsJson(JSON.stringify(payload))
 }
 
-/** Блоб из БД (zstd или прежний gzip) → события. Вызывать только внутри worker thread. */
+/** Блоб из БД (любой формат events-codec.ts) → события. Вызывать только внутри worker thread. */
 export function decodeEventsBlob(blob: Buffer): ReplayEvents {
   return decodeEventsBlobProfiled(blob).events
 }
 
-export interface EventsBlobDecodeProfile {
-  inflateMs: number
-  utf8Ms: number
-  jsonParseMs: number
-}
+export type EventsBlobDecodeProfile = EventsDecodeProfile
 
 /** Вариант для benchmark/профиля без повторной распаковки blob. */
 export function decodeEventsBlobProfiled(blob: Buffer): {
   events: ReplayEvents
   profile: EventsBlobDecodeProfile
 } {
-  let started = performance.now()
-  const json = inflateEventsBlob(blob)
-  const inflateMs = performance.now() - started
-
-  started = performance.now()
-  const text = json.toString('utf8')
-  const utf8Ms = performance.now() - started
-
-  started = performance.now()
-  const parsed = JSON.parse(text) as Omit<ReplayEvents, 'errors'>
-  const jsonParseMs = performance.now() - started
-  return {
-    events: { ...parsed, errors: [] },
-    profile: { inflateMs, utf8Ms, jsonParseMs },
-  }
+  const decoded = decodeEventsPayloadProfiled(blob)
+  const parsed = decoded.payload as Omit<ReplayEvents, 'errors'>
+  return { events: { ...parsed, errors: [] }, profile: decoded.profile }
 }
 
 export function summarizeEvents(events: ReplayEvents): BattleEventSummary {

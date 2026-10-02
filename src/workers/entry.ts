@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { parentPort } from 'node:worker_threads'
 import { formatBattleChat } from '../wrpl/battle-chat.js'
 import { decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
-import { compressEventsJson, inflateEventsBlob, isGzipEventsBlob } from '../wrpl/events-codec.js'
+import { encodeEventsJson, inflateEventsBlob, isColumnarEventsBlob, isZstdEventsBlob } from '../wrpl/events-codec.js'
 import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 import { applyRealNames, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
 import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
@@ -400,10 +400,12 @@ async function readPlayerInsights(
 }
 
 /**
- * Фоновый перевод старых gzip-блобов событий в zstd (events-codec.ts): пачка
- * по ключу после afterSessionId. Распаковка и сжатие — здесь, в worker;
- * запись — одной короткой транзакцией. Блоб, который ingest успел переписать
- * (уже zstd), условие substr(...) = gzip-магия не трогает.
+ * Фоновый перевод блобов событий в колоночный формат (events-codec.ts):
+ * пачка по ключу после afterSessionId. Распаковка, кодирование и проверка
+ * байт в байт — здесь, в worker; запись — одной короткой транзакцией, и
+ * только если блоб не изменился с чтения (ingest мог переразобрать бой).
+ * Затем incremental_vacuum возвращает ОС освободившиеся страницы, чтобы
+ * свободное место не копилось за время перевода.
  */
 async function recompressEventsBlobs(
   input: Extract<AnyWorkerTask, { kind: 'recompress-events-blobs' }>['input'],
@@ -412,7 +414,13 @@ async function recompressEventsBlobs(
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 200) {
     throw new RangeError('limit перевода блобов — от 1 до 200')
   }
-  const { DatabaseSync } = await import('node:sqlite')
+  if (!Number.isSafeInteger(input.vacuumPages) || input.vacuumPages < 0) {
+    throw new RangeError('vacuumPages перевода блобов — неотрицательное целое')
+  }
+  const [{ DatabaseSync }, { runDbMaintenance }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+  ])
   const database = new DatabaseSync(input.dbPath)
   const started = performance.now()
   try {
@@ -421,41 +429,78 @@ async function recompressEventsBlobs(
     const rows = database
       .prepare('SELECT session_id, events_blob FROM battle_events WHERE session_id > ? ORDER BY session_id LIMIT ?')
       .all(input.afterSessionId, input.limit) as { session_id: string; events_blob: Uint8Array }[]
-    const packed: [string, Buffer][] = []
-    let bytesBefore = 0
-    let bytesAfter = 0
+    const packed: [string, Uint8Array, Buffer][] = []
+    let kept = 0
     for (const row of rows) {
-      if (!isGzipEventsBlob(row.events_blob)) continue
-      const next = compressEventsJson(inflateEventsBlob(row.events_blob))
-      packed.push([row.session_id, next])
-      bytesBefore += row.events_blob.byteLength
-      bytesAfter += next.byteLength
+      if (isColumnarEventsBlob(row.events_blob)) continue
+      const next = encodeEventsJson(inflateEventsBlob(row.events_blob).toString('utf8'))
+      // Колоночный не подошёл: zstd-JSON остаётся как был, gzip всё равно
+      // переходит в zstd-JSON (тот же JSON, на 47% меньше).
+      if (!isColumnarEventsBlob(next) && isZstdEventsBlob(row.events_blob)) {
+        kept += 1
+        continue
+      }
+      packed.push([row.session_id, row.events_blob, next])
     }
     let converted = 0
+    let bytesBefore = 0
+    let bytesAfter = 0
     if (packed.length > 0) {
       const update = database.prepare(
-        "UPDATE battle_events SET events_blob = ? WHERE session_id = ? AND substr(events_blob, 1, 2) = x'1f8b'",
+        'UPDATE battle_events SET events_blob = ? WHERE session_id = ? AND events_blob = ?',
       )
       database.exec('BEGIN IMMEDIATE')
       try {
-        for (const [sessionId, blob] of packed) converted += Number(update.run(blob, sessionId).changes)
+        for (const [sessionId, previous, blob] of packed) {
+          if (Number(update.run(blob, sessionId, previous).changes) === 0) continue
+          converted += 1
+          bytesBefore += previous.byteLength
+          bytesAfter += blob.byteLength
+        }
         database.exec('COMMIT')
       } catch (error) {
         database.exec('ROLLBACK')
         throw error
       }
     }
+    const vacuum = input.vacuumPages > 0
+      ? runDbMaintenance(database, { maxPages: input.vacuumPages, optimize: false })
+      : null
     return {
       value: {
         lastSessionId: rows.at(-1)?.session_id ?? null,
         scanned: rows.length,
         converted,
+        kept,
         bytesBefore,
         bytesAfter,
+        freedBytes: vacuum === null ? 0 : vacuum.freedPages * vacuum.pageSize,
         elapsedMs: performance.now() - started,
       },
       transfer: [],
     }
+  } finally {
+    database.close()
+  }
+}
+
+/** PRAGMA optimize и возврат свободных страниц на своём подключении (db/maintenance.ts). */
+async function runDatabaseMaintenance(
+  input: Extract<AnyWorkerTask, { kind: 'db-maintenance' }>['input'],
+): Promise<{ value: WorkerTaskResult<'db-maintenance'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`SQLite не найден: ${input.dbPath}`)
+  if (!Number.isSafeInteger(input.maxPages) || input.maxPages < 0) {
+    throw new RangeError('maxPages обслуживания — неотрицательное целое')
+  }
+  const [{ DatabaseSync }, { runDbMaintenance }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath)
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA synchronous = NORMAL;')
+    return { value: runDbMaintenance(database, { maxPages: input.maxPages, optimize: input.optimize }), transfer: [] }
   } finally {
     database.close()
   }
@@ -549,6 +594,7 @@ function decodeProfiledEvents(input: MediaRenderInput, profile: MutableRenderPro
   addPhase(profile, 'events.inflate', decoded.profile.inflateMs)
   addPhase(profile, 'events.utf8', decoded.profile.utf8Ms)
   addPhase(profile, 'events.json', decoded.profile.jsonParseMs)
+  addPhase(profile, 'events.restore', decoded.profile.restoreMs)
   return decoded.events
 }
 
@@ -803,6 +849,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return readSiteDashboardStats(task.input)
     case 'recompress-events-blobs':
       return recompressEventsBlobs(task.input)
+    case 'db-maintenance':
+      return runDatabaseMaintenance(task.input)
     case 'read-player-insights':
       return readPlayerInsights(task.input)
     case 'render-scoreboard':

@@ -1,4 +1,4 @@
-import type { BattleInput, PlayerReplayInsights } from '../db/index.js'
+import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights } from '../db/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
@@ -189,17 +189,31 @@ export interface WorkerTaskMap {
     output: PlayerReplayInsights & { elapsedMs: number }
   }
   'recompress-events-blobs': {
-    /** Пачка battle_events после afterSessionId в порядке ключа. */
-    input: { dbPath: string; afterSessionId: string; limit: number }
+    /**
+     * Пачка battle_events после afterSessionId в порядке ключа: перевод в
+     * колоночный формат events-codec.ts, затем возврат ОС до vacuumPages
+     * освободившихся страниц.
+     */
+    input: { dbPath: string; afterSessionId: string; limit: number; vacuumPages: number }
     output: {
       /** null — дошли до конца таблицы. */
       lastSessionId: string | null
       scanned: number
+      /** Переписано: в колоночный формат или, если он не подошёл, gzip → zstd-JSON. */
       converted: number
+      /** zstd-JSON, которому колоночный формат не подошёл (нет целых траекторий), — оставлен как был. */
+      kept: number
       bytesBefore: number
       bytesAfter: number
+      /** Возвращено ОС после пачки (incremental_vacuum). */
+      freedBytes: number
       elapsedMs: number
     }
+  }
+  'db-maintenance': {
+    /** PRAGMA optimize (если optimize) и incremental_vacuum до maxPages страниц. */
+    input: { dbPath: string; maxPages: number; optimize: boolean }
+    output: DbMaintenanceResult
   }
   'read-site-dashboard-stats': {
     input: { dbPath: string; sinceTs: number; seasonStart: number }

@@ -205,9 +205,9 @@ voice tracker и Fastify. Делай запросы короткими, инде
   кластеризована по `session_id` (`WITHOUT ROWID`). Большие значения
   (блобы, JSON больше ~1 КиБ) не клади в часто читаемые строки: такая строка
   занимает свою страницу, а колонки после неё читаются через overflow-цепочку.
-- Каждый индекс `battle_players` — ~30 лишних записей на каждый сохранённый
-  бой. Индекс добавляй только под запрос, план которого его использует;
-  неиспользуемые индексы удалены в v17.
+- Каждый индекс `battle_players` — ~16 лишних записей (игроков боя) на
+  каждый сохранённый бой. Индекс добавляй только под запрос, план которого
+  его использует; неиспользуемые индексы удалены в v17.
 - Для `WHERE session_id = ? OR session_hex = ?` план должен использовать
   multi-index OR и `idx_battles_session_hex`, а не полный scan.
 - `getIngestStats().pending` и `getPendingBattleItems()` должны использовать
@@ -220,12 +220,16 @@ voice tracker и Fastify. Делай запросы короткими, инде
 - База с `user_version > DB_SCHEMA_VERSION` не открывается.
 - Подключения: WAL, `synchronous = NORMAL` (коммит не ждёт fsync, сбой
   питания откатывает последние транзакции, но не портит базу), mmap 1 ГиБ,
-  `journal_size_limit`, `temp_store = MEMORY` — только после VACUUM. После
-  миграций `initDb()` запускает VACUUM, если свободно больше 20% и 256 МиБ
-  (минуты на гигабайтах, бот в это время не в сети), с
-  `auto_vacuum = INCREMENTAL`. `db/maintenance.ts` в процессе бота переводит
-  старые gzip-блобы в zstd, раз в несколько часов делает `PRAGMA optimize` и
-  возвращает ОС свободные страницы порциями; останавливается до CPU pool.
+  `journal_size_limit`, `temp_store = MEMORY` — только после VACUUM. Новая
+  база создаётся с `auto_vacuum = INCREMENTAL`; VACUUM на старте — только у
+  базы без него (один раз, минуты на гигабайтах, бот в это время не в сети),
+  если свободно больше 20% и 256 МиБ. Дальше место возвращает
+  `db/maintenance.ts` в worker-задачах (`db-maintenance`,
+  `recompress-events-blobs`), а не main thread: перевод блобов событий в
+  колоночный формат с возвратом освободившихся страниц после каждой пачки,
+  раз в несколько часов `PRAGMA optimize(0x10002)` (у свежего подключения
+  без флага 0x10000 он не видит ни одной таблицы) и `incremental_vacuum`
+  порциями; останавливается до CPU pool.
 - Частые file-backed записи ingest, parser history и player-board publication
   выполняются типизированными worker-задачами
   `persist-ingested-battle`, `record-parse-result` и
@@ -378,8 +382,13 @@ Scheduler запускает sources сразу, не допускает overlap
 AIMD admission и process byte budget ограничивают давление на CDN, pool, SQLite
 и RAM. Budget timeout откладывает item без увеличения attempts. После успешного
 commit replay-cache конкретной сессии удаляется, потому что строки и блоб
-событий (`battle_events`: zstd-19, у старых боёв gzip — `events-codec.ts`)
-позволяют восстановить бой.
+событий (`battle_events`, `events-codec.ts`) позволяют восстановить бой.
+Блоб — колоночный формат: траектории (99% событий) лежат массивами разностей
+и сжаты zstd-19, ~20 КиБ на бой. Запись проверяет восстановление байт в байт
+и иначе пишет zstd-JSON; читаются и прежние zstd-JSON и gzip. Читай события
+через `decodeEventsPayload`/`decodeEventsBlob`, а `inflateEventsBlob` (JSON
+текстом) — только для хэшей и перевода форматов. Образ без колоночного
+формата такие блобы не прочитает (откат — `docs/database.md`).
 
 Replay API показывает часть боёв (~2%) ещё до их конца: `partsCount` и
 `endTime` такой записи ранние, а бот запоминает запись при первом обнаружении
@@ -607,8 +616,8 @@ node:` в `Dockerfile`, поднимай и Node Linux-job. Dependabot прис�
 неделю. Не добавляй в `npm test` флаг `--test-force-exit`: на Windows с Node 24
 он роняет процесс тестов с fetch (libuv assert), а зависающих тестов нет.
 
-Baseline на **2026-10-01**: `npm run build` и `npm run verify` проходят,
-`npm test` даёт **285 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
+Baseline на **2026-10-02**: `npm run build` и `npm run verify` проходят,
+`npm test` даёт **288 pass, 0 fail**, corpus — 6 сценариев (включая 2.59). Если tests добавлены или удалены, сообщи
 новый count; любое новое падение считай регрессией.
 
 Команды с внешними или локальными side effects не запускай только ради smoke

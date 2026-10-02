@@ -807,6 +807,9 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
   db = database
   try {
     assertSupportedDbVersion(database, DB_SCHEMA_VERSION)
+  // Новая база — сразу с auto_vacuum = INCREMENTAL: режим меняется только до
+  // первой таблицы, позже — лишь полным VACUUM (минуты на гигабайтах).
+  if (pragmaNumber(database, 'page_count') === 0) db.exec('PRAGMA auto_vacuum = INCREMENTAL;')
   // WAL: запись не блокирует чтение — сайт отвечает, пока парсеры пишут
   db.exec('PRAGMA journal_mode = WAL;')
   // В WAL коммит с synchronous = NORMAL не ждёт fsync — он идёт при
@@ -1371,13 +1374,17 @@ function pragmaNumber(database: DatabaseSync, name: string): number {
 }
 
 /**
- * Файл базы сам не уменьшается: после v17 в нём ~5,6 ГБ свободных страниц от
- * прежней battles. VACUUM переписывает базу целиком — минуты на гигабайтах,
- * поэтому только на старте (до Discord и сайта) и только при большой доле
- * свободного места. Заодно включается auto_vacuum = INCREMENTAL: дальше
- * свободные страницы понемногу возвращает runDbMaintenance.
+ * Файл базы без auto_vacuum сам не уменьшается: после v17 в нём было ~5,5 ГиБ
+ * свободных страниц от прежней battles. VACUUM переписывает базу целиком —
+ * минуты на гигабайтах, поэтому только на старте (до Discord и сайта), только
+ * при большой доле свободного места и один раз: он же включает
+ * auto_vacuum = INCREMENTAL. Дальше свободные страницы возвращает фоновое
+ * обслуживание порциями (db/maintenance.ts), а VACUUM на старте не нужен:
+ * иначе любой перезапуск после большого освобождения (перевод формата
+ * событий) держал бы бота не в сети минуты.
  */
 function reclaimFreePages(database: DatabaseSync): void {
+  if (pragmaNumber(database, 'auto_vacuum') === 2) return
   const pageSize = pragmaNumber(database, 'page_size')
   const pageCount = pragmaNumber(database, 'page_count')
   const freePages = pragmaNumber(database, 'freelist_count')
@@ -1401,29 +1408,51 @@ function reclaimFreePages(database: DatabaseSync): void {
 export interface DbMaintenanceResult {
   /** Страниц возвращено ОС через incremental_vacuum. */
   freedPages: number
+  /** Свободных страниц осталось в файле. */
+  freelistPages: number
+  pageSize: number
+  /** Таблицы, по которым PRAGMA optimize обновил статистику планировщика. */
+  analyzed: string[]
   elapsedMs: number
 }
 
 /**
- * Периодическое обслуживание (раз в несколько часов): PRAGMA optimize
- * обновляет статистику планировщика по заметно выросшим таблицам, а
- * incremental_vacuum возвращает ОС свободные страницы — например, после
- * фонового перевода блобов событий в zstd. Не больше maxPages за вызов:
- * короткая транзакция не держит запись дольше десятков миллисекунд.
+ * Обслуживание на отдельном подключении worker-задачи `db-maintenance`
+ * (db/maintenance.ts), а не на main thread: возврат 16 тыс. страниц занимал
+ * ~160 мс event loop. PRAGMA optimize обновляет статистику планировщика по
+ * заметно изменившимся таблицам; incremental_vacuum возвращает ОС не больше
+ * maxPages свободных страниц за вызов — одна короткая транзакция записи.
  */
-export function runDbMaintenance(maxPages = 8_192): DbMaintenanceResult {
-  const database = getDb()
+export function runDbMaintenance(
+  database: DatabaseSync,
+  options: { maxPages: number; optimize: boolean },
+): DbMaintenanceResult {
   const started = performance.now()
-  database.exec('PRAGMA optimize;')
+  let analyzed: string[] = []
+  if (options.optimize) {
+    database.exec('PRAGMA analysis_limit = 1000;')
+    // Свежее подключение ещё не выполняло запросов, а без флага 0x10000
+    // PRAGMA optimize смотрит только таблицы из запросов этого подключения.
+    // 0x10003 — тот же отбор без выполнения: список таблиц для лога.
+    analyzed = (database.prepare('PRAGMA optimize(0x10003)').all() as { optimize?: unknown }[])
+      .map((row) => /"main"\."([^"]+)"/.exec(String(row.optimize ?? ''))?.[1] ?? String(row.optimize ?? ''))
+    if (analyzed.length > 0) database.exec('PRAGMA optimize(0x10002);')
+  }
   let freedPages = 0
-  if (pragmaNumber(database, 'auto_vacuum') === 2) {
+  if (pragmaNumber(database, 'auto_vacuum') === 2 && options.maxPages > 0) {
     const before = pragmaNumber(database, 'freelist_count')
     if (before > 0) {
-      database.exec(`PRAGMA incremental_vacuum(${Math.max(1, Math.min(maxPages, before))});`)
+      database.exec(`PRAGMA incremental_vacuum(${Math.min(Math.floor(options.maxPages), before)});`)
       freedPages = before - pragmaNumber(database, 'freelist_count')
     }
   }
-  return { freedPages, elapsedMs: performance.now() - started }
+  return {
+    freedPages,
+    freelistPages: pragmaNumber(database, 'freelist_count'),
+    pageSize: pragmaNumber(database, 'page_size'),
+    analyzed,
+    elapsedMs: performance.now() - started,
+  }
 }
 
 // ---------- Статистика команд ----------
@@ -2047,6 +2076,10 @@ export function setBotState(key: string, value: string): void {
   getDb()
     .prepare('INSERT INTO bot_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, value)
+}
+
+export function deleteBotState(key: string): void {
+  getDb().prepare('DELETE FROM bot_state WHERE key = ?').run(key)
 }
 
 export interface ClanSeasonContext {
