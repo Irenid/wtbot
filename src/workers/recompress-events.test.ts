@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test, { after } from 'node:test'
 import { gzipSync } from 'node:zlib'
-import { closeDb, initDb } from '../db/index.js'
+import { closeDb, initDb, VACUUM_STEP_PAGES } from '../db/index.js'
 import { compressEventsJson, encodeEventsJson, inflateEventsBlob, isColumnarEventsBlob, isZstdEventsBlob } from '../wrpl/events-codec.js'
 import { closeWorkerPool, runWorkerTask } from './pool.js'
 
@@ -86,7 +86,7 @@ test('обслуживание в worker возвращает свободные
     closeDb()
     const database = new DatabaseSync(dbPath)
     const insert = database.prepare('INSERT INTO battle_events (session_id, events_blob) VALUES (?, ?)')
-    for (let i = 0; i < 20; i += 1) insert.run(String(i), Buffer.alloc(64 * 1024, i))
+    for (let i = 0; i < 40; i += 1) insert.run(String(i), Buffer.alloc(64 * 1024, i))
     database.exec('DELETE FROM battle_events')
     // Устаревшая статистика: ANALYZE на 20 строках, затем рост в 1000 раз.
     database.exec('CREATE TABLE stale (a INTEGER); CREATE INDEX stale_a ON stale (a);')
@@ -109,6 +109,8 @@ test('обслуживание в worker возвращает свободные
     assert.ok(firstPortion.analyzed.includes('stale'), `свежее подключение видит устаревшую статистику: ${firstPortion.analyzed.join(', ')}`)
     const rest = await task(1_000_000, false)
     assert.deepEqual([rest.freedPages, rest.freelistPages, rest.analyzed], [firstPortion.freelistPages, 0, []])
+    assert.ok(firstPortion.freelistPages > VACUUM_STEP_PAGES, 'порция больше одного шага')
+    assert.equal(rest.steps, Math.ceil(firstPortion.freelistPages / VACUUM_STEP_PAGES), 'короткими транзакциями по шагу')
     assert.equal((await task(1_000, true)).freedPages, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })

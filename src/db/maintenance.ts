@@ -25,7 +25,7 @@ const LEGACY_RECOMPRESS_KEYS = ['db-maintenance:recompress-after', 'db-maintenan
 const RECOMPRESS_BATCH = 20
 const RECOMPRESS_PAUSE_MS = 2_000
 const RECOMPRESS_RETRY_MS = 5 * 60_000
-/** Пачка освобождает ~500 страниц; потолок — с запасом, транзакция короткая. */
+/** Пачка освобождает ~500 страниц; потолок — с запасом, шаги короткие. */
 const RECOMPRESS_VACUUM_PAGES = 4_096
 const RECOMPRESS_PROGRESS_EVERY = 5_000
 const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000
@@ -33,7 +33,7 @@ const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60_000
 const MAINTENANCE_BUSY_INTERVAL_MS = 2 * 60_000
 /** Первое обслуживание — не сразу: старт и так читает базу (прогрев, парсеры). */
 const MAINTENANCE_FIRST_DELAY_MS = 10 * 60_000
-/** 32 МиБ за порцию: одна транзакция записи ~0,1 с, ingest её ждёт через busy_timeout. */
+/** 32 МиБ за задачу — шагами по VACUUM_STEP_PAGES (db/index.ts) с паузами. */
 const MAINTENANCE_MAX_PAGES = 8_192
 
 let recompressTimer: NodeJS.Timeout | null = null

@@ -464,7 +464,7 @@ async function recompressEventsBlobs(
       }
     }
     const vacuum = input.vacuumPages > 0
-      ? runDbMaintenance(database, { maxPages: input.vacuumPages, optimize: false })
+      ? await runDbMaintenance(database, { maxPages: input.vacuumPages, optimize: false })
       : null
     return {
       value: {
@@ -500,7 +500,10 @@ async function runDatabaseMaintenance(
   try {
     database.exec('PRAGMA busy_timeout = 5000;')
     database.exec('PRAGMA synchronous = NORMAL;')
-    return { value: runDbMaintenance(database, { maxPages: input.maxPages, optimize: input.optimize }), transfer: [] }
+    return {
+      value: await runDbMaintenance(database, { maxPages: input.maxPages, optimize: input.optimize }),
+      transfer: [],
+    }
   } finally {
     database.close()
   }

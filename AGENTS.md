@@ -230,6 +230,12 @@ voice tracker и Fastify. Делай запросы короткими, инде
   раз в несколько часов `PRAGMA optimize(0x10002)` (у свежего подключения
   без флага 0x10000 он не видит ни одной таблицы) и `incremental_vacuum`
   порциями; останавливается до CPU pool.
+- Фоновая транзакция записи (worker, обслуживание, разовый скрипт рядом с
+  ботом) — десятки миллисекунд, не больше: запись main thread ждёт чужую
+  блокировку синхронно, и event loop стоит всё это время.
+  `incremental_vacuum` — шагами `VACUUM_STEP_PAGES` (256 страниц) с паузой:
+  одна порция в 8 192 страницы держала блокировку 1,3 с (watchdog
+  2026-10-02).
 - Частые file-backed записи ingest, parser history и player-board publication
   выполняются типизированными worker-задачами
   `persist-ingested-battle`, `record-parse-result` и

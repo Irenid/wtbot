@@ -1408,6 +1408,8 @@ function reclaimFreePages(database: DatabaseSync): void {
 export interface DbMaintenanceResult {
   /** Страниц возвращено ОС через incremental_vacuum. */
   freedPages: number
+  /** Транзакций incremental_vacuum (шагов по VACUUM_STEP_PAGES). */
+  steps: number
   /** Свободных страниц осталось в файле. */
   freelistPages: number
   pageSize: number
@@ -1417,16 +1419,28 @@ export interface DbMaintenanceResult {
 }
 
 /**
- * Обслуживание на отдельном подключении worker-задачи `db-maintenance`
- * (db/maintenance.ts), а не на main thread: возврат 16 тыс. страниц занимал
- * ~160 мс event loop. PRAGMA optimize обновляет статистику планировщика по
- * заметно изменившимся таблицам; incremental_vacuum возвращает ОС не больше
- * maxPages свободных страниц за вызов — одна короткая транзакция записи.
+ * Страниц за одну транзакцию incremental_vacuum. Перенос страницы блоба
+ * стоит 50–150 мкс, а запись main thread ждёт чужую транзакцию синхронно:
+ * порция в 8 192 страницы держала блокировку 1,3 с, и watchdog бота видел
+ * такую же паузу event loop (2026-10-02). Шаг в 256 страниц — 13–40 мс.
  */
-export function runDbMaintenance(
+export const VACUUM_STEP_PAGES = 256
+/**
+ * Пауза между шагами длиннее интервала busy-ожидания SQLite (до 100 мс):
+ * ждущая запись main thread успевает взять блокировку между шагами.
+ */
+const VACUUM_STEP_PAUSE_MS = 100
+
+/**
+ * Обслуживание на отдельном подключении worker-задачи (db/maintenance.ts),
+ * а не на main thread. PRAGMA optimize обновляет статистику планировщика по
+ * заметно изменившимся таблицам; incremental_vacuum возвращает ОС не больше
+ * maxPages свободных страниц короткими транзакциями по VACUUM_STEP_PAGES.
+ */
+export async function runDbMaintenance(
   database: DatabaseSync,
   options: { maxPages: number; optimize: boolean },
-): DbMaintenanceResult {
+): Promise<DbMaintenanceResult> {
   const started = performance.now()
   let analyzed: string[] = []
   if (options.optimize) {
@@ -1439,15 +1453,23 @@ export function runDbMaintenance(
     if (analyzed.length > 0) database.exec('PRAGMA optimize(0x10002);')
   }
   let freedPages = 0
-  if (pragmaNumber(database, 'auto_vacuum') === 2 && options.maxPages > 0) {
-    const before = pragmaNumber(database, 'freelist_count')
-    if (before > 0) {
-      database.exec(`PRAGMA incremental_vacuum(${Math.min(Math.floor(options.maxPages), before)});`)
-      freedPages = before - pragmaNumber(database, 'freelist_count')
+  let steps = 0
+  if (pragmaNumber(database, 'auto_vacuum') === 2) {
+    while (freedPages < options.maxPages) {
+      const before = pragmaNumber(database, 'freelist_count')
+      if (before === 0) break
+      if (steps > 0) await new Promise((resolve) => setTimeout(resolve, VACUUM_STEP_PAUSE_MS))
+      const pages = Math.min(VACUUM_STEP_PAGES, Math.floor(options.maxPages) - freedPages, before)
+      database.exec(`PRAGMA incremental_vacuum(${pages});`)
+      const freed = before - pragmaNumber(database, 'freelist_count')
+      steps += 1
+      if (freed <= 0) break
+      freedPages += freed
     }
   }
   return {
     freedPages,
+    steps,
     freelistPages: pragmaNumber(database, 'freelist_count'),
     pageSize: pragmaNumber(database, 'page_size'),
     analyzed,
