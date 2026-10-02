@@ -73,6 +73,8 @@ full texts are in Git (commit `46b6950` and earlier).
   lost.
 - Migrations: the season tables and some indexes are created by bootstrap DDL
   outside the `PRAGMA user_version` registry.
+  The same migration can drop the seven indexes no query uses (list in
+  `docs/database.md`, "Page usage").
 - Retention of `clan_rating_snapshots`, `clan_rating_history`,
   `player_external_snapshots`: decide how long to keep them.
 - Foreign keys (`ON DELETE CASCADE` on player and season-stage tables) are

@@ -1,12 +1,12 @@
 # Database: analysis and optimization (October 2026)
 
 Two optimization passes — 2026-10-01 (table layout, indexes, settings;
-migration v17) and 2026-10-02 (events blob format, maintenance) — and an audit
-of data errors (migration v18). Measured on page-level copies of the
-production database (`.backup`) on the home server: NVMe behind LUKS, 31 GiB
-RAM, connection set up as the bot's. "Cold" — after `posix_fadvise(DONTNEED)`
-on the database file (no pages in the OS cache), "warm" — the median of five
-runs.
+migration v17) and 2026-10-02 (events blob format, maintenance) — an audit
+of data errors (migration v18) and a page-usage check. Measured on
+page-level copies of the production database (`.backup`) on the home
+server: NVMe behind LUKS, 31 GiB RAM, connection set up as the bot's.
+"Cold" — after `posix_fadvise(DONTNEED)` on the database file (no pages in
+the OS cache), "warm" — the median of five runs.
 
 ## Summary
 
@@ -335,6 +335,77 @@ correct data is not rewritten.
   correctly.
 - 148 `expired` and 16 `error` downloads older than two weeks — bookkeeping so
   the battle is not downloaded again; they have no data and never will.
+
+## Page usage (2 October, evening)
+
+Copy: a one-step `backup` of production at 16:55 UTC — 1,387 MiB, 354,997
+pages of 4 KiB, 41,928 battles, `user_version` 18. Index use: `EXPLAIN QUERY
+PLAN` of 212 SQL literals extracted from `src/` and 297 statements recorded
+from `npm test` and the offline `verify:*` runs, against the copy and against
+its schema without statistics.
+
+| Pages | MiB | Of the file |
+|---|---:|---:|
+| Free (freelist) | 0 | 0 |
+| Pointer map of `auto_vacuum = INCREMENTAL` (434 pages) | 1.7 | 0.1% |
+| Unused bytes inside pages | 92.7 | 6.7% |
+| — of them returned by a full VACUUM | 41.6 | 3.0% |
+
+| Table with its indexes | MiB | Share | KiB per battle |
+|---|---:|---:|---:|
+| `battle_events` | 889 | 64% | 21.7 |
+| `battle_players` | 251 | 18% | 6.1 |
+| `items` | 89 | 6.4% | 2.2 |
+| `battle_kills` | 81 | 5.9% | 2.0 |
+| `clan_rating_snapshots` | 37 | 2.7% | — |
+| `battles`, `battle_chat`, the rest | 37 | 2.7% | 0.9 |
+
+~33 KiB per battle — ~59 MiB a day at 1,840 battles, as estimated.
+
+- No free pages: maintenance and the repair pass return them at once.
+- The slack VACUUM keeps (51 MiB) is structural. SQLite leaves a 0.5–4 KiB
+  head of each blob on the leaf page so that its overflow pages are full, and
+  two heads often do not fit one page (`battle_events`, 29 MiB); `items` rows
+  (~1.7 KiB) fit two per page (16 MiB).
+- VACUUM would return 25 MiB of half-empty `battle_events` leaves left by
+  rewriting blobs (conversion, repair; appends pack as densely as VACUUM) and
+  ~15 MiB of indexes keyed by nick or user id, which new rows split again
+  within hours: the v17 VACUUM packed them that morning, by evening they had
+  9–16% free space again.
+- Page size, `VACUUM INTO` the copy: 4 KiB — 1,345 MiB, 8 KiB — 1,367,
+  16 KiB — 1,399: larger pages waste more on blob heads.
+- Every index of the large tables serves a code query. In the bot
+  `idx_bp_nick_base` (15 MiB) serves only `/api/voice` (`SITE_SQL`
+  `voiceDashboard`, plan checked by `verify:site-db`, behavior by
+  `src/db/voice-dashboard.test.ts`); `getPlayerBattleStats` uses it only in
+  `voice-api-benchmark`.
+- Seven plain indexes serve no query even without statistics:
+  `idx_player_identities_nick`, `idx_player_identities_nick_nocase`,
+  `idx_player_aliases_source_external`, `idx_player_aliases_nick_nocase`,
+  `idx_player_snapshots_identity_source_fetched`,
+  `idx_player_snapshots_content_hash`, `idx_clan_season_stages_time` — on
+  tables of 7–20 rows, a page each.
+- `items.data` (63 MiB of Replay API JSON): zstd-3 per row 1,594 → 751 B, but
+  SQL reads it with `json_extract`/`json_each`, and it is the source of
+  `fakeName` → nick and of re-parses (v18).
+- StatShark `raw_json` in `player_external_snapshots` is 0.1–1 MiB per
+  snapshot, superseded ones kept (3.7 MiB for 7) — retention, ROADMAP.
+- Healthy: `quick_check` ok, no foreign-key violations, statistics within
+  1–3% of row counts, the file and WAL fully in the OS cache (`fincore`), no
+  watchdog or lock-wait lines in the logs since the 08:24 UTC restart.
+- mmap: the main connection maps 1 GiB of the 1.39 GiB file, and Node's
+  SQLite caps `mmap_size` at 2 GiB (`SQLITE_MAX_MMAP_SIZE`), which the file
+  passes in ~11 days. Pages beyond the window — 1–10% of the hot tables', 39%
+  of `battle_events`' (read a battle at a time) — come by `pread` from the OS
+  cache.
+
+| Candidate | Gain (measured) | Cost and risk | Decision |
+|---|---|---|---|
+| Full VACUUM | −41.6 MiB (3%), the index part returns within hours | bot stopped; no speed gain (the file is in RAM); backups are already compact (`VACUUM INTO`) | no |
+| Drop the seven unused indexes | 7 pages, one B-tree write less per row of small tables | a migration: the previous image refuses the database | with the next migration (ROADMAP) |
+| zstd `items.data` | `data` −53% (~−40 MiB, −1 KiB per battle) | `json_extract` in SQL, every reader, a migration, rollback | no |
+| 8 or 16 KiB pages | none: +22 / +54 MiB | a full VACUUM | no |
+| `mmap_size` 2 GiB | microseconds per page beyond 1 GiB | outgrown in ~11 days | no |
 
 ## Rollback
 

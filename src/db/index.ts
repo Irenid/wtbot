@@ -48,8 +48,6 @@ let selectPlayerRatingStatement: StatementSync | null = null
 let selectPlayerBattleStatsStatement: StatementSync | null = null
 let selectPlayerReplayStatsStatement: StatementSync | null = null
 let selectPlayerReplayVehiclesStatement: StatementSync | null = null
-let selectVoiceDashboardStatement: StatementSync | null = null
-let selectVoiceClanTagsStatement: StatementSync | null = null
 let selectCommandTotalStatement: StatementSync | null = null
 let selectCommandBreakdownStatement: StatementSync | null = null
 let selectItemTotalStatement: StatementSync | null = null
@@ -80,8 +78,6 @@ function resetPreparedStatements(): void {
   selectPlayerBattleStatsStatement = null
   selectPlayerReplayStatsStatement = null
   selectPlayerReplayVehiclesStatement = null
-  selectVoiceDashboardStatement = null
-  selectVoiceClanTagsStatement = null
   selectCommandTotalStatement = null
   selectCommandBreakdownStatement = null
   selectItemTotalStatement = null
@@ -4130,49 +4126,10 @@ export interface VoiceDashboardRow extends VoicePresenceRow {
   lastBattleAt: number | null
 }
 
-/** Полный snapshot для /api/voice одним подготовленным SQLite-запросом. */
+/** The whole /api/voice snapshot in one prepared statement. */
 export function getVoiceDashboardRows(): VoiceDashboardRow[] {
-  selectVoiceDashboardStatement ??= getDb().prepare(`
-    WITH battle_stats AS (
-      SELECT bp.nick_base, COUNT(*) AS battles, MAX(b.start_time) AS last_battle_at
-      FROM battle_players bp
-      JOIN battles b ON b.session_id = bp.session_id
-      WHERE bp.nick_base IN (SELECT wt_nick_base FROM voice_presence)
-        AND b.start_time >= ?
-      GROUP BY bp.nick_base
-    )
-    SELECT
-      v.guild_id,
-      v.guild_name,
-      v.channel_id,
-      v.channel_name,
-      v.user_id,
-      v.display_name,
-      v.wt_nick,
-      v.wt_nick_base,
-      v.joined_at,
-      latest.clan_tag,
-      latest.rating,
-      previous.clan_tag AS previous_clan_tag,
-      previous.rating AS previous_rating,
-      COALESCE(bs.battles, 0) AS battles,
-      bs.last_battle_at
-    FROM voice_presence v
-    LEFT JOIN clan_rating_snapshots latest ON latest.id = (
-      SELECT s.id FROM clan_rating_snapshots s
-      WHERE s.nick_base = v.wt_nick_base AND s.seen_at >= ?
-      ORDER BY s.id DESC LIMIT 1
-    )
-    LEFT JOIN clan_rating_snapshots previous ON previous.id = (
-      SELECT s.id FROM clan_rating_snapshots s
-      WHERE s.nick_base = v.wt_nick_base AND s.seen_at >= ?
-      ORDER BY s.id DESC LIMIT 1 OFFSET 1
-    )
-    LEFT JOIN battle_stats bs ON bs.nick_base = v.wt_nick_base
-    ORDER BY v.guild_id, v.channel_id, v.joined_at
-  `)
   const seasonStart = currentClanSeasonStart()
-  const rows = selectVoiceDashboardStatement.all(seasonStart, seasonStart, seasonStart) as unknown as {
+  const rows = siteStatement('voiceDashboard').all(seasonStart, seasonStart, seasonStart) as unknown as {
     guild_id: string
     guild_name: string
     channel_id: string
@@ -4210,20 +4167,9 @@ export function getVoiceDashboardRows(): VoiceDashboardRow[] {
   }))
 }
 
-/** Кланы активных voice-игроков одним индексированным запросом. */
+/** Clans of the players in voice, by their latest PSR snapshot. */
 export function getVoiceClanTags(): string[] {
-  selectVoiceClanTagsStatement ??= getDb().prepare(`
-    SELECT DISTINCT latest.clan_tag AS clan_tag
-    FROM (SELECT DISTINCT wt_nick_base FROM voice_presence) active
-    JOIN clan_rating_snapshots latest ON latest.id = (
-      SELECT s.id FROM clan_rating_snapshots s
-      WHERE s.nick_base = active.wt_nick_base
-      ORDER BY s.id DESC LIMIT 1
-    )
-    WHERE latest.clan_tag <> ''
-    ORDER BY latest.clan_tag
-  `)
-  const rows = selectVoiceClanTagsStatement.all() as unknown as { clan_tag: string }[]
+  const rows = siteStatement('voiceClanTags').all() as unknown as { clan_tag: string }[]
   return rows.map((row) => row.clan_tag)
 }
 
@@ -5747,6 +5693,59 @@ export const SITE_SQL = {
     FROM battle_kills
     WHERE session_id IN (SELECT value FROM json_each(?))
       AND (killer_id = ? OR victim_id = ?)
+  `,
+  // Voice members match battle rows and PSR snapshots by the base nick
+  // (normalizeWtNick). voiceDashboard is the bot's only query of
+  // idx_bp_nick_base (getPlayerBattleStats serves voice-api-benchmark).
+  voiceDashboard: `
+    WITH battle_stats AS (
+      SELECT bp.nick_base, COUNT(*) AS battles, MAX(b.start_time) AS last_battle_at
+      FROM battle_players bp
+      JOIN battles b ON b.session_id = bp.session_id
+      WHERE bp.nick_base IN (SELECT wt_nick_base FROM voice_presence)
+        AND b.start_time >= ?
+      GROUP BY bp.nick_base
+    )
+    SELECT
+      v.guild_id,
+      v.guild_name,
+      v.channel_id,
+      v.channel_name,
+      v.user_id,
+      v.display_name,
+      v.wt_nick,
+      v.wt_nick_base,
+      v.joined_at,
+      latest.clan_tag,
+      latest.rating,
+      previous.clan_tag AS previous_clan_tag,
+      previous.rating AS previous_rating,
+      COALESCE(bs.battles, 0) AS battles,
+      bs.last_battle_at
+    FROM voice_presence v
+    LEFT JOIN clan_rating_snapshots latest ON latest.id = (
+      SELECT s.id FROM clan_rating_snapshots s
+      WHERE s.nick_base = v.wt_nick_base AND s.seen_at >= ?
+      ORDER BY s.id DESC LIMIT 1
+    )
+    LEFT JOIN clan_rating_snapshots previous ON previous.id = (
+      SELECT s.id FROM clan_rating_snapshots s
+      WHERE s.nick_base = v.wt_nick_base AND s.seen_at >= ?
+      ORDER BY s.id DESC LIMIT 1 OFFSET 1
+    )
+    LEFT JOIN battle_stats bs ON bs.nick_base = v.wt_nick_base
+    ORDER BY v.guild_id, v.channel_id, v.joined_at
+  `,
+  voiceClanTags: `
+    SELECT DISTINCT latest.clan_tag AS clan_tag
+    FROM (SELECT DISTINCT wt_nick_base FROM voice_presence) active
+    JOIN clan_rating_snapshots latest ON latest.id = (
+      SELECT s.id FROM clan_rating_snapshots s
+      WHERE s.nick_base = active.wt_nick_base
+      ORDER BY s.id DESC LIMIT 1
+    )
+    WHERE latest.clan_tag <> ''
+    ORDER BY latest.clan_tag
   `,
 } as const
 
