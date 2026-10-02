@@ -1333,8 +1333,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     properties: { key: { type: 'string', pattern: '^[0-9a-fA-F]{1,20}$' } },
   }
 
-  // Сцена боя для плеера: самый дорогой эндпоинт (worker + gunzip), поэтому
-  // rate limit, дедупликация одинаковых session и бюджет сборок обязательны.
+  // Сцена боя для плеера: самый дорогой эндпоинт (worker, распаковка событий),
+  // поэтому rate limit, дедупликация одинаковых session и бюджет сборок обязательны.
   app.get<{ Params: { key: string } }>('/api/battles/:key/scene', {
     schema: { params: battleKeyParams },
   }, async (request, reply) => {

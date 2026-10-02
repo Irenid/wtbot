@@ -37,7 +37,7 @@ export type { BattleHeatmapKind, BattleMediaKind } from './battle-media-kind.js'
 
 /**
  * Дополнительные материалы боя. Диск/сеть/SQLite остаются в main thread,
- * а gunzip/JSON, SVG и Resvg выполняются в CPU worker. Интерактивный путь
+ * а распаковка и JSON событий, SVG и Resvg выполняются в CPU worker. Интерактивный путь
  * строит один материал, фоновый прогрев при необходимости — полный bundle.
  */
 

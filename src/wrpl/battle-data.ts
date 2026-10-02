@@ -249,7 +249,7 @@ export interface ReconstructedBattle extends ReconstructedBattleSummary {
   eventsBlob: Buffer | null
 }
 
-/** Scoreboard из БД без чтения и gunzip events_blob. */
+/** Scoreboard из БД без чтения и распаковки events_blob. */
 export function reconstructBattleSummary(sessionId: string): ReconstructedBattleSummary | null {
   const data = getBattleSummaryForRender(sessionId)
   return data ? reconstructRows(data.battle, data.players) : null

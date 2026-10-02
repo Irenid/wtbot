@@ -118,23 +118,20 @@ function getDataVersion(): number {
 }
 
 /**
- * Прогрев горячих страниц БД при старте: на HDD первый просмотр каждого
- * игрока/клана иначе стоит секунды случайных чтений и морозит event loop
- * вместе с ботом (blob-overflow цепочки events_blob не читаются). Синхронно,
- * зовётся только при старте долгоживущих процессов (бот, site-real).
+ * Прогрев горячих страниц: иначе первый просмотр игрока или клана на холодном
+ * кэше ОС стоит случайных чтений с диска. Бот выполняет эти запросы в worker
+ * (`warm-sqlite`, DB_BACKGROUND_WARMUP_SQL) после открытия Discord и web;
+ * синхронно (warmupDbHotPages) — только site-real.
  *
- * ИНВАРИАНТ (проверяется в verify:site-db): запрос с expect 'table' обязан
- * читать листья таблицы (в плане нет COVERING INDEX) — покрывающий столбцы
- * запроса индекс молча превращает прогрев в холостой; expect 'index' —
- * наоборот, греет конкретный индекс. Новый индекс может сломать 'table'-план.
+ * ИНВАРИАНТ (verify:site-db): expect 'table' читает листья таблицы — в плане
+ * нет COVERING INDEX, иначе прогрев молча холостой; expect 'index' греет
+ * конкретный индекс. Новый индекс может сломать 'table'-план.
  */
 export const DB_WARMUP_SQL: readonly { sql: string; expect: 'table' | 'index' }[] = [
-  // Ограниченный хвост таблиц прогревает актуальные страницы без полного
-  // синхронного скана многогигабайтной БД на startup.
+  // Ограниченный хвост таблиц — актуальные страницы без полного скана.
   { sql: 'SELECT score FROM battle_players ORDER BY rowid DESC LIMIT 2048', expect: 'table' },
   { sql: 'SELECT COUNT(*) FROM battle_players', expect: 'index' },
-  // Blob-heavy battles нельзя сканировать на main thread: греем компактный
-  // covering index, используемый dashboard-статистикой.
+  // Покрывающий индекс статистики дашборда.
   {
     sql: 'SELECT MAX(duration_sec) FROM battles INDEXED BY idx_battles_metrics',
     expect: 'index',
