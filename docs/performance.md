@@ -119,7 +119,7 @@ explained and a long exact-off control run is done.
 3. **WRPL packet decoding** — the largest offline CPU phase, but not the live
    limit.
 4. **Discord delivery latency** — the runs deliberately published nothing, so
-   discovery → preliminary → final edit is not measured live.
+   discovery → commit → post is not measured live.
 
 No longer bottlenecks: the worst-case replay budget wait, `recordParseResult`,
 the player board publication write, repeated known-replay lookups, the ready
@@ -134,9 +134,9 @@ external/ArrayBuffer, worker peaks and RSS after graceful shutdown. Exact on by
 default only with ≥ 10% more throughput, 429 < 2% and a proven plateau or an
 explained bounded RSS.
 
-**P1 — Discord latency.** Timestamps discovery → preliminary send → commit →
-final edit; a short run only in a dedicated test channel. Gate: preliminary p95
-< 5 s, final edit p95 < 5 s, zero duplicates after a restart.
+**P1 — Discord latency.** Timestamps discovery → commit → post (preliminary
+messages are no longer sent); a short run only in a dedicated test channel.
+Gate: commit → post p95 < 5 s, zero duplicates after a restart.
 
 **P2 — parsing, only under CPU pressure.** GMSync and packet decoding — if the
 live parse queue p95 exceeds 100 ms or CPU workers stay saturated;

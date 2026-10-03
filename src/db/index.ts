@@ -2022,7 +2022,11 @@ export interface PendingAnnounceItem extends StoredItem {
 
 export type AnnounceQueueOrder = 'newest' | 'oldest'
 
-/** Предварительное сообщение отправлено; после ingest оно будет заменено PNG. */
+/**
+ * A preliminary message was sent; the full post replaces it after ingest.
+ * The announcer stopped sending them on 2026-08-01 (e530b1c): only legacy rows
+ * and tests have one (getUnfinishedAnnounceMessages).
+ */
 export function markAnnouncePending(itemId: number, messageId: string): void {
   getDb()
     .prepare(`
@@ -2080,19 +2084,45 @@ export function getPendingAnnounce(
       ORDER BY i.id ${order === 'oldest' ? 'ASC' : 'DESC'}
       LIMIT ?
     `)
-    .all(baselineId, maxAttempts, limit) as unknown as Array<
-      ItemRow & {
-        announce_status: AnnounceStatus | null
-        announce_attempts: number
-        announce_message_id: string | null
-      }
-    >
-  return rows.map((row) => ({
+    .all(baselineId, maxAttempts, limit) as unknown as PendingAnnounceRow[]
+  return rows.map(toPendingAnnounceItem)
+}
+
+/**
+ * Unfinished preliminary messages the baseline has already passed (legacy
+ * rows, see markAnnouncePending): getPendingAnnounce never selects them, so
+ * the announcer finishes them once at start. A primary-key range scan.
+ */
+export function getUnfinishedAnnounceMessages(baselineId: number, maxAttempts: number): PendingAnnounceItem[] {
+  const rows = getDb()
+    .prepare(`
+      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at,
+             NULL AS analysis, a.status AS announce_status,
+             a.attempts AS announce_attempts,
+             a.message_id AS announce_message_id
+      FROM announce_state a
+      JOIN items i ON i.id = a.item_id
+      WHERE a.item_id <= ? AND a.message_id IS NOT NULL
+        AND a.status IN ('pending', 'failed') AND a.attempts < ?
+      ORDER BY a.item_id
+    `)
+    .all(baselineId, maxAttempts) as unknown as PendingAnnounceRow[]
+  return rows.map(toPendingAnnounceItem)
+}
+
+type PendingAnnounceRow = ItemRow & {
+  announce_status: AnnounceStatus | null
+  announce_attempts: number
+  announce_message_id: string | null
+}
+
+function toPendingAnnounceItem(row: PendingAnnounceRow): PendingAnnounceItem {
+  return {
     ...toStoredItem(row),
     announceStatus: row.announce_status,
     announceAttempts: row.announce_attempts,
     announceMessageId: row.announce_message_id,
-  }))
+  }
 }
 
 /**

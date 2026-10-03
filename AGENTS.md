@@ -455,10 +455,12 @@ Data:
   are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral.
 - Announcer: attempts and message state in `announce_state`, the baseline in
   `bot_state`; the first start does not publish history; battles older than
-  `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()` (except
-  started preliminary posts); a single new battle may get a preliminary
-  message replaced by the full post after the commit, a bulk catch-up does
-  not.
+  `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()`. A
+  battle is posted once, after its commit; preliminary messages are no longer
+  sent (since 2026-08-01), and the legacy ones behind the baseline
+  (`getUnfinishedAnnounceMessages()`, loaded at announcer start, kept until
+  resolved) are edited into the post or the error, or marked done if Discord
+  deleted them.
 - `/playerboard setup` stores the channel and one editable message in SQLite;
   the board shows the current voice snapshot and writes its publication state
   through a worker task only when the hash changes. The WT nickname is the
@@ -563,8 +565,8 @@ npm run build:web
 `verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-02**: all
-gates pass, **310 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+each can run alone for the affected subsystem. Baseline on **2026-10-03**: all
+gates pass, **319 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

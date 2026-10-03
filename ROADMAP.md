@@ -115,7 +115,7 @@ full texts are in Git (commit `46b6950` and earlier).
 Measurements, gates and rollback — [docs/performance.md](docs/performance.md).
 Open: prove or disprove the RSS plateau for
 `WT_REPLAY_EXACT_RESERVATION_ENABLED`, measure announcement latency
-(discovery → preliminary → final edit), profile under Docker/Linux.
+(discovery → commit → post), profile under Docker/Linux.
 
 ## Collecting and showing statistics (started 2026-09-29)
 
@@ -129,9 +129,10 @@ Open: prove or disprove the RSS plateau for
   are comparable.
 - **Vehicle BR from the datamine.** `economicRankArcade/Historical/Simulation`
   from `wpcost.blkx` → `VehicleInfo.br` (BR = rank / 3 + 1).
-  `wt-vehicles.json` is built once and kept forever — it needs a format version
-  and an expiry: BR changes with patches, so update it automatically after a
-  game patch (or from the BR-change articles). Then show BR on the site and
+  `wt-vehicles.json` is rebuilt in the background once it is 7 days old
+  (`src/wrpl/vehicles.ts`); a new field also needs a format version so an old
+  cache without it is rebuilt at once, and BR changes with patches, so rebuild
+  right after a game patch too. Then show BR on the site and
   check the season stages' weekly limits against the vehicles in battles (in
   the summary worker).
 - **StatShark: what is not shown.** The player page shows level, rank, dates,

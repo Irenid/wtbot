@@ -145,7 +145,9 @@ export async function cachedBattleHeatmap2x(
 
 // 42: 2.59 replays (zstd stream, new ECS byte) — older images of these battles are empty.
 // 43: bot slot tracks, kills and damage credited to their players (player-events.ts).
-const BATTLE_MEDIA_VERSION = 43
+// 44: icons and missile seekers of mixed-case ids, wt-tools maps with "-", "()" or
+// diacritics in the key.
+const BATTLE_MEDIA_VERSION = 44
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)

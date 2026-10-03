@@ -213,34 +213,43 @@ function parseStatistics($: CheerioAPI): Record<PlayerMode, Record<string, strin
   }
 }
 
-/** Разбирает HTML профиля и извлекает профиль со статистикой. */
+const PROFILE_NOT_FOUND = /player\s+not\s+found|user\s+not\s+found|игрок не найден/i
+
+/**
+ * Parses a profile page into the profile and its statistics. "Not found"
+ * needs the site to say so: unknown markup is a schema error, retried soon,
+ * not a not_found snapshot kept for the whole TTL.
+ */
 export function parsePlayerProfilePageHtml(
   html: string,
   requestedNickname: string,
   profileUrl = PROFILE_URL,
 ): ParsedProfilePage {
   if (Buffer.byteLength(html, 'utf8') > MAX_PROFILE_BYTES) {
-    throw new PlayerSchemaError(`профиль ${requestedNickname}: ответ больше лимита ${MAX_PROFILE_BYTES} байт`)
+    throw new PlayerSchemaError(`profile ${requestedNickname}: response exceeds ${MAX_PROFILE_BYTES} bytes`)
   }
   const $ = load(html)
   const profile = $('.user-profile').first()
   if (profile.length === 0) {
     if (looksLikeSessionPage($, html)) {
-      throw new PlayerSessionError(`профиль ${requestedNickname}: сессия WT истекла или сайт вернул защитную страницу`)
+      throw new PlayerSessionError(`profile ${requestedNickname}: the WT session expired or the site returned a protection page`)
     }
-    if (/player\s+not\s+found|user\s+not\s+found|игрок не найден/i.test($('body').text())) {
-      throw new PlayerNotFoundError(`профиль ${requestedNickname}: игрок не найден`)
+    if (PROFILE_NOT_FOUND.test($('body').text())) {
+      throw new PlayerNotFoundError(`profile ${requestedNickname}: player not found`)
     }
-    throw new PlayerSchemaError(`профиль ${requestedNickname}: блок user-profile не найден`)
+    throw new PlayerSchemaError(`profile ${requestedNickname}: no user-profile block`)
   }
 
   const nickname = firstText($, '.user-profile__data-nick a, .user-profile__data-nick')
     ?? firstText($, '.user-profile h1, h1')
-  if (nickname === null || /player\s+not\s+found|user\s+not\s+found|игрок не найден/i.test(nickname)) {
-    throw new PlayerNotFoundError(`профиль ${requestedNickname}: игрок не найден`)
+  if (PROFILE_NOT_FOUND.test(nickname ?? $('body').text())) {
+    throw new PlayerNotFoundError(`profile ${requestedNickname}: player not found`)
+  }
+  if (nickname === null) {
+    throw new PlayerSchemaError(`profile ${requestedNickname}: no nickname in the user-profile block`)
   }
   if (/sign\s+in|log\s+in|войти/i.test(nickname)) {
-    throw new PlayerSessionError(`профиль ${requestedNickname}: сайт вернул страницу входа — обнови WT_COOKIE`)
+    throw new PlayerSessionError(`profile ${requestedNickname}: the site returned the sign-in page, update WT_COOKIE`)
   }
 
   const clanValue = firstText($, '.user-profile__data-clan a, .user-profile__data-clan')

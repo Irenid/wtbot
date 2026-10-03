@@ -8,7 +8,8 @@ import type { ReplayEvents, SpaceTime } from './replay-events.js'
 // a CPU worker.
 
 // 3: bot slot tracks and kills credited to their players (player-events.ts).
-export const BATTLE_SCENE_VERSION = 3
+// 4: wt-tools maps with "-", "()" or diacritics in the key (battle-assets.ts).
+export const BATTLE_SCENE_VERSION = 4
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000

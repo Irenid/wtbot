@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { writeFileAtomic as writeAtomic } from '../atomic-file.js'
 import { readResponseBuffer } from '../http-response.js'
@@ -10,18 +10,21 @@ import {
 } from '../workers/pool.js'
 
 /**
- * Словарь техники War Thunder: внутренний id → человеческое название,
- * класс машины и страна. Собирается один раз из датамайна игры
+ * War Thunder vehicle dictionary: internal id → display name, vehicle class
+ * and country, built from the game datamine
  * (https://github.com/gszabi99/War-Thunder-Datamine):
  *
- *   lang/units.csv        — локализованные названия («us_m1a1_hc_abrams» → «M1A1 HC»)
- *   config/wpcost.blkx    — unitClass и страна каждой машины (~30 МБ, скачивается один раз)
- *   config/unittags.blkx  — уточнение: лёгкие танки (type_light_tank)
+ *   lang/units.csv        — localized names ("us_m1a1_hc_abrams" → "M1A1 HC")
+ *   config/wpcost.blkx    — unitClass and country of every vehicle (~30 MB)
+ *   config/unittags.blkx  — refinement: light tanks (type_light_tank)
  *
- * Результат кэшируется в data/wt-vehicles.json (~200 КБ), исходники удаляются.
+ * Cached in data/wt-vehicles.json (~200 KB), the sources are deleted. Patches
+ * add vehicles, and a missing one shows its raw id with class "?": a
+ * dictionary older than REFRESH_AFTER_MS is rebuilt in the background while
+ * the old one keeps serving.
  */
 
-/** F — самолёт, H — вертолёт, T — танк, L — лёгкий, AA — ПВО, ? — неизвестно */
+/** F — aircraft, H — helicopter, T — tank, L — light tank, AA — SPAA, ? — unknown */
 export type VehicleClass = 'F' | 'H' | 'T' | 'L' | 'AA' | '?'
 
 export interface VehicleInfo {
@@ -35,15 +38,24 @@ export type VehicleDict = Record<string, VehicleInfo>
 const RAW_BASE = 'https://raw.githubusercontent.com/gszabi99/War-Thunder-Datamine/master'
 const CACHE_FILE = './data/wt-vehicles.json'
 const TMP_DIR = './data/wt-dict'
+const REFRESH_AFTER_MS = 7 * 24 * 3600 * 1000
+const REFRESH_RETRY_MS = 6 * 3600 * 1000
+/** A rebuild with fewer vehicles than this share of the old one means a datamine format change. */
+const MIN_REFRESH_RATIO = 0.9
 
 let loaded: VehicleDict | null = null
 let loading: Promise<VehicleDict> | null = null
 let loadingPriority: WorkerPriority = 'normal'
 let loadingControl: WorkerTaskControl | null = null
+let refreshDueAt = Number.POSITIVE_INFINITY
+let refreshing = false
 
-/** Возвращает словарь техники, при первом запуске собирает его из датамайна */
+/** The vehicle dictionary; the first run builds it, a stale one is rebuilt in the background. */
 export function ensureVehicleDict(priority: WorkerPriority = 'normal'): Promise<VehicleDict> {
-  if (loaded) return Promise.resolve(loaded)
+  if (loaded) {
+    if (Date.now() >= refreshDueAt) refreshInBackground(loaded)
+    return Promise.resolve(loaded)
+  }
   if (loading) {
     promoteLoading(priority)
     return loading
@@ -66,11 +78,54 @@ export function promoteVehicleDictLoad(priority: WorkerPriority): void {
 
 async function loadVehicleDict(): Promise<VehicleDict> {
   try {
-    return JSON.parse(await readFile(CACHE_FILE, 'utf8')) as VehicleDict
+    const [text, info] = await Promise.all([readFile(CACHE_FILE, 'utf8'), stat(CACHE_FILE)])
+    refreshDueAt = info.mtimeMs + REFRESH_AFTER_MS
+    return JSON.parse(text) as VehicleDict
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  console.log('[vehicles] Словаря нет — собираю из датамайна (одноразово, ~40 МБ)...')
+  console.log('[vehicles] No dictionary: building it from the datamine (~40 MB)...')
+  const dict = await buildFromDatamine(loadingPriority, (control) => {
+    loadingControl = control
+    control.promote(loadingPriority)
+  })
+  await writeAtomic(CACHE_FILE, JSON.stringify(dict))
+  refreshDueAt = Date.now() + REFRESH_AFTER_MS
+  console.log(`[vehicles] Done: ${Object.keys(dict).length} vehicles → ${CACHE_FILE}`)
+  return dict
+}
+
+/** Single-flight rebuild; failures keep the old dictionary and retry after REFRESH_RETRY_MS. */
+function refreshInBackground(current: VehicleDict): void {
+  if (refreshing) return
+  refreshing = true
+  refreshDueAt = Date.now() + REFRESH_RETRY_MS
+  void (async () => {
+    // Sources left by a crashed earlier build belong to an older datamine.
+    await rm(TMP_DIR, { recursive: true, force: true })
+    const next = await buildFromDatamine('background')
+    const before = Object.keys(current).length
+    const after = Object.keys(next).length
+    if (after < before * MIN_REFRESH_RATIO) {
+      throw new Error(`the rebuild has ${after} vehicles against ${before}`)
+    }
+    await writeAtomic(CACHE_FILE, JSON.stringify(next))
+    loaded = next
+    refreshDueAt = Date.now() + REFRESH_AFTER_MS
+    console.log(`[vehicles] Dictionary refreshed: ${before} → ${after} vehicles`)
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[vehicles] Dictionary refresh failed, the old one stays: ${message}`)
+  }).finally(() => {
+    refreshing = false
+  })
+}
+
+/** Downloads the sources and builds the dictionary in a worker; sources survive only a failed download. */
+async function buildFromDatamine(
+  priority: WorkerPriority,
+  onControl?: (control: WorkerTaskControl) => void,
+): Promise<VehicleDict> {
   await mkdir(TMP_DIR, { recursive: true })
   const [csvBuffer, wpcostBuffer, tagsBuffer] = await Promise.all([
     fetchOrCached('units.csv', `${RAW_BASE}/lang.vromfs.bin_u/lang/units.csv`),
@@ -80,29 +135,19 @@ async function loadVehicleDict(): Promise<VehicleDict> {
   const csv = transferableBuffer(csvBuffer)
   const wpcost = transferableBuffer(wpcostBuffer)
   const tags = transferableBuffer(tagsBuffer)
-  let dict: VehicleDict
   try {
-    dict = await runWorkerTask(
+    return await runWorkerTask(
       { kind: 'build-vehicle-dict', input: { csv, wpcost, tags } },
       {
-        priority: loadingPriority,
+        priority,
         transferList: [csv, wpcost, tags],
         timeoutMs: 120_000,
-        onControl: (control) => {
-          loadingControl = control
-          control.promote(loadingPriority)
-        },
+        ...(onControl ? { onControl } : {}),
       },
     )
-  } catch (error) {
+  } finally {
     await rm(TMP_DIR, { recursive: true, force: true })
-    throw error
   }
-
-  await writeAtomic(CACHE_FILE, JSON.stringify(dict))
-  await rm(TMP_DIR, { recursive: true, force: true })
-  console.log(`[vehicles] Готово: ${Object.keys(dict).length} машин → ${CACHE_FILE}`)
-  return dict
 }
 
 function promoteLoading(priority: WorkerPriority): void {
@@ -125,8 +170,8 @@ async function fetchOrCached(file: string, url: string): Promise<Buffer> {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
-  if (!res.ok) throw new Error(`HTTP ${res.status} при скачивании ${url}`)
-  const data = await readResponseBuffer(res, 64 * 1024 * 1024, `справочник ${file}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status} downloading ${url}`)
+  const data = await readResponseBuffer(res, 64 * 1024 * 1024, `datamine ${file}`)
   await writeAtomic(p, data)
   return data
 }

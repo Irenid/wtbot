@@ -4,21 +4,24 @@ import { writeFileAtomic as writeAtomic } from '../atomic-file.js'
 import { readResponseBuffer, readResponseJson, readResponseText } from '../http-response.js'
 
 /**
- * Внешние ресурсы для картинки боя.
+ * External assets for the battle image.
  *
- * Иконки техники — белые силуэты из датамайна игры
- * (atlases.vromfs.bin_u/units/<wpcost-id>.png, ~5–10 КБ каждая).
- * Скачиваются по мере надобности и кэшируются навсегда в data/unit-icons/.
- * Отсутствующие в датамайне id запоминаются пустым файлом *.miss,
- * чтобы не ходить на GitHub повторно.
+ * Vehicle icons are white silhouettes from the game datamine
+ * (atlases.vromfs.bin_u/units/<wpcost id>.png, ~5–10 KiB each). Game ids keep
+ * their case (germ_leopard_I), datamine file names are lowercase, and
+ * raw.githubusercontent.com is case-sensitive: the file name is the lowercased
+ * id. Downloaded on demand and cached in data/unit-icons/.
  *
- * Тактические карты для хитмап — снимки игровой карты с wt-tools.app
- * (открытый бакет wt-map-files: 62 карты × все режимы). Картинка режима
- * покрывает ровно battleArea миссии (проверено по координатам зон), так
- * что привязка к миру точная. Кэш — data/maps/, качается один раз.
+ * Heatmap tactical maps are snapshots of the game map from wt-tools.app
+ * (public bucket wt-map-files: 62 maps × all modes). A mode's image covers
+ * exactly the mission's battleArea (checked against zone coordinates), so the
+ * world alignment is exact. Cached in data/maps/.
  *
- * Фон таблицы результатов — скриншот в data/maps/<level>.jpg|png
- * (кладётся руками); нет файла — рендер рисует тёмный градиент.
+ * A missing icon or map leaves an empty *.miss marker for MISS_TTL_MS: the
+ * datamine and wt-tools add new vehicles and maps days after a patch.
+ *
+ * The scoreboard background is a screenshot at data/maps/<level>.jpg|png
+ * (placed by hand); without one the renderer draws a dark gradient.
  */
 
 const ICONS_DIR = './data/unit-icons'
@@ -30,13 +33,14 @@ const WTTOOLS_MANIFEST_URL = 'https://wt-tools.app/manifest.json'
 const WTTOOLS_MAPS_BASE = 'https://storage.googleapis.com/wt-map-files/maps'
 const MANIFEST_FILE = path.join(MAPS_DIR, 'wt-tools-manifest.json')
 const MANIFEST_TTL_MS = 7 * 24 * 3600 * 1000
+const MISS_TTL_MS = 24 * 3600 * 1000
 
 /** "levels/avg_jungle.bin" → "avg_jungle" */
 export function levelId(headerLevel: string): string {
   return headerLevel.replace(/^.*[/\\]/, '').replace(/\.bin$/i, '')
 }
 
-/** Возвращает id → бинарный PNG силуэта; недоступные иконки в Map не попадают */
+/** id → silhouette PNG; unavailable icons are left out of the map. */
 export async function ensureUnitIcons(ids: string[]): Promise<Map<string, Buffer>> {
   await mkdir(ICONS_DIR, { recursive: true })
   const icons = new Map<string, Buffer>()
@@ -54,27 +58,28 @@ export async function ensureUnitIcons(ids: string[]): Promise<Map<string, Buffer
 const iconInflight = new Map<string, Promise<Buffer | null>>()
 
 function ensureUnitIcon(id: string): Promise<Buffer | null> {
-  const running = iconInflight.get(id)
+  const name = id.toLowerCase()
+  const running = iconInflight.get(name)
   if (running) return running
-  const task = loadUnitIcon(id).finally(() => iconInflight.delete(id))
-  iconInflight.set(id, task)
+  const task = loadUnitIcon(name).finally(() => iconInflight.delete(name))
+  iconInflight.set(name, task)
   return task
 }
 
-async function loadUnitIcon(id: string): Promise<Buffer | null> {
-  const file = path.join(ICONS_DIR, `${id}.png`)
-  const miss = path.join(ICONS_DIR, `${id}.miss`)
+async function loadUnitIcon(name: string): Promise<Buffer | null> {
+  const file = path.join(ICONS_DIR, `${name}.png`)
+  const miss = path.join(ICONS_DIR, `${name}.miss`)
   const cached = await readOptional(file)
   if (cached && isPng(cached) && cached.length <= 2 * 1024 * 1024) return cached
   if (cached) await rm(file, { force: true }).catch(() => undefined)
-  if (await exists(miss)) return null
+  if (await freshMiss(miss)) return null
   try {
-    const response = await fetch(`${ICONS_BASE}/${id}.png`, { signal: AbortSignal.timeout(20_000) })
+    const response = await fetch(`${ICONS_BASE}/${name}.png`, { signal: AbortSignal.timeout(20_000) })
     if (!response.ok) {
       if (response.status === 404) await writeAtomic(miss, '')
       return null
     }
-    const data = await readResponseBuffer(response, 2 * 1024 * 1024, `иконка ${id}`)
+    const data = await readResponseBuffer(response, 2 * 1024 * 1024, `icon ${name}`)
     if (!isPng(data) || data.length > 2 * 1024 * 1024) return null
     await writeAtomic(file, data)
     return data
@@ -255,7 +260,7 @@ export async function loadMapIconFontPath(): Promise<string | null> {
   }
 }
 
-// ---------- ГСН ракет (для значков причины смерти на хитмапе) ----------
+// ---------- missile seekers (cause-of-death icons on the heatmap) ----------
 
 export type MissileSeeker = 'ir' | 'sarh' | 'arh'
 
@@ -264,11 +269,12 @@ const ROCKETGUNS_BASE =
   'https://raw.githubusercontent.com/gszabi99/War-Thunder-Datamine/master/aces.vromfs.bin_u/gamedata/weapons/rocketguns'
 
 /**
- * Тип ГСН по id оружия из события убийства: ИК / полуактивная РЛ /
- * активная РЛ. Ракеты авиации описаны в rocketguns/<id>.blkx датамайна
- * (radarSeeker.active → АРЛ, radarSeeker → ПАРЛ, opticalSeeker → ИК);
- * снаряды, пули и ЗУР зениток отдельных файлов не имеют — для них в
- * кэш пишется "none" и в ответ они не попадают. Кэш — data/weapons.json.
+ * Seeker type by the weapon id of a kill event: IR / semi-active radar /
+ * active radar. Missiles are described in the datamine's
+ * rocketguns/<lowercased id>.blkx (radarSeeker.active → ARH, radarSeeker →
+ * SARH, opticalSeeker → IR); shells, bullets and other weapons without a file
+ * are cached as "none" and left out of the result. Cache — data/weapons.json,
+ * keyed by the lowercased id (su_9M39 is su_9m39.blkx).
  */
 let weaponQueue: Promise<void> = Promise.resolve()
 
@@ -282,41 +288,44 @@ async function loadWeaponSeekers(ids: string[]): Promise<Map<string, MissileSeek
   let cache: Record<string, string> = {}
   try {
     const parsed: unknown = JSON.parse(await readFile(WEAPONS_FILE, 'utf8'))
-    if (parsed !== null && typeof parsed === 'object') cache = parsed as Record<string, string>
+    // Mixed-case keys come from the old case-sensitive lookup and are never read again.
+    if (parsed !== null && typeof parsed === 'object') {
+      cache = Object.fromEntries(Object.entries(parsed).filter(([id]) => id === id.toLowerCase())) as Record<string, string>
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
   }
   const unique = [...new Set(ids.filter((id) => /^[a-z0-9_.-]+$/i.test(id)))]
-  const missing = unique.filter((id) => !(id in cache))
+  const missing = [...new Set(unique.map((id) => id.toLowerCase()))].filter((name) => !Object.hasOwn(cache, name))
 
   await Promise.all(
-    missing.map(async (id) => {
+    missing.map(async (name) => {
       try {
-        const res = await fetch(`${ROCKETGUNS_BASE}/${id}.blkx`, { signal: AbortSignal.timeout(20_000) })
+        const res = await fetch(`${ROCKETGUNS_BASE}/${name}.blkx`, { signal: AbortSignal.timeout(20_000) })
         if (!res.ok) {
-          if (res.status === 404) cache[id] = 'none'
+          if (res.status === 404) cache[name] = 'none'
           return
         }
         const blk = await readResponseJson<{
           rocket?: { guidance?: { radarSeeker?: { active?: unknown }; opticalSeeker?: unknown } }
-        }>(res, 2 * 1024 * 1024, `оружие ${id}`)
+        }>(res, 2 * 1024 * 1024, `weapon ${name}`)
         const guidance = blk.rocket?.guidance
-        cache[id] =
+        cache[name] =
           guidance?.radarSeeker ? (guidance.radarSeeker.active === true ? 'arh' : 'sarh')
           : guidance?.opticalSeeker ? 'ir'
           : 'none'
       } catch {
-        // сеть недоступна — не кэшируем, попробуем в другой раз
+        // network down: not cached, the next build retries
       }
     }),
   )
-  if (missing.some((id) => id in cache)) {
+  if (missing.some((name) => Object.hasOwn(cache, name))) {
     await writeAtomic(WEAPONS_FILE, JSON.stringify(cache))
   }
 
   const seekers = new Map<string, MissileSeeker>()
   for (const id of unique) {
-    const s = cache[id]
+    const s = cache[id.toLowerCase()]
     if (s === 'ir' || s === 'sarh' || s === 'arh') seekers.set(id, s)
   }
   return seekers
@@ -350,6 +359,8 @@ export function tacticalMapKeys(
   const normalizeKey = (value: string): string =>
     value
       .trim()
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '') // "Hürtgen" → "hurtgen", as in the wt-tools keys
       .toLowerCase()
       .replace(/['’.]/g, '')
       .replace(/[^a-z0-9]+/g, '_')
@@ -365,6 +376,17 @@ export function tacticalMapKeys(
     mapKey,
     modeKey: `${mode}-${number}`,
   }
+}
+
+/**
+ * wt-tools key of a map: the keys keep "-" and "()" ("seversk-13_(winter)",
+ * "test-site_2271"), so only letters and digits are compared.
+ */
+function wtToolsMapKey(manifest: WtToolsManifest, mapKey: string): string | undefined {
+  if (Object.hasOwn(manifest, mapKey)) return mapKey
+  const bare = (key: string): string => key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const wanted = bare(mapKey)
+  return Object.keys(manifest).find((key) => bare(key) === wanted)
 }
 
 /** Манифест wt-tools: кэш с обновлением раз в неделю; сбой сети → старый кэш */
@@ -448,32 +470,32 @@ async function fetchTacticalMap(keys: { mapKey: string; modeKey: string }): Prom
   const cached = await readOptional(file)
   if (cached && isPng(cached) && cached.length <= 32 * 1024 * 1024) return file
   if (cached) await rm(file, { force: true }).catch(() => undefined)
-  if (await exists(miss)) return null
+  if (await freshMiss(miss)) return null
 
   const manifest = await loadWtToolsManifest()
-  const entry = manifest?.[keys.mapKey]?.[keys.modeKey]
-  if (!entry) {
-    if (manifest) {
-      await writeAtomic(miss, '')
-      console.log(`[maps] в коллекции wt-tools нет ${keys.mapKey}/${keys.modeKey} — хитмапа будет без карты`)
-    }
+  if (!manifest) return null
+  const manifestKey = wtToolsMapKey(manifest, keys.mapKey)
+  const entry = manifestKey === undefined ? undefined : manifest[manifestKey]?.[keys.modeKey]
+  if (manifestKey === undefined || !entry) {
+    await writeAtomic(miss, '')
+    console.log(`[maps] wt-tools has no ${keys.mapKey}/${keys.modeKey}: the heatmap goes without a map`)
     return null
   }
   try {
-    const res = await fetch(`${WTTOOLS_MAPS_BASE}/${keys.mapKey}/${keys.modeKey}/${entry.image}`, {
-      signal: AbortSignal.timeout(30_000),
-    })
+    const url = `${WTTOOLS_MAPS_BASE}/${encodeURIComponent(manifestKey)}/${encodeURIComponent(keys.modeKey)}/` +
+      encodeURIComponent(entry.image)
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
     if (!res.ok) {
       if (res.status === 404) await writeAtomic(miss, '')
       return null
     }
-    const buf = await readResponseBuffer(res, 32 * 1024 * 1024, 'тактическая карта')
+    const buf = await readResponseBuffer(res, 32 * 1024 * 1024, 'tactical map')
     if (!isPng(buf) || buf.length > 32 * 1024 * 1024) return null
     await writeAtomic(file, buf)
-    console.log(`[maps] тактическая карта ${keys.mapKey}/${keys.modeKey} сохранена (${Math.round(buf.length / 1024)} КБ)`)
+    console.log(`[maps] tactical map ${manifestKey}/${keys.modeKey} saved (${Math.round(buf.length / 1024)} KiB)`)
     return file
   } catch {
-    return null // сеть недоступна — в другой раз получится
+    return null // network down: the next build retries
   }
 }
 
@@ -486,10 +508,10 @@ async function readOptional(file: string): Promise<Buffer | null> {
   }
 }
 
-async function exists(file: string): Promise<boolean> {
+/** A *.miss marker younger than MISS_TTL_MS. */
+async function freshMiss(file: string): Promise<boolean> {
   try {
-    await stat(file)
-    return true
+    return Date.now() - (await stat(file)).mtimeMs < MISS_TTL_MS
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
