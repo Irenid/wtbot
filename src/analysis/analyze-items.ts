@@ -2,19 +2,17 @@ import Anthropic from '@anthropic-ai/sdk'
 import { config } from '../config.js'
 import { closeDb, getUnanalyzedItems, initDb, saveAnalysis } from '../db/index.js'
 
-// Анализ собранных записей нейросетью (Claude). Запуск вручную:
-//   npm run analyze          — проанализировать 3 записи
-//   npm run analyze -- 20    — проанализировать 20 записей
+// AI analysis of collected items (Claude), run by hand (paid API calls):
+//   npm run analyze          — analyze 3 items
+//   npm run analyze -- 20    — analyze 20 items
 //
-// Ключевая идея конвейера: анализ работает ОТДЕЛЬНО от парсеров и сайта,
-// каждая запись анализируется один раз, результат кэшируется в БД (analyses)
-// и мгновенно виден на дашборде и в API. Когда захочешь автоматизировать —
-// вызывай analyzeBatch() по интервалу из src/index.ts, как парсеры.
+// Analysis runs apart from the parsers and the site: each item is analyzed
+// once (analyses.item_id is unique), the result is stored in the database and
+// shows on the dashboard and in the API. Parsers and ingest never call it.
 //
-// Нужен ключ API: https://platform.claude.com/ → API Keys →
-// добавь в .env строку ANTHROPIC_API_KEY=sk-ant-...
+// Needs ANTHROPIC_API_KEY in .env (https://platform.claude.com/ → API Keys).
 
-const MODEL = 'claude-opus-4-8'
+const MODEL = 'claude-opus-5-5'
 
 const argLimit = Number(process.argv[2])
 const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : 3
@@ -23,18 +21,18 @@ initDb(config.dbPath, { allowCreate: config.allowNewDb })
 
 const items = getUnanalyzedItems(limit)
 if (items.length === 0) {
-  console.log('Все собранные записи уже проанализированы — очередь пуста.')
+  console.log('Every collected item is already analyzed: the queue is empty.')
   closeDb()
   process.exit(0)
 }
 
-console.log(`К анализу: ${items.length} записей (модель ${MODEL})`)
+console.log(`To analyze: ${items.length} items (model ${MODEL})`)
 
 let client: Anthropic
 try {
-  client = new Anthropic() // ключ берётся из ANTHROPIC_API_KEY автоматически
+  client = new Anthropic() // reads ANTHROPIC_API_KEY
 } catch {
-  console.error('Не найден ключ API. Добавь в .env строку: ANTHROPIC_API_KEY=sk-ant-...')
+  console.error('No API key: add ANTHROPIC_API_KEY=sk-ant-... to .env')
   closeDb()
   process.exit(1)
 }
@@ -46,14 +44,14 @@ for (const item of items) {
       max_tokens: 1024,
       thinking: { type: 'adaptive' },
       system:
-        'Ты — аналитик данных, собранных ботом с разных сайтов. ' +
-        'Отвечай по-русски, одним-двумя предложениями, без преамбулы.',
+        'You analyze data a bot collected from websites. ' +
+        'Answer in English, in one or two sentences, without a preamble.',
       messages: [
         {
           role: 'user',
           content:
-            `Запись из источника «${item.source}». О чём она и чем может быть интересна?\n\n` +
-            `Заголовок: ${item.title}\nДанные: ${JSON.stringify(item.data)}`,
+            `An item from the source "${item.source}". What is it about and why could it be interesting?\n\n` +
+            `Title: ${item.title}\nData: ${JSON.stringify(item.data)}`,
         },
       ],
     })
@@ -64,17 +62,17 @@ for (const item of items) {
       .join(' ')
       .trim()
 
-    saveAnalysis(item.id, text || '(пустой ответ)', MODEL)
+    saveAnalysis(item.id, text || '(empty answer)', MODEL)
     console.log(`✓ [${item.source}] ${item.title.slice(0, 50)}… → ${text.slice(0, 80)}`)
   } catch (err) {
     if (err instanceof Anthropic.AuthenticationError) {
-      console.error('Ключ API не подошёл. Проверь ANTHROPIC_API_KEY в .env')
+      console.error('The API key was rejected: check ANTHROPIC_API_KEY in .env')
       break
     }
-    // Ключ не найден: SDK бросает обычный Error ещё до запроса,
-    // типизированного класса у этой ошибки нет — распознаём по тексту
+    // A missing key is a plain Error thrown before the request (the SDK has no
+    // class for it), so it is recognized by its text.
     if (err instanceof Error && err.message.includes('Could not resolve authentication')) {
-      console.error('Не найден ключ API. Добавь в .env строку: ANTHROPIC_API_KEY=sk-ant-...')
+      console.error('No API key: add ANTHROPIC_API_KEY=sk-ant-... to .env')
       break
     }
     console.error(`✗ [${item.source}] ${item.title.slice(0, 50)}…:`, err)
