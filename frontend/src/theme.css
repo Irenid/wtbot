@@ -879,6 +879,14 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
 .hero-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .hero-actions a.btn { color: var(--ink); text-decoration: none; }
+.refresh-status { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); }
+.refresh-status:empty { display: none; }
+.refresh-status.fail { color: var(--fail); }
+.refresh-status.active { color: var(--accent); }
+.refresh-status.active::before {
+  content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); animation: glowPulse 1.2s ease-in-out infinite;
+}
 .chip-action {
   margin-left: 6px; border: none; background: none; color: var(--ink2);
   cursor: pointer; font: inherit; padding: 0; line-height: 1;
@@ -1007,5 +1015,6 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
   .week-chart__bar-value,
   .season-track__stages::after,
   .season-track__stage.is-current .season-track__node::before,
-  .season-battles.is-open::before { animation: none; }
+  .season-battles.is-open::before,
+  .refresh-status.active::before { animation: none; }
 }

@@ -5,7 +5,8 @@ import { Chip, DeltaPill } from '../../components/ui'
 import { clanRoleLabel, fmtAge, fmtDate, fmtDateTime, fmtInt } from '../../lib/format'
 import { t } from '../../i18n'
 
-export type RefreshState = 'idle' | 'sending' | 'queued' | 'done' | 'unchanged' | 'failed'
+/** checking: asking the bot (silent); updating: sources are being reread; slow: gave up waiting. */
+export type RefreshState = 'idle' | 'checking' | 'updating' | 'done' | 'slow' | 'failed'
 
 const WT_PROFILE_URL = 'https://warthunder.com/en/community/userinfo/?nick='
 const STATSHARK_PROFILE_URL = 'https://statshark.net/player/'
@@ -13,14 +14,14 @@ const STATSHARK_PROFILE_URL = 'https://statshark.net/player/'
 /** Буфер обмена есть только в защищённом контексте (HTTPS или localhost). */
 const clipboardAvailable = typeof navigator !== 'undefined' && navigator.clipboard !== undefined
 
-export function PlayerHero({ profile, clan, account, updatedAt, refresh, onRefresh }: {
+export function PlayerHero({ profile, clan, account, updatedAt, refresh, onRetry }: {
   profile: PlayerProfile
   clan: PlayerClan | null
   /** Сведения об аккаунте: уровень и даты — из любого источника, где они есть. */
   account: Pick<PlayerAccount, 'level' | 'title' | 'registeredAt' | 'lastOnlineAt'>
   updatedAt: number | null
   refresh: RefreshState
-  onRefresh: () => void
+  onRetry: () => void
 }) {
   const { player, rating } = profile
   const [copied, setCopied] = useState(false)
@@ -31,12 +32,11 @@ export function PlayerHero({ profile, clan, account, updatedAt, refresh, onRefre
       setTimeout(() => setCopied(false), 1_500)
     }, () => undefined)
   }
-  const refreshText = refresh === 'sending' ? t('player.refresh.sending')
-    : refresh === 'queued' ? t('player.refresh.queued')
-      : refresh === 'done' ? t('player.refresh.done')
-        : refresh === 'unchanged' ? t('player.refresh.unchanged')
-          : refresh === 'failed' ? t('player.refresh.failed')
-            : null
+  const refreshText = refresh === 'updating' ? t('player.refresh.updating')
+    : refresh === 'done' ? t('player.refresh.done')
+      : refresh === 'slow' ? t('player.refresh.slow')
+        : refresh === 'failed' ? t('player.refresh.failed')
+          : null
 
   return (
     <header className="hero-card blue">
@@ -80,12 +80,12 @@ export function PlayerHero({ profile, clan, account, updatedAt, refresh, onRefre
               {t('player.link.statshark')} ↗
             </a>
           )}
-          <button type="button" className="btn small" onClick={onRefresh} disabled={refresh === 'sending' || refresh === 'queued'}>
-            {t('player.refresh')}
-          </button>
-          {refreshText && (
-            <span className={`small ${refresh === 'failed' ? 'fail' : 'muted'}`} role="status">{refreshText}</span>
+          {refresh === 'failed' && (
+            <button type="button" className="btn small" onClick={onRetry}>{t('player.refresh.retry')}</button>
           )}
+        </div>
+        <div className={`refresh-status small${refresh === 'updating' ? ' active' : ''}${refresh === 'failed' ? ' fail' : ''}`} role="status" aria-live="polite">
+          {refreshText}
         </div>
       </div>
       {rating && (

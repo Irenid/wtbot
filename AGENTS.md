@@ -527,7 +527,7 @@ Data:
   `frontend/src/i18n/guide/<locale>.ts`, each implementing `GuideText` (a
   missing translation is a type error); `**bold**` and `[label](/path#id)`
   become React nodes in `Rich`, never HTML.
-- `POST /api/player-stats` (the refresh button, the dashboard form) accepts
+- `POST /api/player-stats` (the player page on opening, the dashboard form) accepts
   only an exact known nickname or a stable WT user id. Every enabled external
   source has a single-slot lazy queue, 24 h TTL (younger snapshots are not
   refetched), stale fallback, schema validation and its own rate limit.

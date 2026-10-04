@@ -183,11 +183,14 @@ export function fetchPlayerInsights(
   return getJson(`${playerApiBase(kind, key)}/insights?days=${days}`)
 }
 
-/**
- * Просит бота обновить внешние источники игрока. Источник с данными младше
- * суток не перечитывается; ответ приходит сразу, обновление идёт в фоне.
- */
-export function requestPlayerStatsRefresh(player: string): Promise<{ ok: true }> {
+export interface PlayerStatsRefresh {
+  ok: true
+  /** refreshQueued: the bot is rereading this source now; a source checked less than a day ago is not reread. */
+  stats: { accountSources: { source: string; refreshQueued: boolean }[] }
+}
+
+/** Asks the bot to reread the player's external sources; it answers at once, the reads run in the background. */
+export function requestPlayerStatsRefresh(player: string): Promise<PlayerStatsRefresh> {
   return postJson('/api/player-stats', { player })
 }
 

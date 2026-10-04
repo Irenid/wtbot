@@ -80,8 +80,8 @@ function vehicleName(dict: VehicleDict, id: string): string {
 }
 
 /** Самая свежая проверка источников — по ней видно, что обновление пришло. */
-function latestCheck(profile: PlayerProfile): number {
-  return Math.max(0, ...profile.accounts.map((account) => account.checkedAt ?? 0))
+function checkedAtBySource(profile: PlayerProfile): Map<string, number> {
+  return new Map(profile.accounts.map((account) => [account.source, account.checkedAt ?? 0]))
 }
 
 // Ключ стека фрагов → акцентный цвет «любимого класса» (подпись берётся из словаря).
@@ -92,8 +92,9 @@ const KILL_BRIGHT: Record<string, string> = {
 }
 
 const BATTLES_PAGE = 15
-const REFRESH_POLLS = 4
-const REFRESH_POLL_MS = 15_000
+/** A queued source answers in seconds (StatShark through the bot's browser: up to a minute); then the page gives up. */
+const REFRESH_POLLS = 30
+const REFRESH_POLL_MS = 4_000
 /** The server waits up to 15 s per lookup; `pending` is asked again this many times. */
 const ID_LOOKUP_ATTEMPTS = 4
 const ID_LOOKUP_RETRY_MS = 5_000
@@ -133,6 +134,8 @@ export function PlayerPage({ kind }: { kind: PlayerKind }) {
   const [dict, setDict] = useState<VehicleDict>({})
   const [days, setDays] = useState<'30' | '90' | '400'>('90')
   const [refresh, setRefresh] = useState<RefreshState>('idle')
+  // Bumped after a refresh: the charts reread the new account snapshots.
+  const [historyVersion, setHistoryVersion] = useState(0)
   const [error, setError] = useState<unknown>(null)
   // Page generation: answers for the previous player and polling after leaving the page are dropped.
   const generation = useRef(0)
@@ -156,6 +159,7 @@ export function PlayerPage({ kind }: { kind: PlayerKind }) {
       .then((body) => {
         if (generation.current !== current) return
         setProfile(body)
+        void refreshSources(body, current, true)
         if (body.player.wtUserId) {
           // A failed request is not "the player has no battles": show the error, not an empty list.
           fetchBattles({ player: body.player.wtUserId, limit: BATTLES_PAGE })
@@ -191,7 +195,7 @@ export function PlayerPage({ kind }: { kind: PlayerKind }) {
       .then((body) => { if (!cancelled) setHistory(body) })
       .catch((err) => { if (!cancelled) setHistoryError(err) })
     return () => { cancelled = true }
-  }, [kind, key, days])
+  }, [kind, key, days, historyVersion])
 
   useEffect(() => {
     let cancelled = false
@@ -263,32 +267,44 @@ export function PlayerPage({ kind }: { kind: PlayerKind }) {
   }
 
   /**
-   * Asks the bot to reread the external sources, then rereads the profile a few
-   * times: the refresh runs in the background through the bot's browser, up to a minute.
+   * Asks the bot to reread the external sources (on opening the page and on a
+   * retry), then rereads the profile until every queued source has a newer check.
+   * Nothing queued (all checked less than a day ago) shows nothing; on opening, a
+   * rate limit or an unknown/ambiguous nick stays silent too.
    */
-  const refreshSources = async () => {
-    if (!profile) return
-    const current = generation.current
-    const before = latestCheck(profile)
-    setRefresh('sending')
+  const refreshSources = async (shown: PlayerProfile, current: number, opened: boolean) => {
+    setRefresh('checking')
     try {
-      await requestPlayerStatsRefresh(profile.player.wtUserId ?? profile.player.nick)
+      const answer = await requestPlayerStatsRefresh(shown.player.wtUserId ?? shown.player.nick)
       if (generation.current !== current) return
-      setRefresh('queued')
+      const queued = answer.stats.accountSources.filter((source) => source.refreshQueued).map((source) => source.source)
+      if (queued.length === 0) {
+        setRefresh('idle')
+        return
+      }
+      setRefresh('updating')
+      const before = checkedAtBySource(shown)
       for (let attempt = 0; attempt < REFRESH_POLLS; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, REFRESH_POLL_MS))
         if (generation.current !== current) return
         const next = await fetchPlayerProfile(kind, key)
         if (generation.current !== current) return
-        setProfile(next)
-        if (latestCheck(next) > before) {
+        const after = checkedAtBySource(next)
+        const updated = queued.filter((source) => (after.get(source) ?? 0) > (before.get(source) ?? 0))
+        // Shows each source as it lands, not only when the slowest one is done.
+        if (updated.length > 0) setProfile(next)
+        if (updated.length === queued.length) {
+          setHistoryVersion((version) => version + 1)
           setRefresh('done')
           return
         }
       }
-      setRefresh('unchanged')
-    } catch {
-      if (generation.current === current) setRefresh('failed')
+      setHistoryVersion((version) => version + 1)
+      setRefresh('slow')
+    } catch (err) {
+      if (generation.current !== current) return
+      const quiet = opened && err instanceof SiteApiError && [404, 409, 429].includes(err.status)
+      setRefresh(quiet ? 'idle' : 'failed')
     }
   }
 
@@ -375,7 +391,7 @@ export function PlayerPage({ kind }: { kind: PlayerKind }) {
         account={heroAccount}
         updatedAt={updatedAt}
         refresh={refresh}
-        onRefresh={() => { void refreshSources() }}
+        onRetry={() => { void refreshSources(profile, generation.current, false) }}
       />
 
       <SectionNav sections={sections} />
