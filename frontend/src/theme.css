@@ -726,11 +726,21 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .tbl tbody tr:hover { background: var(--bg-soft); }
 .tbl tbody tr.row-link { cursor: pointer; }
 /* --- Squadron rankings (/clans): the squadron column takes the free width and cuts a long
-   name with an ellipsis; narrower screens drop minor columns instead of scrolling sideways. --- */
+   name with an ellipsis; narrower screens drop minor columns instead of scrolling sideways.
+   Reward tiers run warm to cool down the table: bars, tier lines and the card's top edge share
+   the colours; past the top 100 the bars are slate. --- */
 /* Under the sticky top bar when the pager scrolls back to the table. */
-.clans-table { padding: 0; scroll-margin-top: 80px; }
+.clans-table {
+  --zone-5: #f5bc4a; --zone-10: #f2984a; --zone-20: #ec6f8e; --zone-50: #a08af2; --zone-100: #6f96ff;
+  --zone-rest: #5f6680;
+  padding: 0; scroll-margin-top: 80px;
+  background:
+    linear-gradient(90deg, var(--zone-5), var(--zone-10) 25%, var(--zone-20) 50%, var(--zone-50) 75%, var(--zone-100))
+      top / 100% 2px no-repeat padding-box,
+    linear-gradient(180deg, var(--card-top), var(--card-bottom)) border-box;
+}
 .clans-table__head {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   gap: 12px 24px; padding: 16px 20px 14px;
 }
 .clans-table__title { min-width: 0; }
@@ -757,50 +767,128 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .clan-search__clear:hover, .clan-search__clear:focus-visible { outline: none; background: var(--bg-soft); color: var(--ink); }
 .clans-table .tbl-scroll { margin: 0; transition: opacity 0.15s ease; }
 .clans-table.is-busy .tbl-scroll { opacity: 0.55; }
+/* While the next page or a search loads, a light runs along the head's lower edge. */
+.clans-table.is-busy .clans-table__head::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) 0 0 / 40% 100% no-repeat;
+  animation: clanBusy 1.1s ease-in-out infinite;
+}
 .clans-table .tbl-scroll > table { min-width: 0; }
 .clans-table thead th { border-top: 1px solid var(--line); }
-.clans-table .tbl td { padding-top: 11px; padding-bottom: 11px; }
-/* A fixed line: a fallback glyph (French digit groups use U+202F) or a medal no longer makes a
-   row taller than the rest. */
-.clans-table .tbl td { line-height: 20px; }
+/* A fixed line: a fallback glyph (French digit groups use U+202F) no longer makes a row taller
+   than the rest. Row lines are cell shadows, not borders: collapsed borders belong to the table
+   and would stand before their rows fade in. */
+.clans-table .tbl td {
+  padding-top: 11px; padding-bottom: 11px; line-height: 20px; border-top: none; box-shadow: var(--row-line);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+/* Rows rise one after another and their bars grow after them; --i is the row's index
+   (cascade() in ClansPage.tsx), the cascade stops at row 24, below the fold of most screens. */
+.clans-table tbody tr {
+  --row-line: inset 0 1px 0 var(--line);
+  --delay: calc(min(var(--i, 0), 24) * 22ms);
+  animation: clanRowIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) var(--delay) backwards;
+}
+.clans-table tbody tr:first-child, .clans-table tr.tier-cut, .clans-table tr.tier-cut + tr { --row-line: 0 0 transparent; }
+.clans-table .tbl tbody tr:hover { background: none; }
+.clans-table tbody tr.row-link:hover > td { background-color: rgba(255, 255, 255, 0.035); }
+.clans-table tbody tr.row-link:hover > td:first-child { box-shadow: inset 3px 0 0 var(--zone, var(--line2)), var(--row-line); }
+.clans-table tbody tr.row-link:hover .clan-cell a { color: var(--accent); }
+.clans-table tbody tr.row-link:hover .rating-bar__fill { filter: brightness(1.2) saturate(1.1); }
 .clans-table .col-rank { width: 46px; }
 .clans-table td.col-rank { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .clans-table .clan-cell { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .clans-table .clan-cell__name { margin-left: 8px; font-size: 12.5px; color: var(--muted); }
+.clans-table mark {
+  padding: 0 1px; border-radius: 3px; color: var(--accent-hover);
+  background: rgba(245, 188, 74, 0.16); box-shadow: inset 0 -1px 0 rgba(245, 188, 74, 0.65);
+}
+.clans-table .rating-cell { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.clans-table .rating-cell__value { min-width: 52px; }
 .clans-table .rating { font-family: var(--font-display); font-size: 14.5px; font-weight: 700; color: var(--ink); }
-.clans-table .rating.is-estimate { font-weight: 500; color: var(--ink2); }
+.clans-table tr.is-estimate .rating { font-weight: 500; color: var(--ink2); }
 .clans-table .rating-change { display: none; }
-.clans-table .change { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.clans-table .change.up { color: var(--ok); }
-.clans-table .change.down { color: var(--fail); }
-.clans-table .change.flat, .clans-table .change.none { font-weight: 400; color: var(--muted); }
-/* Places 1–3: gold, silver and bronze. */
-.medal {
-  display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
-  vertical-align: top; font-family: var(--font-display); font-size: 11px; font-weight: 700; line-height: 1;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 3px 8px -3px rgba(0, 0, 0, 0.7);
+/* The share of the overall leader's rating, in the colour of the reward the place holds now. */
+.rating-bar { position: relative; flex: none; width: clamp(56px, calc(28vw - 150px), 180px); height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.055); }
+.rating-bar__fill {
+  position: absolute; inset: 0 auto 0 0; overflow: hidden; border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--zone, var(--zone-rest)) 30%, transparent), var(--zone, var(--zone-rest)));
+  transform-origin: left center;
+  animation: clanGrowX 0.9s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--delay, 0ms) + 0.12s) backwards;
+  transition: filter 0.2s ease;
 }
-.medal.m1 {
-  background: linear-gradient(145deg, #ffe39a, #e9a12c); color: #2b1d04;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 0 14px -3px rgba(245, 188, 74, 0.7);
+.clans-table .zone-5 { --zone: var(--zone-5); }
+.clans-table .zone-10 { --zone: var(--zone-10); }
+.clans-table .zone-20 { --zone: var(--zone-20); }
+.clans-table .zone-50 { --zone: var(--zone-50); }
+.clans-table .zone-100 { --zone: var(--zone-100); }
+/* Places 1–3: a metal numeral, a hairline on the left, a faint tint and a metal bar that a
+   light crosses every few seconds. */
+.clans-table .place-1 { --zone: #f7c55a; --metal: linear-gradient(90deg, #d98a12, #ffe08a); }
+.clans-table .place-2 { --zone: #d3d9e1; --metal: linear-gradient(90deg, #7f8895, #f3f6f9); }
+.clans-table .place-3 { --zone: #e7a06b; --metal: linear-gradient(90deg, #9c4f1c, #f6bf93); }
+.clans-table tr.is-podium > td { background-color: color-mix(in srgb, var(--zone) 5%, transparent); }
+.clans-table tr.is-podium:hover > td { background-color: color-mix(in srgb, var(--zone) 9%, transparent); }
+.clans-table tr.is-podium > td:first-child { box-shadow: inset 2px 0 0 var(--zone), var(--row-line); }
+.clans-table tr.is-podium td.col-rank { color: var(--zone); font-family: var(--font-display); font-size: 14px; font-weight: 700; }
+.clans-table tr.is-podium .rating-bar__fill { background: var(--metal); }
+.clans-table tr.place-1 .rating-bar__fill { box-shadow: 0 0 10px rgba(245, 188, 74, 0.45); }
+.clans-table tr.is-podium .rating-bar__fill::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.6), transparent);
+  transform: translateX(-100%);
+  animation: clanSheen 7s ease-in-out calc(var(--delay, 0ms) + 1.2s) infinite;
 }
-.medal.m2 { background: linear-gradient(145deg, #f3f5f8, #a3abb6); color: #1b1e24; }
-.medal.m3 { background: linear-gradient(145deg, #f2b98d, #b0642e); color: #2a1405; }
-.clans-table tr.is-leader { background: linear-gradient(90deg, rgba(245, 188, 74, 0.09), rgba(245, 188, 74, 0) 65%); }
 .clans-table tr.is-dropped td, .clans-table tr.is-dropped a, .clans-table tr.is-dropped .rating { color: var(--muted); }
-/* Reward tier: a gold label on a fading hairline replaces the line above the tier's first row. */
-.clans-table .tier-row th { padding-top: 18px; padding-bottom: 7px; border-bottom: none; }
-.clans-table .tbl tbody tr.tier-row:hover { background: none; }
-.clans-table .tier-row + tr td { border-top: none; }
-.tier-label {
-  display: flex; align-items: center; gap: 10px;
-  font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(245, 188, 74, 0.9);
+.clans-table tr.is-dropped .rating-bar__fill { background: rgba(184, 179, 172, 0.22); }
+.clans-table tr.is-estimate .rating-bar__fill {
+  background: repeating-linear-gradient(-45deg, rgba(184, 179, 172, 0.45) 0 2px, rgba(184, 179, 172, 0.12) 2px 5px);
 }
-.tier-label::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(245, 188, 74, 0.32), rgba(245, 188, 74, 0)); }
+.clans-table .change {
+  display: inline-block; padding: 2px 7px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; line-height: 16px; font-variant-numeric: tabular-nums;
+}
+.clans-table .change.up { color: var(--ok); background: rgba(142, 230, 161, 0.12); }
+.clans-table .change.down { color: var(--fail); background: rgba(255, 143, 163, 0.12); }
+.clans-table .change.flat, .clans-table .change.none { font-weight: 400; color: var(--muted); }
+/* Season win rate and K/D: greener the further above even, redder below (toneClass). */
+.clans-table .tone-up-1 { color: color-mix(in srgb, var(--ok) 45%, var(--ink)); }
+.clans-table .tone-up-2 { color: color-mix(in srgb, var(--ok) 75%, var(--ink)); }
+.clans-table .tone-up-3 { color: var(--ok); }
+.clans-table .tone-down-1 { color: color-mix(in srgb, var(--fail) 45%, var(--ink)); }
+.clans-table .tone-down-2 { color: color-mix(in srgb, var(--fail) 75%, var(--ink)); }
+.clans-table .tone-down-3 { color: var(--fail); }
+/* A reward tier's line under its last place, in the tier's colour; it replaces the row lines. */
+.clans-table tr.tier-cut > td { height: 30px; padding-top: 0; padding-bottom: 0; }
+.tier-cut__inner { display: flex; align-items: center; gap: 10px; }
+.tier-cut__label {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 2px 9px 2px 7px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--zone) 32%, transparent);
+  background: color-mix(in srgb, var(--zone) 12%, transparent);
+  color: var(--zone); font-size: 10px; font-weight: 700; line-height: 14px; letter-spacing: 0.1em; text-transform: uppercase;
+  animation: clanFadeIn 0.5s ease calc(var(--delay, 0ms) + 0.2s) backwards;
+}
+.tier-cut__line {
+  flex: 1; height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--zone) 55%, transparent), transparent 85%);
+  transform-origin: left center;
+  animation: clanGrowX 1s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--delay, 0ms) + 0.2s) backwards;
+}
+@keyframes clanRowIn { from { opacity: 0; transform: translateY(6px); } }
+@keyframes clanGrowX { from { transform: scaleX(0); } }
+@keyframes clanFadeIn { from { opacity: 0; } }
+/* The light's width is 40 % of the bar: from just left of it to past its end, then a pause. */
+@keyframes clanSheen { 0% { transform: translateX(-100%); } 16%, 100% { transform: translateX(260%); } }
+@keyframes clanBusy { from { background-position: -60% 0; } to { background-position: 160% 0; } }
 .clans-table__error { padding: 0 20px 14px; }
 .clans-table__error .notice { margin-top: 0; }
 .clans-empty { padding: 30px 20px 34px; border-top: 1px solid var(--line); text-align: center; font-size: 13px; color: var(--muted); }
 .clans-table__foot { display: grid; justify-items: center; gap: 10px; padding: 14px 20px 16px; border-top: 1px solid var(--line); text-align: center; }
+/* A long header ("Taux de victoire") wraps instead of squeezing the squadron column. */
+@media (max-width: 860px) {
+  .clans-table thead th { white-space: normal; vertical-align: bottom; }
+}
 @media (max-width: 760px) {
   .clans-table .col-kd { display: none; }
 }
@@ -810,17 +898,19 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .clan-search { flex-basis: 100%; }
   .clans-table__foot { padding: 12px 14px 14px; }
   .clans-table .col-change, .clans-table .col-battles, .clans-table .col-members { display: none; }
-  /* Two lines per row on a phone: the name under the tag, the 24 h change under the rating. */
+  /* Two lines per row on a phone: the name under the tag, the 24 h change under the rating; the
+     bar stays level with the rating. */
   .clans-table .clan-cell__name { display: block; margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; line-height: 16px; }
+  .clans-table .rating-cell { align-items: flex-start; gap: 8px; }
+  .rating-bar { width: 40px; height: 5px; margin-top: 7.5px; }
   .clans-table .rating-change { display: block; margin-top: 1px; line-height: 16px; }
-  .clans-table .rating-change .change { font-size: 11.5px; }
+  /* Top-aligned: on the baseline the pill's line grows by the descender, and the row by 1 px. */
+  .clans-table .rating-change .change { padding: 0 6px; font-size: 11px; vertical-align: top; }
   .clans-table .tbl th, .clans-table .tbl td { padding-left: 6px; padding-right: 6px; }
-  /* A long header ("Taux de victoire") wraps instead of squeezing the squadron column. */
-  .clans-table thead th { white-space: normal; vertical-align: bottom; }
   .clans-table .tbl td { padding-top: 9px; padding-bottom: 9px; }
   .clans-table .tbl th:first-child, .clans-table .tbl td:first-child { padding-left: 14px; }
   .clans-table .tbl th:last-child, .clans-table .tbl td:last-child { padding-right: 14px; }
-  .clans-table .tier-row th { padding-top: 14px; padding-bottom: 5px; }
+  .clans-table tr.tier-cut > td { height: 26px; }
   .clans-table .col-rank { width: 38px; }
 }
 @media (max-width: 359px) {
@@ -1072,5 +1162,11 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
   .season-track__stages::after,
   .season-track__stage.is-current .season-track__node::before,
   .season-battles.is-open::before,
-  .refresh-status.active::before { animation: none; }
+  .refresh-status.active::before,
+  .clans-table tbody tr,
+  .rating-bar__fill,
+  .clans-table tr.is-podium .rating-bar__fill::after,
+  .tier-cut__label,
+  .tier-cut__line,
+  .clans-table.is-busy .clans-table__head::after { animation: none; }
 }

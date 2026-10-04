@@ -1125,6 +1125,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       // All matches; without a query — the whole ranking.
       total: found.length,
       updatedAt: crawlTimes.length > 0 ? Math.min(...crawlTimes) : null,
+      // Rating bars on every page and in a search are shares of the overall leader's rating.
+      leaderRating: ranked[0]?.totalRating ?? null,
       clans: page.map((group) => ({
         coreTag: group.coreTag,
         displayTag: clanDisplayName(group.displayTag),

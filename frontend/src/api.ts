@@ -337,6 +337,8 @@ export function fetchClans(params: { query?: string; offset?: number; limit?: nu
   total: number
   /** The oldest crawl time among the page's squadrons in the leaderboard; null — none on the page. */
   updatedAt: number | null
+  /** The overall leader's rating, also on later pages and in a search: rating bars are shares of it. */
+  leaderRating: number | null
   clans: ClanListEntry[]
 }> {
   const search = new URLSearchParams()

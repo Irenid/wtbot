@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { fetchClans, type ClanListEntry } from '../api'
 import { fmtDateTime, fmtInt, fmtPercent, fmtRatio } from '../lib/format'
@@ -14,8 +14,8 @@ const MAX_QUERY_LENGTH = 64
 const COLUMNS = 8
 
 /**
- * Season reward tiers by place: places 1–3 have their own rewards (medals), the rest share one
- * per tier (see the rewards on a squadron page). A header row opens each tier.
+ * Season reward tiers by place: places 1–3 have their own rewards, the rest share one per tier
+ * (see the rewards on a squadron page). A line under a tier's last place closes it.
  */
 const REWARD_TIERS = [
   { top: 5, from: 4 },
@@ -26,6 +26,56 @@ const REWARD_TIERS = [
 ] as const
 
 type RewardTier = (typeof REWARD_TIERS)[number]
+
+/**
+ * The reward a squadron holds now, as row classes that colour its bar and hover mark: its place
+ * (1–3) or its tier; null — outside the top 100 or the leaderboard.
+ */
+function rewardZone(clan: ClanListEntry): string | null {
+  // Only squadrons in the leaderboard compete for its rewards; the ranking puts them first.
+  if (clan.leaderboard !== 'current') return null
+  if (clan.rank <= 3) return `is-podium place-${clan.rank}`
+  const tier = REWARD_TIERS.find((candidate) => clan.rank >= candidate.from && clan.rank <= candidate.top)
+  return tier === undefined ? null : `zone-${tier.top}`
+}
+
+/**
+ * Colour class of a season figure by its score, −1…1 (beyond — clamped): three steps of green
+ * above, of red below; '' for a plain one near zero.
+ */
+function toneClass(score: number | null): string {
+  if (score === null || !Number.isFinite(score)) return ''
+  const level = Math.min(3, Math.floor(Math.abs(score) * 3))
+  return level === 0 ? '' : ` tone-${score > 0 ? 'up' : 'down'}-${level}`
+}
+
+/** Win rate around 50 %: 80 % and above — the full green, 20 % and below — the full red. */
+function winRateScore(rate: number | null): number | null {
+  return rate === null ? null : (rate - 0.5) / 0.3
+}
+
+/** K/D on a log scale around 1, so 3.0 and 0.33 weigh the same. */
+function kdScore(kd: number | null): number | null {
+  return kd === null || kd <= 0 ? null : Math.log2(kd) / Math.log2(3)
+}
+
+/** A search query as a case-insensitive pattern; null — no query. */
+function searchPattern(query: string): RegExp | null {
+  return query === '' ? null : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu')
+}
+
+/** A name with the first match of the search marked. */
+function Marked({ text, pattern }: { text: string; pattern: RegExp | null }) {
+  const match = pattern?.exec(text) ?? null
+  if (match === null) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, match.index)}
+      <mark>{match[0]}</mark>
+      {text.slice(match.index + match[0].length)}
+    </>
+  )
+}
 
 /** Season win rate from the official leaderboard; null — no data. */
 function seasonWinRate(clan: ClanListEntry): number | null {
@@ -61,7 +111,7 @@ function fmtCrawlTime(ts: number): string {
     : fmtDateTime(ts)
 }
 
-/** The 24 h rating change: signed and coloured; 0 and "no data" stay quiet. */
+/** The 24 h rating change: a signed, tinted pill; 0 and "no data" stay quiet. */
 function Change({ clan }: { clan: ClanListEntry }) {
   const value = clan.delta24h
   if (value === null) {
@@ -76,72 +126,113 @@ function Change({ clan }: { clan: ClanListEntry }) {
   )
 }
 
-function ClanRow({ clan, onOpen }: { clan: ClanListEntry; onOpen: ReturnType<typeof useRowLink> }) {
+/** A row's place in the entrance cascade: CSS staggers the row and its bar or tier line by it. */
+function cascade(index: number): CSSProperties {
+  return { '--i': index } as CSSProperties
+}
+
+function ClanRow({ clan, index, leaderRating, pattern, onOpen }: {
+  clan: ClanListEntry
+  index: number
+  leaderRating: number
+  pattern: RegExp | null
+  onOpen: ReturnType<typeof useRowLink>
+}) {
   const href = `/clans/${clan.coreTag}`
-  const medal = clan.rank <= 3 && clan.leaderboard === 'current'
   const estimate = clan.leaderboard === null
   const dropped = clan.leaderboard === 'dropped'
   const showName = clan.name !== null && clan.name.toLowerCase() !== clan.displayTag.toLowerCase()
-  const classes = ['row-link', medal && clan.rank === 1 ? 'is-leader' : '', dropped ? 'is-dropped' : '']
+  const share = leaderRating > 0 ? Math.max(0, Math.min(1, clan.totalRating / leaderRating)) : 0
+  const winRate = seasonWinRate(clan)
+  const kd = seasonKd(clan)
+  const classes = ['row-link', rewardZone(clan), dropped ? 'is-dropped' : null, estimate ? 'is-estimate' : null]
     .filter(Boolean)
     .join(' ')
   return (
     <tr
       className={classes}
+      style={cascade(index)}
       onClick={(event) => onOpen(event, href)}
       title={dropped ? t('clans.dropped.title', { time: fmtDateTime(clan.lastSeenAt) }) : undefined}
     >
-      <td className="col-rank">
-        {medal ? <span className={`medal m${clan.rank}`}>{clan.rank}</span> : fmtInt(clan.rank)}
-      </td>
+      <td className="col-rank">{fmtInt(clan.rank)}</td>
       <td className="clan-cell">
-        <Link to={href}>{clan.displayTag}</Link>
-        {showName && <span className="clan-cell__name">{clan.name}</span>}
+        <Link to={href}><Marked text={clan.displayTag} pattern={pattern} /></Link>
+        {showName && <span className="clan-cell__name"><Marked text={clan.name ?? ''} pattern={pattern} /></span>}
       </td>
-      <td className="num" title={estimate ? t('clans.psr.title') : undefined}>
-        <span className={`rating${estimate ? ' is-estimate' : ''}`}>
-          {estimate ? '≈ ' : ''}{fmtInt(clan.totalRating)}
-        </span>
-        {/* On a phone the 24 h column folds under the rating; zero and "no data" are left out. */}
-        {clan.delta24h !== null && clan.delta24h !== 0 && (
-          <span className="rating-change"><Change clan={clan} /></span>
-        )}
+      <td
+        className="num"
+        title={estimate ? t('clans.psr.title') : t('home.share.leader', { pct: Math.round(share * 100) })}
+      >
+        <div className="rating-cell">
+          {/* The share of the overall leader's rating. */}
+          <span className="rating-bar" aria-hidden="true">
+            <span className="rating-bar__fill" style={{ width: `${(share * 100).toFixed(2)}%` }} />
+          </span>
+          <span className="rating-cell__value">
+            <span className="rating">{estimate ? '≈ ' : ''}{fmtInt(clan.totalRating)}</span>
+            {/* On a phone the 24 h column folds under the rating; zero and "no data" are left out. */}
+            {clan.delta24h !== null && clan.delta24h !== 0 && (
+              <span className="rating-change"><Change clan={clan} /></span>
+            )}
+          </span>
+        </div>
       </td>
       <td className="num col-change"><Change clan={clan} /></td>
       <td className="num col-battles">{fmtInt(clan.seasonBattles)}</td>
-      <td className="num col-wr" title={seasonWinTitle(clan)}>{fmtPercent(seasonWinRate(clan))}</td>
-      <td className="num col-kd" title={seasonKdTitle(clan)}>{fmtRatio(seasonKd(clan))}</td>
+      <td className={`num col-wr${toneClass(winRateScore(winRate))}`} title={seasonWinTitle(clan)}>
+        {fmtPercent(winRate)}
+      </td>
+      <td className={`num col-kd${toneClass(kdScore(kd))}`} title={seasonKdTitle(clan)}>{fmtRatio(kd)}</td>
       <td className="num col-members">{fmtInt(clan.members)}</td>
     </tr>
   )
 }
 
-function TierHeader({ tier }: { tier: RewardTier }) {
+/** The line under a reward tier's last place: every squadron above it is in that top. */
+function TierCut({ tier, index }: { tier: RewardTier; index: number }) {
   const reward = t('clan.reward.top', { n: tier.top })
   return (
-    <tr className="tier-row">
-      <th colSpan={COLUMNS} scope="rowgroup" title={t('clans.tier.title', { from: tier.from, to: tier.top, reward })}>
-        <span className="tier-label">{reward}</span>
-      </th>
+    <tr className={`tier-cut zone-${tier.top}`} style={cascade(index)}>
+      <td colSpan={COLUMNS} title={t('clans.tier.title', { from: tier.from, to: tier.top, reward })}>
+        <div className="tier-cut__inner">
+          <span className="tier-cut__label">
+            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+              <path d="M4 1.2 7.4 6.6H.6z" fill="currentColor" />
+            </svg>
+            {reward}
+          </span>
+          <span className="tier-cut__line" aria-hidden="true" />
+        </div>
+      </td>
     </tr>
   )
 }
 
-/** Rows split by reward tier: places 1–3 open the table without a header. */
-function tierGroups(
+/** The page's rows; in the full ranking a tier line follows each tier's last place. */
+function rankingRows(
   clans: readonly ClanListEntry[],
-  withTiers: boolean,
-): { tier: RewardTier | null; clans: ClanListEntry[] }[] {
-  const groups: { tier: RewardTier | null; clans: ClanListEntry[] }[] = [{ tier: null, clans: [] }]
+  options: { withTiers: boolean; leaderRating: number; query: string; onOpen: ReturnType<typeof useRowLink> },
+): ReactNode[] {
+  const pattern = searchPattern(options.query)
+  const rows: ReactNode[] = []
   for (const clan of clans) {
-    // Only squadrons in the leaderboard compete for its rewards; the ranking puts them first.
-    const tier = withTiers && clan.leaderboard === 'current'
-      ? REWARD_TIERS.find((candidate) => candidate.from === clan.rank)
+    rows.push(
+      <ClanRow
+        key={clan.coreTag}
+        clan={clan}
+        index={rows.length}
+        leaderRating={options.leaderRating}
+        pattern={pattern}
+        onOpen={options.onOpen}
+      />,
+    )
+    const tier = options.withTiers && clan.leaderboard === 'current'
+      ? REWARD_TIERS.find((candidate) => candidate.top === clan.rank)
       : undefined
-    if (tier !== undefined) groups.push({ tier, clans: [] })
-    groups[groups.length - 1]!.clans.push(clan)
+    if (tier !== undefined) rows.push(<TierCut key={`top-${tier.top}`} tier={tier} index={rows.length} />)
   }
-  return groups.filter((group) => group.clans.length > 0)
+  return rows
 }
 
 type ClansResponse = Awaited<ReturnType<typeof fetchClans>>
@@ -308,12 +399,15 @@ export function ClansPage() {
                   <th className="num col-members">{t('clans.col.members')}</th>
                 </tr>
               </thead>
-              {tierGroups(body.clans, !searching).map((group) => (
-                <tbody key={group.clans[0]!.coreTag}>
-                  {group.tier !== null && <TierHeader tier={group.tier} />}
-                  {group.clans.map((clan) => <ClanRow key={clan.coreTag} clan={clan} onOpen={openRow} />)}
-                </tbody>
-              ))}
+              {/* A new page or query mounts new rows, so their entrance plays again. */}
+              <tbody key={`${loaded.page}|${loaded.query}`}>
+                {rankingRows(body.clans, {
+                  withTiers: !searching,
+                  leaderRating: body.leaderRating ?? 0,
+                  query: loaded.query,
+                  onOpen: openRow,
+                })}
+              </tbody>
             </table>
           </div>
         )}

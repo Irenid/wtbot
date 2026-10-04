@@ -557,11 +557,13 @@ async function main(): Promise<void> {
       }[]
       season: { currentStage: { week: number; maxBr: number } | null }
       updatedAt: number | null
+      leaderRating: number | null
     }
     assert.equal(clansBody.season.currentStage?.week, expectedSeason.currentStage?.week)
     assert.equal(clansBody.clans.length, 4)
     // Ранг — место в общем рейтинге, список отсортирован по нему.
     assert.deepEqual(clansBody.clans.map((clan) => clan.rank), [1, 2, 3, 4])
+    assert.equal(clansBody.leaderRating, clansBody.clans[0]?.totalRating)
     assert.ok(clansBody.clans.every((clan) => typeof clan.rosterKnown === 'boolean'))
     const testClan = clansBody.clans.find((clan) => clan.coreTag === 'tst')
     assert.equal(testClan?.name, 'Test Clan')
@@ -877,6 +879,7 @@ async function main(): Promise<void> {
       assert.equal(officialClans.statusCode, 200)
       const officialBody = officialClans.json() as {
         updatedAt: number | null
+        leaderRating: number | null
         clans: {
           coreTag: string; name: string | null; totalRating: number; members: number; avgRating: number | null
           seasonBattles: number | null; seasonWins: number | null; delta24h: number | null
@@ -901,9 +904,13 @@ async function main(): Promise<void> {
       assert.equal(officialBody.updatedAt, fullCrawlAt)
       const latestPage = await officialApp.inject({ method: 'GET', url: '/api/clans?limit=4' })
       assert.equal((latestPage.json() as { updatedAt: number | null }).updatedAt, topCrawlAt)
-      // An exact tag before a longer one with a better place.
+      // An exact tag before a longer one with a better place; bars still measure against the
+      // overall leader, not the first match.
       const avSearch = await officialApp.inject({ method: 'GET', url: '/api/clans?query=av' })
-      assert.deepEqual((avSearch.json() as { clans: { coreTag: string }[] }).clans.map((clan) => clan.coreTag), ['av', 'avr'])
+      const avBody = avSearch.json() as { leaderRating: number | null; clans: { coreTag: string }[] }
+      assert.deepEqual(avBody.clans.map((clan) => clan.coreTag), ['av', 'avr'])
+      assert.equal(avBody.leaderRating, 48_400)
+      assert.equal(officialBody.leaderRating, 48_400)
       const leader = officialList[0]
       assert.equal(leader?.name, 'AVANGARD')
       assert.equal(leader?.totalRating, 48_400)
