@@ -137,6 +137,7 @@ export const MAP_SIDES = { maps: 55, minBattles: 400, low: 0.452, high: 0.566 }
 /**
  * Battle windows in UTC hours [start, end), measured from battle start times.
  * `share` — part of all battles, `medianTeamPsr` — median team average PSR.
+ * The season panel's header says whether one is open now: until when, or the next start.
  */
 export const BATTLE_WINDOWS = [
   { start: 14, end: 22, share: 0.87, medianTeamPsr: 991 },
