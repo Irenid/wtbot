@@ -29,6 +29,7 @@ import {
   getSiteClanRatingEvents,
   getSiteClanProfile,
   getSiteFirstBattleAt,
+  getLastFullClanCrawlAt,
   getSiteClanRosterAll,
   getSiteClanRosterDetails,
   getSiteExternalAggregateHistory,
@@ -99,44 +100,60 @@ function cleanupBuckets(buckets: Map<string, RateBucket>, now: number): void {
 
 interface SiteClanGroup {
   coreTag: string
-  /** Сырые украшенные теги, встречавшиеся у клана (для SQL-фильтров). */
+  /** Decorated raw tags the squadron has had (SQL filters). */
   rawTags: string[]
-  /** Самый свежий сырой тег — из него строится отображаемое имя. */
+  /** The freshest raw tag: the display name is built from it. */
   displayTag: string
   name: string | null
   members: SiteClanMemberLatest[]
   totalRating: number
   lastSeenAt: number
-  /** Место в рейтинге всех кланов по totalRating (1 — лучший). */
+  /** Place among all squadrons, 1 — the best (compareClanGroups). */
   rank: number
   /**
-   * Состав известен из обхода claninfo. false — ростера ещё нет, и сумма
-   * считается по всем, кто когда-либо носил этот тег (могут быть ушедшие).
+   * The roster is known from a claninfo crawl. false — no roster yet: the PSR sum counts
+   * everyone who ever wore the tag, leavers included.
    */
   rosterKnown: boolean
-  /** Статистика с официального лидерборда сезона; null — клана нет в обходах. */
+  /** Season stats from the official leaderboard; null — the squadron is in no crawl of the season. */
   official: SiteClanOfficial | null
-  /**
-   * Ступень порядка: 0 — клан из последнего обхода лидерборда, 1 — из прежних
-   * обходов сезона (сейчас он ниже охваченной части списка), 2 — без
-   * официальных данных, сумма по снимкам ПКР.
-   */
+  /** One of the RANK_TIER_* values. */
   rankTier: number
 }
 
+/** In the latest leaderboard crawl. */
+const RANK_TIER_LATEST = 0
+/** In an earlier crawl, not older than the last full one: below the part the latest crawl read. */
+const RANK_TIER_EARLIER = 1
+/**
+ * Missed by the last full crawl, which reads every squadron with a rating above zero: renamed,
+ * disbanded or fallen to zero (a squadron that moved up a page during the crawl stays here until
+ * the next one). Its last figures would otherwise hold a place above squadrons that are in the
+ * table. A zero rating is never dropped: see SiteClanOfficial.confirmedAt.
+ */
+const RANK_TIER_DROPPED = 2
+/** No official data this season: rated by the sum of members' PSR snapshots. */
+const RANK_TIER_PSR = 3
+
 interface SiteClanOfficial {
-  /** Текущий тег клана в лидерборде. */
+  /** The squadron's current tag in the leaderboard. */
   tag: string
   rating: number
   position: number | null
   members: number | null
   battles: number | null
   wins: number | null
+  /** The crawl that read this row. */
   ratingAt: number
+  /**
+   * When the rating was last confirmed: ratingAt, or the last full crawl for a zero rating — the
+   * crawl stops at a page without a rating above zero, so a zero below the read part is still zero.
+   */
+  confirmedAt: number
   airKills: number | null
   groundKills: number | null
   deaths: number | null
-  /** Налёт сезона, минуты. */
+  /** Season flight time, minutes. */
   flightTime: number | null
   activity: number | null
   region: string | null
@@ -147,9 +164,9 @@ interface SiteClanOfficial {
 }
 
 /**
- * Единый порядок рейтинга кланов: ступень, затем рейтинг, место в
- * лидерборде и тег. Устаревший рейтинг клана, выпавшего из свежего обхода,
- * иначе вытеснял бы кланы, которые сейчас выше него.
+ * The one order of the squadron ranking: tier, then rating, leaderboard place and tag. The stale
+ * rating of a squadron missing from a fresher crawl would otherwise push out squadrons that are
+ * above it now.
  */
 function compareClanGroups(left: SiteClanGroup, right: SiteClanGroup): number {
   return left.rankTier - right.rankTier
@@ -161,13 +178,15 @@ function compareClanGroups(left: SiteClanGroup, right: SiteClanGroup): number {
 interface ClanSnapshot {
   builtAt: number
   groups: Map<string, SiteClanGroup>
-  /** Базис ПКР (клан-ядро + ник → значение месяц назад) для честных дельт. */
+  /** PSR baseline (core tag + nick → the value a month ago) for honest deltas. */
   baseline: Map<string, number>
   seasonStart: number
-  /** Граница «месяц назад» для дельт, не раньше начала сезона. */
+  /** The "month ago" mark of the deltas, not before the season start. */
   baselineAt: number
-  /** Официальный рейтинг на baselineAt по ядру тега; заполняется по запросу. */
+  /** Official rating at baselineAt by core tag; filled on demand. */
   officialBaseline: Map<string, number | null>
+  /** Official rating a day before each squadron's confirmedAt (clanDelta24h); filled on demand. */
+  dayBaseline: Map<string, number | null>
 }
 
 /** Игровой Total PSR: 20 лучших участников полностью, остальные — 5%. */
@@ -192,8 +211,8 @@ function baselineKey(core: string, nick: string): string {
 function buildClanSnapshot(): ClanSnapshot {
   const seasonStart = getClanSeasonContext().season?.startsAt ?? 0
   const members = getSiteClanLatestMembers()
-  // Текущий состав по ядру тега: покинувшие исключаются из групп и сумм;
-  // ядро без строк ростера (до первого обхода) читается без фильтра.
+  // The current roster by core tag: leavers are excluded from groups and sums; a core without
+  // roster rows (before its first crawl) is read unfiltered.
   const rosterByCore = new Map<string, Map<string, number>>()
   for (const row of getSiteClanRosterAll()) {
     let roster = rosterByCore.get(row.clanCore)
@@ -204,8 +223,8 @@ function buildClanSnapshot(): ClanSnapshot {
     roster.set(row.nick, row.lastPresentAt)
   }
   const groups = new Map<string, SiteClanGroup>()
-  // Один ник может жить в нескольких вариантах украшенного тега одного ядра —
-  // берём самую свежую запись, чтобы не задваивать участника в сумме.
+  // One nick can live under several decorated variants of one core: the freshest row is taken
+  // so the member is not counted twice.
   const freshestByCoreNick = new Map<string, SiteClanMemberLatest>()
   for (const member of members) {
     const core = plainClanTag(member.clanTag)
@@ -232,7 +251,7 @@ function buildClanSnapshot(): ClanSnapshot {
         rank: 0,
         rosterKnown: (rosterByCore.get(core)?.size ?? 0) > 0,
         official: null,
-        rankTier: 2,
+        rankTier: RANK_TIER_PSR,
       }
       groups.set(core, group)
     }
@@ -260,13 +279,14 @@ function buildClanSnapshot(): ClanSnapshot {
     group.totalRating = totalSquadronRating(group.members.map((member) => member.rating))
   }
 
-  // Официальный лидерборд: рейтинг, место и состав клана берутся отсюда, а
-  // сумма по снимкам ПКР остаётся только кланам без официальных данных сезона
-  // (снимки есть лишь у кланов, чьи бои бот рисовал, и лидеры выпадали).
+  // The official leaderboard gives rating, place and member count; the PSR snapshot sum is left
+  // to squadrons without official season data (snapshots exist only for squadrons from drawn
+  // battles, and leaders went missing).
   const nameByTag = new Map<string, string>()
   const dictionaryTagsByCore = new Map<string, string[]>()
   const officialByCore = new Map<string, { name: string; stats: SiteClanOfficial }>()
   let latestOfficialAt = 0
+  const fullCrawlAt = getLastFullClanCrawlAt()
   for (const row of getSiteClanDictionary()) {
     nameByTag.set(row.tag, row.name)
     const core = plainClanTag(row.tag)
@@ -276,7 +296,7 @@ function buildClanSnapshot(): ClanSnapshot {
     else dictionaryTagsByCore.set(core, [row.tag])
     if (row.rating === null || row.ratingAt === null || row.ratingAt < seasonStart) continue
     latestOfficialAt = Math.max(latestOfficialAt, row.ratingAt)
-    // Смена украшений оставляет в словаре прежний тег — берём свежую строку.
+    // A decoration change leaves the previous tag in the dictionary: the fresher row wins.
     const existing = officialByCore.get(core)
     if (existing && existing.stats.ratingAt >= row.ratingAt) continue
     officialByCore.set(core, {
@@ -289,6 +309,7 @@ function buildClanSnapshot(): ClanSnapshot {
         battles: row.battles,
         wins: row.wins,
         ratingAt: row.ratingAt,
+        confirmedAt: row.rating === 0 && fullCrawlAt !== null && row.ratingAt < fullCrawlAt ? fullCrawlAt : row.ratingAt,
         airKills: row.airKills,
         groundKills: row.groundKills,
         deaths: row.deaths,
@@ -316,7 +337,7 @@ function buildClanSnapshot(): ClanSnapshot {
         rank: 0,
         rosterKnown: (rosterByCore.get(core)?.size ?? 0) > 0,
         official: null,
-        rankTier: 2,
+        rankTier: RANK_TIER_PSR,
       }
       groups.set(core, group)
     }
@@ -325,11 +346,13 @@ function buildClanSnapshot(): ClanSnapshot {
     group.displayTag = stats.tag
     group.totalRating = stats.rating
     group.lastSeenAt = stats.ratingAt
-    group.rankTier = stats.ratingAt === latestOfficialAt ? 0 : 1
+    group.rankTier = stats.ratingAt === latestOfficialAt
+      ? RANK_TIER_LATEST
+      : fullCrawlAt !== null && stats.confirmedAt < fullCrawlAt ? RANK_TIER_DROPPED : RANK_TIER_EARLIER
   }
   for (const group of groups.values()) {
-    // Теги для выборки боёв (SQL берёт первые 8): текущий тег лидерборда,
-    // затем встреченные в снимках и прочие варианты украшений из словаря.
+    // Tags for battle queries (SQL takes the first 8): the current leaderboard tag, then the ones
+    // seen in snapshots and the other decorated variants from the dictionary.
     const tags: string[] = []
     const candidates = [
       ...(group.official ? [group.official.tag] : []),
@@ -345,14 +368,14 @@ function buildClanSnapshot(): ClanSnapshot {
     }
   }
 
-  // Ранг считается по всем кланам: список /api/clans обрезан до 100, и
-  // страница клана вне сотни раньше теряла своё место и дельту.
+  // Ranks cover every squadron: /api/clans returns one page, and a squadron page outside it
+  // used to lose its place and delta.
   const ranked = [...groups.values()].sort(compareClanGroups)
   ranked.forEach((group, index) => {
     group.rank = index + 1
   })
-  // Час-округлённая граница даёт стабильный базис в пределах TTL кэша.
-  // Базис тоже фильтруется по текущему составу — уход не искажает дельту.
+  // An hour-rounded mark keeps the baseline stable within the cache TTL. The baseline is
+  // filtered by the current roster too: a leaver does not skew the delta.
   const baselineAt = Math.max(
     seasonStart,
     Math.floor(Date.now() / 3_600_000) * 3_600 - 30 * DAY_SEC,
@@ -365,7 +388,15 @@ function buildClanSnapshot(): ClanSnapshot {
     if (roster && roster.size > 0 && !roster.has(row.nick)) continue
     baseline.set(baselineKey(core, row.nick), row.rating)
   }
-  return { builtAt: Date.now(), groups, baseline, seasonStart, baselineAt, officialBaseline: new Map() }
+  return {
+    builtAt: Date.now(),
+    groups,
+    baseline,
+    seasonStart,
+    baselineAt,
+    officialBaseline: new Map(),
+    dayBaseline: new Map(),
+  }
 }
 
 /**
@@ -395,6 +426,53 @@ function clanDelta30d(snapshot: ClanSnapshot, group: SiteClanGroup): number | nu
   return baselineRatings.length > 0
     ? totalSquadronRating(currentRatings) - totalSquadronRating(baselineRatings)
     : null
+}
+
+/**
+ * Official rating change over the day before the rating was last confirmed: the top 100 are read
+ * every 20 minutes and the rest at full crawls, so a shared "now − 24 h" mark would give the rest
+ * a shorter window. null — no official data, the squadron left the leaderboard, or no history
+ * point that old inside the season.
+ */
+function clanDelta24h(snapshot: ClanSnapshot, group: SiteClanGroup): number | null {
+  const official = group.official
+  if (official === null || group.rankTier > RANK_TIER_EARLIER) return null
+  const dayAgo = official.confirmedAt - DAY_SEC
+  if (dayAgo < snapshot.seasonStart) return null
+  let base = snapshot.dayBaseline.get(group.coreTag)
+  if (base === undefined) {
+    base = getSiteClanOfficialRatingAt(group.coreTag, snapshot.seasonStart, dayAgo)?.rating ?? null
+    snapshot.dayBaseline.set(group.coreTag, base)
+  }
+  return base === null ? null : official.rating - base
+}
+
+/** Status in the official leaderboard; see the RANK_TIER_* values. */
+function leaderboardStatus(group: SiteClanGroup): 'current' | 'dropped' | null {
+  if (group.official === null) return null
+  return group.rankTier === RANK_TIER_DROPPED ? 'dropped' : 'current'
+}
+
+/**
+ * Squadrons matching a search: the core tag (decorations and case ignored) or the name contains
+ * the query. Exact tags first, then prefixes, then the rest, each by place: "ash" finds the
+ * squadron ASH before ASHES and CRASH.
+ */
+function searchClanGroups(ranked: readonly SiteClanGroup[], query: string): SiteClanGroup[] {
+  const core = plainClanTag(query)
+  const text = normalizePlayerSearchKey(query.trim())
+  const matches: { group: SiteClanGroup; score: number }[] = []
+  for (const group of ranked) {
+    const name = group.name === null ? '' : normalizePlayerSearchKey(group.name)
+    const tagHit = core !== '' && group.coreTag.includes(core)
+    if (!tagHit && (text === '' || !name.includes(text))) continue
+    const score = core !== '' && group.coreTag === core
+      ? 0
+      : (core !== '' && group.coreTag.startsWith(core)) || (text !== '' && name.startsWith(text)) ? 1 : 2
+    matches.push({ group, score })
+  }
+  // Array.prototype.sort is stable: equal scores keep the ranking order.
+  return matches.sort((left, right) => left.score - right.score).map((match) => match.group)
 }
 
 interface SiteAccountView {
@@ -1012,13 +1090,15 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     return statsSnapshot.payload
   })
 
-  // One page of the ranking: ~1,200 stored squadrons (2026-10-04) do not fit one response.
-  app.get<{ Querystring: { offset?: number; limit?: number } }>('/api/clans', {
+  // One page of the ranking or of a search: ~1,200 stored squadrons (2026-10-04) do not fit one
+  // response.
+  app.get<{ Querystring: { query?: string; offset?: number; limit?: number } }>('/api/clans', {
     schema: {
       querystring: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          query: { type: 'string', minLength: 1, maxLength: 64 },
           offset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
           limit: { type: 'integer', minimum: 1, maximum: 100 },
         },
@@ -1031,9 +1111,21 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     const snapshot = cachedClanSnapshot()
     const offset = request.query.offset ?? 0
     const ranked = [...snapshot.groups.values()].sort((left, right) => left.rank - right.rank)
-    const groups = ranked
-      .slice(offset, offset + (request.query.limit ?? 100))
-      .map((group) => ({
+    const query = request.query.query?.trim() ?? ''
+    const found = query === '' ? ranked : searchClanGroups(ranked, query)
+    const page = found.slice(offset, offset + (request.query.limit ?? 100))
+    // The oldest crawl among the page's squadrons in the table: every official figure on the
+    // page is at least this fresh (the top 100 and the rest are crawled at different rates).
+    const crawlTimes = page.flatMap((group) =>
+      group.official !== null && group.rankTier <= RANK_TIER_EARLIER ? [group.official.confirmedAt] : [])
+    return {
+      ok: true,
+      season: getClanSeasonContext(),
+      officialSeason: getOfficialClanSeason(),
+      // All matches; without a query — the whole ranking.
+      total: found.length,
+      updatedAt: crawlTimes.length > 0 ? Math.min(...crawlTimes) : null,
+      clans: page.map((group) => ({
         coreTag: group.coreTag,
         displayTag: clanDisplayName(group.displayTag),
         name: group.name,
@@ -1051,18 +1143,11 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         region: group.official?.region ?? null,
         clanType: group.official?.clanType ?? null,
         lastSeenAt: group.lastSeenAt,
-        delta30d: clanDelta30d(snapshot, group),
+        delta24h: clanDelta24h(snapshot, group),
+        leaderboard: leaderboardStatus(group),
         rank: group.rank,
         rosterKnown: group.rosterKnown,
-      }))
-    return {
-      ok: true,
-      season: getClanSeasonContext(),
-      officialSeason: getOfficialClanSeason(),
-      total: ranked.length,
-      // Rating bars on every page are shares of the overall leader's rating.
-      leaderRating: ranked[0]?.totalRating ?? null,
-      clans: groups,
+      })),
     }
   })
 

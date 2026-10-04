@@ -2883,6 +2883,19 @@ export function getOfficialClanSeason(): OfficialClanSeason | null {
 }
 
 /**
+ * bot_state key: the shared `rating_at` of the last full leaderboard crawl (wt-clans).
+ * The crawl reads every squadron with a rating above zero, so an official row with such a
+ * rating older than it is a squadron gone from the table: renamed, disbanded or fallen to zero.
+ */
+export const CLAN_FULL_CRAWL_KEY = 'wt-clans:full-crawl-at'
+
+/** Unix seconds of the last full leaderboard crawl; null — none yet. */
+export function getLastFullClanCrawlAt(): number | null {
+  const value = Number(getBotState(CLAN_FULL_CRAWL_KEY))
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+/**
  * Снимок ПКР участников клана: строка добавляется только если рейтинг ника
  * изменился с прошлого снимка (или ника ещё не было) — история не пухнет.
  */

@@ -474,11 +474,17 @@ Data:
   display name up to the first `(`.
 - `POST /api/voice/refresh` — at most once per 5 s (`Retry-After`),
   single-flight `refreshVoice()`.
-- Squadrons on the site: rating, place, "30 days" delta and chart are
-  official, from the leaderboard (PSR snapshots exist only for clans from drawn
-  battles, and their sum missed the leaders). Clans of the latest crawl rank
-  above clans from earlier crawls of the season; the PSR sum from snapshots is
-  used only for clans without official data. `clan_roster` is the last
+- Squadrons on the site: rating, place, the list's 24 h change, the clan
+  page's "30 days" delta and chart are official, from the leaderboard (PSR
+  snapshots exist only for clans from drawn battles, and their sum missed the
+  leaders). Ranking tiers (`RANK_TIER_*` in `src/web/routes/site.ts`): the
+  latest crawl, earlier crawls of the season, clans with a rating above zero
+  missed by the last full crawl (`wt-clans:full-crawl-at`; renamed, disbanded
+  or fallen to zero: a stale rating would outrank clans in the table), then
+  clans without official data, rated by the PSR sum from snapshots. A zero
+  rating below the crawled part is confirmed by the full crawl, not dropped.
+  The 24 h change ends at the clan's own confirmation time (top 100 every
+  20 min, the rest at full crawls). `clan_roster` is the last
   non-empty roster; the roster, members' PSR and their deltas are filtered by
   it. A member links to an identity by alias, else to the single WT user id
   of the exact nick in replays (a reused nick: none), else to

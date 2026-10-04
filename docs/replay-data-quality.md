@@ -134,8 +134,9 @@ trajectories and chat (limits above).
   season 62 (from 2026-09-01) are missing from the dataset. So a clan that
   played only then (season leader AVR, 2,545 battles, official statistics
   unchanged since 2026-09-29) has no battles on the site.
-- **The official clan rating history** starts on 2026-09-29, so the "30 days"
-  delta appears no earlier than 2026-10-29.
+- **The official clan rating history** starts on 2026-09-29, so the clan
+  page's "30 days" delta appears no earlier than 2026-10-29; the `/clans` list
+  shows the 24 h change instead.
 - **Leaderboard text** (region, slogan, rewards) came HTML-escaped with game
   markup (`&lt;color=#…&gt;`). Since 2026-10-01 it is cleaned on collection;
   rows of clans that dropped out of the crawls keep the old text, but the site

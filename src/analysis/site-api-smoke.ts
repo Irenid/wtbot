@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { rm } from 'node:fs/promises'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import {
+  CLAN_FULL_CRAWL_KEY,
   closeDb,
   getClanSeasonContext,
   initDb,
@@ -14,6 +15,7 @@ import {
   saveClanRatingSnapshots,
   savePlayerExternalSnapshot,
   savePlayerIdentity,
+  setBotState,
   upsertClans,
   type BattleInput,
   type BattlePlayerInput,
@@ -548,11 +550,13 @@ async function main(): Promise<void> {
         members: number
         totalRating: number
         avgRating: number
-        delta30d: number | null
+        delta24h: number | null
+        leaderboard: string | null
         rank: number
         rosterKnown: boolean
       }[]
       season: { currentStage: { week: number; maxBr: number } | null }
+      updatedAt: number | null
     }
     assert.equal(clansBody.season.currentStage?.week, expectedSeason.currentStage?.week)
     assert.equal(clansBody.clans.length, 4)
@@ -561,10 +565,13 @@ async function main(): Promise<void> {
     assert.ok(clansBody.clans.every((clan) => typeof clan.rosterKnown === 'boolean'))
     const testClan = clansBody.clans.find((clan) => clan.coreTag === 'tst')
     assert.equal(testClan?.name, 'Test Clan')
-    // Покинувший Ghost исключён из состава и суммы; базиса месяц назад нет.
+    // Ghost, who left, is out of the roster and the sum; a PSR-rated squadron has no leaderboard
+    // status, 24 h change or crawl time.
     assert.equal(testClan?.members, 2)
     assert.equal(testClan?.totalRating, 1_520 + 1_400)
-    assert.equal(testClan?.delta30d, null)
+    assert.equal(testClan?.delta24h, null)
+    assert.equal(testClan?.leaderboard, null)
+    assert.equal(clansBody.updatedAt, null)
     const formulaClan = clansBody.clans.find((clan) => clan.coreTag === 'form')
     assert.equal(formulaClan?.members, 128, 'состав squadron не должен превышать игровой лимит')
     assert.equal(formulaClan?.totalRating, 28_090, 'Total PSR должен учитывать 20 лучших и 5% остальных')
@@ -577,17 +584,33 @@ async function main(): Promise<void> {
     const bigClan = clansBody.clans.find((clan) => clan.coreTag === 'big')
     assert.equal(bigClan?.members, 6, 'неправдоподобное сжатие ростера не должно выгонять участников')
 
-    // Paging: total and the leader's rating describe the whole ranking, not the page.
+    // Paging: total describes the whole ranking, not the page.
     const clansPage = await app.inject({ method: 'GET', url: '/api/clans?offset=2&limit=1' })
     assert.equal(clansPage.statusCode, 200)
-    const clansPageBody = clansPage.json() as { total: number; leaderRating: number | null; clans: { rank: number }[] }
+    const clansPageBody = clansPage.json() as { total: number; clans: { rank: number }[] }
     assert.equal(clansPageBody.total, 4)
-    assert.equal(clansPageBody.leaderRating, clansBody.clans[0]?.totalRating)
     assert.deepEqual(clansPageBody.clans.map((clan) => clan.rank), [3])
     const clansPastEnd = await app.inject({ method: 'GET', url: '/api/clans?offset=10' })
     assert.deepEqual((clansPastEnd.json() as { total: number; clans: unknown[] }).clans, [])
     const clansBadLimit = await app.inject({ method: 'GET', url: '/api/clans?limit=101' })
     assert.equal(clansBadLimit.statusCode, 400, 'a page is at most 100 squadrons')
+
+    // Search: the tag without decorations or case, or the name; a match keeps its place.
+    const searchClans = async (query: string): Promise<{ total: number; clans: { coreTag: string; rank: number }[] }> => {
+      const response = await app.inject({ method: 'GET', url: `/api/clans?query=${encodeURIComponent(query)}` })
+      assert.equal(response.statusCode, 200)
+      return response.json() as { total: number; clans: { coreTag: string; rank: number }[] }
+    }
+    const tagSearch = await searchClans('=tst=')
+    assert.deepEqual(tagSearch.clans.map((clan) => clan.coreTag), ['tst'])
+    assert.equal(tagSearch.total, 1)
+    assert.equal(tagSearch.clans[0]?.rank, testClan?.rank)
+    assert.deepEqual((await searchClans('VARIANT')).clans.map((clan) => clan.coreTag), ['var'], 'the name matches too')
+    const noMatch = await searchClans('zzz')
+    assert.equal(noMatch.total, 0)
+    assert.deepEqual(noMatch.clans, [])
+    const longQuery = await app.inject({ method: 'GET', url: `/api/clans?query=${'x'.repeat(65)}` })
+    assert.equal(longQuery.statusCode, 400, 'a query is at most 64 characters')
 
     const clanDetail = await app.inject({ method: 'GET', url: '/api/clans/TST' })
     assert.equal(clanDetail.statusCode, 200)
@@ -614,9 +637,10 @@ async function main(): Promise<void> {
       recent: unknown[]
     }
     assert.equal(clanBody.clan.coreTag, 'tst')
-    // Страница клана получает ранг и дельту из самого ответа, а не из списка топ-100.
+    // The squadron page gets its rank from its own response, not from a page of the list; no
+    // baseline a month ago, so no 30-day delta.
     assert.equal(clanBody.clan.rank, testClan?.rank)
-    assert.equal(clanBody.clan.delta30d, testClan?.delta30d)
+    assert.equal(clanBody.clan.delta30d, null)
     assert.equal(clanBody.clan.rosterKnown, testClan?.rosterKnown)
     assert.equal(clanBody.roster[0]?.nick, 'PilotOne')
     assert.equal(clanBody.roster[0]?.delta, 20)
@@ -811,26 +835,34 @@ async function main(): Promise<void> {
       }
     }
 
-    // --- Официальный лидерборд: рейтинг и место кланов — из него ---
-    // Снимок кланов кэшируется в экземпляре приложения, поэтому после записи
-    // лидерборда проверяется отдельный экземпляр.
+    // --- Official leaderboard: squadron rating and place come from it ---
+    // The squadron snapshot is cached per app instance, so a separate instance checks the
+    // leaderboard written here.
     const seasonStart = getClanSeasonContext().season?.startsAt ?? 0
     const baseAt = Math.max(seasonStart, 1)
     const fullCrawlAt = nowSec - 7_200
+    const oldCrawlAt = fullCrawlAt - 600
     const topCrawlAt = nowSec - 600
+    // A point just before the leader's 24 h mark, unless the season began later than that.
+    const dayMark = topCrawlAt - 86_400
+    const dayAgoAt = dayMark - 60
     const lbClan = (tag: string, name: string, rating: number, position: number, extra: object = {}) => ({
       tag, name, rating, position, members: null, battles: null, wins: null, ...extra,
     })
     saveClanLeaderboard([lbClan('[AVR]', 'AVANGARD', 40_000, 1)], baseAt)
+    if (dayAgoAt > baseAt) saveClanLeaderboard([lbClan('[AVR]', 'AVANGARD', 47_000, 1)], dayAgoAt)
+    saveClanLeaderboard([lbClan('[OLD]', 'Dropped Clan', 2_950, 3), lbClan('[ZRO]', 'Zero Clan', 0, 4)], oldCrawlAt)
     saveClanLeaderboard([
       lbClan('[AVR]', 'AVANGARD', 48_307, 1, { members: 121, battles: 2_540, wins: 2_270 }),
       lbClan(CLAN_RAW_TAG, 'Test Clan', 3_000, 2, { members: 2, battles: 10, wins: 6 }),
-      lbClan('[OLD]', 'Dropped Clan', 2_900, 3),
+      lbClan('[LOW]', 'Lower Clan', 2_700, 3),
     ], fullCrawlAt)
+    setBotState(CLAN_FULL_CRAWL_KEY, String(fullCrawlAt))
     saveClanLeaderboard([
       lbClan('[AVR]', 'AVANGARD', 48_400, 1, { members: 121, battles: 2_545, wins: 2_274 }),
       lbClan(CLAN_RAW_TAG, 'Test Clan', 3_000, 2, { members: 2, battles: 11, wins: 7 }),
       lbClan('[NEW]', 'Newcomer', 2_800, 3),
+      lbClan('[AV]', 'Av Squad', 2_750, 4),
     ], topCrawlAt)
     const officialApp = buildServer(
       {
@@ -843,17 +875,35 @@ async function main(): Promise<void> {
     try {
       const officialClans = await officialApp.inject({ method: 'GET', url: '/api/clans' })
       assert.equal(officialClans.statusCode, 200)
-      const officialList = (officialClans.json() as {
+      const officialBody = officialClans.json() as {
+        updatedAt: number | null
         clans: {
           coreTag: string; name: string | null; totalRating: number; members: number; avgRating: number | null
-          seasonBattles: number | null; seasonWins: number | null; delta30d: number | null; rank: number; lastSeenAt: number
+          seasonBattles: number | null; seasonWins: number | null; delta24h: number | null
+          leaderboard: string | null; rank: number; lastSeenAt: number
         }[]
-      }).clans
-      // Выпавший из свежего обхода [OLD] ниже свежих кланов, хотя его прежний
-      // рейтинг выше, а кланы без официальных данных — после всех официальных.
-      assert.deepEqual(officialList.slice(0, 4).map((clan) => clan.coreTag), ['avr', 'tst', 'new', 'old'])
-      assert.deepEqual(officialList.slice(0, 4).map((clan) => clan.rank), [1, 2, 3, 4])
-      assert.equal(officialList.find((clan) => clan.coreTag === 'form')?.rank, 5, 'сумма ПКР не должна обгонять официальных')
+      }
+      const officialList = officialBody.clans
+      // The latest crawl first; [LOW], read only by the last full crawl, after it; [ZRO], a zero
+      // below the part the full crawl reads, is still in the table; [OLD], missed by the last full
+      // crawl, after every squadron in the table despite its higher rating; squadrons without
+      // official data after all of them.
+      assert.deepEqual(officialList.slice(0, 7).map((clan) => clan.coreTag), ['avr', 'tst', 'new', 'av', 'low', 'zro', 'old'])
+      assert.deepEqual(officialList.slice(0, 7).map((clan) => clan.rank), [1, 2, 3, 4, 5, 6, 7])
+      assert.deepEqual(
+        officialList.slice(0, 7).map((clan) => clan.leaderboard),
+        ['current', 'current', 'current', 'current', 'current', 'current', 'dropped'],
+      )
+      assert.equal(officialList.find((clan) => clan.coreTag === 'form')?.rank, 8, 'a PSR sum must not outrank official squadrons')
+      assert.equal(officialList.find((clan) => clan.coreTag === 'form')?.leaderboard, null)
+      // The page mixes the latest and the full crawl: the older one is the page's time ([ZRO]'s
+      // zero is confirmed by the full crawl).
+      assert.equal(officialBody.updatedAt, fullCrawlAt)
+      const latestPage = await officialApp.inject({ method: 'GET', url: '/api/clans?limit=4' })
+      assert.equal((latestPage.json() as { updatedAt: number | null }).updatedAt, topCrawlAt)
+      // An exact tag before a longer one with a better place.
+      const avSearch = await officialApp.inject({ method: 'GET', url: '/api/clans?query=av' })
+      assert.deepEqual((avSearch.json() as { clans: { coreTag: string }[] }).clans.map((clan) => clan.coreTag), ['av', 'avr'])
       const leader = officialList[0]
       assert.equal(leader?.name, 'AVANGARD')
       assert.equal(leader?.totalRating, 48_400)
@@ -862,7 +912,11 @@ async function main(): Promise<void> {
       assert.equal(leader?.seasonWins, 2_274)
       assert.equal(leader?.avgRating, null, 'без снимков состава средний ПКР неизвестен')
       assert.equal(leader?.lastSeenAt, topCrawlAt)
-      assert.equal(leader?.delta30d, 48_400 - 40_000, 'дельта — от официального значения месяц назад')
+      // The official value a day before the crawl; without a point that old, the season start.
+      const expectedDelta24h = dayAgoAt > baseAt ? 48_400 - 47_000 : dayMark >= seasonStart ? 48_400 - 40_000 : null
+      assert.equal(leader?.delta24h, expectedDelta24h)
+      assert.equal(officialList.find((clan) => clan.coreTag === 'low')?.delta24h, null, 'no point a day before its crawl')
+      assert.equal(officialList.find((clan) => clan.coreTag === 'old')?.delta24h, null, 'a dropped squadron has no change')
       const officialTst = officialList.find((clan) => clan.coreTag === 'tst')
       assert.equal(officialTst?.totalRating, 3_000, 'официальный рейтинг заменяет сумму снимков ПКР')
       assert.equal(officialTst?.avgRating, 1_460, 'средний ПКР по снимкам состава сохраняется')
@@ -870,7 +924,10 @@ async function main(): Promise<void> {
       const leaderDetail = await officialApp.inject({ method: 'GET', url: '/api/clans/avr' })
       assert.equal(leaderDetail.statusCode, 200, 'клан лидерборда без снимков ПКР должен открываться')
       const leaderBody = leaderDetail.json() as {
-        clan: { rank: number; members: number; totalRating: number; seasonBattles: number | null; seasonWins: number | null }
+        clan: {
+          rank: number; members: number; totalRating: number; seasonBattles: number | null; seasonWins: number | null
+          delta30d: number | null
+        }
         roster: unknown[]
       }
       assert.equal(leaderBody.clan.rank, 1)
@@ -878,17 +935,21 @@ async function main(): Promise<void> {
       assert.equal(leaderBody.clan.totalRating, 48_400)
       assert.equal(leaderBody.clan.seasonBattles, 2_545)
       assert.equal(leaderBody.clan.seasonWins, 2_274)
+      assert.equal(leaderBody.clan.delta30d, 48_400 - 40_000, 'the delta is from the official value a month ago')
       assert.equal(leaderBody.roster.length, 0)
 
       const leaderHistory = await officialApp.inject({ method: 'GET', url: '/api/clans/avr/history?days=90' })
       const leaderPoints = (leaderHistory.json() as { points: { t: number; total: number }[] }).points
-      assert.deepEqual(leaderPoints.map((point) => point.total), [40_000, 48_307, 48_400])
+      assert.deepEqual(
+        leaderPoints.map((point) => point.total),
+        [40_000, ...(dayAgoAt > baseAt ? [47_000] : []), 48_307, 48_400],
+      )
       assert.equal(leaderPoints[leaderPoints.length - 1]?.t, topCrawlAt)
 
       const leaderBattles = await officialApp.inject({ method: 'GET', url: '/api/battles?clan=avr' })
       assert.equal(leaderBattles.statusCode, 200)
       const officialStats = await officialApp.inject({ method: 'GET', url: '/api/site-stats' })
-      assert.equal((officialStats.json() as { clans: number }).clans, 7, 'счётчик кланов включает официальные')
+      assert.equal((officialStats.json() as { clans: number }).clans, 10, 'the squadron count includes official squadrons')
     } finally {
       await officialApp.close()
     }

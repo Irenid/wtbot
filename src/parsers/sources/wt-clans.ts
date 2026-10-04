@@ -1,4 +1,5 @@
 import {
+  CLAN_FULL_CRAWL_KEY,
   getBotState,
   getClanNameByTag,
   getClanRosterRefreshedAt,
@@ -46,7 +47,6 @@ const TOP_PAGES = 5
 const MAX_PAGES = 100
 const INTERVAL_MS = 20 * 60_000
 const FULL_CRAWL_INTERVAL_SEC = 12 * 60 * 60
-const FULL_CRAWL_STATE_KEY = 'wt-clans:full-crawl-at'
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_TEXT_LENGTH = 256
 const MAX_DESCRIPTION_LENGTH = 2_048
@@ -309,7 +309,7 @@ export const wtClans: ParserSource = {
     // One moment for the whole crawl: the site tells clans of the latest
     // crawl from earlier ones by the shared rating_at.
     const capturedAt = Math.floor(Date.now() / 1_000)
-    const lastFullCrawl = Number(getBotState(FULL_CRAWL_STATE_KEY) ?? 0)
+    const lastFullCrawl = Number(getBotState(CLAN_FULL_CRAWL_KEY) ?? 0)
     // A request made during this run is served by the next one; a tag an
     // earlier run already found needs no crawl.
     const onDemand = [...requestedTags].some((tag) => getClanNameByTag(tag) === null)
@@ -366,7 +366,7 @@ export const wtClans: ParserSource = {
     }
 
     saveClanLeaderboard(entries, capturedAt)
-    if (full) setBotState(FULL_CRAWL_STATE_KEY, String(capturedAt))
+    if (full) setBotState(CLAN_FULL_CRAWL_KEY, String(capturedAt))
     if (season) saveOfficialClanSeason(season)
 
     // Leader rosters: a claninfo failure is logged and does not fail the crawl.

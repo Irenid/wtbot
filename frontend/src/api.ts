@@ -289,26 +289,34 @@ export interface ClanListEntry {
   displayTag: string
   name: string | null
   members: number
-  /** Официальный рейтинг полковых боёв; для клана вне лидерборда — сумма ПКР. */
+  /** Official squadron rating; for a squadron outside the leaderboard — the sum of members' PSR. */
   totalRating: number
-  /** Средний ПКР по снимкам состава; null — снимков нет. */
+  /** Average PSR over roster snapshots; null — no snapshots. */
   avgRating: number | null
-  /** Бои и победы сезона по официальному лидерборду; null — клана в нём нет. */
+  /** Season battles and wins from the official leaderboard; null — not in it. */
   seasonBattles: number | null
   seasonWins: number | null
-  /** Фраги и смерти сезона по лидерборду; null — клана в нём нет. */
+  /** Season kills and deaths from the leaderboard; null — not in it. */
   airKills: number | null
   groundKills: number | null
   deaths: number | null
+  /** Crawl time of the official figures; without them — the latest member snapshot. */
   lastSeenAt: number
   /**
-   * Изменение рейтинга с отметки месяц назад внутри сезона; у клана вне
-   * лидерборда — ПКР участников, известных и тогда, и сейчас. null — базиса нет.
+   * Official rating change over the day before the rating was last confirmed (its crawl; for a
+   * zero below the crawled part, the last full crawl); null — no point that old in the season, no
+   * official data, or the squadron left the leaderboard.
    */
-  delta30d: number | null
+  delta24h: number | null
+  /**
+   * current — in the leaderboard; dropped — a rating above zero missed by the last full crawl
+   * (renamed, disbanded or fallen to zero), the figures are its last; null — not in it this
+   * season, rated by members' PSR.
+   */
+  leaderboard: 'current' | 'dropped' | null
   /** Place among all squadrons, not within the returned page. */
   rank: number
-  /** false — ростер ещё не обходили: сумма может включать ушедших участников. */
+  /** false — no roster crawl yet: the sum may include members who left. */
   rosterKnown: boolean
 }
 
@@ -320,18 +328,19 @@ export interface OfficialClanSeason {
   endsAt: number
 }
 
-/** One page of the ranking by place; without parameters — the top 100. */
-export function fetchClans(params: { offset?: number; limit?: number } = {}): Promise<{
+/** One page of the ranking by place, or of a search by tag or name; without parameters — the top 100. */
+export function fetchClans(params: { query?: string; offset?: number; limit?: number } = {}): Promise<{
   ok: true
   season: ClanSeasonContext
   officialSeason: OfficialClanSeason | null
-  /** All ranked squadrons, not only this page. */
+  /** All ranked squadrons, or all matches of the query; not only this page. */
   total: number
-  /** The first place's rating; null — no squadrons. */
-  leaderRating: number | null
+  /** The oldest crawl time among the page's squadrons in the leaderboard; null — none on the page. */
+  updatedAt: number | null
   clans: ClanListEntry[]
 }> {
   const search = new URLSearchParams()
+  if (params.query) search.set('query', params.query)
   if (params.offset) search.set('offset', String(params.offset))
   if (params.limit) search.set('limit', String(params.limit))
   const suffix = search.size > 0 ? `?${search.toString()}` : ''
