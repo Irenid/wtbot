@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildServer } from './index.js'
+import { DASHBOARD_PATH } from './routes/pages.js'
+import { legacySpaTarget } from './routes/spa.js'
 
 const deps = {
   getBotStatus: () => ({ online: false, tag: null, guilds: 0, uptimeSec: 0 }),
@@ -183,14 +185,14 @@ test('сетевой режим принимает HTTP Basic с паролем 
   const app = buildServer(deps, undefined, { host: '0.0.0.0', token: 'test-secret' })
   const basic = (credentials: string) => `Basic ${Buffer.from(credentials, 'utf8').toString('base64')}`
   try {
-    const challenge = await app.inject({ method: 'GET', url: '/' })
+    const challenge = await app.inject({ method: 'GET', url: DASHBOARD_PATH })
     assert.equal(challenge.statusCode, 401)
     assert.match(String(challenge.headers['www-authenticate']), /^Basic realm="wtbot"/)
 
-    const wrong = await app.inject({ method: 'GET', url: '/', headers: { authorization: basic('admin:nope') } })
+    const wrong = await app.inject({ method: 'GET', url: DASHBOARD_PATH, headers: { authorization: basic('admin:nope') } })
     assert.equal(wrong.statusCode, 401)
 
-    const page = await app.inject({ method: 'GET', url: '/', headers: { authorization: basic('admin:test-secret') } })
+    const page = await app.inject({ method: 'GET', url: DASHBOARD_PATH, headers: { authorization: basic('admin:test-secret') } })
     assert.equal(page.statusCode, 200)
 
     const lowercaseBearer = await app.inject({
@@ -253,4 +255,47 @@ test('loopback-сервер без токена не защищает и не л
   } finally {
     await app.close()
   }
+})
+
+test('network mode protects every page path of the root SPA, not only /api', async () => {
+  const app = buildServer(deps, undefined, { host: '0.0.0.0', token: 'test-secret' })
+  try {
+    for (const url of ['/', '/clans', '/guides/psr', '/assets/index.js', '/LICENSE.txt', DASHBOARD_PATH, '/app/clans', '/nope']) {
+      const response = await app.inject({ method: 'GET', url })
+      assert.equal(response.statusCode, 401, url)
+    }
+    const health = await app.inject({ method: 'GET', url: '/health' })
+    assert.equal(health.statusCode, 200)
+  } finally {
+    await app.close()
+  }
+})
+
+test('legacy /app links redirect to the same page at the root', async () => {
+  const app = buildServer(deps, undefined, { host: '127.0.0.1', token: '' })
+  try {
+    const cases: Array<[string, string]> = [
+      ['/app', '/'],
+      ['/app/', '/'],
+      ['/app?lang=en', '/?lang=en'],
+      ['/app/players/12345', '/players/12345'],
+      ['/app/battles?clan=wlily&page=2', '/battles?clan=wlily&page=2'],
+      ['/app//evil.example/x', '/evil.example/x'],
+      ['/app/%5Cevil.example', '/%5Cevil.example'],
+    ]
+    for (const [url, location] of cases) {
+      const response = await app.inject({ method: 'GET', url })
+      assert.equal(response.statusCode, 301, url)
+      assert.equal(response.headers['location'], location, url)
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+test('legacySpaTarget never leaves the site', () => {
+  assert.equal(legacySpaTarget('/app/\\\\evil.example'), '/evil.example')
+  assert.equal(legacySpaTarget('/app///evil.example?x=1'), '/evil.example?x=1')
+  assert.equal(legacySpaTarget('http://attacker.example/app/clans?x=1'), '/clans?x=1')
+  assert.equal(legacySpaTarget('/app'), '/')
 })

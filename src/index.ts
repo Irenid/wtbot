@@ -9,8 +9,11 @@ import { startBot, stopBotWork } from './bot/index.js'
 import { startVoiceTracker } from './bot/voice-tracker.js'
 import { requestPlayerBoardRefresh, startPlayerBoardPublisher } from './bot/player-board.js'
 import { buildServer } from './web/index.js'
+import { DASHBOARD_PATH } from './web/routes/pages.js'
 import type { RuntimeStats } from './web/types.js'
-import { startParsers, stopParsers } from './parsers/index.js'
+import { runParserNow, startParsers, stopParsers } from './parsers/index.js'
+import { requestFullClanCrawl } from './parsers/sources/wt-clans.js'
+import { setClanTagLookup } from './wrpl/clan-info.js'
 import { getIngestTelemetrySnapshot, startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
 import { configureReplayFetchAdmission } from './wrpl/replay-cache.js'
 import { configureReplayProcessBudget } from './wrpl/replay-events.js'
@@ -366,7 +369,7 @@ async function startServices(): Promise<void> {
   )
   await app.listen({ port: config.port, host: config.webHost })
   if (shuttingDown) return
-  console.log(`[web] Дашборд: http://${config.webHost}:${config.port}`)
+  console.log(`[web] Site: http://${config.webHost}:${config.port}, bot statistics: ${DASHBOARD_PATH}`)
   void runWorkerTask(
     {
       kind: 'warm-sqlite',
@@ -386,6 +389,12 @@ async function startServices(): Promise<void> {
   if (shuttingDown) return
   startWtCookieRefresh()
   startParsers()
+  // A squadron tag missing from the clans dictionary (it began playing after
+  // the last full crawl) is looked up by an out-of-schedule full crawl.
+  setClanTagLookup((tags) => {
+    requestFullClanCrawl(tags)
+    return runParserNow('wt-clans')
+  })
 
   // 5. Разбор боёв в БД: скачивает файлы реплеев новых боёв, раскладывает
   // фраги/очки/технику/победителя/траектории по таблицам (см. wrpl/ingest.ts)

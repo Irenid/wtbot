@@ -15,7 +15,7 @@ const dashboardHtml = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wtbot — панель</title>
 <style>
-  /* Единая тема с сайтом /app: тёплый чёрный + золотой акцент. */
+  /* One theme with the site: warm black and a gold accent. */
   :root {
     color-scheme: dark;
     --bg: #111015; --card: #1e1c23; --inset: #18161b;
@@ -132,7 +132,7 @@ const dashboardHtml = `<!doctype html>
 <body>
 <div class="wrap">
   <h1>wt<span>bot</span></h1>
-  <div class="sub">Полная телеметрия проекта · адаптивное обновление без тяжёлого polling · <a href="/app">сайт статистики →</a></div>
+  <div class="sub">Полная телеметрия проекта · адаптивное обновление без тяжёлого polling · <a href="/">сайт →</a></div>
   <div class="grid">
     <div class="card full">
       <div class="status-line">
@@ -244,7 +244,7 @@ function voicePlayerRow(p) {
   if (p.rating !== null) {
     const delta = p.delta ? ' (' + (p.delta > 0 ? '+' : '') + p.delta + ')' : '';
     const battles = p.battles ? ' · боёв: ' + p.battles : '';
-    right.textContent = (p.clanTag ? p.clanTag + ' · ' : '') + 'ПКР ' + p.rating + delta + battles;
+    right.textContent = (p.clanTag ? p.clanTag + ' · ' : '') + 'ЛПР ' + p.rating + delta + battles;
   } else {
     right.textContent = p.battles ? 'боёв: ' + p.battles : 'нет данных WT';
   }
@@ -1098,7 +1098,7 @@ function renderSiteStats(data) {
   document.getElementById('site-detail').replaceChildren(
     row('боёв за неделю', fmtMetric(data.battlesWeek)),
     row('уникальных игроков', fmtMetric(data.players)),
-    row('кланов', fmtMetric(data.clans)),
+    row('полков', fmtMetric(data.clans)),
     row('последний бой', fmtTimestamp(data.lastBattleAt))
   );
   const activity = document.getElementById('site-activity');
@@ -1215,8 +1215,11 @@ document.getElementById('voice-refresh').addEventListener('click', async functio
 </body>
 </html>`
 
+/** The bot dashboard; the SPA owns the root and links here from its top bar (frontend/src/App.tsx). */
+export const DASHBOARD_PATH = '/statistics'
+
 export const pageRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/', async (_request, reply) => {
+  app.get(DASHBOARD_PATH, async (_request, reply) => {
     return reply.type('text/html; charset=utf-8').send(dashboardHtml)
   })
 }

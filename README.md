@@ -4,7 +4,7 @@ A Discord bot, website and War Thunder squadron battle statistics collector in
 one Node.js process. The bot collects replays from warthunder.com, parses
 `.wrpl` files and stores battles, players, kills and chat in SQLite. Results
 appear in Discord (`/battle`, auto-announcements, a player board built from
-voice channels) and on the `/app` site.
+voice channels) and on the site (`/`; the bot dashboard is `/statistics`).
 
 ## Documentation
 
@@ -46,8 +46,9 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    and `ui/atlases.vromfs.bin` into `data/wt-game/ui/` and restart the bot;
    without them flags are drawn simplified.
 3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`.
-4. Site — `http://127.0.0.1:3000/app` on the server itself: any user name,
-   password — `WEB_TOKEN`. For network access put a reverse proxy with TLS
+4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
+   `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links
+   redirect to the same page at the root. For network access put a reverse proxy with TLS
    (nginx, caddy) in front of the bot and set `WEB_TRUST_PROXY`.
 5. If Cloudflare wants a manual check or warthunder.com needs a new login,
    set `WT_VNC_PASSWORD`, uncomment port `5900` in `docker-compose.yml` and
@@ -88,9 +89,9 @@ production database.
 - SPA on the server's data without a local database: `WTBOT_API_URL` (the
   site's address behind the reverse proxy) and `WTBOT_API_TOKEN` (its
   `WEB_TOKEN`) in `.env`, then `npm run dev:web` →
-  `http://127.0.0.1:5173/app/`.
+  `http://127.0.0.1:5173/`.
 - Site on the `DB_PATH` database without the bot: `npm run site` →
-  `http://127.0.0.1:3210/app`.
+  `http://127.0.0.1:3210/`.
 - Demo on synthetic data without a database:
   `npx tsx src/analysis/site-preview.ts` (same address).
 - Site design-system mockups — `frontend/design/`. Stop with `Ctrl+C`.

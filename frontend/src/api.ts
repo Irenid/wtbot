@@ -20,6 +20,8 @@ async function readJson<T>(response: Response): Promise<T> {
     const err = (body ?? {}) as Partial<ApiError>
     throw new SiteApiError(response.status, err.code ?? 'ERROR', err.error ?? `HTTP ${response.status}`)
   }
+  // Every endpoint answers with an object: no body (a cut connection, an aborted page) is a failure, not data.
+  if (body === null) throw new SiteApiError(response.status, 'BAD_RESPONSE', `HTTP ${response.status}: the response is not JSON`)
   return body as T
 }
 
@@ -283,7 +285,7 @@ export interface ClanListEntry {
    * лидерборда — ПКР участников, известных и тогда, и сейчас. null — базиса нет.
    */
   delta30d: number | null
-  /** Место в общем рейтинге всех кланов, а не только в показанной сотне. */
+  /** Place among all squadrons, not within the returned page. */
   rank: number
   /** false — ростер ещё не обходили: сумма может включать ушедших участников. */
   rosterKnown: boolean
@@ -297,13 +299,22 @@ export interface OfficialClanSeason {
   endsAt: number
 }
 
-export function fetchClans(): Promise<{
+/** One page of the ranking by place; without parameters — the top 100. */
+export function fetchClans(params: { offset?: number; limit?: number } = {}): Promise<{
   ok: true
   season: ClanSeasonContext
   officialSeason: OfficialClanSeason | null
+  /** All ranked squadrons, not only this page. */
+  total: number
+  /** The first place's rating; null — no squadrons. */
+  leaderRating: number | null
   clans: ClanListEntry[]
 }> {
-  return getJson('/api/clans')
+  const search = new URLSearchParams()
+  if (params.offset) search.set('offset', String(params.offset))
+  if (params.limit) search.set('limit', String(params.limit))
+  const suffix = search.size > 0 ? `?${search.toString()}` : ''
+  return getJson(`/api/clans${suffix}`)
 }
 
 export interface SiteStats {

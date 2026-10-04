@@ -32,7 +32,7 @@ test('анонс добавляет рядом с Match ID только макс
   )
 })
 
-test('обновление ПКР применяется сразу, не ожидая durable summary', async () => {
+test('PSR applies at once; the winner and then the squadron lookup follow in order', async () => {
   let releaseWinner: (() => void) | undefined
   const winnerReady = new Promise<void>((resolve) => {
     releaseWinner = resolve
@@ -54,18 +54,21 @@ test('обновление ПКР применяется сразу, не ожи
       await winnerReady
       return payload('winner')
     },
+    // Built only after the winner is applied, so its redraw keeps the winner.
+    buildLookupPayload: async () => payload('lookup'),
     updateBytes: 0,
   }
 
   queueBattlePostUpdates(post, async (next) => {
     applied.push(next.content)
     if (applied.length === 1) firstApplied?.()
-    if (applied.length === 2) allApplied?.()
+    if (applied.length === 3) allApplied?.()
   })
 
   await firstApply
+  await new Promise<void>((resolve) => setImmediate(resolve))
   assert.deepEqual(applied, ['ratings'])
   releaseWinner?.()
   await complete
-  assert.deepEqual(applied, ['ratings', 'winner'])
+  assert.deepEqual(applied, ['ratings', 'winner', 'lookup'])
 })

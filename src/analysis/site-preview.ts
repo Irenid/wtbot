@@ -1,6 +1,6 @@
-// Локальный предпросмотр сайта на демо-фикстурах: SQLite :memory: + Fastify,
-// без Discord, парсеров и внешних сервисов. Для вёрстки и ручной проверки SPA.
-// Запуск: npx tsx src/analysis/site-preview.ts  → http://127.0.0.1:3210/app
+// Local site preview on demo fixtures: SQLite :memory: + Fastify, without
+// Discord, parsers or external services. For layout and manual SPA checks.
+// Run: npx tsx src/analysis/site-preview.ts  → http://127.0.0.1:3210/
 import { rm } from 'node:fs/promises'
 import { gzipSync } from 'node:zlib'
 import {
@@ -285,7 +285,7 @@ async function main(): Promise<void> {
     },
   )
   await app.listen({ host: '127.0.0.1', port: PORT })
-  console.log(`[site-preview] Демо-сайт: http://127.0.0.1:${PORT}/app (Ctrl+C для выхода)`)
+  console.log(`[site-preview] Demo site: http://127.0.0.1:${PORT}/ (Ctrl+C to exit)`)
   const cleanupDemoScenes = async (): Promise<void> => {
     // Демо-сессии пишут scene-кэш в реальный data/battles — убираем свои файлы.
     for (let i = 0; i < 14; i += 1) {

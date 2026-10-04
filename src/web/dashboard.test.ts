@@ -16,6 +16,7 @@ import {
 } from '../db/index.js'
 import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { buildServer } from './index.js'
+import { DASHBOARD_PATH } from './routes/pages.js'
 
 test('dashboard отдаёт лёгкий кэшируемый снимок и инвалидируется после voice refresh', async () => {
   initDb(':memory:')
@@ -109,7 +110,7 @@ test('dashboard отдаёт лёгкий кэшируемый снимок и �
     const afterRefresh = await app.inject({ method: 'GET', url: '/api/dashboard' })
     assert.equal(afterRefresh.json().recentItems[0].title, 'Вторая запись')
 
-    const page = await app.inject({ method: 'GET', url: '/' })
+    const page = await app.inject({ method: 'GET', url: DASHBOARD_PATH })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /\/api\/dashboard/)
     assert.match(page.body, /visibilitychange/)

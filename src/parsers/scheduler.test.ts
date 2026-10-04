@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 import test from 'node:test'
 import { closeDb, getLatestItems, getParseHistory, initDb } from '../db/index.js'
-import { startParsers, stopParsers } from './index.js'
+import { runParserNow, startParsers, stopParsers } from './index.js'
 import type { ParserSource } from './types.js'
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -166,6 +166,61 @@ test('перезапуск планировщика не сохраняет ре
       ['restart-test-run2'],
     )
   } finally {
+    await stopParsers()
+    closeDb()
+  }
+})
+
+test('runParserNow runs a source outside its interval, after an active run and never beside it', async () => {
+  initDb(':memory:')
+  const gate = deferred<void>()
+  let runs = 0
+  let active = 0
+  let maxActive = 0
+  let failNext = false
+  const source: ParserSource = {
+    name: 'run-now-test',
+    intervalMs: 60_000,
+    async run() {
+      runs++
+      active++
+      maxActive = Math.max(maxActive, active)
+      try {
+        if (runs === 1) await gate.promise
+        if (failNext) throw new Error('expected fixture failure')
+        return { summary: `run ${runs}` }
+      } finally {
+        active--
+      }
+    },
+  }
+  const originalError = console.error
+  console.error = () => undefined
+
+  try {
+    startParsers([source])
+    await waitFor(() => runs === 1)
+    // Two callers during the scheduled run share one extra run after it.
+    const first = runParserNow('run-now-test')
+    const second = runParserNow('run-now-test')
+    await delay(10)
+    assert.equal(runs, 1)
+    gate.resolve()
+    assert.deepEqual(await Promise.all([first, second]), [true, true])
+    assert.equal(runs, 2)
+    // An idle source runs at once instead of after its 60 s interval.
+    assert.equal(await runParserNow('run-now-test'), true)
+    assert.equal(runs, 3)
+    failNext = true
+    assert.equal(await runParserNow('run-now-test'), false)
+    assert.equal(getParseHistory('run-now-test')[0]?.ok, false)
+    assert.equal(maxActive, 1)
+    assert.equal(await runParserNow('unknown-source'), false)
+    await stopParsers()
+    assert.equal(await runParserNow('run-now-test'), false)
+    assert.equal(runs, 4)
+  } finally {
+    console.error = originalError
     await stopParsers()
     closeDb()
   }

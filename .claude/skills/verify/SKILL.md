@@ -38,8 +38,9 @@ process would get the same Discord token and the same database.
 `npm run dev` — bot, site (:3000) and parsers in one process; needs a filled
 `.env` with its own `TOKEN`, otherwise announcements are doubled. Readiness —
 `curl -s --retry 15 --retry-connrefused --retry-delay 1 http://127.0.0.1:3000/health`.
-`GET /` — the HTML dashboard; the `analysis` field in `/api/items` is filled
-by `npm run analyze` (paid, `ANTHROPIC_API_KEY`). `npm run deploy:commands`
+`GET /statistics` — the HTML dashboard, `GET /` — the site; the `analysis`
+field in `/api/items` is filled by `npm run analyze` (paid,
+`ANTHROPIC_API_KEY`). `npm run deploy:commands`
 (needs `CLIENT_ID`, `GUILD_ID`; changes the commands in Discord) prints
 `Зарегистрировано команд: N — на сервере … (мгновенно)` (N commands
 registered); only a live user can press the commands.

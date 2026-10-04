@@ -1,5 +1,6 @@
 import {
   getBotState,
+  getClanNameByTag,
   getClanRosterRefreshedAt,
   getClanSeasonContext,
   saveClanLeaderboard,
@@ -287,15 +288,35 @@ export function parseLeaderboardPage(raw: string, page: number): LeaderboardPage
   return { status: value['status'], size: value['data'].length, clans, hasActive, season }
 }
 
+/** Tags from requestFullClanCrawl() the next run looks for. */
+const requestedTags = new Set<string>()
+
+/**
+ * Makes the next run a full crawl while one of `tags` is still missing from
+ * the dictionary. clan-info.ts asks for it when a battle has such a tag: a
+ * squadron that began playing after the last full crawl would otherwise stay
+ * without a name (so without PSR, roster and site data) for up to
+ * FULL_CRAWL_INTERVAL_SEC.
+ */
+export function requestFullClanCrawl(tags: readonly string[]): void {
+  for (const tag of tags) requestedTags.add(tag)
+}
+
 export const wtClans: ParserSource = {
   name: 'wt-clans',
   intervalMs: INTERVAL_MS,
   async run(signal) {
-    // Один момент на весь обход: по общему rating_at сайт отличает кланы
-    // свежего обхода от оставшихся с прежних.
+    // One moment for the whole crawl: the site tells clans of the latest
+    // crawl from earlier ones by the shared rating_at.
     const capturedAt = Math.floor(Date.now() / 1_000)
     const lastFullCrawl = Number(getBotState(FULL_CRAWL_STATE_KEY) ?? 0)
-    const full = !Number.isFinite(lastFullCrawl) || capturedAt - lastFullCrawl >= FULL_CRAWL_INTERVAL_SEC * 0.9
+    // A request made during this run is served by the next one; a tag an
+    // earlier run already found needs no crawl.
+    const onDemand = [...requestedTags].some((tag) => getClanNameByTag(tag) === null)
+    requestedTags.clear()
+    const full = onDemand
+      || !Number.isFinite(lastFullCrawl)
+      || capturedAt - lastFullCrawl >= FULL_CRAWL_INTERVAL_SEC * 0.9
     const maxPages = full ? MAX_PAGES : TOP_PAGES
 
     const entries: ClanLeaderboardEntry[] = []
@@ -303,80 +324,81 @@ export const wtClans: ParserSource = {
     let season: OfficialClanSeason | null = null
     let pages = 0
     let lastPageActive = false
-    // Страницы зависимы: конец списка и нулевой рейтинг останавливают обход,
-    // а общая очередь warthunder.com всё равно выполняет запросы по одному.
+    // Pages are dependent: the end of the list and a zero rating stop the
+    // crawl, and the shared warthunder.com queue runs requests one by one anyway.
     for (let page = 1; page <= maxPages; page++) {
       signal.throwIfAborted()
       const res = await fetchWtResponse(
         `${LB_URL}/${page}/sort/dr_era5`,
         { headers: { accept: 'application/json' } },
-        `лидерборд, страница ${page}`,
+        `leaderboard, page ${page}`,
         MAX_RESPONSE_BYTES,
       )
       if (!res.ok) {
         await res.body?.cancel().catch(() => undefined)
-        throw new Error(`HTTP ${res.status} на странице ${page} лидерборда`)
+        throw new Error(`HTTP ${res.status} on leaderboard page ${page}`)
       }
       const contentType = res.headers.get('content-type')?.toLowerCase() ?? ''
       if (contentType !== '' && !contentType.includes('json')) {
         await res.body?.cancel().catch(() => undefined)
-        throw new Error(`лидерборд, страница ${page}: сервер вернул не JSON`)
+        throw new Error(`leaderboard, page ${page}: the server returned non-JSON`)
       }
       const parsed = parseLeaderboardPage(
-        await readResponseText(res, MAX_RESPONSE_BYTES, `лидерборд, страница ${page}`),
+        await readResponseText(res, MAX_RESPONSE_BYTES, `leaderboard, page ${page}`),
         page,
       )
       if (parsed.status !== 'ok' || parsed.size === 0) break
       pages = page
       season ??= parsed.season
-      // Пока идёт обход, клан может сдвинуться на соседнюю страницу — дубль
-      // с более низким местом отбрасываем.
+      // A clan can move to the next page during the crawl: the duplicate with
+      // the lower place is dropped.
       for (const clan of parsed.clans) {
         if (seenTags.has(clan.tag)) continue
         seenTags.add(clan.tag)
         entries.push(clan)
       }
-      // страница целиком из кланов с нулевым рейтингом — дальше только неактивные
+      // A page of zero-rated clans only: the rest are inactive.
       lastPageActive = parsed.hasActive
       if (!parsed.hasActive) break
     }
     if (entries.length === 0) {
-      throw new Error('лидерборд не вернул ни одного клана — изменился ответ сайта или доступ')
+      throw new Error('the leaderboard returned no clans: the response or access changed')
     }
 
     saveClanLeaderboard(entries, capturedAt)
     if (full) setBotState(FULL_CRAWL_STATE_KEY, String(capturedAt))
     if (season) saveOfficialClanSeason(season)
 
-    // Ростеры лидеров: сбой claninfo пишется в лог и не роняет обход лидерборда.
+    // Leader rosters: a claninfo failure is logged and does not fail the crawl.
     signal.throwIfAborted()
     const leaders = entries.slice(0, TOP_PAGES * PAGE_SIZE)
     const rosterTags = pickRostersToRefresh(leaders, getClanRosterRefreshedAt(leaders.map((clan) => clan.tag)), capturedAt)
     if (rosterTags.length > 0) await fetchRatingsForTags(rosterTags)
-    const rosterText = rosterTags.length > 0 ? ` · ростеры claninfo: ${rosterTags.length}` : ''
+    const rosterText = rosterTags.length > 0 ? ` · claninfo rosters: ${rosterTags.length}` : ''
 
     const leader = entries[0]!
-    const leaderText = leader.rating === null ? '' : ` · лидер ${leader.tag} — ${leader.rating}`
-    const seasonText = season ? ` · сезон ${season.seasonId}${seasonMismatch(season)}` : ''
+    const leaderText = leader.rating === null ? '' : ` · leader ${leader.tag}: ${leader.rating}`
+    const seasonText = season ? ` · season ${season.seasonId}${seasonMismatch(season)}` : ''
     const capText = full && pages === MAX_PAGES && lastPageActive
-      ? ` · достигнут предел ${MAX_PAGES} страниц, хвост не прочитан`
+      ? ` · hit the ${MAX_PAGES}-page cap, the tail is not read`
       : ''
+    const fullText = onDemand ? 'full crawl for an unknown tag' : 'full crawl'
     return {
       summary: full
-        ? `Кланов в лидерборде: ${entries.length} (страниц: ${pages}, полный обход)${capText}${leaderText}${seasonText}${rosterText}`
-        : `Лидеры обновлены: ${entries.length} кланов (страниц: ${pages})${leaderText}${seasonText}${rosterText}`,
+        ? `Clans on the leaderboard: ${entries.length} (pages: ${pages}, ${fullText})${capText}${leaderText}${seasonText}${rosterText}`
+        : `Leaders updated: ${entries.length} clans (pages: ${pages})${leaderText}${seasonText}${rosterText}`,
     }
   },
 }
 
 /**
- * Сверка сезона с форумом (источник wt-clan-season): расхождение видно в
- * статусе источника на дашборде, расписание при этом не меняется.
+ * The official season checked against the forum one (wt-clan-season): a
+ * mismatch shows in the source status on the dashboard; the schedule stays.
  */
 function seasonMismatch(official: OfficialClanSeason): string {
   const forum = getClanSeasonContext(official.startsAt).season
-  if (forum === null) return ' (на форуме сезона нет)'
+  if (forum === null) return ' (no such season on the forum)'
   return forum.startsAt === official.startsAt && forum.endsAt === official.endsAt
     ? ''
-    : ' (даты с форумом расходятся)'
+    : ' (dates differ from the forum)'
 }

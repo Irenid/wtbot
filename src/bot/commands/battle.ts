@@ -33,7 +33,7 @@ import {
 } from '../../wrpl/battle-media.js'
 import { isBattleHeatmapKind } from '../../wrpl/battle-media-kind.js'
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
-import { fetchRatingsForTags, type ClanRating } from '../../wrpl/clan-info.js'
+import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags, type ClanRating } from '../../wrpl/clan-info.js'
 import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
@@ -105,6 +105,12 @@ export interface BattlePost {
   buildWinnerPayload: (() => Promise<BattlePostPayload | null>) | null
   /** null — фоновое обновление ПКР не требуется. */
   buildRatingsPayload: (() => Promise<BattlePostPayload | null>) | null
+  /**
+   * Runs last: looks up squadron tags missing from the clans dictionary (up
+   * to a full leaderboard crawl) and redraws the post with their PSR; null —
+   * every tag has a name.
+   */
+  buildLookupPayload: (() => Promise<BattlePostPayload | null>) | null
   /** Консервативная оценка retained state замыканий обновления сообщения. */
   updateBytes: number
 }
@@ -150,6 +156,9 @@ export async function renderBattlePost(
   // Interactive /battle gets the current PSR. A background announcement
   // first draws dashes until a separate update gets fresh points.
   const clanTags = teams.flatMap((t) => (t.rawTag ? [t.rawTag] : []))
+  // A squadron that began playing after the last full leaderboard crawl has
+  // no name for its claninfo page yet: the last update looks it up and redraws.
+  const unknownTags = unknownClanTags(clanTags)
   let ratings: Map<string, ClanRating>
   if (priority === 'background') {
     ratings = new Map()
@@ -257,6 +266,16 @@ export async function renderBattlePost(
         return makePayload(currentWinnerTeam, currentHasChat, 'background')
       }
     : null
+  const buildLookupPayload = unknownTags.length > 0
+    ? async (): Promise<BattlePostPayload | null> => {
+        await lookupUnknownClanTags(unknownTags)
+        if (unknownClanTags(unknownTags).length === unknownTags.length) return null
+        const freshRatings = await fetchRatingsForTags(clanTags)
+        if (sameRatings(ratings, freshRatings)) return null
+        ratings = freshRatings
+        return makePayload(currentWinnerTeam, currentHasChat, 'background')
+      }
+    : null
   const buildWinnerPayload = shouldQueueWinnerUpdate(dbSummary !== null, mediaMeta !== null)
     ? async (): Promise<BattlePostPayload | null> => {
         const fresh = await waitForBattlePostSummary(sessionId)
@@ -285,7 +304,10 @@ export async function renderBattlePost(
     sessionIdHex: header.sessionIdHex,
     buildWinnerPayload,
     buildRatingsPayload,
-    updateBytes: buildWinnerPayload || buildRatingsPayload ? estimatePostUpdateBytes(results, content) : 0,
+    buildLookupPayload,
+    updateBytes: buildWinnerPayload || buildRatingsPayload || buildLookupPayload
+      ? estimatePostUpdateBytes(results, content)
+      : 0,
   }
 }
 
@@ -297,7 +319,7 @@ export function seasonMaxBrSuffix(context: ReturnType<typeof getClanSeasonContex
 
 /** Последовательно применяет быстрый ПКР и затем при необходимости durable summary. */
 export function queueBattlePostUpdates(post: BattlePost, apply: (p: BattlePostPayload) => Promise<unknown>): void {
-  const builders = [post.buildRatingsPayload, post.buildWinnerPayload].filter(
+  const builders = [post.buildRatingsPayload, post.buildWinnerPayload, post.buildLookupPayload].filter(
     (build): build is () => Promise<BattlePostPayload | null> => build !== null,
   )
   const sessionIdHex = post.sessionIdHex
@@ -392,10 +414,10 @@ const KIND_NAMES: Record<BattleMediaKind, string> = {
   log: 'battle log',
   'heatmap-ground': 'карту наземной техники',
   'heatmap-air': 'карту авиации',
-  'heatmap-team-0': 'карту первого клана',
-  'heatmap-team-1': 'карту второго клана',
-  'heatmap-team-air-0': 'воздушную карту первого клана',
-  'heatmap-team-air-1': 'воздушную карту второго клана',
+  'heatmap-team-0': 'карту первого полка',
+  'heatmap-team-1': 'карту второго полка',
+  'heatmap-team-air-0': 'воздушную карту первого полка',
+  'heatmap-team-air-1': 'воздушную карту второго полка',
   chat: 'чат',
 }
 

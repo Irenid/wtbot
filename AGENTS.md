@@ -51,7 +51,7 @@ warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
 `src/`: `index.ts` (startup, shutdown), `config.ts` and `runtime-options.ts`
 (env, resource plan), `db/` (bootstrap, migrations, SQL, maintenance), `bot/`
 (commands, announcer, voice tracker, player board), `web/` (API, dashboard
-`/`, SPA `/app`), `parsers/` (scheduler, sources, cookies, browser, backfill),
+`/statistics`, SPA `/`), `parsers/` (scheduler, sources, cookies, browser, backfill),
 `wrpl/` (replays, ingest, assets, media), `workers/` (pool, protocol),
 `player-stats/` (external providers), `analysis/` (manual CLIs, smoke checks,
 paid AI analysis). `frontend/` — React/Vite SPA; `data/` — database, cookies,
@@ -239,8 +239,14 @@ Sources (constants live in their files under `src/parsers/sources/`):
   Replay API page.
 - `wt-clans` — every 20 min the first 5 pages of the squadron leaderboard (top
   100), every 12 h further while the season rating (`dr_era5_hist`) is above
-  zero, up to 100 pages (hitting the cap shows in the source status). A crawl
-  writes `clans` with one shared `rating_at`, change points of rating, battles,
+  zero, up to 100 pages (hitting the cap shows in the source status). A tag
+  missing from the dictionary (a squadron that began playing after the last
+  full crawl: 1.9% of teams on 2026-10-03) has no claninfo name, so no PSR:
+  the battle post's last update asks for the full crawl at once
+  (`lookupUnknownClanTags` → `runParserNow`; one lookup at a time; a tag not
+  found is retried after 15 min, doubling up to 12 h), then fetches claninfo
+  and redraws the post. A crawl writes `clans` with one shared `rating_at`,
+  change points of rating, battles,
   wins, kills and deaths to `clan_rating_history`, the leaderboard season to
   `bot_state` `wt-clans:season` (a mismatch with the forum shows in the
   status). Region, type, slogan and rewards arrive HTML-escaped with game
@@ -480,24 +486,42 @@ Data:
   not code. The forum post is untrusted: any oddity fails the whole parse; a
   forum season with a shifted start replaces the old one, overlapping a
   built-in one is an error.
-- Dashboard `/` — HTML in `src/web/routes/pages.ts`: user data goes through
-  `textContent`, never `innerHTML`. SPA `/app` — only when `frontend/dist`
-  exists.
+- Dashboard `/statistics` (`DASHBOARD_PATH`) — HTML in
+  `src/web/routes/pages.ts`: user data goes through `textContent`, never
+  `innerHTML`. SPA at the root — only when `frontend/dist` exists: named routes
+  (`/api/*`, `/health`, the dashboard) win over its static wildcard, other GET
+  paths get `index.html` except `/assets/*` (a missing hashed asset stays a
+  404). `/app/*`, the SPA's address until 2026-10-04, redirects 301 to the
+  same path at the root (`legacySpaTarget` collapses leading slashes: no open
+  redirect).
 - A new route goes to `src/web/routes/`, dependencies through an explicit
   `WebDeps`, no hidden singletons; APIs have a schema, bounded limits and a
   rate limit.
 - Web listens on loopback by default; outside only through a reverse proxy and
-  `WEB_TOKEN`. A POST with a foreign `Origin`/`Sec-Fetch-Site` gets 403 in
-  every mode; without these headers (not a browser) it passes. With a token,
-  the `onSend` hook turns `public` into `private` on protected responses, so a
-  shared proxy cache never serves them without the token.
-- Player page (`/app/players/…`): `/api/players/:key` — profile, clan with
+  `WEB_TOKEN`, which then guards every path except `/health`. A POST with a
+  foreign `Origin`/`Sec-Fetch-Site` gets 403 in every mode; without these
+  headers (not a browser) it passes. With a token, the `onSend` hook turns
+  `public` into `private` on protected responses, so a shared proxy cache
+  never serves them without the token.
+- Player page (`/players/…`): `/api/players/:key` — profile, clan with
   the roster role, sources with `account` (level, dates, clan and nickname
   history, WT leaderboard places); `/api/players/:key/insights?days=` — a
   breakdown of local replays (maps, vehicles, clans, teammates, weapons,
   opponents, hours) over the period's last 500 battles: worker task
   `read-player-insights` with its own read-only connection, 1 min cache, rate
   limit weight 2.
+- Guides (`/guides`, `frontend/src/pages/GuidesPage.tsx`, `pages/guides/`)
+  hold three kinds of facts. The PSR rule is `frontend/src/lib/psr.ts`: tables
+  and the calculator compute from it, the prose quotes its results, so a new
+  constant means rewriting those sentences in every locale. Measurements are
+  dated in `pages/guides/measurements.ts` (`MEASURED_AT`), reach the texts as
+  arguments and are refreshed together. Live data comes from `/api/clans` and
+  the season panel; a failed request leaves the static text, never stale
+  numbers. `updates.site` quotes the `wt-clans` cadence (20 min / 12 h,
+  rosters once a day): change both together. Texts are
+  `frontend/src/i18n/guide/<locale>.ts`, each implementing `GuideText` (a
+  missing translation is a type error); `**bold**` and `[label](/path#id)`
+  become React nodes in `Rich`, never HTML.
 - `POST /api/player-stats` (the refresh button, the dashboard form) accepts
   only an exact known nickname or a stable WT user id. Every enabled external
   source has a single-slot lazy queue, 24 h TTL (younger snapshots are not
@@ -539,8 +563,9 @@ analysis per item.
   Cyrillic only as data: patterns matching Russian external content (the
   forum.warthunder.ru season post), test fixtures exercising UTF-8, varint
   lengths, nicknames or chat, the Russian UI dictionary
-  `frontend/src/i18n/ru.ts` (values), and old stored Russian text the code
-  must still recognize. Code text is still mostly Russian (ROADMAP, "English
+  `frontend/src/i18n/ru.ts` (values) and guide text
+  `frontend/src/i18n/guide/ru.ts`, and old stored Russian text the code must
+  still recognize. Code text is still mostly Russian (ROADMAP, "English
   everywhere"): when you change a function, translate its comments and strings
   in the same change and check whether the code is still needed — review
   happens on touch, not as a whole-repo sweep.
@@ -565,8 +590,8 @@ npm run build:web
 `verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-03**: all
-gates pass, **319 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+each can run alone for the affected subsystem. Baseline on **2026-10-04**: all
+gates pass, **327 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

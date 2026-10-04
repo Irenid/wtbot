@@ -197,6 +197,47 @@ export function SegControl<T extends string>({ options, value, onChange, ariaLab
   )
 }
 
+/** The first and last pages and the current one with its neighbours; null marks a skipped range. */
+function pagerItems(page: number, pages: number): (number | null)[] {
+  const shown = [...new Set([1, page - 1, page, page + 1, pages])]
+    .filter((item) => item >= 1 && item <= pages)
+    .sort((left, right) => left - right)
+  const items: (number | null)[] = []
+  let previous = 0
+  for (const item of shown) {
+    // A gap of one page shows that page: "…" would take the same room.
+    if (item - previous === 2) items.push(item - 1)
+    else if (item - previous > 2) items.push(null)
+    items.push(item)
+    previous = item
+  }
+  return items
+}
+
+/** Page switcher, 1-based; nothing for a single page. */
+export function Pager({ page, pages, onChange }: { page: number; pages: number; onChange: (page: number) => void }) {
+  if (pages <= 1) return null
+  return (
+    <nav className="seg-control pager" aria-label={t('a11y.pager')}>
+      <button type="button" disabled={page <= 1} aria-label={t('pager.prev')} onClick={() => onChange(page - 1)}>‹</button>
+      {pagerItems(page, pages).map((item, index) => item === null ? (
+        <span key={`gap-${index}`} className="gap" aria-hidden="true">…</span>
+      ) : (
+        <button
+          key={item}
+          type="button"
+          className={item === page ? 'active' : ''}
+          aria-current={item === page ? 'page' : undefined}
+          onClick={() => onChange(item)}
+        >
+          {item}
+        </button>
+      ))}
+      <button type="button" disabled={page >= pages} aria-label={t('pager.next')} onClick={() => onChange(page + 1)}>›</button>
+    </nav>
+  )
+}
+
 export function Panel({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
   return (
     <section className="panel">

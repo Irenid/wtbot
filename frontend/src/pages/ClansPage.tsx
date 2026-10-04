@@ -1,17 +1,15 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   fetchClanHistory,
   fetchClans,
   type ClanHistoryPoint,
   type ClanListEntry,
-  type ClanSeasonContext,
-  type OfficialClanSeason,
 } from '../api'
 import { fmtDateTime, fmtInt, fmtPercent, fmtRatio } from '../lib/format'
 import { t } from '../i18n'
 import { SeasonPanel } from '../components/SeasonPanel'
-import { BarTrack, DeltaPill, ErrorNotice, Loading, SecHead } from '../components/ui'
+import { BarTrack, DeltaPill, ErrorNotice, Loading, Pager, SecHead } from '../components/ui'
 
 /* Мини-спарклайн суммы ПКР на витринной карточке клана (как в макете). */
 function Sparkline({ points, gold }: { points: ClanHistoryPoint[]; gold: boolean }) {
@@ -106,21 +104,21 @@ function ClanHeroCard({ clan, rank, leaderRating, history }: {
         </span>
         {leader && <span className="chip accent" style={{ marginLeft: 'auto' }}>{t('clans.leader')}</span>}
       </div>
-      <div style={{ display: 'flex', gap: 20, marginTop: 14, flexWrap: 'wrap', alignItems: 'baseline' }}>
-        <span>
-          <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+      <div className="clan-hero__kpis">
+        <span className="clan-hero__kpi">
+          <span className="v">
             {fmtInt(clan.totalRating)}
             {clan.delta30d !== null && <span style={{ marginLeft: 6, verticalAlign: 'middle' }}><DeltaPill value={clan.delta30d} /></span>}
           </span>
-          <span className="muted" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('clans.sumDelta')}</span>
+          <span className="l">{t('clans.sumDelta')}</span>
         </span>
-        <span title={seasonWinTitle(clan)}>
-          <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmtPercent(seasonWinRate(clan))}</span>
-          <span className="muted" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('clans.winRate')}</span>
+        <span className="clan-hero__kpi" title={seasonWinTitle(clan)}>
+          <span className="v">{fmtPercent(seasonWinRate(clan))}</span>
+          <span className="l">{t('clans.winRate')}</span>
         </span>
-        <span>
-          <span style={{ display: 'block', fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(clan.members)}</span>
-          <span className="muted" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('clans.members')}</span>
+        <span className="clan-hero__kpi">
+          <span className="v">{fmtInt(clan.members)}</span>
+          <span className="l">{t('clans.members')}</span>
         </span>
       </div>
       {history !== undefined && history.length >= 2 ? (
@@ -138,110 +136,177 @@ function ClanHeroCard({ clan, rank, leaderRating, history }: {
   )
 }
 
+const PAGE_SIZE = 100
+
+type ClansResponse = Awaited<ReturnType<typeof fetchClans>>
+
 export function ClansPage() {
-  const [clans, setClans] = useState<ClanListEntry[] | null>(null)
-  const [season, setSeason] = useState<ClanSeasonContext | null>(null)
-  const [officialSeason, setOfficialSeason] = useState<OfficialClanSeason | null>(null)
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  // 1-based page in the URL: it survives a reload, Back and a shared link.
+  const pageParam = Number(searchParams.get('page') ?? '1')
+  const page = Number.isSafeInteger(pageParam) && pageParam >= 1 ? pageParam : 1
+  const [loaded, setLoaded] = useState<{ page: number; body: ClansResponse } | null>(null)
   const [histories, setHistories] = useState<Record<string, ClanHistoryPoint[]>>({})
   const [error, setError] = useState<unknown>(null)
+  const tableRef = useRef<HTMLDivElement>(null)
+  // Set by the pager under the table: the new page opens at the table's top.
+  const scrollOnLoad = useRef(false)
 
   useEffect(() => {
     let cancelled = false
-    fetchClans()
+    setError(null)
+    fetchClans({ offset: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE })
       .then((body) => {
         if (cancelled) return
-        setSeason(body.season)
-        setOfficialSeason(body.officialSeason)
-        setClans(body.clans)
-        // Спарклайны только для двух витринных карточек — по одному запросу.
-        for (const clan of body.clans.slice(0, 2)) {
-          fetchClanHistory(clan.coreTag, 90)
-            .then((history) => {
-              if (!cancelled) setHistories((prev) => ({ ...prev, [clan.coreTag]: history.points }))
-            })
-            // Спарклайн декоративный: без него карточка остаётся полной, ошибку не показываем.
-            .catch(() => {})
+        const lastPage = Math.max(1, Math.ceil(body.total / PAGE_SIZE))
+        if (page > lastPage) {
+          // A stale link past the end (the ranking shrank) opens the last page.
+          setSearchParams((params) => {
+            const next = new URLSearchParams(params)
+            if (lastPage === 1) next.delete('page')
+            else next.set('page', String(lastPage))
+            return next
+          }, { replace: true })
+          return
         }
+        setLoaded({ page, body })
       })
       .catch((err) => { if (!cancelled) setError(err) })
     return () => { cancelled = true }
-  }, [])
+  }, [page, setSearchParams])
 
-  const leaderRating = Math.max(clans?.[0]?.totalRating ?? 1, 1)
-  const updatedAt = clans?.[0]?.lastSeenAt ?? null
+  // Sparklines only for the two hero cards of the first page, one request each.
+  const heroTags = loaded?.page === 1 ? loaded.body.clans.slice(0, 2).map((clan) => clan.coreTag) : []
+  const heroKey = heroTags.join(' ')
+  useEffect(() => {
+    if (heroKey === '') return
+    let cancelled = false
+    for (const coreTag of heroKey.split(' ')) {
+      fetchClanHistory(coreTag, 90)
+        .then((history) => {
+          if (!cancelled) setHistories((prev) => ({ ...prev, [coreTag]: history.points }))
+        })
+        // The sparkline is decorative: the card is complete without it, so no error is shown.
+        .catch(() => {})
+    }
+    return () => { cancelled = true }
+  }, [heroKey])
+
+  // Before paint: the first page's hero cards vanish on page 2 and would shift the table.
+  useLayoutEffect(() => {
+    if (loaded === null || !scrollOnLoad.current) return
+    scrollOnLoad.current = false
+    tableRef.current?.scrollIntoView({ block: 'start' })
+  }, [loaded])
+
+  const goToPage = (next: number): void => {
+    scrollOnLoad.current = true
+    setSearchParams((params) => {
+      const updated = new URLSearchParams(params)
+      if (next <= 1) updated.delete('page')
+      else updated.set('page', String(next))
+      return updated
+    })
+  }
+
+  const openClan = (event: MouseEvent<HTMLTableRowElement>, coreTag: string): void => {
+    // The tag link handles its own clicks (keyboard, middle click); a drag that selects text is not a click.
+    if (event.target instanceof Element && event.target.closest('a') !== null) return
+    if ((window.getSelection()?.toString() ?? '') !== '') return
+    const path = `/clans/${coreTag}`
+    if (event.ctrlKey || event.metaKey) window.open(path, '_blank', 'noopener')
+    else navigate(path)
+  }
+
+  const body = loaded?.body ?? null
+  const clans = body?.clans ?? null
+  const offset = ((loaded?.page ?? 1) - 1) * PAGE_SIZE
+  const leaderRating = Math.max(body?.leaderRating ?? 1, 1)
+  const busy = loaded !== null && loaded.page !== page
 
   return (
     <>
       <div className="page-head">
         <h1>{t('clans.title')}</h1>
-        <span className="muted small">
-          {t('clans.subtitle')}
-          {updatedAt !== null && <> · {t('common.updated', { when: fmtDateTime(updatedAt) })}</>}
-        </span>
       </div>
       {error !== null && <ErrorNotice error={error} />}
-      {season !== null && <SeasonPanel context={season} official={officialSeason} />}
-      {clans === null ? <Loading /> : clans.length === 0 ? (
+      {body !== null && <SeasonPanel context={body.season} official={body.officialSeason} />}
+      {error !== null ? null : clans === null || body === null ? <Loading /> : clans.length === 0 ? (
         <div className="notice">{t('clans.empty')}</div>
       ) : (
         <>
-          <div className="grid-2" style={{ marginBottom: 16 }}>
-            {clans.slice(0, 2).map((clan, index) => (
-              <ClanHeroCard
-                key={clan.coreTag}
-                clan={clan}
-                rank={index + 1}
-                leaderRating={leaderRating}
-                history={histories[clan.coreTag]}
-              />
-            ))}
-          </div>
+          {loaded?.page === 1 && (
+            <div className="grid-2" style={{ marginBottom: 16 }}>
+              {clans.slice(0, 2).map((clan) => (
+                <ClanHeroCard
+                  key={clan.coreTag}
+                  clan={clan}
+                  rank={clan.rank}
+                  leaderRating={leaderRating}
+                  history={histories[clan.coreTag]}
+                />
+              ))}
+            </div>
+          )}
 
-          <div className="card" style={{ padding: 0 }}>
-            <div style={{ padding: '14px 20px 0' }}>
-              <SecHead title={t('clans.fullRating')} hint={t('clans.fullRating.hint', { n: clans.length })} />
+          <div
+            ref={tableRef}
+            className="card clans-table"
+            style={{ padding: 0, ...(busy ? { opacity: 0.6 } : {}) }}
+            aria-busy={busy}
+          >
+            <div className="clans-table__head">
+              <SecHead
+                title={t('clans.fullRating')}
+                hint={t('clans.fullRating.hint', {
+                  from: fmtInt(offset + 1),
+                  to: fmtInt(offset + clans.length),
+                  total: fmtInt(body.total),
+                })}
+              />
             </div>
             <div className="tbl-scroll" style={{ margin: 0 }}>
               <table className="tbl">
                 <thead>
                   <tr>
-                    <th>#</th><th>{t('clans.col.clan')}</th>
-                    <th style={{ width: '26%' }}>{t('clans.col.sum')}</th>
+                    <th>#</th>
+                    <th className="clan-cell">{t('clans.col.clan')}</th>
+                    <th>{t('clans.col.sum')}</th>
                     <th className="num">{t('clans.col.winRate')}</th>
-                    <th className="num" title={t('metric.kd')}>{t('clans.col.kd')}</th>
-                    <th className="num">{t('clans.col.members')}</th>
-                    <th className="num">{t('clans.col.delta30')}</th>
-                    <th>{t('clans.col.updated')}</th>
+                    <th className="num col-kd" title={t('metric.kd')}>{t('clans.col.kd')}</th>
+                    <th className="num col-members">{t('clans.col.members')}</th>
+                    <th className="num col-delta">{t('clans.col.delta30')}</th>
+                    <th className="col-updated">{t('clans.col.updated')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {clans.map((clan, index) => (
-                    <tr key={clan.coreTag}>
-                      <td className="rank">{index + 1}</td>
-                      <td>
+                  {clans.map((clan) => (
+                    <tr key={clan.coreTag} className="row-link" onClick={(event) => openClan(event, clan.coreTag)}>
+                      <td className="rank">{clan.rank}</td>
+                      <td className="clan-cell">
                         <Link to={`/clans/${clan.coreTag}`}>{clan.displayTag}</Link>
-                        {clan.name && <span className="muted small" style={{ marginLeft: 6, fontWeight: 400 }}>{clan.name}</span>}
+                        {clan.name && <span className="clan-cell__name">{clan.name}</span>}
                       </td>
-                      <td style={{ minWidth: 160 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', minWidth: 52 }}>{fmtInt(clan.totalRating)}</span>
-                          <div style={{ flex: 1 }}>
-                            <BarTrack fraction={clan.totalRating / leaderRating} {...(index === 0 ? { tone: 'glow' as const } : {})} />
-                          </div>
+                      <td>
+                        <div className="rating-cell">
+                          <span className="rating-cell__value">{fmtInt(clan.totalRating)}</span>
+                          <BarTrack fraction={clan.totalRating / leaderRating} {...(clan.rank === 1 ? { tone: 'glow' as const } : {})} />
                         </div>
                       </td>
                       <td className="num" title={seasonWinTitle(clan)}>{fmtPercent(seasonWinRate(clan))}</td>
-                      <td className="num" title={seasonKdTitle(clan)}>{fmtRatio(seasonKd(clan))}</td>
-                      <td className="num">{fmtInt(clan.members)}</td>
-                      <td className="num">{clan.delta30d === null ? <span className="muted">—</span> : <DeltaPill value={clan.delta30d} />}</td>
-                      <td className="muted" style={{ fontWeight: 400 }}>{fmtDateTime(clan.lastSeenAt)}</td>
+                      <td className="num col-kd" title={seasonKdTitle(clan)}>{fmtRatio(seasonKd(clan))}</td>
+                      <td className="num col-members">{fmtInt(clan.members)}</td>
+                      <td className="num col-delta">{clan.delta30d === null ? <span className="muted">—</span> : <DeltaPill value={clan.delta30d} />}</td>
+                      <td className="muted col-updated" style={{ fontWeight: 400 }}>{fmtDateTime(clan.lastSeenAt)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="muted small" style={{ padding: '12px 20px', borderTop: '1px solid var(--line)' }}>
-              {t('clans.footnote')}
+            <div className="muted small clans-table__foot">
+              <Pager page={page} pages={Math.max(1, Math.ceil(body.total / PAGE_SIZE))} onChange={goToPage} />
+              <span>{t('clans.footnote')}</span>
             </div>
           </div>
         </>

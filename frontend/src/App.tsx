@@ -6,11 +6,14 @@ import { BattlesPage } from './pages/BattlesPage'
 import { Loading } from './components/ui'
 import { LOCALES, t, useLocale, type Locale } from './i18n'
 
-// Графики (uPlot) и плеер карты нужны только этим страницам: отдельные чанки
-// не тормозят первую загрузку главной, списка кланов и ленты боёв.
+// Charts (uPlot), the map player and the guide texts of all five locales are
+// needed only on these pages: separate chunks keep the first load of the home
+// page, the squadron list and the battle feed light. Both guide pages share one chunk.
 const PlayerPage = lazy(() => import('./pages/PlayerPage').then((module) => ({ default: module.PlayerPage })))
 const ClanPage = lazy(() => import('./pages/ClanPage').then((module) => ({ default: module.ClanPage })))
 const BattlePage = lazy(() => import('./pages/BattlePage').then((module) => ({ default: module.BattlePage })))
+const GuidesPage = lazy(() => import('./pages/GuidesPage').then((module) => ({ default: module.GuidesPage })))
+const GuidePage = lazy(() => import('./pages/GuidesPage').then((module) => ({ default: module.GuidePage })))
 
 /** Репозиторий исходного кода: AGPL-3.0 требует предложить его пользователям сети. */
 const SOURCE_URL = 'https://github.com/Irenid/wtbot'
@@ -30,10 +33,11 @@ export function App() {
     <div className="layout">
       <ScrollToTop />
       <nav className="topnav">
-        {/* Логотип — единственная дорога на главную с поиском. */}
+        {/* The logo is the only way back to the home page with search. */}
         <NavLink to="/" className="brand" title={t('nav.brandTitle')}>wt<span>bot</span></NavLink>
         <NavLink to="/clans" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>{t('nav.clans')}</NavLink>
         <NavLink to="/battles" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>{t('nav.battles')}</NavLink>
+        <NavLink to="/guides" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>{t('nav.guides')}</NavLink>
         <span className="spacer" />
         <select
           className="select"
@@ -44,7 +48,8 @@ export function App() {
         >
           {LOCALES.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
         </select>
-        <a className="nav-ext" href="/">{t('nav.botPanel')}</a>
+        {/* The bot dashboard, DASHBOARD_PATH in src/web/routes/pages.ts. */}
+        <a className="nav-ext" href="/statistics">{t('nav.botPanel')}</a>
       </nav>
       <Suspense fallback={<Loading />}>
         <Routes>
@@ -55,6 +60,8 @@ export function App() {
           <Route path="/clans/:coreTag" element={<ClanPage />} />
           <Route path="/battles" element={<BattlesPage />} />
           <Route path="/battles/:battleKey" element={<BattlePage />} />
+          <Route path="/guides" element={<GuidesPage />} />
+          <Route path="/guides/:slug" element={<GuidePage />} />
           <Route path="*" element={<div className="notice">{t('common.notFound')}</div>} />
         </Routes>
       </Suspense>

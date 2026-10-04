@@ -12,8 +12,10 @@ import {
   ClanPageHttpError,
   fetchClanMembers,
   fetchRatingsForTags,
+  lookupUnknownClanTags,
   parseClanEntryDate,
   resetClanInfoState,
+  setClanTagLookup,
 } from './clan-info.js'
 
 // Кулдауны и пауза claninfo живут в модуле — каждый тест начинает с чистого листа.
@@ -277,4 +279,106 @@ test('parseClanEntryDate принимает только настоящую да
   assert.equal(parseClanEntryDate('01.01.1970'), null)
   assert.equal(parseClanEntryDate('2021-05-26'), null)
   assert.equal(parseClanEntryDate('29.02.2023'), null)
+})
+
+test('lookupUnknownClanTags: one lookup for concurrent callers, a retry only after the cooldown', async () => {
+  initDb(':memory:')
+  const calls: string[][] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  setClanTagLookup(async (tags) => {
+    calls.push([...tags])
+    await held
+    upsertClans([{ tag: 'NEW', name: 'New Clan' }])
+  })
+
+  try {
+    upsertClans([{ tag: 'OLD', name: 'Old Clan' }])
+    const first = lookupUnknownClanTags(['NEW', 'OLD', ''])
+    const second = lookupUnknownClanTags(['NEW'])
+    // Another tag waits for the running lookup, then starts its own.
+    const third = lookupUnknownClanTags(['GONE'])
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.deepEqual(calls, [['NEW']])
+    release()
+    await Promise.all([first, second, third])
+    assert.deepEqual(calls, [['NEW'], ['GONE']])
+    // GONE is still unknown, NEW is found: nothing to look up before the cooldown ends.
+    await lookupUnknownClanTags(['GONE', 'NEW'])
+    assert.deepEqual(calls, [['NEW'], ['GONE']])
+  } finally {
+    closeDb()
+  }
+})
+
+test('a failed squadron lookup does not throw, and its retries back off', async () => {
+  const originalWarn = console.warn
+  const originalNow = Date.now
+  const warnings: string[] = []
+  console.warn = (message: string) => {
+    warnings.push(message)
+  }
+  let now = originalNow()
+  Date.now = () => now
+  initDb(':memory:')
+  let calls = 0
+  setClanTagLookup(async () => {
+    calls += 1
+    if (calls === 1) throw new Error('leaderboard down')
+  })
+
+  try {
+    await lookupUnknownClanTags(['X'])
+    assert.match(warnings.join('\n'), /squadron lookup failed: leaderboard down/)
+    await lookupUnknownClanTags(['X'])
+    assert.equal(calls, 1, 'no retry within 15 min')
+    now += 16 * 60_000
+    await lookupUnknownClanTags(['X'])
+    assert.equal(calls, 2)
+    assert.match(warnings.join('\n'), /not found on the leaderboard, next lookup: X in 30 min/)
+    now += 16 * 60_000
+    await lookupUnknownClanTags(['X'])
+    assert.equal(calls, 2, 'the second miss waits 30 min')
+    now += 15 * 60_000
+    await lookupUnknownClanTags(['X'])
+    assert.equal(calls, 3)
+  } finally {
+    Date.now = originalNow
+    console.warn = originalWarn
+    closeDb()
+  }
+})
+
+test('a squadron lookup names a new squadron, then fetchRatingsForTags reads its PSR', async () => {
+  const originalFetch = globalThis.fetch
+  const urls: string[] = []
+  globalThis.fetch = async (input) => {
+    urls.push(String(input))
+    return new Response(`
+      <div class="squadrons-members">
+        <a href="en/community/userinfo/?nick=Chud">Chud</a>
+        <div class="squadrons-members__grid-item">1450</div>
+      </div>
+    `)
+  }
+  initDb(':memory:')
+  setClanTagLookup(async () => {
+    upsertClans([{ tag: '[P00R]', name: 'POOR' }])
+  })
+
+  try {
+    // Without the lookup an unknown tag has no name, so no claninfo request.
+    assert.equal((await fetchRatingsForTags(['[P00R]'])).size, 0)
+    assert.deepEqual(urls, [])
+
+    await lookupUnknownClanTags(['[P00R]'])
+    const ratings = await fetchRatingsForTags(['[P00R]'])
+    assert.deepEqual(ratings.get('Chud'), { rating: 1450, delta: null })
+    assert.deepEqual(urls, ['https://warthunder.com/en/community/claninfo/POOR'])
+  } finally {
+    closeDb()
+    globalThis.fetch = originalFetch
+  }
 })

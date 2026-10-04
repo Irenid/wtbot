@@ -5,7 +5,7 @@ import { apiRoutes } from './routes/api.js'
 import { pageRoutes } from './routes/pages.js'
 import { playerStatsRoutes } from './routes/player-stats.js'
 import { siteRoutes, type SiteRoutesOptions } from './routes/site.js'
-import { spaDistAvailable, spaRoutes } from './routes/spa.js'
+import { legacySpaRoutes, spaDistAvailable, spaRoutes } from './routes/spa.js'
 
 export interface WebSecurityOptions {
   host?: string
@@ -68,9 +68,13 @@ function hasValidToken(request: { headers: Record<string, string | string[] | un
   return provided.length === expected.length && timingSafeEqual(provided, expected)
 }
 
+/**
+ * With WEB_TOKEN every path is private except the health probe: the SPA serves
+ * index.html for any page path at the root, and a list of protected prefixes
+ * would leave every new route public.
+ */
 function isProtectedPathname(pathname: string): boolean {
-  return pathname === '/' || pathname === '/app' || pathname.startsWith('/app/')
-    || pathname === '/api' || pathname.startsWith('/api/')
+  return pathname !== '/health'
 }
 
 /**
@@ -202,14 +206,15 @@ export function buildServer(
   app.register(apiRoutes, { deps })
   app.register(playerStatsRoutes, { deps })
   app.register(siteRoutes, site ? { site } : {})
-  // SPA подключается только при собранном frontend/dist: без него бот и API
-  // работают как раньше, а /app отдаёт обычный 404.
+  app.register(legacySpaRoutes)
+  // The SPA is served only from a built frontend/dist: without it the bot,
+  // the API and the dashboard work as before, and page paths get a plain 404.
   const hasSpa = spaDistAvailable()
   if (hasSpa) {
     app.register(spaRoutes)
   } else {
     app.setNotFoundHandler((_request, reply) => {
-      return reply.code(404).send({ ok: false, code: 'NOT_FOUND', error: 'Не найдено' })
+      return reply.code(404).send({ ok: false, code: 'NOT_FOUND', error: 'Not found' })
     })
   }
 

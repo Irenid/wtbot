@@ -21,6 +21,7 @@ import {
 import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { closeWorkerPool } from '../workers/pool.js'
 import { buildServer } from '../web/index.js'
+import { DASHBOARD_PATH } from '../web/routes/pages.js'
 import { spaDistAvailable } from '../web/routes/spa.js'
 import { BATTLE_SCENE_VERSION } from '../wrpl/battle-scene-core.js'
 
@@ -483,6 +484,18 @@ async function main(): Promise<void> {
     const bigClan = clansBody.clans.find((clan) => clan.coreTag === 'big')
     assert.equal(bigClan?.members, 6, 'неправдоподобное сжатие ростера не должно выгонять участников')
 
+    // Paging: total and the leader's rating describe the whole ranking, not the page.
+    const clansPage = await app.inject({ method: 'GET', url: '/api/clans?offset=2&limit=1' })
+    assert.equal(clansPage.statusCode, 200)
+    const clansPageBody = clansPage.json() as { total: number; leaderRating: number | null; clans: { rank: number }[] }
+    assert.equal(clansPageBody.total, 4)
+    assert.equal(clansPageBody.leaderRating, clansBody.clans[0]?.totalRating)
+    assert.deepEqual(clansPageBody.clans.map((clan) => clan.rank), [3])
+    const clansPastEnd = await app.inject({ method: 'GET', url: '/api/clans?offset=10' })
+    assert.deepEqual((clansPastEnd.json() as { total: number; clans: unknown[] }).clans, [])
+    const clansBadLimit = await app.inject({ method: 'GET', url: '/api/clans?limit=101' })
+    assert.equal(clansBadLimit.statusCode, 400, 'a page is at most 100 squadrons')
+
     const clanDetail = await app.inject({ method: 'GET', url: '/api/clans/TST' })
     assert.equal(clanDetail.statusCode, 200)
     const clanBody = clanDetail.json() as {
@@ -663,17 +676,30 @@ async function main(): Promise<void> {
     assert.equal(mapMissing.statusCode, 404)
     assert.equal((mapMissing.json() as { code: string }).code, 'MAP_UNAVAILABLE')
 
-    // --- SPA (только при собранном frontend/dist) ---
+    // --- SPA at the root (only with a built frontend/dist) ---
+    const dashboard = await app.inject({ method: 'GET', url: DASHBOARD_PATH })
+    assert.equal(dashboard.statusCode, 200)
+    assert.match(dashboard.body, /\/api\/dashboard/)
+    const legacy = await app.inject({ method: 'GET', url: '/app/players/12345?days=30' })
+    assert.equal(legacy.statusCode, 301)
+    assert.equal(legacy.headers['location'], '/players/12345?days=30')
+    const unknownApi = await app.inject({ method: 'GET', url: '/api/nope' })
+    assert.equal(unknownApi.statusCode, 404)
+    assert.equal((unknownApi.json() as { code: string }).code, 'NOT_FOUND')
     if (spaDistAvailable()) {
-      const spaIndex = await app.inject({ method: 'GET', url: '/app' })
+      const spaIndex = await app.inject({ method: 'GET', url: '/' })
       assert.equal(spaIndex.statusCode, 200)
       assert.match(spaIndex.headers['content-type'] ?? '', /text\/html/)
-      const spaRoot = await app.inject({ method: 'GET', url: '/app/' })
-      assert.equal(spaRoot.statusCode, 200, '/app/ со слэшем — тот же index.html')
-      assert.match(spaRoot.headers['content-type'] ?? '', /text\/html/)
-      const spaFallback = await app.inject({ method: 'GET', url: '/app/players/12345' })
-      assert.equal(spaFallback.statusCode, 200, 'клиентские маршруты должны отдавать index.html')
+      assert.equal(spaIndex.headers['cache-control'], 'no-cache')
+      const spaFallback = await app.inject({ method: 'GET', url: '/players/12345' })
+      assert.equal(spaFallback.statusCode, 200, 'client-side routes get index.html')
       assert.match(spaFallback.headers['content-type'] ?? '', /text\/html/)
+      const license = await app.inject({ method: 'GET', url: '/LICENSE.txt' })
+      assert.equal(license.statusCode, 200)
+      assert.match(license.headers['content-type'] ?? '', /text\/plain/)
+      const missingAsset = await app.inject({ method: 'GET', url: '/assets/missing-0000.js' })
+      assert.equal(missingAsset.statusCode, 404, 'a missing build asset is not index.html')
+      assert.doesNotMatch(missingAsset.headers['content-type'] ?? '', /text\/html/)
     }
 
     // --- Weighted rate limit дорогого battle-фильтра ---

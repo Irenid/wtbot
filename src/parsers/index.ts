@@ -15,7 +15,7 @@ import type { ParserSource } from './types.js'
 // его видно на дашборде и в /stats.
 
 const MAX_SOURCE_BACKOFF_MS = 30 * 60_000
-const runtimes = new Map<string, { failures: number; timer: NodeJS.Timeout | null }>()
+const runtimes = new Map<string, { source: ParserSource; failures: number; timer: NodeJS.Timeout | null }>()
 let parsersRunning = false
 /** Поколение планировщика: stop/restart делает результаты старых запусков неактуальными. */
 let generation = 0
@@ -100,6 +100,23 @@ export function parserBackoffMs(intervalMs: number, failures: number): number {
   return Math.min(intervalMs * 2 ** Math.min(failures - 1, 10), MAX_SOURCE_BACKOFF_MS)
 }
 
+/** The next run: the interval after a success, exponential backoff after a failure. */
+function scheduleAfterRun(source: ParserSource, ok: boolean, runGeneration: number, signal: AbortSignal): void {
+  const runtime = runtimes.get(source.name)
+  if (!runtime || !isCurrent(runGeneration)) return
+  if (ok) {
+    runtime.failures = 0
+    schedule(source, source.intervalMs, runGeneration, signal)
+    return
+  }
+  runtime.failures += 1
+  const nextDelay = parserBackoffMs(source.intervalMs, runtime.failures)
+  console.warn(
+    `[parser:${source.name}] backoff after ${runtime.failures} failures: next attempt in ${Math.ceil(nextDelay / 1_000)} s`,
+  )
+  schedule(source, nextDelay, runGeneration, signal)
+}
+
 function schedule(source: ParserSource, delayMs: number, runGeneration: number, signal: AbortSignal): void {
   if (!isCurrent(runGeneration)) return
   const runtime = runtimes.get(source.name)
@@ -107,26 +124,43 @@ function schedule(source: ParserSource, delayMs: number, runGeneration: number, 
   runtime.timer = setTimeout(() => {
     runtime.timer = null
     void launch(source, runGeneration, signal)
-      .then((ok) => {
-        if (ok) {
-          runtime.failures = 0
-          schedule(source, source.intervalMs, runGeneration, signal)
-          return
-        }
-        runtime.failures += 1
-        const nextDelay = parserBackoffMs(source.intervalMs, runtime.failures)
-        console.warn(
-          `[parser:${source.name}] backoff после ${runtime.failures} ошибок: следующая попытка через ${Math.ceil(nextDelay / 1_000)} с`,
-        )
-        schedule(source, nextDelay, runGeneration, signal)
-      })
+      .then((ok) => scheduleAfterRun(source, ok, runGeneration, signal))
       .catch((error: unknown) => {
         if (!isCurrent(runGeneration)) return
         runtime.failures += 1
-        console.error(`[parser:${source.name}] scheduler завершился ошибкой:`, error)
+        console.error(`[parser:${source.name}] the scheduler failed:`, error)
         schedule(source, parserBackoffMs(source.intervalMs, runtime.failures), runGeneration, signal)
       })
   }, Math.max(0, delayMs))
+}
+
+/**
+ * Runs a registered source now, outside its interval (wt-clans looks up an
+ * unknown squadron tag). An active run is awaited, never overlapped; the
+ * regular cadence restarts from this run. false — the scheduler is stopped or
+ * restarted, the source is not registered, or the run failed.
+ */
+export async function runParserNow(name: string): Promise<boolean> {
+  const runtime = runtimes.get(name)
+  if (!runtime || !parsersRunning) return false
+  const runGeneration = generation
+  const signal = stopController.signal
+  // Sequential on purpose: one source never runs twice at once.
+  await activeRuns.get(name)?.catch(() => undefined)
+  if (!isCurrent(runGeneration) || runtimes.get(name) !== runtime) return false
+  // A run started by another caller after this request was made covers it.
+  const active = activeRuns.get(name)
+  if (active) return active.catch(() => false)
+  if (runtime.timer !== null) {
+    clearTimeout(runtime.timer)
+    runtime.timer = null
+  }
+  const ok = await launch(runtime.source, runGeneration, signal).catch((error: unknown) => {
+    if (isCurrent(runGeneration)) console.error(`[parser:${name}] the scheduler failed:`, error)
+    return false
+  })
+  scheduleAfterRun(runtime.source, ok, runGeneration, signal)
+  return ok
 }
 
 export function startParsers(sourceList: readonly ParserSource[] = sources): void {
@@ -148,7 +182,7 @@ export function startParsers(sourceList: readonly ParserSource[] = sources): voi
     primeKnownItemExternalIds('wt-replays')
   }
   for (const source of sourceList) {
-    runtimes.set(source.name, { failures: 0, timer: null })
+    runtimes.set(source.name, { source, failures: 0, timer: null })
     schedule(source, 0, runGeneration, signal)
   }
   console.log(`[parsers] Запущено источников: ${sourceList.length}`)

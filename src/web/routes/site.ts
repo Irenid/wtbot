@@ -957,22 +957,34 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     return statsSnapshot.payload
   })
 
-  app.get('/api/clans', async (request, reply) => {
+  // One page of the ranking: ~1,200 stored squadrons (2026-10-04) do not fit one response.
+  app.get<{ Querystring: { offset?: number; limit?: number } }>('/api/clans', {
+    schema: {
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          offset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+  }, async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
-    // Совпадает с TTL серверного снимка: переходы Home → Clans → Battles не
-    // запрашивают одни и те же данные заново.
+    // Matches the server snapshot TTL: Home → Clans → Battles does not fetch the same data again.
     void reply.header('Cache-Control', 'public, max-age=60')
     const snapshot = cachedClanSnapshot()
-    const groups = [...snapshot.groups.values()]
-      .sort((left, right) => left.rank - right.rank)
-      .slice(0, 100)
+    const offset = request.query.offset ?? 0
+    const ranked = [...snapshot.groups.values()].sort((left, right) => left.rank - right.rank)
+    const groups = ranked
+      .slice(offset, offset + (request.query.limit ?? 100))
       .map((group) => ({
         coreTag: group.coreTag,
         displayTag: clanDisplayName(group.displayTag),
         name: group.name,
         members: group.official?.members ?? group.members.length,
         totalRating: group.totalRating,
-        // Средний ПКР — только по известным снимкам состава; без них null, не 0.
+        // Average PSR only over known roster snapshots: null without them, not 0.
         avgRating: group.members.length > 0
           ? Math.round(group.members.reduce((sum, member) => sum + member.rating, 0) / group.members.length)
           : null,
@@ -988,7 +1000,15 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         rank: group.rank,
         rosterKnown: group.rosterKnown,
       }))
-    return { ok: true, season: getClanSeasonContext(), officialSeason: getOfficialClanSeason(), clans: groups }
+    return {
+      ok: true,
+      season: getClanSeasonContext(),
+      officialSeason: getOfficialClanSeason(),
+      total: ranked.length,
+      // Rating bars on every page are shares of the overall leader's rating.
+      leaderRating: ranked[0]?.totalRating ?? null,
+      clans: groups,
+    }
   })
 
   app.get<{ Params: { coreTag: string }; Querystring: { days?: number } }>('/api/clans/:coreTag/history', {

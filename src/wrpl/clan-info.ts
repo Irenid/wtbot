@@ -11,18 +11,22 @@ import { readResponseText } from '../http-response.js'
 import { deferRequestSlot, retryAfterMs, waitForRequestSlot } from '../parsers/sources/wt-request.js'
 
 /**
- * Личный клановый рейтинг (ПКР) участников — со страницы клана
- * warthunder.com/en/community/claninfo/<имя> (публичная, куки не нужны).
+ * Members' personal squadron rating (PSR) from the squadron page
+ * warthunder.com/en/community/claninfo/<name> (public, no cookies).
  *
- * Cloudflare эту страницу не проверяет, поэтому она читается обычным fetch,
- * без браузерного транспорта и cookie jar. Но интервал между запросами и пауза
- * после 429 общие для всего warthunder.com: запрос берёт слот общей очереди.
+ * Cloudflare does not check this page, so a plain fetch reads it, without the
+ * browser transport and the cookie jar. The request spacing and the pause
+ * after 429 are shared by all of warthunder.com: a request takes a slot of the
+ * shared queue.
  *
- * Имя клана берётся из словаря clans (его наполняет источник wt-clans
- * по лидерборду), сам рейтинг — из таблицы участников на странице.
- * Каждый успешный запрос кладёт снимок в clan_rating_snapshots, и дельта
- * «сколько получил/потерял» — это разница двух последних снимков ника.
- * Пока снимок один (первый рендер клана), дельты нет — только рейтинг.
+ * The page is addressed by the squadron name, a replay has only the tag: the
+ * name comes from the clans dictionary that wt-clans fills from the
+ * leaderboard. A tag missing from it (a squadron that began playing after the
+ * last full crawl) is looked up by an out-of-schedule full crawl
+ * (lookupUnknownClanTags). Every successful request stores a snapshot in
+ * clan_rating_snapshots, and the delta "gained/lost" is the difference of the
+ * nick's two latest snapshots. With one snapshot (the clan's first render)
+ * there is a rating and no delta.
  */
 
 const UA =
@@ -54,6 +58,25 @@ const notFoundTags = new Set<string>()
 let pagesDownUntil = 0
 let requestQueue = sharedRequestQueue
 
+/**
+ * Every lookup is a full leaderboard crawl (~30 pages in October 2026). A tag
+ * it did not resolve (a squadron with zero rating is not in the active part)
+ * waits LOOKUP_RETRY_MS, doubled per miss up to the scheduled full crawl
+ * interval: a squadron that keeps playing never makes the bot crawl nonstop.
+ */
+const LOOKUP_RETRY_MS = 15 * 60_000
+const LOOKUP_RETRY_MAX_MS = 12 * 60 * 60_000
+/** Reads the leaderboard for the given tags; wired at startup (src/index.ts). */
+export type ClanTagLookup = (tags: readonly string[]) => Promise<unknown>
+let clanTagLookup: ClanTagLookup | null = null
+/** Lookups of tags still unknown: the last attempt and the attempt count. */
+const lookupMisses = new Map<string, { at: number; misses: number }>()
+let lookupInFlight: Promise<void> | null = null
+
+function lookupRetryMs(misses: number): number {
+  return Math.min(LOOKUP_RETRY_MS * 2 ** Math.min(misses - 1, 16), LOOKUP_RETRY_MAX_MS)
+}
+
 export type { ClanRating }
 
 /** Страница клана ответила не 2xx. */
@@ -68,8 +91,9 @@ export class ClanPageHttpError extends Error {
 }
 
 /**
- * Сбрасывает кулдауны и паузу запросов claninfo (изоляция тестов); `queue`
- * подменяет общую очередь warthunder.com, чтобы тест не ждал её интервал.
+ * Resets the claninfo cooldowns, the pause and the tag lookup (test
+ * isolation); `queue` replaces the shared warthunder.com queue so a test does
+ * not wait for its spacing.
  */
 export function resetClanInfoState(queue: WtRequestQueue = sharedRequestQueue): void {
   lastFetch.clear()
@@ -77,6 +101,77 @@ export function resetClanInfoState(queue: WtRequestQueue = sharedRequestQueue): 
   notFoundTags.clear()
   pagesDownUntil = 0
   requestQueue = queue
+  clanTagLookup = null
+  lookupMisses.clear()
+  lookupInFlight = null
+}
+
+/**
+ * Wires the lookup of tags missing from the clans dictionary: the bot process
+ * runs an out-of-schedule full wt-clans crawl; without it (CLIs, tests) an
+ * unknown tag stays without PSR.
+ */
+export function setClanTagLookup(lookup: ClanTagLookup | null): void {
+  clanTagLookup = lookup
+}
+
+/** Tags without a name in the clans dictionary: claninfo cannot be opened for them. */
+export function unknownClanTags(tags: readonly string[]): string[] {
+  return [...new Set(tags)].filter((tag) => tag !== '' && getClanNameByTag(tag) === null)
+}
+
+/**
+ * Looks up tags missing from the clans dictionary. One lookup runs at a time
+ * and covers every tag missing when it starts; a caller with other tags waits
+ * for it and starts the next one. A tag still unknown afterwards is retried
+ * with backoff (lookupRetryMs). Never throws.
+ */
+export async function lookupUnknownClanTags(tags: readonly string[]): Promise<void> {
+  for (;;) {
+    const lookup = clanTagLookup
+    if (!lookup) return
+    if (lookupInFlight) {
+      await lookupInFlight
+      continue
+    }
+    const now = Date.now()
+    let missing: string[]
+    try {
+      missing = unknownClanTags(tags).filter((tag) => {
+        const miss = lookupMisses.get(tag)
+        return miss === undefined || now - miss.at >= lookupRetryMs(miss.misses)
+      })
+    } catch (err) {
+      console.warn(`[clan-info] squadron lookup skipped: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    if (missing.length === 0) return
+    for (const [tag, miss] of lookupMisses) {
+      if (now - miss.at >= 2 * LOOKUP_RETRY_MAX_MS) lookupMisses.delete(tag)
+    }
+    for (const tag of missing) lookupMisses.set(tag, { at: now, misses: (lookupMisses.get(tag)?.misses ?? 0) + 1 })
+    console.log(`[clan-info] squadrons missing from the dictionary, reading the leaderboard: ${missing.join(', ')}`)
+    const run: Promise<void> = (async () => {
+      try {
+        await lookup(missing)
+        const unresolved = new Set(unknownClanTags(missing))
+        for (const tag of missing) {
+          if (!unresolved.has(tag)) lookupMisses.delete(tag)
+        }
+        if (unresolved.size > 0) {
+          const next = [...unresolved].map((tag) => `${tag} in ${lookupRetryMs(lookupMisses.get(tag)?.misses ?? 1) / 60_000} min`)
+          console.warn(`[clan-info] not found on the leaderboard, next lookup: ${next.join(', ')}`)
+        }
+      } catch (err) {
+        console.warn(`[clan-info] squadron lookup failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })().finally(() => {
+      if (lookupInFlight === run) lookupInFlight = null
+    })
+    lookupInFlight = run
+    await run
+    return
+  }
 }
 
 /** Участник со страницы claninfo; поля после ПКР — null, если вёрстка их не дала. */
@@ -189,11 +284,13 @@ function getStoredRatingsForTags(tags: string[]): Map<string, ClanRating> {
 }
 
 /**
- * ПКР и дельты для игроков боя по тегам обеих команд.
- * Возвращает карту «ник → {rating, delta}»; недоступные кланы молча
- * пропускаются (нет в словаре, сайт не ответил) — картинка выйдет без ПКР.
- * `force` игнорирует кулдаун (кнопка принудительного обновления),
- * `cachedOnly` возвращает только сохранённые снимки без обращения к сети.
+ * PSR and deltas of a battle's players by the tags of both teams: a
+ * "nick → {rating, delta}" map. Unavailable clans are skipped (no name in
+ * the dictionary, the site did not answer): their players get no PSR.
+ * `force` ignores the cooldown (the forced refresh button), `cachedOnly`
+ * returns stored snapshots without the network. An unknown tag is looked up
+ * by lookupUnknownClanTags, which the caller awaits separately: it may take a
+ * full leaderboard crawl.
  */
 export async function fetchRatingsForTags(
   tags: string[],
@@ -210,7 +307,7 @@ export async function fetchRatingsForTags(
     async (tag): Promise<Map<string, ClanRating> | null> => {
       try {
         const name = getClanNameByTag(tag)
-        if (!name) return null // клана нет в словаре — источник wt-clans ещё не прошёлся
+        if (!name) return null // not in the dictionary: the lookup did not find it (yet)
 
         const now = Date.now()
         const last = lastFetch.get(tag)
@@ -231,7 +328,7 @@ export async function fetchRatingsForTags(
         }
         return getClanRatingsWithDelta(tag)
       } catch (err) {
-        console.warn(`[clan-info] ПКР клана ${tag} не получен: ${err instanceof Error ? err.message : String(err)}`)
+        console.warn(`[clan-info] PSR of clan ${tag} not fetched: ${err instanceof Error ? err.message : String(err)}`)
         return null
       }
     },

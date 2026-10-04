@@ -18,6 +18,7 @@ import type {
   RawPlayerStats,
 } from '../player-stats/types.js'
 import { buildServer } from '../web/index.js'
+import { DASHBOARD_PATH } from '../web/routes/pages.js'
 
 function player(userId: string, nick: string, team: number, vehicleId: string): BattlePlayerInput {
   return {
@@ -217,7 +218,7 @@ async function main(): Promise<void> {
       assert.equal(invalidItems.statusCode, 400, `limit=${invalidLimit} должен быть отклонён`)
     }
 
-    const page = await app.inject({ method: 'GET', url: '/' })
+    const page = await app.inject({ method: 'GET', url: DASHBOARD_PATH })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /id="player-stats-form"/)
     assert.match(page.body, /\/api\/player-stats/)

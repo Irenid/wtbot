@@ -1,7 +1,8 @@
-// Сайт на реальной БД без бота, парсеров и внешних запросов: только чтение
-// data/wtbot.db (или DB_PATH) + Fastify. Для просмотра живых данных локально.
-// Запуск: npx tsx src/analysis/site-real.ts  → http://127.0.0.1:3210/app
-// Бот может работать параллельно: БД в WAL-режиме, сайт-роуты read-only.
+// The site on the real database without the bot, parsers or external
+// requests: read-only data/wtbot.db (or DB_PATH) + Fastify, to view live data
+// locally. Run: npx tsx src/analysis/site-real.ts  → http://127.0.0.1:3210/
+// The bot may run at the same time: the database is in WAL mode, site routes
+// only read.
 import { closeDb, initDb, warmupDbHotPages } from '../db/index.js'
 import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { buildServer } from '../web/index.js'
@@ -20,7 +21,7 @@ async function main(): Promise<void> {
     playerStats: new PlayerStatsCoordinator({ externalService: null, externalSource: 'site-real' }),
   })
   await app.listen({ host: '127.0.0.1', port: PORT })
-  console.log(`[site-real] Сайт на ${DB_PATH}: http://127.0.0.1:${PORT}/app (Ctrl+C для выхода)`)
+  console.log(`[site-real] Site on ${DB_PATH}: http://127.0.0.1:${PORT}/ (Ctrl+C to exit)`)
   const shutdown = async (): Promise<void> => {
     await app.close()
     closeDb()

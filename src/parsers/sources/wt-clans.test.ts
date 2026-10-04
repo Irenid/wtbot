@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { closeDb, getClanNameByTag, initDb, setBotState } from '../../db/index.js'
+import { resetClanInfoState } from '../../wrpl/clan-info.js'
+import { resetWtTransportState } from './wt-request.js'
 import {
   leaderboardMultilineText,
   leaderboardText,
   parseClanRequirements,
   parseLeaderboardPage,
   pickRostersToRefresh,
+  requestFullClanCrawl,
+  wtClans,
 } from './wt-clans.js'
 
 function page(data: unknown[], status = 'ok'): string {
@@ -237,4 +242,59 @@ test('parseClanRequirements: пустой массив — условий нет
     }),
     { ranks: { mode: 'and', items: [{ unitType: 'Tank', rank: 7, count: 1 }] }, battles: [] },
   )
+})
+
+test('requestFullClanCrawl makes the next run read past the top pages while a tag is unknown', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLog = console.log
+  const pages: number[] = []
+  // Pages 1–6 hold one rated clan each, page 7 a zero-rated one: the active list ends there.
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    const page = /\/page\/(\d+)\//.exec(url)
+    if (!page) {
+      // claninfo of the leaders whose roster the run refreshes
+      return new Response(`
+        <div class="squadrons-members">
+          <a href="en/community/userinfo/?nick=Member">Member</a>
+          <div class="squadrons-members__grid-item">100</div>
+        </div>
+      `)
+    }
+    const n = Number(page[1])
+    pages.push(n)
+    const data = n <= 7 ? [{ pos: n - 1, tag: `T${n}`, name: `Clan ${n}`, astat: { dr_era5_hist: n < 7 ? 1_000 - n : 0 } }] : []
+    return new Response(JSON.stringify({ status: 'ok', data }), { headers: { 'content-type': 'application/json' } })
+  }
+  console.log = () => undefined
+  resetWtTransportState({ waitSlot: async () => undefined, browserEnabled: () => false })
+  resetClanInfoState({ wait: async () => undefined, defer: () => undefined })
+  initDb(':memory:')
+  const signal = new AbortController().signal
+
+  try {
+    setBotState('wt-clans:full-crawl-at', String(Math.floor(Date.now() / 1_000)))
+    await wtClans.run(signal)
+    assert.deepEqual(pages, [1, 2, 3, 4, 5])
+    assert.equal(getClanNameByTag('T6'), null)
+
+    pages.length = 0
+    requestFullClanCrawl(['T6'])
+    const full = await wtClans.run(signal)
+    assert.deepEqual(pages, [1, 2, 3, 4, 5, 6, 7])
+    assert.match(full.summary, /full crawl for an unknown tag/)
+    assert.equal(getClanNameByTag('T6'), 'Clan 6')
+
+    // A tag an earlier run already found needs no crawl: only the top pages.
+    pages.length = 0
+    requestFullClanCrawl(['T6'])
+    await wtClans.run(signal)
+    assert.deepEqual(pages, [1, 2, 3, 4, 5])
+  } finally {
+    globalThis.fetch = originalFetch
+    console.log = originalLog
+    resetWtTransportState()
+    resetClanInfoState()
+    closeDb()
+  }
 })

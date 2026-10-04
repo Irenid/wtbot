@@ -260,7 +260,7 @@ function playerField(entry: PlayerBoardEntry): { name: string; value: string; in
   const previous = entry.baselineData ? playerView(entry.baselineData, current.nickname) : null
   const profile = [
     voiceLine,
-    current.clan ? `клан ${escapeMarkdown(current.clan)}` : 'без клана',
+    current.clan ? `полк ${escapeMarkdown(current.clan)}` : 'без полка',
     current.level === null ? null : `ур. ${current.level}`,
     current.registrationDate ? `регистрация ${escapeMarkdown(current.registrationDate)}` : null,
     `реплеев найдено: ${current.replayCount.toLocaleString('ru-RU')}`,

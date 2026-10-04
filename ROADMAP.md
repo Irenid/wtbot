@@ -108,7 +108,8 @@ full texts are in Git (commit `46b6950` and earlier).
 - Render fixtures with many players: non-zero values, sorting, 32 players.
 - `src/player-stats/service.ts` — smoke scripts only.
 - Frontend: no tests and no test setup (error states, resetting
-  `vehicleDictPromise` after a failure, battle pagination).
+  `vehicleDictPromise` after a failure, battle pagination, `lib/psr.ts`
+  against the numbers the guide prose quotes: 780, 903, the ceilings).
 
 ## Performance
 
@@ -146,6 +147,11 @@ Open: prove or disprove the RSS plateau for
   2026-10-01; 2026-10-02 brought the first case: a clan changed its tag
   including the core, the number stayed. Open question — show the clan's
   current tag in old battles or the one it had at the time.
+- **Guide measurements by script.** `frontend/src/pages/guides/measurements.ts`
+  (data up to 2026-10-03) came from one-off read-only queries; a script over a
+  database copy would refresh it each season and print what changed. `TIMING`
+  comes from a live poll of warthunder.com and cannot be recomputed offline:
+  repeat the poll when the site changes its caching.
 - **Not collected yet** (decide whether needed): player search
   `searchplayers` (up to 100 nicknames by prefix, nickname only; needs the
   browser) — nickname hints for `/api/player-stats`; the player leaderboard

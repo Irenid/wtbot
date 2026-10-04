@@ -46,7 +46,7 @@ export const stats: Command = {
         { name: 'Команд выполнено', value: String(cmdStats.total), inline: true },
         { name: 'Собрано записей', value: String(itemStats.total), inline: true },
         {
-          name: 'Клановый сезон',
+          name: 'Сезон полковых боёв',
           value: season.currentStage && season.season
             ? `${season.currentStage.endsAt === season.season.endsAt ? 'до конца сезона' : `${season.currentStage.week} неделя`} · макс. БР ${season.currentStage.maxBr.toFixed(1)} · <t:${season.currentStage.endsAt - 1}:d>`
             : season.season
