@@ -66,14 +66,14 @@ function platformFromNick(nick: string): string | null {
   return nick.match(/@(psn|live|epic)$/i)?.[1]?.toLowerCase() ?? null
 }
 
-function parseSearchResponse(value: unknown, requestedNickname: string): PlayerReference[] {
+function parseSearchResponse(value: unknown): PlayerReference[] {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('companion search: ответ не является JSON-объектом')
+    throw new Error('companion search: the response is not a JSON object')
   }
   const result: PlayerReference[] = []
   for (const [rawUserId, rawNick] of Object.entries(value as CompanionSearchResponse)) {
     if (result.length >= MAX_SEARCH_RESULTS) {
-      throw new Error(`companion search: больше ${MAX_SEARCH_RESULTS} результатов`)
+      throw new Error(`companion search: more than ${MAX_SEARCH_RESULTS} results`)
     }
     if (!/^\d+$/.test(rawUserId) || typeof rawNick !== 'string' || rawNick.trim() === '') continue
     const nick = rawNick.trim()
@@ -85,13 +85,21 @@ function parseSearchResponse(value: unknown, requestedNickname: string): PlayerR
       platform: platformFromNick(nick),
     })
   }
-  if (result.length === 0) {
-    throw new Error(`companion search: игрок ${requestedNickname} не найден`)
-  }
   return result
 }
 
 async function fetchCompanionSearch(nickname: string): Promise<PlayerReference[]> {
+  const result = await searchCompanionNicks(nickname)
+  if (result.length === 0) throw new Error(`companion search: player ${nickname} not found`)
+  return result
+}
+
+/**
+ * Accounts whose nick starts with `nickname` (any case), at most
+ * MAX_SEARCH_RESULTS: a full list may omit the exact nick. Public, no cookie;
+ * [] when none.
+ */
+export async function searchCompanionNicks(nickname: string): Promise<PlayerReference[]> {
   const url = new URL(SEARCH_URL)
   url.search = new URLSearchParams({
     classname: 'eaw_Contacts',
@@ -113,7 +121,6 @@ async function fetchCompanionSearch(nickname: string): Promise<PlayerReference[]
   }
   return parseSearchResponse(
     await readResponseJson<unknown>(response, SEARCH_MAX_BYTES, `companion search ${nickname}`),
-    nickname,
   )
 }
 

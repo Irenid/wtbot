@@ -194,7 +194,7 @@ function normalizedPeriod(input: PlayerStatsLookupInput): PlayerReplayStatsPerio
   return period
 }
 
-function platformFromNick(nick: string): string | null {
+export function platformFromNick(nick: string): string | null {
   return nick.match(/@(psn|live|epic)$/i)?.[1]?.toLowerCase() ?? null
 }
 

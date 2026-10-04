@@ -1,10 +1,26 @@
-import type { ReactNode } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { localeTag, t } from '../i18n'
 import { fmtInt } from '../lib/format'
 import { SiteApiError } from '../api'
 
 export function Chip({ children, tone }: { children: ReactNode; tone?: 'ok' | 'fail' | 'accent' }) {
   return <span className={`chip${tone ? ` ${tone}` : ''}`}>{children}</span>
+}
+
+/**
+ * Click handler of a table row (`tr.row-link`) that opens a page. The row's own
+ * link handles its clicks (keyboard, middle click), a drag that selects text is
+ * not a click, Ctrl/Cmd opens a new tab.
+ */
+export function useRowLink(): (event: MouseEvent<HTMLTableRowElement>, path: string) => void {
+  const navigate = useNavigate()
+  return (event, path) => {
+    if (event.target instanceof Element && event.target.closest('a') !== null) return
+    if ((window.getSelection()?.toString() ?? '') !== '') return
+    if (event.ctrlKey || event.metaKey) window.open(path, '_blank', 'noopener')
+    else navigate(path)
+  }
 }
 
 export function Kpi({ label, value, sub, children }: {

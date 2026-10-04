@@ -19,6 +19,7 @@ import {
   type BattlePlayerInput,
 } from '../db/index.js'
 import { PlayerStatsCoordinator } from '../player-stats/comparison.js'
+import { WtUserIdResolver } from '../player-stats/id-lookup.js'
 import { closeWorkerPool } from '../workers/pool.js'
 import { buildServer } from '../web/index.js'
 import { DASHBOARD_PATH } from '../web/routes/pages.js'
@@ -413,6 +414,98 @@ async function main(): Promise<void> {
       assert.equal(loneBody.replay?.battles, 1)
     }
 
+    // --- Profile by nick (squadron members): an id when local data knows one ---
+    type NickProfile = {
+      player: { identityId: number | null; wtUserId: string | null; nick: string }
+      rating: { rating: number } | null
+      clan: { coreTag: string | null } | null
+      accounts: unknown[]
+      replay: { battles: number } | null
+    }
+    const byNick = async (nick: string, suffix = '') =>
+      app.inject({ method: 'GET', url: `/api/players/nick/${encodeURIComponent(nick)}${suffix}` })
+    const wingman = await byNick('Wingman')
+    assert.equal(wingman.statusCode, 200)
+    const wingmanBody = wingman.json() as NickProfile
+    assert.equal(wingmanBody.player.wtUserId, '502', 'a replay id resolves the nick')
+    assert.equal(wingmanBody.player.identityId, null)
+    assert.equal(wingmanBody.rating?.rating, 1_400)
+    assert.equal(wingmanBody.replay?.battles, 1)
+    const pilotByNick = (await byNick('pilotone')).json() as NickProfile
+    assert.equal(pilotByNick.player.identityId, identity.id, 'a case-folded nick resolves the identity')
+    assert.equal(pilotByNick.player.nick, 'PilotOne')
+    // Known only from the squadron roster: PSR and squadron, no id, no replays.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const member = await byNick('Formula7')
+      assert.equal(member.statusCode, 200)
+      const memberBody = member.json() as NickProfile
+      assert.equal(memberBody.player.identityId, null, 'a GET by nick must not create an identity')
+      assert.equal(memberBody.player.wtUserId, null)
+      assert.equal(memberBody.player.nick, 'Formula7')
+      assert.equal(memberBody.rating?.rating, 1_007)
+      assert.equal(memberBody.clan?.coreTag, 'form')
+      assert.equal(memberBody.accounts.length, 0)
+      assert.equal(memberBody.replay, null)
+    }
+    const memberHistory = await byNick('Formula7', '/history?days=30')
+    assert.equal(memberHistory.statusCode, 200)
+    const memberHistoryBody = memberHistory.json() as { rating: unknown[]; activity: unknown[] }
+    assert.ok(memberHistoryBody.rating.length >= 1)
+    assert.deepEqual(memberHistoryBody.activity, [])
+    const memberInsights = await byNick('Formula7', '/insights')
+    assert.equal(memberInsights.statusCode, 200)
+    assert.equal((memberInsights.json() as { insights: unknown }).insights, null)
+    assert.equal((await byNick('Nobody')).statusCode, 404)
+    // A numeric nick is a nick, not WT user id 501.
+    assert.equal((await byNick('501')).statusCode, 404)
+    assert.equal((await byNick('Pi\u0001lot')).statusCode, 400)
+    assert.equal((await byNick('x'.repeat(65))).statusCode, 400)
+
+    // --- WT user id lookup: the nick page's POST links the member everywhere ---
+    const searched: string[] = []
+    const idApp = buildServer({
+      getBotStatus: () => ({ online: false, tag: null, guilds: 0, uptimeSec: 0 }),
+      refreshVoice: async () => ({ players: 0, clans: 0 }),
+      playerStats: new PlayerStatsCoordinator({ externalService: null, externalSource: 'fixture' }),
+      playerIdLookup: new WtUserIdResolver({
+        steps: [{
+          source: 'fixture-search',
+          minIntervalMs: 0,
+          find: async (nick) => {
+            searched.push(nick)
+            return [{ wtUserId: '9007', nick: 'Formula7' }, { wtUserId: '9070', nick: 'Formula70' }]
+          },
+        }],
+        log: () => undefined,
+      }),
+    })
+    try {
+      const lookupId = (nick: string) => idApp.inject({
+        method: 'POST',
+        url: '/api/player-id',
+        headers: { 'content-type': 'application/json' },
+        payload: JSON.stringify({ nick }),
+      })
+      const resolved = await lookupId('Formula7')
+      assert.equal(resolved.statusCode, 200)
+      assert.deepEqual(resolved.json(), { ok: true, status: 'found', wtUserId: '9007' })
+      assert.equal((await lookupId('Nobody')).statusCode, 404, 'a nick unknown locally reaches no source')
+      assert.deepEqual(searched, ['Formula7'])
+      assert.equal(((await byNick('Formula7')).json() as NickProfile).player.wtUserId, '9007', 'the nick page opens the id')
+      const byId = await app.inject({ method: 'GET', url: '/api/players/9007' })
+      assert.equal(byId.statusCode, 200)
+      const byIdBody = byId.json() as NickProfile
+      assert.equal(byIdBody.player.nick, 'Formula7')
+      assert.equal(byIdBody.rating?.rating, 1_007)
+      const formClan = await app.inject({ method: 'GET', url: '/api/clans/form' })
+      assert.equal(formClan.statusCode, 200)
+      const formRoster = (formClan.json() as { roster: { nick: string; wtUserId: string | null }[] }).roster
+      assert.equal(formRoster.find((member) => member.nick === 'Formula7')?.wtUserId, '9007', 'the roster links the found id')
+      assert.equal(formRoster.find((member) => member.nick === 'Formula70')?.wtUserId, null, 'a prefix match links nothing')
+    } finally {
+      await idApp.close()
+    }
+
     // --- История ---
     const history = await app.inject({ method: 'GET', url: '/api/players/501/history?days=400' })
     assert.equal(history.statusCode, 200)
@@ -528,7 +621,8 @@ async function main(): Promise<void> {
     assert.equal(clanBody.roster[0]?.nick, 'PilotOne')
     assert.equal(clanBody.roster[0]?.delta, 20)
     assert.equal(clanBody.roster[0]?.wtUserId, '501', 'ростер должен линковаться через алиасы')
-    assert.equal(clanBody.roster[1]?.identityId, null, 'без алиаса ссылки быть не должно')
+    assert.equal(clanBody.roster[1]?.identityId, null, 'no alias: no identity link')
+    assert.equal(clanBody.roster[1]?.wtUserId, '502', 'no alias: the single WT user id of the nick in replays')
     // Роль, дата вступления и активность — со страницы клана; у Wingman их нет.
     assert.equal(clanBody.roster[0]?.role, 'Commander')
     assert.equal(clanBody.roster[0]?.joinedAt, nowSec - 400 * 86_400)

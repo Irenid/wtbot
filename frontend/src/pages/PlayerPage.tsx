@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   fetchBattles,
   fetchPlayerHistory,
   fetchPlayerInsights,
   fetchPlayerProfile,
   fetchVehicleDict,
+  lookupPlayerId,
   requestPlayerStatsRefresh,
   SiteApiError,
   type AccountView,
@@ -13,6 +14,7 @@ import {
   type ExternalTotal,
   type PlayerHistory,
   type PlayerInsights,
+  type PlayerKind,
   type PlayerProfile,
   type VehicleDict,
 } from '../api'
@@ -92,11 +94,33 @@ const KILL_BRIGHT: Record<string, string> = {
 const BATTLES_PAGE = 15
 const REFRESH_POLLS = 4
 const REFRESH_POLL_MS = 15_000
+/** The server waits up to 15 s per lookup; `pending` is asked again this many times. */
+const ID_LOOKUP_ATTEMPTS = 4
+const ID_LOOKUP_RETRY_MS = 5_000
 
-export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
+/**
+ * A profile without an id (a squadron member never seen in replays): the bot looks
+ * the account up and the page moves to /players/<id>; any other answer keeps it.
+ */
+async function openFoundAccount(nick: string, isCurrent: () => boolean, open: (path: string) => void): Promise<void> {
+  for (let attempt = 0; attempt < ID_LOOKUP_ATTEMPTS; attempt += 1) {
+    const answer = await lookupPlayerId(nick).catch(() => null)
+    if (answer === null || !isCurrent()) return
+    if (answer.status === 'found' && answer.wtUserId) {
+      open(`/players/${answer.wtUserId}`)
+      return
+    }
+    if (answer.status !== 'pending') return
+    await new Promise((resolve) => setTimeout(resolve, ID_LOOKUP_RETRY_MS))
+    if (!isCurrent()) return
+  }
+}
+
+export function PlayerPage({ kind }: { kind: PlayerKind }) {
   const params = useParams()
+  const navigate = useNavigate()
   const { locale } = useLocale()
-  const key = (kind === 'wt' ? params['wtUserId'] : params['identityId']) ?? ''
+  const key = params[kind === 'wt' ? 'wtUserId' : kind === 'identity' ? 'identityId' : 'nick'] ?? ''
   const [profile, setProfile] = useState<PlayerProfile | null>(null)
   const [history, setHistory] = useState<PlayerHistory | null>(null)
   const [historyError, setHistoryError] = useState<unknown>(null)
@@ -110,10 +134,10 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
   const [days, setDays] = useState<'30' | '90' | '400'>('90')
   const [refresh, setRefresh] = useState<RefreshState>('idle')
   const [error, setError] = useState<unknown>(null)
-  // Поколение страницы: ответы для прежнего игрока и опрос после ухода со страницы отбрасываются.
+  // Page generation: answers for the previous player and polling after leaving the page are dropped.
   const generation = useRef(0)
 
-  // Подписи пересобираются при смене языка — поэтому внутри компонента, а не на уровне модуля.
+  // Labels are rebuilt when the language changes, so they live in the component, not the module.
   const HISTORY_DAYS = useMemo(() => [
     { value: '30', label: t('common.days.30') },
     { value: '90', label: t('common.days.90') },
@@ -133,7 +157,7 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
         if (generation.current !== current) return
         setProfile(body)
         if (body.player.wtUserId) {
-          // Отказ запроса — не «у игрока нет боёв»: показываем ошибку, а не пустой список.
+          // A failed request is not "the player has no battles": show the error, not an empty list.
           fetchBattles({ player: body.player.wtUserId, limit: BATTLES_PAGE })
             .then((list) => {
               if (generation.current !== current) return
@@ -144,6 +168,13 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
         } else {
           setBattles([])
           setBattlesMore('end')
+          if (kind !== 'wt') {
+            void openFoundAccount(
+              body.player.nick,
+              () => generation.current === current,
+              (path) => navigate(path, { replace: true }),
+            )
+          }
         }
       })
       .catch((err) => { if (generation.current === current) setError(err) })
@@ -155,7 +186,7 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
     let cancelled = false
     setHistory(null)
     setHistoryError(null)
-    // Без отдельного состояния ошибки отказ выглядел как вечная загрузка.
+    // Without its own error state a failure looked like endless loading.
     fetchPlayerHistory(kind, key, Number(days))
       .then((body) => { if (!cancelled) setHistory(body) })
       .catch((err) => { if (!cancelled) setHistoryError(err) })
@@ -232,8 +263,8 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
   }
 
   /**
-   * Просит бота перечитать внешние источники и несколько раз перечитывает
-   * профиль: обновление идёт в фоне через браузер бота и занимает до минуты.
+   * Asks the bot to reread the external sources, then rereads the profile a few
+   * times: the refresh runs in the background through the bot's browser, up to a minute.
    */
   const refreshSources = async () => {
     if (!profile) return
@@ -289,7 +320,7 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
     lastOnlineAt: statShark?.lastOnlineAt ?? null,
   }
   const updatedAt = primaryAccount ? primaryAccount.sourceUpdatedAt ?? primaryAccount.checkedAt : null
-  // Ники: локальные алиасы и история ников StatShark одной таблицей.
+  // Nicks: local aliases and the StatShark nick history in one table.
   const knownNicks = new Set(player.aliases.map((alias) => alias.nick))
   const nickRows = [
     ...player.aliases.map((alias) => ({ nick: alias.nick, source: alias.source, first: alias.firstSeenAt, last: alias.lastSeenAt as number | null })),
@@ -298,8 +329,8 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
       .map((name) => ({ nick: name.nick, source: sourceLabel('statshark'), first: name.seenAt, last: null as number | null })),
   ]
 
-  // «Любимый класс» — по фрагам аккаунта: честная замена распределения по боям,
-  // которого внешние источники не публикуют.
+  // "Favourite class" by the account's kills: an honest stand-in for a split by
+  // battles, which the external sources do not publish.
   const favouriteClass = (() => {
     if (!primaryAggregate) return null
     const parts = KILL_PARTS
@@ -358,7 +389,7 @@ export function PlayerPage({ kind }: { kind: 'wt' | 'identity' }) {
               fraction={winRateOf(primaryAggregate.battles, primaryAggregate.victories)}
               text={fmtPercent(winRateOf(primaryAggregate.battles, primaryAggregate.victories))}
               sub={<>
-                {/* число выделено отдельным span — из шаблона «{n} побед» берём только слово */}
+                {/* the number is its own span: only the word is taken from the "{n} wins" template */}
                 <span className="ok" style={{ fontWeight: 700 }}>{fmtInt(primaryAggregate.victories)}</span> {t('metric.wins.count', { n: '' }).trim()}<br />
                 <span className="fail" style={{ fontWeight: 700 }}>{fmtInt(primaryAggregate.defeats)}</span> {t('metric.losses.count', { n: '' }).trim()}
               </>}

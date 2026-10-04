@@ -2,6 +2,7 @@ import type {
   PlayerStatsLookupInput,
   PlayerStatsLookupResult,
 } from '../player-stats/comparison.js'
+import type { WtUserIdLookupResult } from '../player-stats/id-lookup.js'
 
 export interface BotStatus {
   online: boolean
@@ -159,4 +160,8 @@ export interface WebDeps {
   playerStats: {
     lookup(input: PlayerStatsLookupInput): PlayerStatsLookupResult
   }
+  /** WT user id of a nick-only profile (src/player-stats/id-lookup.ts); absent or null: lookups are off. */
+  playerIdLookup?: {
+    resolve(nick: string): Promise<WtUserIdLookupResult>
+  } | null
 }

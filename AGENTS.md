@@ -108,6 +108,7 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WT_REPLAY_HOSTS` | allowlist of CDN hosts for replay parts (`src/wrpl/replay-url-policy.ts`); structural SSRF protection applies without it |
 | `WT_PLAYER_NAMES` | nicknames for `wt-players`: Replay API and HTML profile |
 | `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=false`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: site profile, companion, StatShark (only with a known numeric WT user id) |
+| `WT_PLAYER_ID_LOOKUP_ENABLED=true` | with `WT_PLAYER_STATS_ENABLED`: a profile without an id looks its WT user id up (`POST /api/player-id`, section 8); the Replay API step only with `WT_COOKIE` |
 | `WT_WORKER_THREADS=auto` | from CPU, RAM and reserves; cap 8, estimate 320 MiB per worker |
 | `WT_WORKER_BACKGROUND_RESERVE`, `WT_WORKER_MAX_OLD_SPACE_MB` | slots reserved for interactive work; old space of one worker |
 | `WT_INGEST_CONCURRENCY` | cap 32; above the pool size it overlaps CDN I/O at the cost of RAM held by replays |
@@ -479,7 +480,11 @@ Data:
   above clans from earlier crawls of the season; the PSR sum from snapshots is
   used only for clans without official data. `clan_roster` is the last
   non-empty roster; the roster, members' PSR and their deltas are filtered by
-  it.
+  it. A member links to an identity by alias, else to the single WT user id
+  of the exact nick in replays (a reused nick: none), else to
+  `/players/nick/:nick` — the matching of `resolveKnownPlayer` without its
+  writes: a GET creates no identity; that page then looks the id up
+  (`POST /api/player-id`).
 - `CLAN_SEASON_SCHEDULES` — UTC `[startsAt, endsAt)`; changing a built-in
   schedule takes reconciliation or a data migration, never a manual database
   edit. New seasons come from `wt-clan-season` (`src/clan-season-forum.ts`),
@@ -528,6 +533,17 @@ Data:
   refetched), stale fallback, schema validation and its own rate limit.
   Replay and account coverage are never summed; the primary snapshot is
   `account`, all of them `accountSources`.
+- `POST /api/player-id` (asked once by a profile without an id, which then
+  opens `/players/<id>`): `WtUserIdResolver` (`src/player-stats/id-lookup.ts`)
+  answers from local data (one id; the nick's nick-only identity adopts it),
+  else asks the public companion nick search (no cookie; a prefix list of 100
+  may omit the nick), then the Replay API by name (random battles, the shared
+  queue, one call per 10 s). Exactly one account with the case-folded nick is
+  stored as identity + aliases (`exact_nick`, `medium`: a stale roster nick may
+  now be another account), so the roster links it from then on; several or
+  none link nothing (cached 12 h, failures 5 min). Only locally known nicks
+  reach a source; one lookup at a time, one per nick, ≤ 32 queued (`busy`);
+  the request waits 15 s, then answers `pending`.
 
 Provider invariants:
 
@@ -591,7 +607,7 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-04**: all
-gates pass, **327 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **338 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

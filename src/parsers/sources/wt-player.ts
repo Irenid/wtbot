@@ -512,19 +512,37 @@ async function fetchReplayPage(nickname: string): Promise<ReplayPage> {
         limit: 50,
         page: 1,
       }),
-    }, `replay для ${nickname}`)
+    }, `replay for ${nickname}`)
   } catch (error) {
     throwPlayerRequestError(error, nickname)
   }
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
   if (!contentType.includes('json')) {
     await response.body?.cancel().catch(() => undefined)
-    throw new PlayerSessionError(`replay для ${nickname}: сервер вернул не JSON — сессия могла истечь`)
+    throw new PlayerSessionError(`replay for ${nickname}: the server returned non-JSON, the session may have expired`)
   }
-  // Пустой результат сам по себе не считаем истёкшей сессией: у игрока может
-  // не быть публичных randomBattle-реплеев; явные 401/403/redirect/error выше
-  // уже превращаются в PlayerSessionError.
-  return parseReplayPage(await readResponseJson<unknown>(response, MAX_REPLAY_BYTES, `replay для ${nickname}`))
+  // An empty list alone is no expired session: the player may have no public
+  // random-battle replays; explicit 401/403/redirect/error became PlayerSessionError above.
+  return parseReplayPage(await readResponseJson<unknown>(response, MAX_REPLAY_BYTES, `replay for ${nickname}`))
+}
+
+/**
+ * Accounts whose real name (never the anonymous fakeName) is `nickname` in the
+ * first Replay API page (50 random battles); bot slots (id ≤ 0) are skipped.
+ * Needs WT_COOKIE; an empty list does not prove there is no such account.
+ */
+export async function findReplayAccounts(nickname: string): Promise<Array<{ userId: string; name: string }>> {
+  if (config.wtCookie.trim() === '') throw new PlayerSessionError(`${nickname}: WT_COOKIE is not set`)
+  const page = await fetchReplayPage(nickname)
+  const wanted = normalizeNickname(nickname)
+  const accounts = new Map<string, string>()
+  for (const replay of page.replays) {
+    for (const player of replay.players) {
+      if (!/^[1-9]\d*$/.test(player.userId) || player.name === '') continue
+      if (normalizeNickname(player.name) === wanted) accounts.set(player.userId, player.name)
+    }
+  }
+  return [...accounts].map(([userId, name]) => ({ userId, name }))
 }
 
 async function collectPlayer(nickname: string): Promise<PlayerData> {

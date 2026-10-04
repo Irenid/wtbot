@@ -36,6 +36,7 @@ import {
 } from './player-stats/statshark-normalizer.js'
 import { PlayerStatsService } from './player-stats/service.js'
 import { PlayerStatsCoordinator } from './player-stats/comparison.js'
+import { defaultWtUserIdLookupSteps, WtUserIdResolver } from './player-stats/id-lookup.js'
 import { closeWtBrowser } from './parsers/sources/wt-browser.js'
 import { startWtCookieRefresh, stopWtCookieRefresh } from './parsers/sources/wt-request.js'
 import { startDbMaintenance, stopDbMaintenance } from './db/maintenance.js'
@@ -52,6 +53,7 @@ let app: ReturnType<typeof buildServer> | null = null
 let client: Awaited<ReturnType<typeof startBot>> | null = null
 let voiceTracker: ReturnType<typeof startVoiceTracker> | null = null
 let playerStats: PlayerStatsCoordinator | null = null
+let playerIdLookup: WtUserIdResolver | null = null
 let shuttingDown = false
 let requestedExitCode = 0
 let eventLoopCurrentLagMs = 0
@@ -166,6 +168,13 @@ console.log(
 console.log(
   `[player-stats] ${STATSHARK_SOURCE}: ${statSharkPlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
 )
+if (config.playerStatsEnabled && config.playerIdLookupEnabled) {
+  const withReplayApi = config.wtCookie.trim() !== ''
+  playerIdLookup = new WtUserIdResolver({ steps: defaultWtUserIdLookupSteps(withReplayApi) })
+  console.log(`[player-id] WT user id lookup: companion search${withReplayApi ? ', then the Replay API' : ''}`)
+} else {
+  console.log('[player-id] WT user id lookup: off')
+}
 console.log(
   `[workers] CPU pool (${config.workerResources.explicitWorkerThreads ? 'ручной' : 'авто'}): ` +
     `${config.workerThreads}/${config.workerResources.availableCpus} потоков` +
@@ -363,6 +372,7 @@ async function startServices(): Promise<void> {
       getRuntimeStats,
       refreshVoice: () => startedVoiceTracker.refresh(),
       playerStats: playerStatsCoordinator,
+      playerIdLookup,
     },
     undefined,
     { host: config.webHost, token: config.webToken, trustProxy: config.webTrustProxy },
@@ -442,6 +452,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
     stopBotWork(PRODUCER_DRAIN_MS),
     voiceTracker?.stop() ?? Promise.resolve(),
     playerStats?.stop() ?? Promise.resolve(),
+    playerIdLookup?.stop() ?? Promise.resolve(),
     ingestStopped,
     maintenanceStopped,
   ])

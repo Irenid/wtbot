@@ -108,6 +108,8 @@ export const config = {
   companionCookie: process.env['WT_COMPANION_COOKIE'] ?? '',
   /** Дополнительный lazy snapshot StatShark по стабильному WT user id. */
   statSharkPlayerStatsEnabled: envBoolean('STATSHARK_PLAYER_STATS_ENABLED', false),
+  /** A nick-only profile looks up its WT user id: public companion search, then the Replay API (WT_COOKIE). */
+  playerIdLookupEnabled: envBoolean('WT_PLAYER_ID_LOOKUP_ENABLED', true),
   /** Ники для периодического сбора профилей и реплеев (через запятую). */
   playerNames: envCsvUnique('WT_PLAYER_NAMES'),
   /** Куки залогиненной сессии warthunder.com (identity_*) для WT-парсеров. */

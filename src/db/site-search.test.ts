@@ -9,6 +9,7 @@ import {
   closeDb,
   findKnownPlayerMatches,
   getPlayerReplayStats,
+  getSiteReplayUserIdsByNick,
   initDb,
   saveBattle,
   savePlayerIdentity,
@@ -220,6 +221,56 @@ test('слот coop/Bot с настоящим userId не входит в ста
     assert.equal(getPlayerReplayStats({ userId: '555' }).battles, 1)
     assert.deepEqual(findKnownPlayerMatches('555').map((match) => match.nick), ['RealNick'])
     assert.deepEqual(searchSitePlayers('coop'), [])
+  } finally {
+    closeDb()
+  }
+})
+
+test('a roster nick links to the single account id of its replays', () => {
+  initDb(':memory:')
+  try {
+    const slot = (userId: string, nick: string) => ({ ...replayPlayer(nick), userId })
+    saveBattle({
+      sessionId: 'roster-links',
+      sessionHex: '00000000000000aa',
+      missionName: 'fixture',
+      level: 'fixture',
+      gameMode: null,
+      battleType: null,
+      environment: null,
+      status: null,
+      startTime: 1,
+      durationSec: 600,
+      endTimeMs: 600_000,
+      teamWon: 1,
+      gameVersion: null,
+      missionSettings: null,
+      players: [
+        slot('601', 'Ёлка'),
+        slot('602', 'Reused'),
+        slot('603', 'reused'),
+        slot('604', 'Gamer@psn'),
+        slot('-5', 'Phantom'),
+        slot('605', 'coop/Bot3'),
+      ],
+      kills: [],
+      chat: [],
+      eventsBlob: Buffer.from('{}'),
+    })
+    // 20 nicks cross the 16-slot IN chunk.
+    const filler = Array.from({ length: 20 }, (_, index) => `Nobody${index}`)
+    const links = getSiteReplayUserIdsByNick(['ЁЛКА', 'Reused', 'Gamer', 'Gamer@psn', 'Phantom', 'coop/Bot3', ...filler])
+    // Case-folded exact nick; the key is the caller's spelling.
+    assert.deepEqual(links.get('ЁЛКА'), ['601'])
+    // Two accounts on one nick: the caller links neither.
+    assert.deepEqual(links.get('Reused')?.sort(), ['602', '603'])
+    // The platform suffix is part of the nick.
+    assert.equal(links.has('Gamer'), false)
+    assert.deepEqual(links.get('Gamer@psn'), ['604'])
+    // A bot slot's negative id and a coop/Bot slot are no evidence of a player.
+    assert.equal(links.has('Phantom'), false)
+    assert.equal(links.has('coop/Bot3'), false)
+    assert.equal(links.size, 3)
   } finally {
     closeDb()
   }

@@ -24,7 +24,7 @@ import {
   unitTypeLabel,
   winRateOf,
 } from '../lib/format'
-import { Chip, DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl } from '../components/ui'
+import { Chip, DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl, useRowLink } from '../components/ui'
 import { SeasonPanel } from '../components/SeasonPanel'
 import { TimeChart } from '../components/TimeChart'
 import { t, tp, useLocale } from '../i18n'
@@ -185,9 +185,17 @@ function ClanAboutCard({ clan }: { clan: ClanDetail['clan'] }) {
   )
 }
 
+/** A roster member's profile: by WT user id or identity when the bot knows one, else by nick. */
+function memberPath(member: ClanDetail['roster'][number]): string {
+  if (member.wtUserId) return `/players/${member.wtUserId}`
+  if (member.identityId !== null) return `/players/id/${member.identityId}`
+  return `/players/nick/${encodeURIComponent(member.nick)}`
+}
+
 export function ClanPage() {
   const { coreTag = '' } = useParams()
   const { locale } = useLocale()
+  const openRow = useRowLink()
   const [detail, setDetail] = useState<ClanDetail | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [history, setHistory] = useState<ClanHistoryPoint[] | null>(null)
@@ -197,7 +205,7 @@ export function ClanPage() {
   const [battleFilter, setBattleFilter] = useState<'all' | 'w' | 'l'>('all')
   const [error, setError] = useState<unknown>(null)
 
-  // Подписи пересобираются при смене языка — поэтому внутри компонента, а не на уровне модуля.
+  // Labels are rebuilt when the language changes, so they live in the component, not the module.
   const PERIODS = useMemo(() => [
     { value: '7', label: t('common.days.7') },
     { value: '30', label: t('common.days.30') },
@@ -210,8 +218,8 @@ export function ClanPage() {
     { value: 'l', label: t('battles.filter.losses') },
   ] as const, [locale])
 
-  // Бои и победы сезона есть только в точках официального рейтинга; цвета —
-  // те же, что у боёв и побед на странице игрока.
+  // Season battles and wins exist only in official rating points; the colors are
+  // those of battles and wins on the player page.
   const seasonChart = useMemo(() => {
     const points = (history ?? []).filter((point) => typeof point.battles === 'number' && typeof point.wins === 'number')
     if (points.length < 2) return null
@@ -224,13 +232,13 @@ export function ClanPage() {
     }
   }, [history, locale])
 
-  // Другой клан — прежние данные не показываем ни мгновения.
+  // Another squadron: the previous one's data is not shown for a moment.
   useEffect(() => {
     setDetail(null)
   }, [coreTag])
 
-  // Смена периода обновляет только данные: страница остаётся на месте,
-  // карточка боёв приглушается до ответа.
+  // A new period only reloads the data: the page stays in place, the battles
+  // card dims until the answer.
   useEffect(() => {
     let cancelled = false
     setError(null)
@@ -346,7 +354,7 @@ export function ClanPage() {
               fraction={battles.winRate}
               text={battles.winRate === null ? '—' : `${(battles.winRate * 100).toFixed(1)}%`}
               sub={<>
-                {/* число выделено отдельным span — из шаблона «{n} побед» берём только слово */}
+                {/* the number is its own span: only the word is taken from the "{n} wins" template */}
                 <span className="ok" style={{ fontWeight: 700 }}>{fmtInt(battles.wins)}</span> {t('metric.wins.count', { n: '' }).trim()}<br />
                 <span className="fail" style={{ fontWeight: 700 }}>{fmtInt(battles.losses)}</span> {t('metric.losses.count', { n: '' }).trim()}
               </>}
@@ -370,17 +378,13 @@ export function ClanPage() {
                     member.joinedAt === null ? null : t('clan.roster.joined', { date: fmtDate(member.joinedAt) }),
                     member.activity === null ? null : t('clan.roster.activity', { n: fmtInt(member.activity) }),
                   ].filter((part): part is string => part !== null).join(' · ')
-                  const href = member.wtUserId
-                    ? `/players/${member.wtUserId}`
-                    : member.identityId !== null
-                      ? `/players/id/${member.identityId}`
-                      : null
+                  const href = memberPath(member)
                   return (
-                    <tr key={member.nick}>
+                    <tr key={member.nick} className="row-link" onClick={(event) => openRow(event, href)}>
                       <td className="rank">{index + 1}</td>
                       <td style={{ minWidth: 200 }}>
-                        {href ? <Link to={href}>{member.nick}</Link> : <span style={{ fontWeight: 600 }}>{member.nick}</span>}
-                        {/* Рядовой — роль по умолчанию, отмечаем только старшие. */}
+                        <Link to={href}>{member.nick}</Link>
+                        {/* Private is the default role: only senior ones are marked. */}
                         {member.role !== null && member.role !== 'Private' && (
                           <span style={{ marginLeft: 6 }}><Chip>{clanRoleLabel(member.role)}</Chip></span>
                         )}

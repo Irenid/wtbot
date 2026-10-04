@@ -1,4 +1,4 @@
-// Типизированный клиент JSON API wtbot. Все эндпоинты read-only.
+// Typed client of the wtbot JSON API: GETs read, the POSTs queue work for the bot.
 
 export interface ApiError {
   ok: false
@@ -166,13 +166,21 @@ export interface PlayerInsights {
   starts: number[]
 }
 
+/** Profile route key: /players/:wtUserId, /players/id/:identityId, /players/nick/:nick. */
+export type PlayerKind = 'wt' | 'identity' | 'nick'
+
+function playerApiBase(kind: PlayerKind, key: string): string {
+  if (kind === 'wt') return `/api/players/${key}`
+  if (kind === 'identity') return `/api/players/identity/${key}`
+  return `/api/players/nick/${encodeURIComponent(key)}`
+}
+
 export function fetchPlayerInsights(
-  kind: 'wt' | 'identity',
+  kind: PlayerKind,
   key: string,
   days: number,
 ): Promise<{ ok: true; days: number; insights: PlayerInsights | null }> {
-  const base = kind === 'wt' ? `/api/players/${key}/insights` : `/api/players/identity/${key}/insights`
-  return getJson(`${base}?days=${days}`)
+  return getJson(`${playerApiBase(kind, key)}/insights?days=${days}`)
 }
 
 /**
@@ -181,6 +189,18 @@ export function fetchPlayerInsights(
  */
 export function requestPlayerStatsRefresh(player: string): Promise<{ ok: true }> {
   return postJson('/api/player-stats', { player })
+}
+
+export interface PlayerIdLookup {
+  ok: true
+  /** pending: the lookup goes on, ask again; not_found and ambiguous are cached for hours. */
+  status: 'found' | 'pending' | 'not_found' | 'ambiguous'
+  wtUserId: string | null
+}
+
+/** WT user id of a nick known without one; the bot stores a found id, so the roster links it next time. */
+export function lookupPlayerId(nick: string): Promise<PlayerIdLookup> {
+  return postJson('/api/player-id', { nick })
 }
 
 export interface ExternalCountry {
@@ -228,9 +248,8 @@ export interface PlayerProfile {
   replay: ReplayStats | null
 }
 
-export function fetchPlayerProfile(kind: 'wt' | 'identity', key: string): Promise<PlayerProfile> {
-  const base = kind === 'wt' ? `/api/players/${key}` : `/api/players/identity/${key}`
-  return getJson(base)
+export function fetchPlayerProfile(kind: PlayerKind, key: string): Promise<PlayerProfile> {
+  return getJson(playerApiBase(kind, key))
 }
 
 export interface RatingPoint { nick: string; clanTag: string; rating: number; seenAt: number }
@@ -258,9 +277,8 @@ export interface PlayerHistory {
   activity: ActivityPoint[]
 }
 
-export function fetchPlayerHistory(kind: 'wt' | 'identity', key: string, days: number): Promise<PlayerHistory> {
-  const base = kind === 'wt' ? `/api/players/${key}/history` : `/api/players/identity/${key}/history`
-  return getJson(`${base}?days=${days}`)
+export function fetchPlayerHistory(kind: PlayerKind, key: string, days: number): Promise<PlayerHistory> {
+  return getJson(`${playerApiBase(kind, key)}/history?days=${days}`)
 }
 
 export interface ClanListEntry {

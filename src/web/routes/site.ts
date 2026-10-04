@@ -35,7 +35,9 @@ import {
   getSiteRatingHistory,
   getSiteReplayNick,
   getSiteReplayPlayerCount,
+  getSiteReplayUserIdsByNick,
   listSiteBattles,
+  normalizePlayerSearchKey,
   normalizeWtNick,
   resolveSiteSessionId,
   searchSitePlayers,
@@ -460,8 +462,12 @@ interface SiteProfileTarget {
   nick: string | null
 }
 
-/** Read-only разрешение ключа профиля: identity по id/wt_user_id либо replay-only игрок. */
-function resolveProfileTarget(kind: 'wt' | 'identity', key: string): SiteProfileTarget | null {
+/** Profile URL key: /players/:wtUserId, /players/id/:identityId, /players/nick/:nick. */
+type ProfileKind = 'wt' | 'identity' | 'nick'
+
+/** Read-only resolution of a profile key: an identity by id or WT user id, a replay-only player or a nick. */
+function resolveProfileTarget(kind: ProfileKind, key: string): SiteProfileTarget | null {
+  if (kind === 'nick') return resolveNickTarget(key)
   if (kind === 'identity') {
     const identityId = Number(key)
     if (!Number.isSafeInteger(identityId) || identityId <= 0) return null
@@ -473,11 +479,38 @@ function resolveProfileTarget(kind: 'wt' | 'identity', key: string): SiteProfile
   if (identity) return { identity, wtUserId: identity.wtUserId ?? key, nick: identity.canonicalNick }
   const replayNick = getSiteReplayNick(key)
   if (replayNick) return { identity: null, wtUserId: key, nick: replayNick }
-  // Игрок может быть известен только voice/rating-данным — ищем точное свидетельство.
+  // Known only from voice or rating data: look for exact evidence of this id.
   const matches = findKnownPlayerMatches(key).filter((match) => match.wtUserId === key)
   const match = matches[0]
   if (match) return { identity: null, wtUserId: key, nick: match.nick }
   return null
+}
+
+/**
+ * A profile by nick, for squadron members with no known id: the matching of
+ * resolveKnownPlayer (src/player-stats/comparison.ts) without its writes, so the
+ * page shows what its refresh button links. One WT user id, else one identity,
+ * else the nick alone (PSR, roster); a nick of several ids stays nick-only, as the
+ * refresh answers 409 for it.
+ */
+function resolveNickTarget(nick: string): SiteProfileTarget | null {
+  const query = nick.trim()
+  if (query === '') return null
+  const key = normalizePlayerSearchKey(query)
+  // A numeric query also matches a WT user id: keep the matches of this nick.
+  const matches = findKnownPlayerMatches(query).filter((match) => normalizePlayerSearchKey(match.nick) === key)
+  const wtUserIds = new Set(matches.flatMap((match) =>
+    match.wtUserId !== null && /^[1-9]\d*$/.test(match.wtUserId) ? [match.wtUserId] : []))
+  const [wtUserId] = wtUserIds
+  if (wtUserIds.size === 1 && wtUserId !== undefined) return resolveProfileTarget('wt', wtUserId)
+  if (wtUserIds.size === 0) {
+    const identityIds = new Set(matches.flatMap((match) => (match.identityId === null ? [] : [match.identityId])))
+    const [identityId] = identityIds
+    if (identityIds.size === 1 && identityId !== undefined) return resolveProfileTarget('identity', String(identityId))
+  }
+  // Matches come newest first: the nick as the latest source spells it.
+  const latest = matches[0]
+  return latest === undefined ? null : { identity: null, wtUserId: null, nick: latest.nick }
 }
 
 function periodFromQuery(query: { from?: number; to?: number }): { from?: number; to?: number } {
@@ -672,7 +705,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     }
   })
 
-  const profileHandler = (kind: 'wt' | 'identity') =>
+  const profileHandler = (kind: ProfileKind) =>
     async (
       request: FastifyRequest<{ Params: { key: string }; Querystring: { from?: number; to?: number } }>,
       reply: FastifyReply,
@@ -680,11 +713,11 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       if (!passRateLimit(request, reply)) return reply
       const target = resolveProfileTarget(kind, request.params.key)
       if (!target || !target.nick) {
-        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Игрок не найден в локальных данных' })
+        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Player not found in local data' })
       }
       const { from, to } = request.query
       if (from !== undefined && to !== undefined && from > to) {
-        return reply.code(400).send({ ok: false, code: 'INVALID_PERIOD', error: 'from не может быть позже to' })
+        return reply.code(400).send({ ok: false, code: 'INVALID_PERIOD', error: 'from cannot be later than to' })
       }
       const aliases = target.identity ? getPlayerIdentityAliases(target.identity.id) : []
       const groups = clanGroups()
@@ -698,7 +731,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         replay = getPlayerReplayStats({ userId: target.wtUserId }, periodFromQuery(request.query))
       }
       const rating = getPlayerRating(target.nick)
-      // Клан — по снимку ПКР сезона, иначе по последней записи истории StatShark.
+      // The squadron of the season's PSR snapshot, else the latest one in the StatShark history.
       const latestSquadron = accounts.find((account) => account.source === 'statshark')?.account?.squadrons[0]
       const clan = playerClanView(target.nick, rating?.clanTag ?? latestSquadron?.tag ?? null)
       return {
@@ -787,16 +820,16 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     return value
   }
 
-  const insightsHandler = (kind: 'wt' | 'identity') =>
+  const insightsHandler = (kind: ProfileKind) =>
     async (
       request: FastifyRequest<{ Params: { key: string }; Querystring: { days?: number } }>,
       reply: FastifyReply,
     ) => {
-      // Тяжелее обычного запроса сайта — двойной вес в rate limit.
+      // Heavier than a usual site request: double weight in the rate limit.
       if (!passRateLimit(request, reply, 2)) return reply
       const target = resolveProfileTarget(kind, request.params.key)
       if (!target || !target.nick) {
-        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Игрок не найден в локальных данных' })
+        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Player not found in local data' })
       }
       const days = request.query.days ?? 90
       if (!target.wtUserId) return { ok: true, days, insights: null }
@@ -814,6 +847,13 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     additionalProperties: false,
     required: ['key'],
     properties: { key: { type: 'string', pattern: '^[0-9]{1,10}$' } },
+  }
+  // The nick rules of POST /api/player-stats: the refresh button sends this nick there.
+  const profileParamsNick = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['key'],
+    properties: { key: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[^\\u0000-\\u001f\\u007f]+$' } },
   }
   const profileQuerystring = {
     type: 'object',
@@ -834,8 +874,13 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     { schema: { params: profileParamsIdentity, querystring: profileQuerystring } },
     profileHandler('identity'),
   )
+  app.get<{ Params: { key: string }; Querystring: { from?: number; to?: number } }>(
+    '/api/players/nick/:key',
+    { schema: { params: profileParamsNick, querystring: profileQuerystring } },
+    profileHandler('nick'),
+  )
 
-  const historyHandler = (kind: 'wt' | 'identity') =>
+  const historyHandler = (kind: ProfileKind) =>
     async (
       request: FastifyRequest<{ Params: { key: string }; Querystring: { days?: number } }>,
       reply: FastifyReply,
@@ -843,7 +888,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       if (!passRateLimit(request, reply)) return reply
       const target = resolveProfileTarget(kind, request.params.key)
       if (!target || !target.nick) {
-        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Игрок не найден в локальных данных' })
+        return reply.code(404).send({ ok: false, code: 'PLAYER_NOT_FOUND', error: 'Player not found in local data' })
       }
       const days = request.query.days ?? 90
       const fromTs = Math.floor(Date.now() / 1_000) - days * DAY_SEC
@@ -885,6 +930,11 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     historyHandler('identity'),
   )
   app.get<{ Params: { key: string }; Querystring: { days?: number } }>(
+    '/api/players/nick/:key/history',
+    { schema: { params: profileParamsNick, querystring: historyQuerystring } },
+    historyHandler('nick'),
+  )
+  app.get<{ Params: { key: string }; Querystring: { days?: number } }>(
     '/api/players/:key/insights',
     { schema: { params: profileParamsWt, querystring: historyQuerystring } },
     insightsHandler('wt'),
@@ -893,6 +943,11 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     '/api/players/identity/:key/insights',
     { schema: { params: profileParamsIdentity, querystring: historyQuerystring } },
     insightsHandler('identity'),
+  )
+  app.get<{ Params: { key: string }; Querystring: { days?: number } }>(
+    '/api/players/nick/:key/insights',
+    { schema: { params: profileParamsNick, querystring: historyQuerystring } },
+    insightsHandler('nick'),
   )
 
   // Плитки главной пересчитывают агрегаты всей БД — кэшируем как кланы.
@@ -1096,15 +1151,15 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!passRateLimit(request, reply)) return reply
     const core = plainClanTag(request.params.coreTag)
     if (!core) {
-      return reply.code(400).send({ ok: false, code: 'INVALID_CLAN', error: 'Некорректный тег клана' })
+      return reply.code(400).send({ ok: false, code: 'INVALID_CLAN', error: 'Invalid squadron tag' })
     }
     const snapshot = cachedClanSnapshot()
     const group = snapshot.groups.get(core)
     if (!group) {
-      return reply.code(404).send({ ok: false, code: 'CLAN_NOT_FOUND', error: 'Клан не найден в снимках рейтинга' })
+      return reply.code(404).send({ ok: false, code: 'CLAN_NOT_FOUND', error: 'Squadron not found in rating snapshots' })
     }
 
-    // Дельта ПКР по каждому нику: по двум последним снимкам внутри сырого тега.
+    // PSR delta of each nick: its two latest snapshots under one raw tag.
     const deltas = new Map<string, number | null>()
     for (const rawTag of group.rawTags.slice(0, 8)) {
       for (const [nick, ratingInfo] of getClanRatingsWithDelta(rawTag)) {
@@ -1112,7 +1167,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       }
     }
 
-    // Связка с identity только по алиасам; коллизия nick_base → без ссылки.
+    // Profile links: an identity only through its aliases (several on one nick_base:
+    // none), else the single WT user id of this exact nick in the replays (a covering
+    // index, ~0.2 ms for 128 members on 2026-10-04); the site links the rest by nick.
     const nickBases = group.members.map((member) => normalizeWtNick(member.nick))
     const aliasRows = getSiteAliasIdentities(nickBases)
     const byBase = new Map<string, { identityId: number; wtUserId: string | null } | null>()
@@ -1124,11 +1181,15 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         byBase.set(row.nickBase, null)
       }
     }
+    const replayIds = getSiteReplayUserIdsByNick(group.members
+      .filter((member) => (byBase.get(normalizeWtNick(member.nick)) ?? null) === null)
+      .map((member) => member.nick))
 
     const rosterDetails = getSiteClanRosterDetails(group.coreTag)
     const roster = group.members
       .map((member) => {
         const link = byBase.get(normalizeWtNick(member.nick)) ?? null
+        const replayIdsOfNick = replayIds.get(member.nick) ?? []
         const details = rosterDetails.get(member.nick)
         return {
           nick: member.nick,
@@ -1136,7 +1197,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
           delta: deltas.get(member.nick) ?? null,
           seenAt: member.seenAt,
           identityId: link?.identityId ?? null,
-          wtUserId: link?.wtUserId ?? null,
+          wtUserId: link !== null
+            ? link.wtUserId
+            : replayIdsOfNick.length === 1 ? replayIdsOfNick[0] ?? null : null,
           role: details?.role ?? null,
           joinedAt: details?.joinedAt ?? null,
           activity: details?.activity ?? null,
@@ -1166,7 +1229,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     let kills = 0
     let deaths = 0
     for (const session of sessions.values()) {
-      // Команда клана в сессии — та, где больше его игроков (при равенстве — меньший номер).
+      // The squadron's team in a session has most of its players (a tie: the lower team number).
       const clanRow = [...session.rows].sort((a, b) => b.players - a.players || a.team - b.team)[0]!
       score += clanRow.score
       kills += clanRow.kills
@@ -1219,7 +1282,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         score,
         kills,
         deaths,
-        // Клан без боёв при боте: страница пишет, с какого дня бот собирает бои.
+        // No battles since the bot started collecting: the page says since which day it collects.
         collectedSince: battlesTotal === 0 ? getSiteFirstBattleAt() : null,
       },
       recent: battleListPayload(recent, new Set([group.coreTag])),

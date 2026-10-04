@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   fetchClanHistory,
   fetchClans,
@@ -9,7 +9,7 @@ import {
 import { fmtDateTime, fmtInt, fmtPercent, fmtRatio } from '../lib/format'
 import { t } from '../i18n'
 import { SeasonPanel } from '../components/SeasonPanel'
-import { BarTrack, DeltaPill, ErrorNotice, Loading, Pager, SecHead } from '../components/ui'
+import { BarTrack, DeltaPill, ErrorNotice, Loading, Pager, SecHead, useRowLink } from '../components/ui'
 
 /* Мини-спарклайн суммы ПКР на витринной карточке клана (как в макете). */
 function Sparkline({ points, gold }: { points: ClanHistoryPoint[]; gold: boolean }) {
@@ -141,7 +141,7 @@ const PAGE_SIZE = 100
 type ClansResponse = Awaited<ReturnType<typeof fetchClans>>
 
 export function ClansPage() {
-  const navigate = useNavigate()
+  const openRow = useRowLink()
   const [searchParams, setSearchParams] = useSearchParams()
   // 1-based page in the URL: it survives a reload, Back and a shared link.
   const pageParam = Number(searchParams.get('page') ?? '1')
@@ -210,15 +210,6 @@ export function ClansPage() {
     })
   }
 
-  const openClan = (event: MouseEvent<HTMLTableRowElement>, coreTag: string): void => {
-    // The tag link handles its own clicks (keyboard, middle click); a drag that selects text is not a click.
-    if (event.target instanceof Element && event.target.closest('a') !== null) return
-    if ((window.getSelection()?.toString() ?? '') !== '') return
-    const path = `/clans/${coreTag}`
-    if (event.ctrlKey || event.metaKey) window.open(path, '_blank', 'noopener')
-    else navigate(path)
-  }
-
   const body = loaded?.body ?? null
   const clans = body?.clans ?? null
   const offset = ((loaded?.page ?? 1) - 1) * PAGE_SIZE
@@ -282,7 +273,7 @@ export function ClansPage() {
                 </thead>
                 <tbody>
                   {clans.map((clan) => (
-                    <tr key={clan.coreTag} className="row-link" onClick={(event) => openClan(event, clan.coreTag)}>
+                    <tr key={clan.coreTag} className="row-link" onClick={(event) => openRow(event, `/clans/${clan.coreTag}`)}>
                       <td className="rank">{clan.rank}</td>
                       <td className="clan-cell">
                         <Link to={`/clans/${clan.coreTag}`}>{clan.displayTag}</Link>

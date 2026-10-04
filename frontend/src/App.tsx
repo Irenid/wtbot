@@ -55,6 +55,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/players/id/:identityId" element={<PlayerPage kind="identity" />} />
+          <Route path="/players/nick/:nick" element={<PlayerPage kind="nick" />} />
           <Route path="/players/:wtUserId" element={<PlayerPage kind="wt" />} />
           <Route path="/clans" element={<ClansPage />} />
           <Route path="/clans/:coreTag" element={<ClanPage />} />

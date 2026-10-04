@@ -5689,6 +5689,12 @@ export const SITE_SQL = {
     JOIN player_identities i ON i.id = a.identity_id
     WHERE a.nick_base IN (${siteInSlots(SITE_ALIAS_IN_SLOTS)})
   `,
+  // Covering idx_bp_nick_search: no table reads, so no coop/Bot filter on nick here.
+  replayUserIdsByNickSearch: `
+    SELECT DISTINCT nick_search, user_id
+    FROM battle_players
+    WHERE nick_search IN (${siteInSlots(SITE_ALIAS_IN_SLOTS)}) AND user_id <> ''
+  `,
   replayNickByUserId: `
     SELECT nick FROM battle_players
     WHERE user_id = ? AND user_id <> '' AND nick NOT GLOB 'coop/Bot*'
@@ -6763,4 +6769,34 @@ export function getSiteAliasIdentities(nickBases: readonly string[]): SiteAliasI
     }
   }
   return results
+}
+
+/**
+ * WT user ids that stored replays show under each nick: exact case-folded match,
+ * the platform suffix kept (unlike nick_base). A nick without replays is absent;
+ * several ids mean a reused nick, and the caller links none of them.
+ */
+export function getSiteReplayUserIdsByNick(nicks: readonly string[]): Map<string, string[]> {
+  const idsByKey = new Map<string, Set<string>>()
+  for (const nick of nicks) {
+    const key = normalizePlayerSearchKey(nick)
+    // A coop/Bot… slot may carry a real player's id: it is no evidence of a nick.
+    if (key !== '' && !key.startsWith('coop/bot')) idsByKey.set(key, new Set())
+  }
+  const keys = [...idsByKey.keys()]
+  for (let offset = 0; offset < keys.length; offset += SITE_ALIAS_IN_SLOTS) {
+    const chunk = keys.slice(offset, offset + SITE_ALIAS_IN_SLOTS)
+    const rows = siteStatement('replayUserIdsByNickSearch')
+      .all(...padSiteList(chunk, SITE_ALIAS_IN_SLOTS)) as unknown as { nick_search: string; user_id: string }[]
+    for (const row of rows) {
+      // Bot slots have negative ids (signed int64): only an account id links a nick.
+      if (/^[1-9]\d*$/.test(row.user_id)) idsByKey.get(row.nick_search)?.add(row.user_id)
+    }
+  }
+  const result = new Map<string, string[]>()
+  for (const nick of nicks) {
+    const ids = idsByKey.get(normalizePlayerSearchKey(nick))
+    if (ids !== undefined && ids.size > 0) result.set(nick, [...ids])
+  }
+  return result
 }
