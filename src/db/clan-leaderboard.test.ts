@@ -25,6 +25,7 @@ const NO_EXTRAS = {
   foundedAt: null,
   slogan: null,
   rewards: null,
+  clanId: null,
 }
 
 function entry(tag: string, name: string, rating: number, extra: Partial<ClanLeaderboardEntry> = {}): ClanLeaderboardEntry {

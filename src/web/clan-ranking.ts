@@ -147,6 +147,64 @@ export function clanTierCutoffs(ranked: readonly ClanRankingRow[]): { place: num
   })
 }
 
+/** A squadron's freshest leaderboard row under one core tag, for renamedClanCores. */
+export interface ClanIdentityRow {
+  core: string
+  /** The leaderboard `_id`, which survives a tag change; null — read before the bot stored it. */
+  clanId: number | null
+  /** Founding time (`cdate`, seconds), which survives it too. */
+  foundedAt: number | null
+  ratingAt: number
+}
+
+/**
+ * Former core tags of renamed squadrons → the core tag read last. One squadron is one `_id`; a
+ * row without one matches by founding time (no two `_id`s shared one on 2026-10-05). Its last
+ * row stayed at its old place after the rename: 4 squadrons at once on 2026-10-05.
+ * A squadron whose newest cores were read by one crawl is ambiguous and left alone.
+ */
+export function renamedClanCores(rows: readonly ClanIdentityRow[]): Map<string, string> {
+  const idByFounded = new Map<number, number | null>()
+  for (const row of rows) {
+    if (row.clanId === null || row.foundedAt === null) continue
+    const known = idByFounded.get(row.foundedAt)
+    // Two `_id`s on one founding time: a row without an `_id` cannot pick between them.
+    idByFounded.set(row.foundedAt, known === undefined || known === row.clanId ? row.clanId : null)
+  }
+  const squadrons = new Map<string, ClanIdentityRow[]>()
+  for (const row of rows) {
+    const id = row.clanId ?? (row.foundedAt === null ? undefined : idByFounded.get(row.foundedAt))
+    const key = id !== undefined && id !== null
+      ? `id ${id}`
+      : row.clanId === null && row.foundedAt !== null && !idByFounded.has(row.foundedAt) ? `founded ${row.foundedAt}` : null
+    if (key === null) continue
+    const cores = squadrons.get(key)
+    if (cores === undefined) squadrons.set(key, [row])
+    else cores.push(row)
+  }
+  const renamed = new Map<string, string>()
+  for (const cores of squadrons.values()) {
+    if (cores.length < 2) continue
+    cores.sort((left, right) => right.ratingAt - left.ratingAt)
+    const [current, next] = cores
+    if (current!.ratingAt === next!.ratingAt) continue
+    for (const former of cores.slice(1)) renamed.set(former.core, current!.core)
+  }
+  return renamed
+}
+
+/** Crawls with former core tags read as the current ones (renamedClanCores), each core once. */
+export function crawlsUnderCurrentTags(
+  crawls: readonly ClanCrawlRead[],
+  renamed: ReadonlyMap<string, string>,
+): ClanCrawlRead[] {
+  if (renamed.size === 0) return [...crawls]
+  return crawls.map((crawl) => ({
+    ...crawl,
+    cores: [...new Set(crawl.cores.map((core) => renamed.get(core) ?? core))],
+  }))
+}
+
 /** A leaderboard crawl: when it ran, whether it read the whole table, the core tags it read. */
 export interface ClanCrawlRead {
   capturedAt: number

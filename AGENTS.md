@@ -482,10 +482,15 @@ Data:
   snapshots exist only for clans from drawn battles, and their sum missed the
   leaders). Ranking tiers (`RANK_TIER_*` in `src/web/routes/site.ts`): the
   latest crawl, earlier crawls of the season, clans with a rating above zero
-  missed by the last full crawl (`wt-clans:full-crawl-at`; renamed, disbanded
-  or fallen to zero: a stale rating would outrank clans in the table), then
-  clans without official data, rated by the PSR sum from snapshots. A zero
-  rating below the crawled part is confirmed by the full crawl, not dropped.
+  missed by the last full crawl (`wt-clans:full-crawl-at`; disbanded or fallen
+  to zero: a stale rating would outrank clans in the table), then clans
+  without official data, rated by the PSR sum from snapshots. A zero rating
+  below the crawled part is confirmed by the full crawl, not dropped. A
+  renamed squadron (one leaderboard `_id`, else one founding time) is one row
+  under its newest core tag (`renamedClanCores`; its old core used to keep its
+  last row among the dropped: 4 squadrons on 2026-10-05); old links,
+  favourites and search resolve to it, its history and crawl reads stay under
+  the old core.
   The 24 h change and the day's battles and wins end at the clan's own
   confirmation time (top 100 every 20 min, the rest at full crawls) and start
   at the `clan_crawls` read nearest a day before it, at most

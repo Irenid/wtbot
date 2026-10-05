@@ -6,10 +6,12 @@ import {
   clanPlacesAt,
   clanRecords,
   clanTierCutoffs,
+  crawlsUnderCurrentTags,
   dayBaseRead,
   defaultClanSortDirection,
   filterClanRows,
   nearestCrawl,
+  renamedClanCores,
   sortClanRows,
   squadronBattleCounts,
   type ClanCrawlRead,
@@ -158,6 +160,32 @@ test('clanPlacesAt rebuilds the table at a moment, dropped squadrons left out', 
   // Equal ratings keep today's order; a squadron without a rating then holds no place.
   const tied = clanPlacesAt([crawl(1, ['p', 'q', 'r'], true)], 1, (core) => (core === 'r' ? null : 5), (core) => (core === 'p' ? 2 : 1))
   assert.deepEqual([...(tied ?? [])], [['q', 1], ['p', 2]])
+})
+
+test('renamedClanCores maps former tags to the one read last, by _id or founding time', () => {
+  const renamed = renamedClanCores([
+    // Renamed twice (CISS → xCISx → N3VER on 2026-10-05).
+    { core: 'ciss', clanId: 7, foundedAt: 100, ratingAt: 10 },
+    { core: 'xcisx', clanId: 7, foundedAt: 100, ratingAt: 20 },
+    { core: 'n3ver', clanId: 7, foundedAt: 100, ratingAt: 30 },
+    // Read before the bot stored _id: matched by founding time.
+    { core: 'lotis', clanId: null, foundedAt: 200, ratingAt: 10 },
+    { core: 'thles', clanId: 8, foundedAt: 200, ratingAt: 30 },
+    // No _id on either side.
+    { core: 'old', clanId: null, foundedAt: 300, ratingAt: 10 },
+    { core: 'new', clanId: null, foundedAt: 300, ratingAt: 20 },
+    // One founding time, two _ids: a row without one matches neither.
+    { core: 'p', clanId: 9, foundedAt: 400, ratingAt: 30 },
+    { core: 'q', clanId: 10, foundedAt: 400, ratingAt: 30 },
+    { core: 'r', clanId: null, foundedAt: 400, ratingAt: 10 },
+    // Both read by one crawl: two squadrons, not a rename.
+    { core: 's', clanId: null, foundedAt: 500, ratingAt: 30 },
+    { core: 't', clanId: null, foundedAt: 500, ratingAt: 30 },
+    { core: 'u', clanId: null, foundedAt: null, ratingAt: 10 },
+  ])
+  assert.deepEqual(Object.fromEntries(renamed), { xcisx: 'n3ver', ciss: 'n3ver', lotis: 'thles', old: 'new' })
+  const crawls = crawlsUnderCurrentTags([crawl(1, ['ciss', 'a', 'xcisx'], true)], renamed)
+  assert.deepEqual(crawls[0]!.cores, ['n3ver', 'a'])
 })
 
 test('squadronBattleCounts counts battles of teams under one squadron tag', () => {

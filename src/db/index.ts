@@ -5847,7 +5847,8 @@ export const SITE_SQL = {
   clanDictionary: `
     SELECT
       tag, name, rating, position, members, battles, wins, rating_at,
-      air_kills, ground_kills, deaths, flight_time, activity, region, clan_type, founded_at, slogan, rewards
+      air_kills, ground_kills, deaths, flight_time, activity, region, clan_type, founded_at, slogan, rewards,
+      clan_id
     FROM clans
   `,
   clanOfficialRatingAt: `
@@ -6479,7 +6480,7 @@ export function getSiteClanBaselineRatings(atTs: number): { clanTag: string; nic
 export interface SiteClanDictionaryRow {
   tag: string
   name: string
-  /** Официальный рейтинг сезона на момент ratingAt; null — только имя. */
+  /** The official season rating at ratingAt; null — a name only. */
   rating: number | null
   position: number | null
   members: number | null
@@ -6496,6 +6497,8 @@ export interface SiteClanDictionaryRow {
   foundedAt: number | null
   slogan: string | null
   rewards: ClanSeasonRewards | null
+  /** The leaderboard `_id`: survives a tag change. */
+  clanId: number | null
 }
 
 /** Награды из JSON колонки rewards; битая запись — null, а не ошибка страницы. */
@@ -6534,6 +6537,7 @@ export function getSiteClanDictionary(): SiteClanDictionaryRow[] {
     founded_at: number | null
     slogan: string | null
     rewards: string | null
+    clan_id: number | null
   }[]
   return rows.map((row) => ({
     tag: row.tag,
@@ -6554,6 +6558,7 @@ export function getSiteClanDictionary(): SiteClanDictionaryRow[] {
     foundedAt: row.founded_at,
     slogan: row.slogan,
     rewards: parseClanRewards(row.rewards),
+    clanId: row.clan_id,
   }))
 }
 

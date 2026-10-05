@@ -861,11 +861,12 @@ async function main(): Promise<void> {
     const logStartAt = dayMark - 8 * 3_600
     if (logStartAt > baseAt) saveClanLeaderboard([lbClan('[AVR]', 'AVANGARD', 40_000, 1)], logStartAt)
     if (hasDayPoints) {
-      // A full crawl a day ago: [OLD], second then, has dropped out since.
+      // A full crawl a day ago: [OLD], second then, has dropped out since; [AV] was [AVX] then (one
+      // leaderboard _id).
       saveClanLeaderboard([
         lbClan('[AVR]', 'AVANGARD', 47_000, 1, { battles: 2_500, wins: 2_240 }),
         lbClan('[OLD]', 'Dropped Clan', 3_100, 2),
-        lbClan('[AV]', 'Av Squad', 2_950, 3),
+        lbClan('[AVX]', 'Av Squad', 2_950, 3, { clanId: 77 }),
         lbClan('[LOW]', 'Lower Clan', 2_600, 4),
       ], dayAgoAt, { full: true })
     }
@@ -880,7 +881,7 @@ async function main(): Promise<void> {
       lbClan('[AVR]', 'AVANGARD', 48_400, 1, { members: 121, battles: 2_545, wins: 2_274 }),
       lbClan(CLAN_RAW_TAG, 'Test Clan', 3_000, 2, { members: 2, battles: 11, wins: 7 }),
       lbClan('[NEW]', 'Newcomer', 2_800, 3),
-      lbClan('[AV]', 'Av Squad', 2_750, 4),
+      lbClan('[AV]', 'Av Squad', 2_750, 4, { clanId: 77 }),
     ], topCrawlAt)
     // Playing now comes from replays: [TST]'s battle 100200304 ended 20 min ago, [AVR] has two,
     // [LOW] one; a team of two tags (a random battle) counts for nobody, and a battle that ended
@@ -980,7 +981,7 @@ async function main(): Promise<void> {
       assert.equal(officialTst?.avgRating, 1_460, 'средний ПКР по снимкам состава сохраняется')
 
       // The day's battles come from the same point as the rating change. A day ago the table was
-      // AVR, OLD, AV, LOW: [AV] was third and is fourth behind [TST] and [NEW], which had no place
+      // AVR, OLD, AV (as [AVX]), LOW: [AV] was third and is fourth behind [TST] and [NEW], which had no place
       // then; [OLD], dropped since, still held its place (ranking today's squadrons alone made
       // [AV] lose two).
       const officialAv = officialList.find((clan) => clan.coreTag === 'av')
@@ -991,6 +992,12 @@ async function main(): Promise<void> {
         officialList.slice(0, 7).map((clan) => clan.rankChange24h),
         hasDayPoints ? [0, null, null, -1, -1, null, null] : [null, null, null, null, null, null, null],
       )
+      // A renamed squadron is one row; its old tag opens it, its old history counts above.
+      assert.equal(officialList.some((clan) => clan.coreTag === 'avx'), false)
+      if (hasDayPoints) {
+        const renamedPage = await officialApp.inject({ method: 'GET', url: '/api/clans/avx' })
+        assert.equal((renamedPage.json() as { clan?: { coreTag: string } }).clan?.coreTag, 'av')
+      }
       // Playing now: battles that ended within the window, from replays.
       assert.deepEqual(officialList.slice(0, 7).map((clan) => clan.recentBattles), [2, 1, 0, 0, 1, 0, 0])
       assert.deepEqual({ ...officialBody.live, at: 0 }, { count: 3, at: 0, windowSec: 45 * 60 })

@@ -23,7 +23,6 @@ import {
   getSiteClanBaselineRatings,
   getSiteClanDictionary,
   getSiteClanLatestMembers,
-  getSiteClanOfficialRatingAt,
   getSiteClanOfficialRatingEvents,
   getSiteClanOfficialStatsAt,
   getSiteClanRatingBaseline,
@@ -63,9 +62,11 @@ import {
   clanPlacesAt,
   clanRecords,
   clanTierCutoffs,
+  crawlsUnderCurrentTags,
   dayBaseRead,
   defaultClanSortDirection,
   filterClanRows,
+  renamedClanCores,
   sortClanRows,
   squadronBattleCounts,
   type ClanRankingRow,
@@ -160,6 +161,8 @@ interface SiteClanGroup {
    * everyone who ever wore the tag, leavers included.
    */
   rosterKnown: boolean
+  /** Core tags it had before a rename, newest first (renamedClanCores): its history is under them. */
+  formerCoreTags: string[]
   /** Season stats from the official leaderboard; null — the squadron is in no crawl of the season. */
   official: SiteClanOfficial | null
   /** One of the RANK_TIER_* values. */
@@ -194,10 +197,11 @@ const RANK_TIER_LATEST = 0
 /** In an earlier crawl, not older than the last full one: below the part the latest crawl read. */
 const RANK_TIER_EARLIER = 1
 /**
- * Missed by the last full crawl, which reads every squadron with a rating above zero: renamed,
- * disbanded or fallen to zero (a squadron that moved up a page during the crawl stays here until
- * the next one). Its last figures would otherwise hold a place above squadrons that are in the
- * table. A zero rating is never dropped: see SiteClanOfficial.confirmedAt.
+ * Missed by the last full crawl, which reads every squadron with a rating above zero: disbanded
+ * or fallen to zero (a squadron that moved up a page during the crawl stays here until the next
+ * one; a renamed one is merged into its current tag, renamedClanCores). Its last figures would
+ * otherwise hold a place above squadrons that are in the table. A zero rating is never dropped:
+ * see SiteClanOfficial.confirmedAt.
  */
 const RANK_TIER_DROPPED = 2
 /** No official data this season: rated by the sum of members' PSR snapshots. */
@@ -258,6 +262,8 @@ interface ClanSnapshot {
   /** The ranking's rows for sorting and filtering, in ranking order. */
   rows: SiteClanRow[]
   rowByCore: Map<string, SiteClanRow>
+  /** Former core tag → the current one (renamedClanCores): old links and favourites still resolve. */
+  renamed: Map<string, string>
   records: ClanRecords
   tierCutoffs: { place: number; rating: number }[]
   /** Squadrons playing now and when the window ended; null — replays are not coming in. */
@@ -265,6 +271,23 @@ interface ClanSnapshot {
 }
 
 type SiteClanRow = ClanRankingRow & { group: SiteClanGroup }
+
+/**
+ * The squadron's official figures at atTs (getSiteClanOfficialStatsAt) under whichever core tag it
+ * had then: history stays under the tag of its time.
+ */
+function clanOfficialStatsAt(
+  group: SiteClanGroup,
+  fromTs: number,
+  atTs: number,
+): ReturnType<typeof getSiteClanOfficialStatsAt> {
+  let latest: ReturnType<typeof getSiteClanOfficialStatsAt> = null
+  for (const core of [group.coreTag, ...group.formerCoreTags]) {
+    const stats = getSiteClanOfficialStatsAt(core, fromTs, atTs)
+    if (stats !== null && (latest === null || stats.capturedAt > latest.capturedAt)) latest = stats
+  }
+  return latest
+}
 
 /** a − b for two counts of one series; null — a count is missing or went back. */
 function countGrowth(now: number | null, before: number | null): number | null {
@@ -304,12 +327,63 @@ function buildClanSnapshot(): ClanSnapshot {
     }
     roster.set(row.nick, row.lastPresentAt)
   }
+  // The official leaderboard gives rating, place and member count; the PSR snapshot sum is left
+  // to squadrons without official season data (snapshots exist only for squadrons from drawn
+  // battles, and leaders went missing).
+  const nameByTag = new Map<string, string>()
+  const dictionaryTagsByCore = new Map<string, string[]>()
+  const officialByCore = new Map<string, { name: string; clanId: number | null; stats: SiteClanOfficial }>()
+  let latestOfficialAt = 0
+  const fullCrawlAt = getLastFullClanCrawlAt()
+  for (const row of getSiteClanDictionary()) {
+    nameByTag.set(row.tag, row.name)
+    const core = plainClanTag(row.tag)
+    if (!core) continue
+    const tags = dictionaryTagsByCore.get(core)
+    if (tags) tags.push(row.tag)
+    else dictionaryTagsByCore.set(core, [row.tag])
+    if (row.rating === null || row.ratingAt === null || row.ratingAt < seasonStart) continue
+    latestOfficialAt = Math.max(latestOfficialAt, row.ratingAt)
+    // A decoration change leaves the previous tag in the dictionary: the fresher row wins.
+    const existing = officialByCore.get(core)
+    if (existing && existing.stats.ratingAt >= row.ratingAt) continue
+    officialByCore.set(core, {
+      name: row.name,
+      clanId: row.clanId,
+      stats: {
+        tag: row.tag,
+        rating: row.rating,
+        position: row.position,
+        members: row.members,
+        battles: row.battles,
+        wins: row.wins,
+        ratingAt: row.ratingAt,
+        confirmedAt: row.rating === 0 && fullCrawlAt !== null && row.ratingAt < fullCrawlAt ? fullCrawlAt : row.ratingAt,
+        airKills: row.airKills,
+        groundKills: row.groundKills,
+        deaths: row.deaths,
+        flightTime: row.flightTime,
+        activity: row.activity,
+        region: row.region,
+        clanType: row.clanType,
+        foundedAt: row.foundedAt,
+        slogan: row.slogan,
+        rewards: row.rewards,
+      },
+    })
+  }
+  // A renamed squadron's old core kept its last row and sat among the dropped at the bottom, a
+  // second row of one squadron (4 at once on 2026-10-05): it is merged into the current core.
+  // History and crawl reads stay under the core of their time.
+  const renamed = renamedClanCores([...officialByCore].map(([core, { clanId, stats }]) =>
+    ({ core, clanId, foundedAt: stats.foundedAt, ratingAt: stats.ratingAt })))
+  const currentCore = (core: string): string => renamed.get(core) ?? core
   const groups = new Map<string, SiteClanGroup>()
   // One nick can live under several decorated variants of one core: the freshest row is taken
   // so the member is not counted twice.
   const freshestByCoreNick = new Map<string, SiteClanMemberLatest>()
   for (const member of members) {
-    const core = plainClanTag(member.clanTag)
+    const core = currentCore(plainClanTag(member.clanTag))
     if (!core) continue
     const roster = rosterByCore.get(core)
     if (roster && roster.size > 0 && !roster.has(member.nick)) continue
@@ -318,7 +392,7 @@ function buildClanSnapshot(): ClanSnapshot {
     if (!existing || member.seenAt > existing.seenAt) freshestByCoreNick.set(key, member)
   }
   for (const member of freshestByCoreNick.values()) {
-    const core = plainClanTag(member.clanTag)
+    const core = currentCore(plainClanTag(member.clanTag))
     if (!core) continue
     let group = groups.get(core)
     if (!group) {
@@ -332,6 +406,7 @@ function buildClanSnapshot(): ClanSnapshot {
         lastSeenAt: 0,
         rank: 0,
         rosterKnown: (rosterByCore.get(core)?.size ?? 0) > 0,
+        formerCoreTags: [],
         official: null,
         rankTier: RANK_TIER_PSR,
         delta24h: null,
@@ -367,51 +442,8 @@ function buildClanSnapshot(): ClanSnapshot {
     group.totalRating = totalSquadronRating(group.members.map((member) => member.rating))
   }
 
-  // The official leaderboard gives rating, place and member count; the PSR snapshot sum is left
-  // to squadrons without official season data (snapshots exist only for squadrons from drawn
-  // battles, and leaders went missing).
-  const nameByTag = new Map<string, string>()
-  const dictionaryTagsByCore = new Map<string, string[]>()
-  const officialByCore = new Map<string, { name: string; stats: SiteClanOfficial }>()
-  let latestOfficialAt = 0
-  const fullCrawlAt = getLastFullClanCrawlAt()
-  for (const row of getSiteClanDictionary()) {
-    nameByTag.set(row.tag, row.name)
-    const core = plainClanTag(row.tag)
-    if (!core) continue
-    const tags = dictionaryTagsByCore.get(core)
-    if (tags) tags.push(row.tag)
-    else dictionaryTagsByCore.set(core, [row.tag])
-    if (row.rating === null || row.ratingAt === null || row.ratingAt < seasonStart) continue
-    latestOfficialAt = Math.max(latestOfficialAt, row.ratingAt)
-    // A decoration change leaves the previous tag in the dictionary: the fresher row wins.
-    const existing = officialByCore.get(core)
-    if (existing && existing.stats.ratingAt >= row.ratingAt) continue
-    officialByCore.set(core, {
-      name: row.name,
-      stats: {
-        tag: row.tag,
-        rating: row.rating,
-        position: row.position,
-        members: row.members,
-        battles: row.battles,
-        wins: row.wins,
-        ratingAt: row.ratingAt,
-        confirmedAt: row.rating === 0 && fullCrawlAt !== null && row.ratingAt < fullCrawlAt ? fullCrawlAt : row.ratingAt,
-        airKills: row.airKills,
-        groundKills: row.groundKills,
-        deaths: row.deaths,
-        flightTime: row.flightTime,
-        activity: row.activity,
-        region: row.region,
-        clanType: row.clanType,
-        foundedAt: row.foundedAt,
-        slogan: row.slogan,
-        rewards: row.rewards,
-      },
-    })
-  }
   for (const [core, { name, stats }] of officialByCore) {
+    if (renamed.has(core)) continue
     let group = groups.get(core)
     if (!group) {
       group = {
@@ -424,6 +456,7 @@ function buildClanSnapshot(): ClanSnapshot {
         lastSeenAt: 0,
         rank: 0,
         rosterKnown: (rosterByCore.get(core)?.size ?? 0) > 0,
+        formerCoreTags: [],
         official: null,
         rankTier: RANK_TIER_PSR,
         delta24h: null,
@@ -444,6 +477,9 @@ function buildClanSnapshot(): ClanSnapshot {
       ? RANK_TIER_LATEST
       : fullCrawlAt !== null && stats.confirmedAt < fullCrawlAt ? RANK_TIER_DROPPED : RANK_TIER_EARLIER
   }
+  const formerByAge = [...renamed].sort(([left], [right]) =>
+    officialByCore.get(right)!.stats.ratingAt - officialByCore.get(left)!.stats.ratingAt)
+  for (const [former, current] of formerByAge) groups.get(current)?.formerCoreTags.push(former)
   for (const group of groups.values()) {
     // Tags for battle queries (SQL takes the first 8): the current leaderboard tag, then the ones
     // seen in snapshots and the other decorated variants from the dictionary.
@@ -451,7 +487,7 @@ function buildClanSnapshot(): ClanSnapshot {
     const candidates = [
       ...(group.official ? [group.official.tag] : []),
       ...group.rawTags,
-      ...(dictionaryTagsByCore.get(group.coreTag) ?? []),
+      ...[group.coreTag, ...group.formerCoreTags].flatMap((core) => dictionaryTagsByCore.get(core) ?? []),
     ]
     for (const tag of candidates) {
       if (!tags.includes(tag)) tags.push(tag)
@@ -472,7 +508,9 @@ function buildClanSnapshot(): ClanSnapshot {
   // all of them. One or two indexed point queries per squadron (~650: a few ms).
   const nowSec = Math.floor(Date.now() / 1000)
   // History keeps change points only: the crawl log tells which crawls read a squadron.
-  const crawls = latestOfficialAt > 0 ? getClanCrawls(Math.max(0, latestOfficialAt - CRAWL_LOG_READ_SEC)) : []
+  const crawls = latestOfficialAt > 0
+    ? crawlsUnderCurrentTags(getClanCrawls(Math.max(0, latestOfficialAt - CRAWL_LOG_READ_SEC)), renamed)
+    : []
   const readsByCore = clanCrawlReads(crawls)
   const logFrom = crawls[0]?.capturedAt
   for (const group of ranked) {
@@ -483,7 +521,7 @@ function buildClanSnapshot(): ClanSnapshot {
     const mark = official.confirmedAt - DAY_SEC
     const read = dayBaseRead(readsByCore.get(group.coreTag) ?? [], mark, logFrom, DAY_BASE_MAX_SHIFT_SEC)
     const from = read ?? mark
-    const day = from >= seasonStart ? getSiteClanOfficialStatsAt(group.coreTag, seasonStart, from) : null
+    const day = from >= seasonStart ? clanOfficialStatsAt(group, seasonStart, from) : null
     if (day !== null) {
       group.delta24h = official.rating - day.rating
       group.delta24hFrom = read
@@ -498,7 +536,13 @@ function buildClanSnapshot(): ClanSnapshot {
     ? clanPlacesAt(
       crawls,
       placesAt,
-      (core) => getSiteClanOfficialStatsAt(core, seasonStart, placesAt)?.rating ?? null,
+      (core) => {
+        const group = groups.get(core)
+        const stats = group === undefined
+          ? getSiteClanOfficialStatsAt(core, seasonStart, placesAt)
+          : clanOfficialStatsAt(group, seasonStart, placesAt)
+        return stats?.rating ?? null
+      },
       (core) => groups.get(core)?.rank ?? Number.MAX_SAFE_INTEGER,
     )
     : null
@@ -567,6 +611,7 @@ function buildClanSnapshot(): ClanSnapshot {
     ranked,
     rows,
     rowByCore: new Map(rows.map((row) => [row.coreTag, row])),
+    renamed,
     records: clanRecords(rows),
     tierCutoffs: clanTierCutoffs(rows),
     live: liveFresh
@@ -586,7 +631,7 @@ function clanDelta30d(snapshot: ClanSnapshot, group: SiteClanGroup): number | nu
   if (group.official !== null) {
     let base = snapshot.officialBaseline.get(group.coreTag)
     if (base === undefined) {
-      base = getSiteClanOfficialRatingAt(group.coreTag, snapshot.seasonStart, snapshot.baselineAt)?.rating ?? null
+      base = clanOfficialStatsAt(group, snapshot.seasonStart, snapshot.baselineAt)?.rating ?? null
       snapshot.officialBaseline.set(group.coreTag, base)
     }
     return base === null ? null : group.official.rating - base
@@ -621,9 +666,9 @@ function searchClanGroups(ranked: readonly SiteClanGroup[], query: string): Site
   const matches: { group: SiteClanGroup; score: number }[] = []
   for (const group of ranked) {
     const name = group.name === null ? '' : normalizePlayerSearchKey(group.name)
-    const tagHit = core !== '' && group.coreTag.includes(core)
+    const tagHit = core !== '' && (group.coreTag.includes(core) || group.formerCoreTags.some((former) => former.includes(core)))
     if (!tagHit && (text === '' || !name.includes(text))) continue
-    const score = core !== '' && group.coreTag === core
+    const score = core !== '' && (group.coreTag === core || group.formerCoreTags.includes(core))
       ? 0
       : (core !== '' && group.coreTag.startsWith(core)) || (text !== '' && name.startsWith(text)) ? 1 : 2
     matches.push({ group, score })
@@ -889,6 +934,12 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     return cachedClanSnapshot().groups
   }
 
+  /** The squadron under a core tag, a former one included (renamedClanCores). */
+  function findClanGroup(core: string): SiteClanGroup | undefined {
+    const snapshot = cachedClanSnapshot()
+    return snapshot.groups.get(snapshot.renamed.get(core) ?? core)
+  }
+
   /** true — запрос пропущен; false — уже отправлен 429. */
   function passRateLimit(request: FastifyRequest, reply: FastifyReply, weight = 1): boolean {
     if (!Number.isSafeInteger(weight) || weight < 1 || weight > PER_IP_LIMIT) {
@@ -955,10 +1006,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         return reply.code(400).send({ ok: false, code: 'INVALID_PERIOD', error: 'from cannot be later than to' })
       }
       const aliases = target.identity ? getPlayerIdentityAliases(target.identity.id) : []
-      const groups = clanGroups()
       const knownClanCore = (tag: string): string | null => {
         const core = plainClanTag(tag)
-        return core !== '' && groups.has(core) ? core : null
+        return core === '' ? null : findClanGroup(core)?.coreTag ?? null
       }
       const accounts = target.identity ? buildAccountViews(target.identity, knownClanCore) : []
       let replay: PlayerReplayStats | null = null
@@ -999,17 +1049,17 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (tag === null) return null
     const core = plainClanTag(tag)
     if (core === '') return null
-    const group = clanGroups().get(core)
+    const group = findClanGroup(core)
     const base = normalizeWtNick(nick)
     let details: SiteClanRosterDetails | undefined
-    for (const [rosterNick, entry] of getSiteClanRosterDetails(core)) {
+    for (const [rosterNick, entry] of getSiteClanRosterDetails(group?.coreTag ?? core)) {
       if (normalizeWtNick(rosterNick) === base) {
         details = entry
         break
       }
     }
     return {
-      coreTag: group ? core : null,
+      coreTag: group?.coreTag ?? null,
       displayTag: clanDisplayName(group?.displayTag ?? tag),
       name: group?.name ?? null,
       rank: group?.rank ?? null,
@@ -1292,7 +1342,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       })
     const tagSet = tags === undefined
       ? undefined
-      : new Set(tags.split(',', MAX_FILTER_TAGS).map((tag) => plainClanTag(tag)).filter((tag) => tag !== ''))
+      : new Set(tags.split(',', MAX_FILTER_TAGS).map((tag) => plainClanTag(tag)).filter((tag) => tag !== '')
+        .map((core) => snapshot.renamed.get(core) ?? core))
     const filtered = filterClanRows(found, { live, tags: tagSet })
     const sortKey = sort ?? (dir === undefined ? undefined : 'place')
     const ordered = sortKey === undefined
@@ -1369,7 +1420,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
   }, async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
     const core = plainClanTag(request.params.coreTag)
-    const group = core ? clanGroups().get(core) : undefined
+    const group = core ? findClanGroup(core) : undefined
     if (!group) {
       return reply.code(404).send({ ok: false, code: 'CLAN_NOT_FOUND', error: 'Клан не найден в снимках рейтинга' })
     }
@@ -1378,16 +1429,16 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     const seasonStart = season.season?.startsAt ?? 0
     const fromTs = Math.max(Math.floor(Date.now() / 1_000) - days * DAY_SEC, seasonStart)
     if (group.official !== null) {
-      // Официальный рейтинг: значение на границе периода (если есть) и все
-      // его изменения; последняя точка — свежий обход, чтобы линия доходила
-      // до «сейчас», даже если рейтинг с тех пор не менялся.
+      // The official rating: its value at the period's start (if any) and every change, under
+      // every core tag the squadron had; the last point is the latest crawl, so the line reaches
+      // "now" even if the rating has not changed since.
       const official = group.official
-      const base = getSiteClanOfficialRatingAt(group.coreTag, seasonStart, fromTs)
-      const { events, truncated } = getSiteClanOfficialRatingEvents(
-        group.coreTag,
-        fromTs,
-        Math.floor(Date.now() / 1_000),
-      )
+      const base = clanOfficialStatsAt(group, seasonStart, fromTs)
+      const nowSec = Math.floor(Date.now() / 1_000)
+      const histories = [group.coreTag, ...group.formerCoreTags]
+        .map((historyCore) => getSiteClanOfficialRatingEvents(historyCore, fromTs, nowSec))
+      const events = histories.flatMap((history) => history.events).sort((left, right) => left.capturedAt - right.capturedAt)
+      const truncated = histories.some((history) => history.truncated)
       const points: { t: number; total: number; battles?: number | null; wins?: number | null }[] = base
         ? [{ t: fromTs, total: base.rating }]
         : []
@@ -1440,7 +1491,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       return reply.code(400).send({ ok: false, code: 'INVALID_CLAN', error: 'Invalid squadron tag' })
     }
     const snapshot = cachedClanSnapshot()
-    const group = snapshot.groups.get(core)
+    const group = findClanGroup(core)
     if (!group) {
       return reply.code(404).send({ ok: false, code: 'CLAN_NOT_FOUND', error: 'Squadron not found in rating snapshots' })
     }
@@ -1601,7 +1652,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     }
     if (clan !== undefined) {
       const core = plainClanTag(clan)
-      const group = core ? clanGroups().get(core) : undefined
+      const group = core ? findClanGroup(core) : undefined
       if (!group) {
         return reply.code(404).send({ ok: false, code: 'CLAN_NOT_FOUND', error: 'Клан не найден в снимках рейтинга' })
       }
