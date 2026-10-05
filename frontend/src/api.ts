@@ -308,6 +308,15 @@ export interface ClanListEntry {
    * official data, or the squadron left the leaderboard.
    */
   delta24h: number | null
+  /** Season battles and wins over the same day; null — no point that old or no counts. */
+  battles24h: number | null
+  wins24h: number | null
+  /** Places gained (+) or lost (−) over the day; null — no place a day ago. */
+  rankChange24h: number | null
+  /** Season battles shortly before the latest crawl of the top 100: above 0 — playing now. */
+  recentBattles: number
+  /** The rating one place higher; null — first place or not in the leaderboard. */
+  aboveRating: number | null
   /**
    * current — in the leaderboard; dropped — a rating above zero missed by the last full crawl
    * (renamed, disbanded or fallen to zero), the figures are its last; null — not in it this
@@ -328,23 +337,62 @@ export interface OfficialClanSeason {
   endsAt: number
 }
 
-/** One page of the ranking by place, or of a search by tag or name; without parameters — the top 100. */
-export function fetchClans(params: { query?: string; offset?: number; limit?: number } = {}): Promise<{
+/** Sort keys of /api/clans; place — the ranking's own order. */
+export type ClanSortKey = 'place' | 'change' | 'battles' | 'winRate' | 'kd' | 'members'
+
+/** Core tags of the squadrons holding the season's best figures; null — nobody qualifies. */
+export interface ClanRecords {
+  /** Win rate and K/D only count squadrons with enough battles (MIN_RATE_BATTLES on the server). */
+  winRate: string | null
+  kd: string | null
+  battles: string | null
+  /** The largest rating gain over 24 hours. */
+  gain: string | null
+}
+
+/**
+ * One page of the ranking by place, of a search by tag or name, or of a filtered and sorted view;
+ * without parameters — the top 100.
+ */
+export function fetchClans(params: {
+  query?: string
+  offset?: number
+  limit?: number
+  /** Without it: by place, a search by relevance. */
+  sort?: ClanSortKey
+  dir?: 'asc' | 'desc'
+  /** Only the first N places of the leaderboard: 5, 10, 20, 50 or 100. */
+  top?: number
+  /** Only squadrons playing now. */
+  live?: boolean
+  /** Only these core tags (an empty list matches nothing). */
+  tags?: readonly string[]
+} = {}): Promise<{
   ok: true
   season: ClanSeasonContext
   officialSeason: OfficialClanSeason | null
-  /** All ranked squadrons, or all matches of the query; not only this page. */
+  /** Every squadron matching the query and filters; not only this page. */
   total: number
   /** The oldest crawl time among the page's squadrons in the leaderboard; null — none on the page. */
   updatedAt: number | null
   /** The overall leader's rating, also on later pages and in a search: rating bars are shares of it. */
   leaderRating: number | null
+  /** The rating at each reward tier's last place, top 5 to top 100; a tier not filled is missing. */
+  tierCutoffs: { place: number; rating: number }[]
+  records: ClanRecords
+  /** Squadrons playing now in the whole ranking; null — no fresh crawl of the top 100. */
+  live: { count: number; at: number; windowSec: number } | null
   clans: ClanListEntry[]
 }> {
   const search = new URLSearchParams()
   if (params.query) search.set('query', params.query)
   if (params.offset) search.set('offset', String(params.offset))
   if (params.limit) search.set('limit', String(params.limit))
+  if (params.sort) search.set('sort', params.sort)
+  if (params.dir) search.set('dir', params.dir)
+  if (params.top) search.set('top', String(params.top))
+  if (params.live) search.set('live', 'true')
+  if (params.tags) search.set('tags', params.tags.join(','))
   const suffix = search.size > 0 ? `?${search.toString()}` : ''
   return getJson(`/api/clans${suffix}`)
 }

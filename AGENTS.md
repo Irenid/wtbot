@@ -491,6 +491,16 @@ Data:
   `/players/nick/:nick` — the matching of `resolveKnownPlayer` without its
   writes: a GET creates no identity; that page then looks the id up
   (`POST /api/player-id`).
+- `/api/clans` views (`src/web/clan-ranking.ts`): `sort`
+  (place/change/battles/winRate/kd/members), `dir`, `top` (reward tiers
+  5–100), `live`, `tags` (≤ 50 core tags: the SPA's favourites, kept only in
+  the browser's localStorage); search → filters → sort → page. A win rate or
+  K/D from fewer than `MIN_RATE_BATTLES` (50) season battles sorts after the
+  rest and holds no record. The day's battles, wins and places moved use the
+  same point as the 24 h change. "Playing now" (`recentBattles`): season
+  battles grew within 45 min before the latest crawl, only for the 100 places
+  every crawl reads (below them the last point can be 12 h old) and only while
+  that crawl is under an hour old.
 - `CLAN_SEASON_SCHEDULES` — UTC `[startsAt, endsAt)`; changing a built-in
   schedule takes reconciliation or a data migration, never a manual database
   edit. New seasons come from `wt-clan-season` (`src/clan-season-forum.ts`),

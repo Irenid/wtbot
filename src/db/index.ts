@@ -2889,6 +2889,9 @@ export function getOfficialClanSeason(): OfficialClanSeason | null {
  */
 export const CLAN_FULL_CRAWL_KEY = 'wt-clans:full-crawl-at'
 
+/** Places the wt-clans source reads on every run (20 min); the rest only at full crawls (12 h). */
+export const CLAN_TOP_CRAWL_PLACES = 100
+
 /** Unix seconds of the last full leaderboard crawl; null — none yet. */
 export function getLastFullClanCrawlAt(): number | null {
   const value = Number(getBotState(CLAN_FULL_CRAWL_KEY))
@@ -5769,7 +5772,7 @@ export const SITE_SQL = {
     FROM clans
   `,
   clanOfficialRatingAt: `
-    SELECT captured_at, rating
+    SELECT captured_at, rating, battles, wins
     FROM clan_rating_history
     WHERE clan_core = ? AND captured_at >= ? AND captured_at <= ?
     ORDER BY captured_at DESC
@@ -6462,20 +6465,33 @@ export function getSiteClanDictionary(): SiteClanDictionaryRow[] {
   }))
 }
 
-/** Официальный рейтинг клана на момент atTs: последнее изменение в [fromTs, atTs] или null. */
+/** The squadron's official rating at atTs (getSiteClanOfficialStatsAt); null — no point. */
 export function getSiteClanOfficialRatingAt(
   clanCore: string,
   fromTs: number,
   atTs: number,
 ): { capturedAt: number; rating: number } | null {
+  const stats = getSiteClanOfficialStatsAt(clanCore, fromTs, atTs)
+  return stats ? { capturedAt: stats.capturedAt, rating: stats.rating } : null
+}
+
+/**
+ * The squadron's official figures at atTs: the last change point in [fromTs, atTs] (points are
+ * written only when a figure changes, so it holds until the next one); null — none.
+ */
+export function getSiteClanOfficialStatsAt(
+  clanCore: string,
+  fromTs: number,
+  atTs: number,
+): { capturedAt: number; rating: number; battles: number | null; wins: number | null } | null {
   if (!clanCore) return null
   if (!Number.isSafeInteger(fromTs) || fromTs < 0 || !Number.isSafeInteger(atTs) || atTs < 0) {
-    throw new RangeError('Границы истории рейтинга клана должны быть неотрицательным Unix-временем')
+    throw new RangeError('Squadron history bounds must be non-negative Unix seconds')
   }
   const row = siteStatement('clanOfficialRatingAt').get(clanCore, fromTs, atTs) as
-    | { captured_at: number; rating: number }
+    | { captured_at: number; rating: number; battles: number | null; wins: number | null }
     | undefined
-  return row ? { capturedAt: row.captured_at, rating: row.rating } : null
+  return row ? { capturedAt: row.captured_at, rating: row.rating, battles: row.battles, wins: row.wins } : null
 }
 
 /** Изменения официальной статистики клана в (fromTs, toTs]; truncated — упёрлись в лимит. */

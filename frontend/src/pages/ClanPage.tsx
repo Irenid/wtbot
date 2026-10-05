@@ -24,7 +24,8 @@ import {
   unitTypeLabel,
   winRateOf,
 } from '../lib/format'
-import { Chip, DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl, useRowLink } from '../components/ui'
+import { Chip, DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl, StarIcon, useRowLink } from '../components/ui'
+import { MAX_FAVORITE_CLANS, toggleFavoriteClan, useFavoriteClans } from '../lib/favorite-clans'
 import { SeasonPanel } from '../components/SeasonPanel'
 import { TimeChart } from '../components/TimeChart'
 import { t, tp, useLocale } from '../i18n'
@@ -76,6 +77,26 @@ function applicationsText(profile: ClanProfile): string | null {
   if (profile.autoAccept === true) return t('clan.about.applications.auto')
   if (profile.autoAccept === false) return t('clan.about.applications.manual')
   return t('clan.about.applications.open')
+}
+
+/** Adds the squadron to the viewer's favourites, the filter of the /clans table. */
+function FavoriteChip({ coreTag }: { coreTag: string }) {
+  const favorites = useFavoriteClans()
+  const on = favorites.includes(coreTag)
+  const full = !on && favorites.length >= MAX_FAVORITE_CLANS
+  return (
+    <button
+      type="button"
+      className={`chip fav-chip${on ? ' is-on' : ''}`}
+      aria-pressed={on}
+      aria-disabled={full}
+      title={on ? t('clans.favorite.remove') : full ? t('clans.favorite.full', { n: MAX_FAVORITE_CLANS }) : undefined}
+      onClick={() => toggleFavoriteClan(coreTag)}
+    >
+      <StarIcon filled={on} size={12} />
+      {t(on ? 'clans.favorite.on' : 'clans.favorite.add')}
+    </button>
+  )
 }
 
 /** Сезон по лидерборду игры: в отличие от карточки боёв, не зависит от реплеев бота. */
@@ -310,6 +331,7 @@ export function ClanPage() {
               <Chip>{t('clan.seasonRecord', { wins: fmtInt(clan.seasonWins), battles: fmtInt(clan.seasonBattles) })}</Chip>
             )}
             <Chip>{t('common.updated', { when: fmtDateTime(clan.lastSeenAt) })}</Chip>
+            <FavoriteChip coreTag={clan.coreTag} />
           </div>
         </div>
         <div className="aside">

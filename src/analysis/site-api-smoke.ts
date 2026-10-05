@@ -852,7 +852,13 @@ async function main(): Promise<void> {
       tag, name, rating, position, members: null, battles: null, wins: null, ...extra,
     })
     saveClanLeaderboard([lbClan('[AVR]', 'AVANGARD', 40_000, 1)], baseAt)
-    if (dayAgoAt > baseAt) saveClanLeaderboard([lbClan('[AVR]', 'AVANGARD', 47_000, 1)], dayAgoAt)
+    const hasDayPoints = dayAgoAt > baseAt
+    if (hasDayPoints) {
+      saveClanLeaderboard([
+        lbClan('[AVR]', 'AVANGARD', 47_000, 1, { battles: 2_500, wins: 2_240 }),
+        lbClan('[AV]', 'Av Squad', 2_950, 2),
+      ], dayAgoAt)
+    }
     saveClanLeaderboard([lbClan('[OLD]', 'Dropped Clan', 2_950, 3), lbClan('[ZRO]', 'Zero Clan', 0, 4)], oldCrawlAt)
     saveClanLeaderboard([
       lbClan('[AVR]', 'AVANGARD', 48_307, 1, { members: 121, battles: 2_540, wins: 2_270 }),
@@ -877,15 +883,22 @@ async function main(): Promise<void> {
     try {
       const officialClans = await officialApp.inject({ method: 'GET', url: '/api/clans' })
       assert.equal(officialClans.statusCode, 200)
-      const officialBody = officialClans.json() as {
+      type ClansBody = {
+        total: number
         updatedAt: number | null
         leaderRating: number | null
+        tierCutoffs: { place: number; rating: number }[]
+        records: { winRate: string | null; kd: string | null; battles: string | null; gain: string | null }
+        live: { count: number; at: number; windowSec: number } | null
         clans: {
           coreTag: string; name: string | null; totalRating: number; members: number; avgRating: number | null
           seasonBattles: number | null; seasonWins: number | null; delta24h: number | null
+          battles24h: number | null; wins24h: number | null; rankChange24h: number | null
+          recentBattles: number; aboveRating: number | null
           leaderboard: string | null; rank: number; lastSeenAt: number
         }[]
       }
+      const officialBody = officialClans.json() as ClansBody
       const officialList = officialBody.clans
       // The latest crawl first; [LOW], read only by the last full crawl, after it; [ZRO], a zero
       // below the part the full crawl reads, is still in the table; [OLD], missed by the last full
@@ -927,6 +940,54 @@ async function main(): Promise<void> {
       const officialTst = officialList.find((clan) => clan.coreTag === 'tst')
       assert.equal(officialTst?.totalRating, 3_000, 'официальный рейтинг заменяет сумму снимков ПКР')
       assert.equal(officialTst?.avgRating, 1_460, 'средний ПКР по снимкам состава сохраняется')
+
+      // The day's battles come from the same point as the rating change; [AV] lost two places to
+      // [TST] and [NEW], which had no place a day ago.
+      const officialAv = officialList.find((clan) => clan.coreTag === 'av')
+      assert.equal(leader?.battles24h, hasDayPoints ? 45 : null)
+      assert.equal(leader?.wins24h, hasDayPoints ? 34 : null)
+      assert.equal(leader?.rankChange24h, expectedDelta24h === null ? null : 0)
+      assert.equal(officialAv?.delta24h, hasDayPoints ? -200 : null)
+      assert.equal(officialAv?.rankChange24h, hasDayPoints ? -2 : null)
+      assert.equal(officialTst?.rankChange24h, null, 'no place a day ago')
+      // Playing now: season battles grew within the window before the latest top crawl.
+      assert.deepEqual(officialList.slice(0, 7).map((clan) => clan.recentBattles), [5, 1, 0, 0, 0, 0, 0])
+      assert.deepEqual(officialBody.live, { count: 2, at: topCrawlAt, windowSec: 45 * 60 })
+      assert.deepEqual(
+        officialList.slice(0, 7).map((clan) => clan.aboveRating),
+        [null, 48_400, 3_000, 2_800, 2_750, 2_700, null],
+      )
+      assert.deepEqual(officialBody.tierCutoffs, [{ place: 5, rating: 2_700 }], 'place 10 is not an official squadron')
+      // [TST]'s 11 battles are too few for a win rate record; nobody has kills, so no K/D record.
+      assert.deepEqual(officialBody.records, {
+        winRate: 'avr',
+        kd: null,
+        battles: 'avr',
+        gain: expectedDelta24h === null ? null : 'avr',
+      })
+
+      const clanTags = async (query: string): Promise<{ total: number; tags: string[] }> => {
+        const response = await officialApp.inject({ method: 'GET', url: `/api/clans?${query}` })
+        assert.equal(response.statusCode, 200, query)
+        const body = response.json() as ClansBody
+        return { total: body.total, tags: body.clans.map((clan) => clan.coreTag) }
+      }
+      assert.deepEqual(await clanTags('top=5'), { total: 5, tags: ['avr', 'tst', 'new', 'av', 'low'] })
+      assert.deepEqual(await clanTags('live=true'), { total: 2, tags: ['avr', 'tst'] })
+      assert.deepEqual((await clanTags('sort=battles&limit=3')).tags, ['avr', 'tst', 'new'])
+      assert.deepEqual(
+        (await clanTags('sort=change&dir=asc&top=5')).tags,
+        hasDayPoints ? ['av', 'avr', 'tst', 'new', 'low'] : ['avr', 'tst', 'new', 'av', 'low'],
+      )
+      // Decorated tags match by their core; a sort replaces the search's own order.
+      assert.deepEqual(await clanTags('tags=avr,%5BAV%5D,zzz'), { total: 2, tags: ['avr', 'av'] })
+      assert.deepEqual(await clanTags('tags='), { total: 0, tags: [] }, 'an empty favourites list matches nothing')
+      assert.deepEqual((await clanTags('query=av&sort=place')).tags, ['avr', 'av'])
+      assert.deepEqual(await clanTags('query=av&live=true'), { total: 1, tags: ['avr'] })
+      for (const bad of ['sort=rating', 'dir=up', 'top=7', 'live=maybe']) {
+        const response = await officialApp.inject({ method: 'GET', url: `/api/clans?${bad}` })
+        assert.equal(response.statusCode, 400, bad)
+      }
 
       const leaderDetail = await officialApp.inject({ method: 'GET', url: '/api/clans/avr' })
       assert.equal(leaderDetail.statusCode, 200, 'клан лидерборда без снимков ПКР должен открываться')

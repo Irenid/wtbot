@@ -4,6 +4,7 @@ import {
   closeDb,
   getSiteClanDictionary,
   getSiteClanOfficialRatingAt,
+  getSiteClanOfficialStatsAt,
   getSiteClanProfile,
   getSiteClanOfficialRatingEvents,
   initDb,
@@ -54,6 +55,9 @@ test('saveClanLeaderboard пишет статистику клана и исто
     assert.deepEqual(getSiteClanOfficialRatingEvents('avr', 1_000, 10_000).events, [{ capturedAt: 3_000, rating: 48_300, battles: 10, wins: 7 }])
     assert.deepEqual(getSiteClanOfficialRatingAt('avr', 0, 2_500), { capturedAt: 1_000, rating: 48_000 })
     assert.equal(getSiteClanOfficialRatingAt('avr', 1_500, 2_500), null, 'изменение до начала периода не базис')
+    assert.deepEqual(getSiteClanOfficialStatsAt('avr', 0, 3_000), { capturedAt: 3_000, rating: 48_300, battles: 10, wins: 7 })
+    assert.equal(getSiteClanOfficialStatsAt('', 0, 3_000), null)
+    assert.throws(() => getSiteClanOfficialStatsAt('avr', -1, 3_000), RangeError)
   } finally {
     closeDb()
   }

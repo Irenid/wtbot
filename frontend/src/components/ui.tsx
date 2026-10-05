@@ -300,3 +300,18 @@ export function ErrorNotice({ error }: { error: unknown }) {
   }
   return <div className="notice fail">{message}</div>
 }
+
+/** A five-point star: outlined, or filled for a favourite. */
+export function StarIcon({ filled, size = 14 }: { filled: boolean; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 3.2l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"
+        fill={filled ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}

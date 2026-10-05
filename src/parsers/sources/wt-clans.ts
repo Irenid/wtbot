@@ -1,5 +1,6 @@
 import {
   CLAN_FULL_CRAWL_KEY,
+  CLAN_TOP_CRAWL_PLACES,
   getBotState,
   getClanNameByTag,
   getClanRosterRefreshedAt,
@@ -38,7 +39,7 @@ import type { ParserSource } from '../types.js'
 
 const LB_URL = 'https://warthunder.com/en/community/getclansleaderboard/dif/_hist/page'
 const PAGE_SIZE = 20
-const TOP_PAGES = 5
+const TOP_PAGES = CLAN_TOP_CRAWL_PLACES / PAGE_SIZE
 /**
  * Предел полного обхода — 2000 кланов. В октябре 2026 кланов с ненулевым
  * рейтингом было 567; упор в предел виден в статусе источника, иначе хвост
