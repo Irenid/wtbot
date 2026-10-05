@@ -46,10 +46,9 @@ test('SQLite table warmup runs in a worker and rejects mutating SQL', async () =
 
     const stats = await runWorkerTask({
       kind: 'read-site-dashboard-stats',
-      input: { dbPath, sinceTs: 900, seasonStart: 800 },
+      input: { dbPath, sinceTs: 900 },
     })
     assert.equal(stats.players, 2)
-    assert.equal(stats.clans, 2)
     assert.equal(stats.battlesTotal, 1)
     assert.equal(stats.battlesRecent, 1)
     assert.equal(stats.lastBattleAt, 1000)

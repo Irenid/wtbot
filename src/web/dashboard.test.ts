@@ -71,7 +71,6 @@ test('dashboard отдаёт лёгкий кэшируемый снимок и �
         await new Promise<void>((resolve) => setTimeout(resolve, 10))
         return {
           players: 10,
-          clans: 2,
           battlesTotal: 30,
           battlesRecent: 4,
           lastBattleAt: 100,

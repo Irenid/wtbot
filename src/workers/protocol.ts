@@ -225,10 +225,9 @@ export interface WorkerTaskMap {
     output: DbMaintenanceResult
   }
   'read-site-dashboard-stats': {
-    input: { dbPath: string; sinceTs: number; seasonStart: number }
+    input: { dbPath: string; sinceTs: number }
     output: {
       players: number
-      clans: number
       battlesTotal: number
       battlesRecent: number
       lastBattleAt: number | null

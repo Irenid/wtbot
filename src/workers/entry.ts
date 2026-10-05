@@ -10,7 +10,7 @@ import type { ReplayEvents } from '../wrpl/replay-events.js'
 import { heatmapSelection, isBattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 import { applyRealNames, fakeNamesFromItem, parseReplayResults, parseWrplHeader } from '../wrpl/replay.js'
 import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
-import { buildBattleSvg, plainClanTag } from '../wrpl/render-battle.js'
+import { buildBattleSvg } from '../wrpl/render-battle.js'
 import {
   buildHeatmapSvg,
   prepareHeatmapScene,
@@ -625,9 +625,6 @@ async function readSiteDashboardStats(
   if (!Number.isSafeInteger(input.sinceTs) || input.sinceTs < 0) {
     throw new RangeError('sinceTs сайта должен быть неотрицательным Unix-временем')
   }
-  if (!Number.isSafeInteger(input.seasonStart) || input.seasonStart < 0) {
-    throw new RangeError('seasonStart сайта должен быть неотрицательным Unix-временем')
-  }
   const { DatabaseSync } = await import('node:sqlite')
   const database = new DatabaseSync(input.dbPath, { readOnly: true })
   const started = performance.now()
@@ -654,26 +651,9 @@ async function readSiteDashboardStats(
       GROUP BY day
       ORDER BY day
     `).all(input.sinceTs) as unknown as { day: string; battles: number }[]
-    // Те же кланы, что в рейтинге сайта: со снимками ПКР сезона и с
-    // официальной статистикой сезона из лидерборда.
-    const clanRows = database.prepare(`
-      SELECT DISTINCT clan_tag AS tag
-      FROM clan_rating_snapshots
-      WHERE seen_at >= ?
-      UNION
-      SELECT tag
-      FROM clans
-      WHERE rating IS NOT NULL AND rating_at >= ?
-    `).all(input.seasonStart, input.seasonStart) as unknown as { tag: string }[]
-    const clans = new Set(
-      clanRows
-        .map((row) => plainClanTag(row.tag))
-        .filter((tag) => tag !== ''),
-    ).size
     return {
       value: {
         players: players.players,
-        clans,
         battlesTotal: counts.total,
         battlesRecent: counts.recent,
         lastBattleAt: counts.last_start,

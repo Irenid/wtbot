@@ -883,13 +883,14 @@ function parseVehiclesJson(raw: string): string[] {
 export interface SiteRoutesOptions {
   /** Подменяется в smoke: боевой загрузчик качает датамайн при холодном data/. */
   loadVehicleDict?: () => Promise<VehicleDict>
-  /** Подменяется в smoke/benchmark; file-backed DB читает тяжёлые агрегаты в worker. */
+  /**
+   * Replaced in smoke/benchmark; a file-backed DB reads the heavy aggregates in a worker. The
+   * squadron count is the ranking's (cachedClanSnapshot), which the home page loads anyway.
+   */
   loadDashboardStats?: (
     sinceTs: number,
-    seasonStart: number,
   ) => Promise<{
     players: number
-    clans: number
     battlesTotal: number
     battlesRecent: number
     lastBattleAt: number | null
@@ -1238,16 +1239,16 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
   let statsSnapshot: { builtAt: number; payload: unknown } | null = null
   let statsSnapshotInFlight: Promise<unknown> | null = null
 
-  async function loadDashboardStats(sinceTs: number, seasonStart: number) {
+  async function loadDashboardStats(sinceTs: number) {
     if (opts.site?.loadDashboardStats) {
-      return opts.site.loadDashboardStats(sinceTs, seasonStart)
+      return opts.site.loadDashboardStats(sinceTs)
     }
     const dbPath = getDbWorkerPath()
     if (dbPath !== null) {
       return runWorkerTask(
         {
           kind: 'read-site-dashboard-stats',
-          input: { dbPath, sinceTs, seasonStart },
+          input: { dbPath, sinceTs },
         },
         { priority: 'background', timeoutMs: 60_000 },
       )
@@ -1255,7 +1256,6 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     const counts = getSiteBattleCounts(sinceTs)
     return {
       players: getSiteReplayPlayerCount(),
-      clans: cachedClanSnapshot().rows.length,
       battlesTotal: counts.total,
       battlesRecent: counts.recent,
       lastBattleAt: counts.lastStartAt,
@@ -1272,13 +1272,14 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         const season = getClanSeasonContext(Math.floor(now / 1_000))
         const seasonStart = season.season?.startsAt ?? 0
         const weekAgo = Math.max(Math.floor(now / 1_000) - 7 * DAY_SEC, seasonStart)
-        const stats = await loadDashboardStats(weekAgo, seasonStart)
+        const stats = await loadDashboardStats(weekAgo)
         const payload = {
           ok: true,
           season,
           officialSeason: getOfficialClanSeason(),
           players: stats.players,
-          clans: stats.clans,
+          // The squadrons the list shows: renamed ones once, none without a season rating.
+          clans: cachedClanSnapshot().rows.length,
           battlesTotal: stats.battlesTotal,
           battlesWeek: stats.battlesRecent,
           lastBattleAt: stats.lastBattleAt,
