@@ -1,4 +1,5 @@
-import type { MouseEvent, ReactNode } from 'react'
+import { useState } from 'react'
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { localeTag, t } from '../i18n'
 import { fmtInt } from '../lib/format'
@@ -230,15 +231,27 @@ function pagerItems(page: number, pages: number): (number | null)[] {
   return items
 }
 
-/** Page switcher, 1-based; nothing for a single page. */
+/** Page switcher, 1-based; nothing for a single page. A "…" opens a field for any page number. */
 export function Pager({ page, pages, onChange }: { page: number; pages: number; onChange: (page: number) => void }) {
+  // The index of the gap whose field is open.
+  const [editing, setEditing] = useState<number | null>(null)
   if (pages <= 1) return null
+  const items = pagerItems(page, pages)
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'Escape') setEditing(null)
+    if (event.key !== 'Enter') return
+    const raw = event.currentTarget.value.trim()
+    const value = Number(raw)
+    setEditing(null)
+    // Out-of-range numbers clamp to the first or last page; anything else is ignored.
+    if (raw === '' || !Number.isFinite(value)) return
+    const next = Math.min(pages, Math.max(1, Math.round(value)))
+    if (next !== page) onChange(next)
+  }
   return (
     <nav className="seg-control pager" aria-label={t('a11y.pager')}>
       <button type="button" disabled={page <= 1} aria-label={t('pager.prev')} onClick={() => onChange(page - 1)}>‹</button>
-      {pagerItems(page, pages).map((item, index) => item === null ? (
-        <span key={`gap-${index}`} className="gap" aria-hidden="true">…</span>
-      ) : (
+      {items.map((item, index) => item !== null ? (
         <button
           key={item}
           type="button"
@@ -248,6 +261,21 @@ export function Pager({ page, pages, onChange }: { page: number; pages: number; 
         >
           {item}
         </button>
+      ) : editing === index ? (
+        <input
+          key={`gap-${index}`}
+          className="gap-input"
+          type="text"
+          inputMode="numeric"
+          autoFocus
+          aria-label={t('pager.input', { pages })}
+          // The skipped range: the neighbours of a gap are always numbers.
+          placeholder={`${(items[index - 1] as number) + 1}–${(items[index + 1] as number) - 1}`}
+          onKeyDown={onKeyDown}
+          onBlur={() => setEditing(null)}
+        />
+      ) : (
+        <button key={`gap-${index}`} type="button" className="gap" title={t('pager.goTo')} aria-label={t('pager.goTo')} onClick={() => setEditing(index)}>…</button>
       ))}
       <button type="button" disabled={page >= pages} aria-label={t('pager.next')} onClick={() => onChange(page + 1)}>›</button>
     </nav>

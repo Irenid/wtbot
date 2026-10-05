@@ -145,6 +145,8 @@ export const es: Partial<Record<MessageKey, string>> = {
   "clans.search.empty": "Ningún escuadrón coincide con «{q}».",
   "pager.prev": "Página anterior",
   "pager.next": "Página siguiente",
+  "pager.goTo": "Ir a la página",
+  "pager.input": "Número de página, 1–{pages}",
   "clans.col.clan": "Escuadrón",
   "clans.col.rating": "Clasificación",
   "clans.col.place": "Puesto",

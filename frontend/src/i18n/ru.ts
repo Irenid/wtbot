@@ -172,6 +172,8 @@ export const ru = {
   'clans.search.empty': 'Нет полков по запросу «{q}».',
   'pager.prev': 'Предыдущая страница',
   'pager.next': 'Следующая страница',
+  'pager.goTo': 'Перейти к странице',
+  'pager.input': 'Номер страницы, 1–{pages}',
   'clans.col.clan': 'Полк',
   'clans.col.rating': 'Рейтинг',
   'clans.col.place': 'Место',

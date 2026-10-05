@@ -690,7 +690,13 @@ a.suggest-row:hover { background: var(--bg-soft); color: var(--ink); }
 .seg-control button:disabled { opacity: 0.4; cursor: default; }
 .pager { flex-wrap: wrap; justify-self: center; }
 .pager button { min-width: 32px; font-variant-numeric: tabular-nums; }
-.pager .gap { align-self: center; padding: 0 4px; color: var(--muted); font-size: 12px; }
+.pager button.gap { min-width: 24px; padding: 5px 4px; color: var(--muted); }
+.pager button.gap:hover { color: var(--ink); background: var(--bg-soft); }
+.pager .gap-input {
+  width: 64px; border: 1px solid var(--accent); border-radius: 7px; background: var(--bg-soft); color: var(--ink);
+  font: inherit; font-size: 12px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; padding: 4px 6px;
+}
+.pager .gap-input:focus { outline: none; }
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
 .tabs .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-right: 4px; }
 

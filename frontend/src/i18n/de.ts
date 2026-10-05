@@ -145,6 +145,8 @@ export const de: Partial<Record<MessageKey, string>> = {
   "clans.search.empty": "Keine Schwadron passt zu „{q}“.",
   "pager.prev": "Vorherige Seite",
   "pager.next": "Nächste Seite",
+  "pager.goTo": "Zu Seite springen",
+  "pager.input": "Seitennummer, 1–{pages}",
   "clans.col.clan": "Schwadron",
   "clans.col.rating": "Wertung",
   "clans.col.place": "Platz",

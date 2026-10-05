@@ -145,6 +145,8 @@ export const fr: Partial<Record<MessageKey, string>> = {
   "clans.search.empty": "Aucun escadron ne correspond à « {q} ».",
   "pager.prev": "Page précédente",
   "pager.next": "Page suivante",
+  "pager.goTo": "Aller à la page",
+  "pager.input": "Numéro de page, 1–{pages}",
   "clans.col.clan": "Escadron",
   "clans.col.rating": "Note",
   "clans.col.place": "Place",
