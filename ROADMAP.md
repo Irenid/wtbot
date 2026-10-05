@@ -52,12 +52,13 @@ full texts are in Git (commit `46b6950` and earlier).
   Discord only after `npm run deploy:commands`. Also remove `.cbmignore`
   (codebase-memory-mcp is not configured) and move
   `Редизайн игрового портала/` to `frontend/design/portal-redesign/`.
-- **Squadron page in de/fr/es.** The redesign of 2026-10-05 added 41
-  `clan.*` keys (hero, standing track, daily bars, roster filters) to `ru.ts`
-  and `en.ts` only: German, French and Spanish show Russian there until
-  translated. Then check every locale at 320–1280 (long words in the role
-  chips, KPI tiles and the standing track's ends), together with the season
-  panel, unchecked outside English since 27b765c.
+- **Squadron page in de/fr/es.** The redesigns of 2026-10-05 added 51
+  `clan.*` keys (hero, standing track, season tiles, daily bars, rewards
+  chart, roster filters) to `ru.ts` and `en.ts` only: German, French and
+  Spanish show Russian there until translated. Then check every locale at
+  320–1280 (long words in the role chips, season tiles, reward chips and the
+  standing track's ends), together with the season panel, unchecked outside
+  English since 27b765c.
 - **Dead code and hotspots without reading everything:**
   `tsc --noUnusedLocals --noUnusedParameters`, exports without callers, files
   without importers, the longest functions — review only what they flag; the

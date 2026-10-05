@@ -22,15 +22,38 @@ function areaFill(plot: uPlot, area: { top: string; bottom: string }): CanvasGra
   return gradient
 }
 
+/** Day ticks this far apart at least, px: a few days' history gets a tick a day, not one every 12 hours. */
+const DAY_TICK_SPACE = 64
+
+/** "Sep 30" for a midnight or ticks a day or more apart, the time for the rest (a history of hours). */
+function dayTickValues(_plot: uPlot, ticks: number[], _axis: number, _space: number, step: number): string[] {
+  return ticks.map((tick) => {
+    const date = new Date(tick * 1000)
+    const midnight = date.getHours() === 0 && date.getMinutes() === 0
+    return step < 86_400 && !midnight
+      ? date.toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' })
+      : date.toLocaleDateString(localeTag(), { month: 'short', day: 'numeric' })
+  })
+}
+
 /** A uPlot wrapper: dark axes, sized to its container, time on X in seconds. */
-export function TimeChart({ xs, series, height = 220, percent = false }: {
+export function TimeChart({ xs, series, height = 220, percent = false, dayTicks = false, onCursor }: {
   xs: number[]
   series: TimeSeries[]
   height?: number
   percent?: boolean
+  /** X ticks as "Sep 30" without uPlot's year line under the first one. */
+  dayTicks?: boolean
+  /** The hovered point's index; null — the pointer left the plot. */
+  onCursor?: (index: number | null) => void
 }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
+  // The latest callback: a new function each render must not rebuild the chart.
+  const cursorRef = useRef(onCursor)
+  useEffect(() => {
+    cursorRef.current = onCursor
+  })
 
   useEffect(() => {
     const box = boxRef.current
@@ -60,7 +83,7 @@ export function TimeChart({ xs, series, height = 220, percent = false }: {
         })),
       ],
       axes: [
-        { ...axisStyle },
+        dayTicks ? { ...axisStyle, space: DAY_TICK_SPACE, values: dayTickValues } : { ...axisStyle },
         {
           ...axisStyle,
           size: 56,
@@ -70,6 +93,9 @@ export function TimeChart({ xs, series, height = 220, percent = false }: {
       ],
       cursor: { points: { size: 7 } },
       legend: { show: series.length > 1 },
+      hooks: {
+        setCursor: [(plot: uPlot) => cursorRef.current?.(plot.cursor.idx ?? null)],
+      },
     }
 
     const data: uPlot.AlignedData = [xs, ...series.map((entry) => entry.values)] as uPlot.AlignedData
@@ -85,7 +111,7 @@ export function TimeChart({ xs, series, height = 220, percent = false }: {
       plot.destroy()
       plotRef.current = null
     }
-  }, [xs, series, height, percent])
+  }, [xs, series, height, percent, dayTicks])
 
   if (xs.length === 0) return <div className="muted small">{t('common.chart.noData')}</div>
   return <div className="chart-box" ref={boxRef} />

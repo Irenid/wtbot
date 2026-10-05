@@ -1113,36 +1113,43 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .clan-page .place-1 { --metal-v: linear-gradient(180deg, #fff1c2, #f7c55a 48%, #c97d0e); }
 .clan-page .place-2 { --metal-v: linear-gradient(180deg, #ffffff, #d3d9e1 48%, #8a93a0); }
 .clan-page .place-3 { --metal-v: linear-gradient(180deg, #ffd9b8, #e7a06b 48%, #9c4f1c); }
+.clan-page > .card { margin-bottom: 14px; }
+.clan-page > .card:not(.clans-table, .clan-dynamics) { padding: 16px 20px; }
+.clan-page .card > .sec-head, .clan-dynamics__pane > .sec-head { margin-bottom: 10px; }
+.sec-head__note { font-size: 11px; color: var(--muted); }
+.sec-head__end { margin-left: auto; }
+
+/* The hero: the place, the name and the rating, the gaps to the neighbours, the season's figures. */
 .clan-hero {
   --zone: var(--zone-rest);
-  position: relative; overflow: hidden; padding: 22px 24px 18px;
+  position: relative; overflow: hidden;
   border-color: color-mix(in srgb, var(--zone) 34%, var(--card-line));
   background:
     linear-gradient(90deg, var(--zone), color-mix(in srgb, var(--zone) 0%, transparent) 72%) top / 100% 2px no-repeat padding-box,
-    radial-gradient(640px 300px at 0 0, color-mix(in srgb, var(--zone) 17%, transparent), transparent 72%) padding-box,
+    radial-gradient(560px 260px at 0 0, color-mix(in srgb, var(--zone) 15%, transparent), transparent 72%) padding-box,
     linear-gradient(180deg, var(--card-top), var(--card-bottom)) border-box;
   animation: clanRowIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
-.clan-hero__main { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px 20px; }
+.clan-hero__main { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px 16px; }
 /* The place on a tile in its zone's colour, places 1–3 in metal that a light crosses every few
    seconds; --len (the place's characters) keeps "1,024" inside. */
 .clan-medal {
   position: relative; overflow: hidden; display: flex; align-items: baseline; justify-content: center; gap: 1px;
-  min-width: 76px; height: 76px; padding: 0 12px; border-radius: 20px;
+  min-width: 58px; height: 58px; padding: 0 10px; border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--zone) 45%, transparent);
   background:
-    radial-gradient(90px 60px at 30% 0, color-mix(in srgb, var(--zone) 30%, transparent), transparent 75%),
+    radial-gradient(70px 46px at 30% 0, color-mix(in srgb, var(--zone) 30%, transparent), transparent 75%),
     linear-gradient(160deg, color-mix(in srgb, var(--zone) 16%, var(--elevated)), var(--bg-soft));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 16px 34px -18px color-mix(in srgb, var(--zone) 70%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 12px 26px -16px color-mix(in srgb, var(--zone) 70%, transparent);
   color: color-mix(in srgb, var(--zone) 82%, var(--ink));
-  font-family: var(--font-display); font-weight: 700; line-height: 76px; font-variant-numeric: tabular-nums;
+  font-family: var(--font-display); font-weight: 700; line-height: 58px; font-variant-numeric: tabular-nums;
   animation: clanMedalIn 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s backwards;
 }
-.clan-medal__hash { font-size: 15px; opacity: 0.7; }
-.clan-medal__n { font-size: clamp(20px, calc(42px - var(--len, 1) * 5px), 34px); letter-spacing: -0.02em; }
+.clan-medal__hash { font-size: 12px; opacity: 0.7; }
+.clan-medal__n { font-size: clamp(15px, calc(33px - var(--len, 1) * 4px), 27px); letter-spacing: -0.02em; }
 .clan-hero.is-podium .clan-medal { border-color: color-mix(in srgb, var(--zone) 70%, transparent); }
 .clan-hero.place-1 .clan-medal {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 16px 34px -16px rgba(247, 197, 90, 0.75), 0 0 28px -8px rgba(247, 197, 90, 0.6);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 12px 26px -14px rgba(247, 197, 90, 0.75), 0 0 22px -8px rgba(247, 197, 90, 0.6);
 }
 .clan-hero.is-podium :is(.clan-medal__n, .clan-medal__hash) {
   background: var(--metal-v); -webkit-background-clip: text; background-clip: text; color: transparent;
@@ -1154,56 +1161,59 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   animation: clanSheen 7s ease-in-out 1.4s infinite;
 }
 .clan-hero__who { min-width: 0; }
-.clan-hero h1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-family: var(--font-display); font-weight: 700; line-height: 1.1; }
-.clan-hero__tag { font-size: clamp(26px, 3.6vw, 34px); letter-spacing: -0.01em; overflow-wrap: anywhere; }
-.clan-hero__name { font-size: 15px; font-weight: 500; color: var(--ink2); }
-.clan-hero__chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
-.clan-hero__chips .chip { vertical-align: baseline; }
+.clan-hero h1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; font-family: var(--font-display); font-weight: 700; line-height: 1.15; }
+.clan-hero__tag { font-size: clamp(22px, 2.5vw, 27px); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.clan-hero__name { font-size: 13.5px; font-weight: 500; color: var(--ink2); }
+/* Chips of one height: the place's reward, playing now, out of the table, members, favourite. */
+.clan-hero__chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
+.clan-hero__chips > * { display: inline-flex; align-items: center; height: 22px; padding-top: 0; padding-bottom: 0; font-size: 11.5px; line-height: 1; }
 /* The reward the place holds, in its zone's colour; places 1–3 a metal plate. */
 .reward-badge {
-  display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 8px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 5px; padding: 0 9px 0 7px; border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--zone) 42%, transparent);
   background: color-mix(in srgb, var(--zone) 15%, transparent);
-  color: var(--zone); font-size: 11px; font-weight: 700; line-height: 16px; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
+  color: var(--zone); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
 }
+.clan-hero__chips .reward-badge { font-size: 10.5px; }
 .clan-hero.is-podium .reward-badge {
   border-color: transparent; background: var(--metal); color: #1d1606;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 8px 20px -10px color-mix(in srgb, var(--zone) 85%, transparent);
 }
 .clan-chip.is-static { cursor: default; }
 .clan-chip.is-on.is-static:hover { border-color: color-mix(in srgb, var(--zone) 55%, transparent); color: var(--zone); }
-.clan-hero__score { padding-left: 22px; border-left: 1px solid color-mix(in srgb, var(--zone) 25%, transparent); text-align: right; }
-.clan-hero__rating { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 10px; }
+.clan-hero__score { padding-left: 18px; border-left: 1px solid color-mix(in srgb, var(--zone) 25%, transparent); text-align: right; }
+.clan-hero__rating { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; }
 .clan-hero__value {
-  font-family: var(--font-display); font-size: clamp(30px, 4.2vw, 42px); font-weight: 800;
+  font-family: var(--font-display); font-size: clamp(26px, 3vw, 34px); font-weight: 800;
   line-height: 1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums;
 }
 .clan-hero.is-podium .clan-hero__value {
   background: var(--metal-v); -webkit-background-clip: text; background-clip: text; color: transparent;
-  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--zone) 35%, transparent));
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--zone) 32%, transparent));
 }
 .clan-hero:is(.is-estimate, .is-dropped) .clan-hero__value { font-weight: 600; color: var(--ink2); }
-.clan-hero .change { padding: 3px 9px; font-size: 13px; line-height: 18px; }
+.clan-hero .change { padding: 2px 8px; font-size: 12px; line-height: 16px; }
 /* The season's biggest gain in 24 hours. */
 .clan-hero .has-record .change { color: var(--accent); background: rgba(245, 188, 74, 0.16); box-shadow: 0 0 16px -4px rgba(245, 188, 74, 0.7); }
-.clan-hero__label { margin-top: 6px; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink2); }
+.clan-hero__label { margin-top: 5px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink2); }
 .clan-hero__label .move { letter-spacing: 0; }
 /* Between the neighbours in the table: the marker stands at the rating on the way from the place
-   below (left) to the place above (right); each end in its place's colour. */
+   below (left) to the place above (right); each end in its place's colour, the next reward tier
+   under the track. */
 .standing {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 2fr) minmax(0, 1fr); align-items: center; gap: 10px 18px;
-  margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 2fr) minmax(0, 1fr); align-items: center; gap: 6px 16px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
-.standing__end { --zone: var(--muted); display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12px; line-height: 16px; }
+.standing__end { --zone: var(--muted); display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 12px; line-height: 16px; }
 .standing__end.is-above { align-items: flex-end; text-align: right; }
-.standing__end.is-first { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.standing__end.is-first { color: var(--accent); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .standing__who { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; min-width: 0; color: var(--ink); font-weight: 600; }
 .standing__who:hover { color: var(--accent); }
 .standing__rank { flex: none; font-family: var(--font-display); color: color-mix(in srgb, var(--zone) 78%, var(--muted)); font-variant-numeric: tabular-nums; }
 .standing__tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .standing__gap { color: var(--muted); font-variant-numeric: tabular-nums; }
 .standing__end.is-below .standing__gap { color: color-mix(in srgb, var(--ok) 72%, var(--ink2)); }
-.standing__track { position: relative; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35); }
+.standing__track { position: relative; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.07); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35); }
 .standing__track::before, .standing__track::after {
   content: ''; position: absolute; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--line2);
 }
@@ -1216,132 +1226,249 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   animation: clanGrowX 1s cubic-bezier(0.22, 1, 0.36, 1) 0.35s backwards;
 }
 .standing__marker {
-  position: absolute; z-index: 1; top: 50%; left: calc(var(--pos) * 100%); width: 16px; height: 16px; margin: -8px 0 0 -8px;
+  position: absolute; z-index: 1; top: 50%; left: calc(var(--pos) * 100%); width: 14px; height: 14px; margin: -7px 0 0 -7px;
   border-radius: 50%; background: var(--zone); border: 3px solid var(--card-top);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--zone) 60%, transparent), 0 0 16px color-mix(in srgb, var(--zone) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--zone) 60%, transparent), 0 0 14px color-mix(in srgb, var(--zone) 70%, transparent);
   animation: standingMarker 1s cubic-bezier(0.22, 1, 0.36, 1) 0.35s backwards;
 }
 .clan-hero.is-podium .standing__lead { background: var(--metal); }
 .clan-hero.is-podium .standing__marker { background: var(--metal-v); }
-/* The next reward tier past the place above, in that tier's colour. */
 .standing__tier {
-  grid-column: 1 / -1; justify-self: center; display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
-  padding: 3px 12px; border-radius: 999px; border: 1px dashed color-mix(in srgb, var(--zone) 42%, transparent);
-  color: color-mix(in srgb, var(--zone) 85%, var(--ink)); font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums;
+  grid-column: 2; justify-self: center; display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 1px 10px; border-radius: 999px; border: 1px dashed color-mix(in srgb, var(--zone) 42%, transparent);
+  color: color-mix(in srgb, var(--zone) 85%, var(--ink)); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums;
   animation: clanFadeIn 0.6s ease 0.7s backwards;
 }
 .standing__tier svg { flex: none; }
 @keyframes clanMedalIn { from { opacity: 0; transform: scale(0.7) rotate(-6deg); } }
 @keyframes standingMarker { from { left: 0; opacity: 0; } }
 
-/* A card's head: the section title, a line of context under it. */
-.clan-card__head { margin-bottom: 14px; }
-.clan-card__head > .sec-head { margin-bottom: 3px; }
-.clan-card__meta { padding-left: 11px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.sec-head__note { font-size: 11px; color: var(--muted); }
-.sec-head__end { margin-left: auto; }
-.clan-season {
-  background:
-    linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 0%, transparent) 70%) top / 100% 2px no-repeat padding-box,
-    linear-gradient(180deg, var(--card-top), var(--card-bottom)) border-box;
+/* The season under the standing: its name and stage on one line, then its figures. */
+.clan-season { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.clan-season__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 9px; }
+.clan-season__head h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+.clan-season__line { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.clan-season__hint { margin-left: auto; font-size: 11px; color: var(--muted); }
+/* Figures on tiles of one height: green above the norm, red below, grey from too few battles, gold
+   for a season record; a win rate's ring draws itself in. */
+/* The second tile holds the win rate's ring: a little wider, so its wins and losses keep one line. */
+.clan-stats { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) repeat(3, minmax(0, 1fr)); gap: 8px; }
+.clan-stats.is-four { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) repeat(2, minmax(0, 1fr)); }
+.clan-stat {
+  --k: 0;
+  display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 9px 12px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.055); border-radius: 11px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
+  transition: border-color 0.2s ease;
+  animation: clanRowIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) calc(var(--k) * 50ms + 0.1s) backwards;
 }
-/* KPI tiles: five in a row (four for the replays); green above the norm, red below, grey from too few
-   battles, gold for a season record. The ring draws itself in. */
-.clan-kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.clan-replays .clan-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.clan-kpis .kpi {
-  position: relative;
-  transition: border-color 0.2s ease, transform 0.2s ease;
-  animation: clanRowIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) calc(var(--k, 0) * 60ms + 0.1s) backwards;
+.clan-stat:nth-child(2) { --k: 1; }
+.clan-stat:nth-child(3) { --k: 2; }
+.clan-stat:nth-child(4) { --k: 3; }
+.clan-stat:nth-child(5) { --k: 4; }
+.clan-stat:hover { border-color: var(--line2); }
+.clan-stat__ring { flex: none; align-self: center; }
+.clan-stat__body { min-width: 0; }
+/* A narrow tile moves the record mark under the name rather than cutting it. */
+.clan-stat__label {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; min-width: 0;
+  font-size: 10.5px; line-height: 14px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); white-space: nowrap;
 }
-.clan-kpis .kpi:nth-child(2) { --k: 1; }
-.clan-kpis .kpi:nth-child(3) { --k: 2; }
-.clan-kpis .kpi:nth-child(4) { --k: 3; }
-.clan-kpis .kpi:nth-child(5) { --k: 4; }
-.clan-kpis .kpi:hover { border-color: var(--line2); transform: translateY(-2px); }
-.clan-kpis .kpi :is(.l, .s) { text-shadow: none; }
-.clan-kpis .with-donut .donut-text { fill: currentColor; }
-.clan-kpis .kpi:is(.tone-up-2, .tone-up-3) {
-  border-color: rgba(142, 230, 161, 0.32);
-  background: linear-gradient(180deg, rgba(142, 230, 161, 0.08), transparent 70%), linear-gradient(180deg, var(--tile-top), var(--tile-bottom));
+.clan-stat__value { margin-top: 3px; font-family: var(--font-display); font-size: 22px; font-weight: 700; line-height: 26px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.clan-stat__sub { margin-top: 1px; font-size: 11.5px; line-height: 15px; color: var(--muted); }
+.clan-stat__sub :is(.ok, .fail) { font-weight: 700; }
+.clan-stat :is(.clan-stat__label, .clan-stat__sub) { text-shadow: none; }
+.clan-stat__day { font-weight: 600; color: color-mix(in srgb, var(--ok) 80%, var(--ink2)); }
+.clan-stat:is(.tone-up-2, .tone-up-3) {
+  border-color: rgba(142, 230, 161, 0.24);
+  background: linear-gradient(180deg, rgba(142, 230, 161, 0.1), rgba(142, 230, 161, 0.02));
 }
-.clan-kpis .kpi:is(.tone-down-2, .tone-down-3) {
-  border-color: rgba(255, 143, 163, 0.3);
-  background: linear-gradient(180deg, rgba(255, 143, 163, 0.07), transparent 70%), linear-gradient(180deg, var(--tile-top), var(--tile-bottom));
+.clan-stat:is(.tone-down-2, .tone-down-3) {
+  border-color: rgba(255, 143, 163, 0.24);
+  background: linear-gradient(180deg, rgba(255, 143, 163, 0.09), rgba(255, 143, 163, 0.015));
 }
-.clan-kpis .kpi.is-losing { --donut: var(--fail); }
-.clan-kpis .kpi.is-few { --donut: var(--muted); color: color-mix(in srgb, var(--muted) 80%, transparent); }
-.clan-kpis .kpi.has-record {
+.clan-stat.is-losing { --donut: var(--fail); }
+.clan-stat.is-few { --donut: var(--muted); color: color-mix(in srgb, var(--muted) 80%, transparent); }
+.clan-stat.has-record {
   --donut: var(--accent);
-  border-color: rgba(245, 188, 74, 0.55);
-  background: radial-gradient(180px 90px at 100% 0, rgba(245, 188, 74, 0.18), transparent 72%), linear-gradient(180deg, var(--tile-top), var(--tile-bottom));
-  box-shadow: inset 0 1px 0 rgba(255, 233, 180, 0.08), 0 14px 30px -18px rgba(245, 188, 74, 0.65);
+  border-color: rgba(245, 188, 74, 0.45);
+  background: radial-gradient(160px 70px at 100% 0, rgba(245, 188, 74, 0.17), transparent 72%), linear-gradient(180deg, rgba(245, 188, 74, 0.06), rgba(245, 188, 74, 0.015));
 }
-.clan-kpis .kpi.has-record :is(.v, .donut-text) { color: var(--accent); fill: var(--accent); text-shadow: 0 0 14px rgba(245, 188, 74, 0.4); }
-.kpi-record {
-  display: inline-flex; align-items: center; gap: 4px; margin-top: 7px; padding: 2px 8px; border-radius: 999px;
-  background: rgba(245, 188, 74, 0.14); color: var(--accent);
-  font-size: 10.5px; font-weight: 700; line-height: 14px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
+.clan-stat.has-record .clan-stat__value { color: var(--accent); text-shadow: 0 0 14px rgba(245, 188, 74, 0.4); }
+.stat-record {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 0 6px; border-radius: 999px;
+  background: rgba(245, 188, 74, 0.16); color: var(--accent); font-size: 9.5px; font-weight: 700; line-height: 14px; letter-spacing: 0.06em;
 }
-.kpi-day { font-weight: 600; color: color-mix(in srgb, var(--ok) 80%, var(--ink2)); }
 .clan-page .donut-arc { animation: donutDraw 1.1s cubic-bezier(0.22, 1, 0.36, 1) 0.3s backwards; }
 @keyframes donutDraw { from { stroke-dasharray: 0 164; } }
 
-/* The rating line and the battles per day side by side, as tall as each other. */
-.clan-charts.grid-2 { align-items: stretch; }
-.clan-charts > .card { min-width: 0; }
-.clan-chart__wait { display: grid; place-items: center; min-height: 220px; }
-.clan-chart__month { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
-/* Battles per UTC day: wins (green) under losses (rose) in one bar; the busiest day labelled, the
-   last day (counted up to the latest reading) paler; a line every quarter of the plot. */
-.clan-daily { display: flex; flex-direction: column; }
-.daily-bars {
-  --plot: 172px;
-  display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: clamp(2px, 0.6vw, 6px);
-  margin: 2px 0 0; padding: 20px 2px 0; list-style: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px) 0 20px / 100% calc(var(--plot) / 4) repeat-y;
+/* About: the squadron's own text, cut while long, beside its facts; its season rewards under both. */
+.clan-about__grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-items: start; gap: 12px 28px; }
+.clan-about__grid.is-single { grid-template-columns: minmax(0, 1fr); }
+.clan-about__text { min-width: 0; }
+.clan-about__clamp { max-height: 132px; overflow: hidden; }
+.clan-about__clamp.is-open { max-height: none; }
+.clan-about__clamp.is-cut {
+  -webkit-mask-image: linear-gradient(180deg, #000 60%, transparent);
+  mask-image: linear-gradient(180deg, #000 60%, transparent);
 }
-.daily-bars__day { display: grid; grid-template-rows: var(--plot) 20px; min-width: 0; }
+.clan-about__clamp > :last-child { margin-bottom: 0; }
+.clan-about__slogan { font-style: italic; color: var(--ink2); }
+.clan-about__label { margin-bottom: 3px; font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.clan-about__more {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 0; border: none; background: none;
+  color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.clan-about__more:hover, .clan-about__more:focus-visible { outline: none; color: var(--accent-hover); }
+.clan-about__more svg { transition: transform 0.2s ease; }
+.clan-about__more svg.is-up { transform: rotate(180deg); }
+.clan-facts { margin: 0; font-size: 12.5px; line-height: 18px; }
+.clan-facts__row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.clan-facts__row:first-child { padding-top: 0; }
+.clan-facts__row:last-child { padding-bottom: 0; border-bottom: none; }
+.clan-facts dt { color: var(--muted); }
+.clan-facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.clan-facts__note { color: var(--muted); }
+/* Season rewards: a tally of each reward, then a bar per season in the reward's colour, as high as
+   the reward ranks (place 1 the plot's height, the top 100 a sixth of it). A season without one is a
+   dot; the current season's bar, the reward its place holds so far, is dashed and breathes. */
+/* A short history sits beside the tally; a long one takes its own line. */
+.clan-rewards {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.clan-rewards__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
+.clan-rewards__head h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.clan-rewards__tally { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.reward-chip {
+  --zone: var(--zone-rest);
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 4px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--zone) 34%, transparent);
+  background: color-mix(in srgb, var(--zone) 11%, transparent);
+  color: color-mix(in srgb, var(--zone) 82%, var(--ink)); font-size: 10.5px; font-weight: 700; line-height: 16px;
+  letter-spacing: 0.07em; text-transform: uppercase; white-space: nowrap; cursor: default;
+  animation: clanRowIn 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) calc(min(var(--i, 0), 12) * 40ms) backwards;
+}
+.reward-chip b { color: var(--ink); font-family: var(--font-display); font-size: 11.5px; letter-spacing: 0; }
+.reward-chip__medal {
+  flex: none; width: 14px; height: 14px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.6), transparent 48%), var(--zone);
+  box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.35), 0 0 8px -1px color-mix(in srgb, var(--zone) 70%, transparent);
+}
+.reward-chip.is-podium .reward-chip__medal { background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.7), transparent 48%), var(--metal-v); }
+.reward-chip.is-mini { padding: 1px 9px; animation: none; }
+.reward-ladder {
+  --plot: 52px;
+  flex: 0 1 calc(var(--n) * 29px); min-width: 0;
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 24px); column-gap: clamp(2px, 0.45vw, 5px);
+  margin: 0; padding: 0; list-style: none;
+  background: linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)) 0 var(--plot) / 100% 1px no-repeat;
+}
+.reward-ladder__season { display: grid; grid-template-rows: var(--plot) 17px; min-width: 0; cursor: default; }
+.reward-ladder__slot { display: flex; align-items: flex-end; justify-content: center; }
+.reward-ladder__bar {
+  width: 100%; height: calc(var(--h) * 100%); border-radius: 4px 4px 1px 1px;
+  background: linear-gradient(180deg, var(--zone), color-mix(in srgb, var(--zone) 38%, transparent));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transform-origin: bottom center; transition: filter 0.18s ease;
+  animation: dailyRise 0.7s cubic-bezier(0.22, 1, 0.36, 1) calc(min(var(--i, 0), 40) * 14ms + 0.15s) backwards;
+}
+.reward-ladder__season:hover .reward-ladder__bar { filter: brightness(1.22); }
+.reward-ladder__season.is-podium .reward-ladder__bar {
+  background: var(--metal-v);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 0 12px -3px color-mix(in srgb, var(--zone) 80%, transparent);
+}
+.reward-ladder__season.is-empty .reward-ladder__bar { width: 4px; height: 4px; margin-bottom: 3px; border-radius: 50%; background: var(--line2); box-shadow: none; }
+.reward-ladder__season.is-live .reward-ladder__bar {
+  border: 1px dashed color-mix(in srgb, var(--zone) 85%, transparent);
+  background: color-mix(in srgb, var(--zone) 18%, transparent);
+  box-shadow: 0 0 12px -3px color-mix(in srgb, var(--zone) 70%, transparent);
+  animation: dailyRise 0.7s cubic-bezier(0.22, 1, 0.36, 1) calc(min(var(--i, 0), 40) * 14ms + 0.15s) backwards, rewardLive 2.6s ease-in-out 1.2s infinite;
+}
+/* Centred by flex: a number wider than a thin bar spills to both sides, not only to the right. */
+.reward-ladder__label {
+  display: flex; justify-content: center; visibility: hidden; padding-top: 3px;
+  font: 600 10px/14px var(--font-display); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.reward-ladder__season.is-labelled .reward-ladder__label { visibility: visible; }
+.reward-ladder__season.is-live .reward-ladder__label { color: var(--zone); }
+@keyframes rewardLive { 50% { opacity: 0.5; } }
+
+/* The rating line and the battles per day in one card, side by side; stacked on narrow screens. */
+.clan-dynamics { display: grid; grid-template-columns: minmax(0, 1fr); padding: 0; }
+.clan-dynamics.has-daily { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+.clan-dynamics__pane { min-width: 0; padding: 16px 20px; }
+.clan-dynamics__pane + .clan-dynamics__pane { border-left: 1px solid var(--line); }
+.clan-chart__wait { display: grid; place-items: center; min-height: 196px; }
+.clan-chart__month { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.clan-chart__readout { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.clan-chart__readout b { color: var(--accent); font-family: var(--font-display); }
+/* Battles per UTC day: wins (green) under losses (rose) in one bar, over a dashed line at the
+   average of the full days; days at or above it bright, the busiest labelled in gold, the day still
+   counting hatched. */
+.clan-daily { display: flex; flex-direction: column; }
+.daily-summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: -2px 0 4px;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.daily-summary b { color: var(--ink); font-family: var(--font-display); font-size: 14px; font-weight: 700; }
+.daily-summary__rate:is(.tone-up-1, .tone-up-2, .tone-up-3, .tone-down-1, .tone-down-2, .tone-down-3, .is-few) b { color: inherit; }
+.daily-summary__avg { text-decoration: underline dashed rgba(245, 188, 74, 0.65); text-underline-offset: 4px; }
+.daily-summary__none { color: var(--ink2); }
+.daily-summary__legend { display: inline-flex; gap: 10px; margin-left: auto; font-size: 11px; }
+.daily-summary__legend .swatch { width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; vertical-align: 0; }
+.daily-summary__legend .swatch.is-win { background: #8ee6a1; }
+.daily-summary__legend .swatch.is-loss { background: rgba(255, 143, 163, 0.72); }
+.daily-bars {
+  --plot: 128px;
+  --label: 18px;
+  position: relative; flex: 1;
+  display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); align-content: end; column-gap: clamp(2px, 0.5vw, 6px);
+  margin: 0; padding: 16px 0 0; list-style: none;
+}
+.daily-bars::before {
+  content: ''; position: absolute; left: 0; right: 0; bottom: var(--label); height: 1px; background: rgba(255, 255, 255, 0.09);
+}
+.daily-bars.has-avg::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: calc(var(--label) + var(--a) * var(--plot));
+  border-top: 1px dashed rgba(245, 188, 74, 0.55); pointer-events: none;
+  animation: clanFadeIn 0.6s ease 0.9s backwards;
+}
+.daily-bars__day { display: grid; grid-template-rows: var(--plot) var(--label); min-width: 0; }
 .daily-bars__slot { position: relative; display: flex; align-items: flex-end; justify-content: center; }
 .daily-bars__bar {
   position: relative; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden;
-  width: min(100%, 28px); height: max(3px, calc(var(--h) * 100%)); border-radius: 5px 5px 2px 2px;
+  width: min(72%, 26px); height: max(2px, calc(var(--h) * 100%)); border-radius: 4px 4px 1px 1px;
   background: linear-gradient(180deg, rgba(255, 143, 163, 0.78), rgba(255, 143, 163, 0.5));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  transform-origin: bottom center; transition: filter 0.18s ease;
+  transform-origin: bottom center; transition: filter 0.18s ease, opacity 0.18s ease;
   animation: dailyRise 0.7s cubic-bezier(0.22, 1, 0.36, 1) calc(min(var(--i, 0), 30) * 18ms + 0.2s) backwards;
 }
 .daily-bars__wins { flex: none; height: calc(var(--w) * 100%); background: linear-gradient(180deg, #b9f4c6, #6fd389); }
-.daily-bars__day:hover .daily-bars__bar { filter: brightness(1.18); }
-.daily-bars__day.is-peak .daily-bars__bar { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 0 18px -4px rgba(142, 230, 161, 0.55); }
-.daily-bars__day.is-partial .daily-bars__bar { opacity: 0.6; }
-.daily-bars__day.is-empty .daily-bars__bar { height: 3px; background: var(--line2); box-shadow: none; }
+/* Below the average a day steps back a little; at or above it, it glows. */
+.daily-bars.has-avg .daily-bars__day:not(.is-high) .daily-bars__bar { opacity: 0.74; filter: saturate(0.8); }
+.daily-bars__day.is-high .daily-bars__bar { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 0 14px -5px rgba(142, 230, 161, 0.7); }
+.daily-bars__day.is-peak .daily-bars__bar { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 0 18px -3px rgba(142, 230, 161, 0.8); }
+.daily-bars .daily-bars__day:hover .daily-bars__bar { opacity: 1; filter: brightness(1.15); }
+.daily-bars__day.is-partial .daily-bars__bar::after {
+  content: ''; position: absolute; inset: 0;
+  background: repeating-linear-gradient(-45deg, rgba(17, 16, 21, 0.5) 0 2px, transparent 2px 5px);
+}
+.daily-bars .daily-bars__day.is-empty .daily-bars__bar { height: 2px; opacity: 1; background: var(--line2); box-shadow: none; }
 .daily-bars__value {
-  position: absolute; bottom: calc(max(3px, var(--h) * 100%) + 5px); left: 50%; transform: translateX(-50%);
-  color: var(--ink); font: 600 11px/1 var(--font-display); font-variant-numeric: tabular-nums; white-space: nowrap;
-  animation: clanFadeIn 0.5s ease 0.9s backwards;
+  position: absolute; bottom: calc(max(2px, var(--h) * 100%) + 4px); left: 50%; transform: translateX(-50%);
+  color: var(--ink2); font: 600 10.5px/1 var(--font-display); font-variant-numeric: tabular-nums; white-space: nowrap;
+  animation: clanFadeIn 0.5s ease 0.8s backwards;
 }
+.daily-bars__day.is-peak .daily-bars__value { color: var(--accent); }
 .daily-bars__label {
-  visibility: hidden; padding-top: 5px; text-align: center;
-  font-size: 10.5px; line-height: 15px; color: var(--muted); font-variant-numeric: tabular-nums;
+  display: flex; justify-content: center; padding-top: 4px;
+  font-size: 10px; line-height: 14px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.daily-bars__day.is-labelled .daily-bars__label { visibility: visible; }
 .daily-bars__day.is-partial .daily-bars__label { color: var(--accent); }
-.daily-legend {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: auto; padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.055); font-size: 12px; color: var(--ink2);
-}
-.daily-legend .swatch { margin-right: 6px; }
-.daily-legend .swatch.is-win { background: #8ee6a1; }
-.daily-legend .swatch.is-loss { background: rgba(255, 143, 163, 0.72); }
-.daily-legend__range { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
-.daily-bars + .daily-legend { margin-top: 12px; }
-/* No battle on any day: the flat bars stay, the line sits over the plot. */
-.clan-daily { position: relative; }
-.daily-none {
-  position: absolute; left: 20px; right: 20px; top: 50%; transform: translateY(-50%);
-  text-align: center; font-size: 13px; color: var(--muted); pointer-events: none;
-}
+.clan-daily.is-none .daily-bars { --plot: 24px; flex: none; }
+/* No battle on any day: the line takes the free room above the flat bars. */
+.clan-daily.is-none .daily-summary { flex: 1; align-items: center; justify-content: center; margin: 0; padding: 12px 0; font-size: 13px; }
 @keyframes dailyRise { from { opacity: 0.2; transform: scaleY(0.03); } }
 
 /* The roster: members whose PSR counts in full (SQUADRON_TOP) in gold, the best three in metal,
@@ -1351,21 +1478,22 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .roster-cut { --zone: var(--accent); }
 .roster-card .col-rank { width: 52px; }
 .roster-card .member-cell { width: 100%; max-width: 0; }
+.roster-card .tbl td { padding-top: 8px; padding-bottom: 8px; }
 .member-cell__inner { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .member-cell__nick { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .clans-table tbody tr.row-link:hover .member-cell__nick { color: var(--accent); }
 .roster-card .rating-cell__value { min-width: 44px; }
 .roster-card .rating.is-zero { font-weight: 500; color: var(--muted); }
 /* A strong squadron's top is green row after row: colour without the glow. */
-.roster-card .rating { text-shadow: none; }
+.roster-card .rating { font-size: 14px; text-shadow: none; }
 .roster-card td.col-joined { color: var(--ink2); }
 /* Roles in the squadron, as its page names them; a newcomer green. */
 .member-badge {
   --badge: var(--muted);
-  flex: none; padding: 1px 7px; border-radius: 999px;
+  flex: none; padding: 0 6px; border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--badge) 36%, transparent);
   background: color-mix(in srgb, var(--badge) 13%, transparent);
-  color: var(--badge); font-size: 10px; font-weight: 700; line-height: 14px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--badge); font-size: 9.5px; font-weight: 700; line-height: 15px; letter-spacing: 0.06em; text-transform: uppercase;
 }
 .role-commander { --badge: #f5bc4a; }
 .role-deputy { --badge: #f2984a; }
@@ -1390,7 +1518,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .activity.is-idle { color: var(--muted); }
 .activity__value { min-width: 38px; text-align: right; }
 .roster-more {
-  display: inline-flex; align-items: center; gap: 8px; padding: 7px 16px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px; border-radius: 999px;
   border: 1px solid var(--line2); background: var(--bg-soft); color: var(--ink2);
   font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
   transition: border-color 0.15s ease, color 0.15s ease;
@@ -1398,53 +1526,40 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .roster-more:hover, .roster-more:focus-visible { outline: none; border-color: rgba(245, 188, 74, 0.5); color: var(--ink); }
 .roster-more svg { transition: transform 0.2s ease; }
 .roster-more svg.is-up { transform: rotate(180deg); }
-.roster-card__note { padding: 12px 20px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.roster-card .clans-table__foot { padding: 12px 20px; }
+.roster-card__note { padding: 10px 20px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .clans-table__foot + .roster-card__note { padding-top: 0; border-top: none; }
 
-/* The replays: figures for the period, then the latest battles in two columns, a win or loss on the
+/* The replays: figures for the period, then the latest battles in columns, a win or loss on the
    row's edge. */
 .clan-replays > :not(.sec-head) { transition: opacity 0.15s ease; }
 .clan-replays.is-busy > :not(.sec-head) { opacity: 0.55; }
-.clan-replays__empty { margin: 0 -20px -18px; border-radius: 0 0 var(--radius) var(--radius); }
-.clan-recent { margin-top: 18px; }
-.clan-recent__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+.clan-replays__empty { margin: 0 -20px -16px; border-radius: 0 0 var(--radius) var(--radius); }
+.clan-recent { margin-top: 14px; }
+.clan-recent__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; }
 .clan-recent__head h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .clan-recent__all { margin-left: auto; font-size: 12px; font-weight: 600; }
-.clan-recent__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 8px; }
-.clan-recent__list .row-item { margin: 0; }
+.clan-recent__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 6px; }
+.clan-recent__list .row-item { gap: 10px; margin: 0; padding: 7px 10px 7px 12px; }
+.clan-recent__list .row-item .title { font-size: 13.5px; }
+.clan-recent__list .row-item .sub { margin-top: 1px; font-size: 11px; }
 .recent-row { animation: clanRowIn 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) calc(min(var(--i, 0), 12) * 30ms) backwards; }
 .recent-row.is-win { box-shadow: inset 3px 0 0 rgba(142, 230, 161, 0.7); }
 .recent-row.is-loss { box-shadow: inset 3px 0 0 rgba(255, 143, 163, 0.65); }
 .recent-row__time { display: none; }
 
-/* About: the squadron's own text, facts, past rewards as medals in the ranking's colours. */
-.clan-about__slogan { font-style: italic; color: var(--ink2); }
-.reward-shelf-wrap { padding-top: 10px; }
-.reward-shelf { display: flex; flex-wrap: wrap; gap: 6px; }
-.reward-medal {
-  --zone: var(--zone-rest);
-  display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 3px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--zone) 38%, transparent);
-  background: color-mix(in srgb, var(--zone) 12%, transparent);
-  color: color-mix(in srgb, var(--zone) 80%, var(--ink)); font-size: 12px; font-weight: 600; line-height: 18px; white-space: nowrap; cursor: default;
-  animation: clanRowIn 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) calc(min(var(--i, 0), 12) * 35ms) backwards;
-}
-.reward-medal__season {
-  display: grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 999px;
-  background: color-mix(in srgb, var(--zone) 30%, var(--bg)); color: var(--ink); font: 700 11px/1 var(--font-display);
-}
-.reward-medal.is-podium { border-color: transparent; background: var(--metal); color: #1d1606; }
-.reward-medal.is-podium .reward-medal__season { background: rgba(0, 0, 0, 0.28); color: #fff; }
-.reward-medal.is-mini { padding: 1px 9px; animation: none; }
-.reward-medal.is-more { --zone: var(--muted); padding: 3px 10px; }
-
 @media (max-width: 980px) {
   /* Three tiles over two, no gaps. */
-  .clan-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  .clan-kpis > * { grid-column: span 2; }
-  .clan-kpis > :nth-child(n + 4) { grid-column: span 3; }
-  .clan-replays .clan-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .clan-replays .clan-kpis > * { grid-column: auto; }
+  .clan-stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .clan-stats > * { grid-column: span 2; }
+  .clan-stats > :nth-child(n + 4) { grid-column: span 3; }
+  .clan-stats.is-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .clan-stats.is-four > * { grid-column: auto; }
+}
+@media (max-width: 860px) {
+  .clan-dynamics.has-daily { grid-template-columns: minmax(0, 1fr); }
+  .clan-dynamics__pane + .clan-dynamics__pane { border-left: none; border-top: 1px solid var(--line); }
+  .clan-about__grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 760px) {
   .roster-card .col-joined { display: none; }
@@ -1452,35 +1567,41 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .roster-card.sorted-joined .col-activity { display: none; }
 }
 @media (max-width: 640px) {
-  .clan-hero { padding: 16px 14px 14px; }
-  .clan-hero__main { grid-template-columns: auto minmax(0, 1fr); gap: 12px 14px; }
-  .clan-medal { min-width: 58px; height: 58px; padding: 0 9px; border-radius: 16px; line-height: 58px; }
-  .clan-medal__hash { font-size: 12px; }
-  .clan-medal__n { font-size: clamp(16px, calc(34px - var(--len, 1) * 4px), 28px); }
-  .clan-hero__tag { font-size: 24px; }
-  .clan-hero__name { font-size: 13.5px; }
+  .clan-page > .card:not(.clans-table, .clan-dynamics), .clan-dynamics__pane { padding: 14px; }
+  .clan-hero__main { grid-template-columns: auto minmax(0, 1fr); gap: 10px 12px; }
+  .clan-medal { min-width: 50px; height: 50px; padding: 0 8px; border-radius: 14px; line-height: 50px; }
+  .clan-medal__hash { font-size: 11px; }
+  .clan-medal__n { font-size: clamp(14px, calc(30px - var(--len, 1) * 4px), 24px); }
+  .clan-hero__tag { font-size: 22px; }
+  .clan-hero__name { font-size: 13px; }
   /* The rating under the name, the label beside it. */
   .clan-hero__score {
     grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px;
-    padding: 12px 0 0; border-left: none; border-top: 1px solid rgba(255, 255, 255, 0.06); text-align: left;
+    padding: 10px 0 0; border-left: none; border-top: 1px solid rgba(255, 255, 255, 0.06); text-align: left;
   }
   .clan-hero__rating { justify-content: flex-start; }
-  .clan-hero__value { font-size: 30px; }
+  .clan-hero__value { font-size: 28px; }
   .clan-hero__label { margin-top: 0; }
-  /* Neighbours on one line, the track under them. */
-  .standing { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 12px; margin-top: 12px; padding-top: 12px; }
+  /* Neighbours on one line, the track under them, the tier under it. */
+  .standing { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; margin-top: 10px; padding-top: 10px; }
   .standing__end.is-below { grid-area: 1 / 1; }
   .standing__end.is-above { grid-area: 1 / 2; }
   .standing__track { grid-area: 2 / 1 / 3 / 3; }
   .standing__tier { grid-area: 3 / 1 / 4 / 3; }
-  .clan-season, .clan-replays, .clan-about, .clan-charts > .card { padding: 14px; }
-  /* Two columns; the ring across both, a lone last tile too. */
-  .clan-kpis, .clan-replays .clan-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: dense; gap: 10px; }
-  .clan-kpis > *, .clan-kpis > :nth-child(n + 4) { grid-column: auto; }
-  .clan-kpis > .with-donut, .clan-replays .clan-kpis > :last-child { grid-column: 1 / -1; }
-  .clan-kpis .kpi { padding: 12px 13px; }
-  .clan-kpis .kpi .v { font-size: 22px; }
-  .daily-bars { --plot: 150px; }
+  .clan-season { margin-top: 10px; padding-top: 10px; }
+  .clan-season__hint { display: none; }
+  /* Two columns; the ring across both. */
+  .clan-stats, .clan-stats.is-four { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: dense; gap: 6px; }
+  .clan-stats > *, .clan-stats > :nth-child(n + 4) { grid-column: auto; }
+  .clan-stats > .has-ring, .clan-stats.is-four > :last-child { grid-column: 1 / -1; }
+  .clan-stat { padding: 8px 10px 9px; }
+  .clan-stat__value { font-size: 20px; line-height: 24px; }
+  .clan-about__clamp { max-height: 112px; }
+  .clan-facts__row { gap: 12px; }
+  .reward-ladder { --plot: 44px; column-gap: 3px; }
+  .reward-ladder__season.is-early { display: none; }
+  .daily-bars { --plot: 110px; }
+  .daily-summary__legend { display: none; }
   .clan-replays__empty { margin: 0 -14px -14px; }
   /* PSR alone beside the name: the change folds under it, activity and the join date go; a column
      sorted by stays and takes the bar's room. */
@@ -1491,9 +1612,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .roster-card.sorted-joined .col-joined { display: table-cell; }
   .roster-card.sorted-change .rating-change { display: none; }
   .roster-card:is(.sorted-change, .sorted-activity, .sorted-joined) .rating-bar { display: none; }
+  .roster-card .tbl td { padding-top: 7px; padding-bottom: 7px; }
   .activity__bar { display: none; }
+  .roster-card .clans-table__foot { padding: 10px 14px; }
   .roster-card__note { padding: 10px 14px 14px; }
-  .member-badge { padding: 0 5px; font-size: 9.5px; }
+  .member-badge { padding: 0 5px; font-size: 9px; }
   /* One line per battle, the time in the subtitle; the first eight, "All" leads to the rest. */
   .clan-recent__list .recent-row { flex-wrap: nowrap; }
   .clan-recent__list .recent-row .title { min-width: 0; }
@@ -1502,8 +1625,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .clan-recent__list > :nth-child(n + 9) { display: none; }
 }
 @media (max-width: 359px) {
-  .clan-medal { min-width: 50px; height: 50px; line-height: 50px; border-radius: 14px; }
-  .clan-hero__tag { font-size: 21px; }
+  .clan-medal { min-width: 46px; height: 46px; line-height: 46px; border-radius: 13px; }
+  .clan-hero__tag { font-size: 20px; }
   .member-badge:not(.role-commander) { display: none; }
 }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1769,11 +1892,14 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
   .standing__lead,
   .standing__marker,
   .standing__tier,
-  .clan-kpis .kpi,
+  .clan-stat,
   .clan-page .donut-arc,
+  .reward-chip,
+  .reward-ladder__bar,
+  .reward-ladder__season.is-live .reward-ladder__bar,
+  .daily-bars.has-avg::after,
   .daily-bars__bar,
   .daily-bars__value,
   .activity__fill,
-  .recent-row,
-  .reward-medal { animation: none; }
+  .recent-row { animation: none; }
 }

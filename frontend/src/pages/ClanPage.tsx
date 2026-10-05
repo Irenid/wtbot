@@ -10,6 +10,7 @@ import {
   type ClanProfile,
   type ClanRecords,
   type ClanRequirements,
+  type ClanSeasonRewards,
 } from '../api'
 import {
   battleVersusLabel,
@@ -27,7 +28,7 @@ import {
   romanRank,
   unitTypeLabel,
 } from '../lib/format'
-import { DeltaPill, DonutKpi, ErrorNotice, Kpi, Loading, ResultBadge, SecHead, SegControl, StarIcon, useRowLink } from '../components/ui'
+import { DeltaPill, ErrorNotice, Loading, ResultBadge, SecHead, SegControl, StarIcon, useRowLink } from '../components/ui'
 import {
   Change,
   cascade,
@@ -36,6 +37,7 @@ import {
   Marked,
   MIN_RATE_BATTLES,
   Move,
+  REWARD_TIERS,
   rewardTierOf,
   rewardZone,
   searchPattern,
@@ -81,15 +83,21 @@ const ROLES = ['Commander', 'Deputy', 'Officer', 'Sergeant'] as const
  */
 const ROSTER_PREVIEW = SQUADRON_TOP
 const ROSTER_PREVIEW_SLACK = 5
-const ROSTER_COLUMNS = 6
 /** The daily battles chart's span, days. */
 const DAILY_DAYS = 30
-/** The rating chart's height, px: level with the daily bars and their legend beside it. */
-const RATING_CHART_HEIGHT = 262
+/** Up to this many days every bar is labelled with its battles; more label only the busiest. */
+const DAILY_VALUES_ALL = 10
+/** The rating chart's height, px: level with the daily bars beside it. */
+const RATING_CHART_HEIGHT = 196
 /** The URL's limit for the roster search, as on /clans. */
 const MAX_QUERY_LENGTH = 64
 /** One URL update per pause in typing: the rows follow the field at once. */
 const SEARCH_DELAY_MS = 300
+/** Seasons in the rewards chart: 40 (about six and a half years), 20 on a phone; the tally counts every season. */
+const REWARD_SEASONS_SHOWN = 40
+const REWARD_SEASONS_NARROW = 20
+/** A rewards chart this short labels every season; a longer one every fifth. */
+const REWARD_LABEL_ALL = 12
 
 /** Season title of a reward ("place3@historical"); the mode is named only when it is not RB squadron battles. */
 function rewardText(code: string): string | null {
@@ -106,6 +114,16 @@ function rewardClass(code: string): string {
   if (place) return ` is-podium place-${place[1]}`
   const top = /^top(\d{1,3})$/.exec(title)
   return top !== null && rewardTierOf(Number(top[1]))?.top === Number(top[1]) ? ` zone-${top[1]}` : ''
+}
+
+/** A reward's height in the rewards chart: place 1 is 8, the top 100 is 1; 0 — not a ranking reward. */
+function rewardLevel(code: string): number {
+  const [title = ''] = code.split('@')
+  const place = /^place([1-3])$/.exec(title)
+  if (place) return 9 - Number(place[1])
+  const top = /^top(\d{1,3})$/.exec(title)
+  const index = top === null ? -1 : REWARD_TIERS.findIndex((tier) => tier.top === Number(top[1]))
+  return index === -1 ? 0 : REWARD_TIERS.length - index
 }
 
 function requirementLines(requirements: ClanRequirements): string[] {
@@ -162,13 +180,28 @@ function activityTone(activity: number): string {
   return ''
 }
 
+/** "New": joined within NEW_MEMBER_DAYS by the join date on the squadron's page on warthunder.com. */
 function isNewMember(member: Member, nowSec: number): boolean {
   return member.joinedAt !== null && nowSec - member.joinedAt < NEW_MEMBER_DAYS * DAY_SEC
+}
+
+/** How long a member has been in the squadron: days for the first month, then months or years. */
+function memberAge(joinedAt: number, nowSec: number): string {
+  return nowSec - joinedAt < 31 * DAY_SEC
+    ? tp('season.days', Math.max(1, Math.floor((nowSec - joinedAt) / DAY_SEC)))
+    : fmtAge(joinedAt, nowSec)
 }
 
 /** A nick as search compares it: NFKC, locale-neutral lowercase (as the server's nick search). */
 function searchKey(text: string): string {
   return text.normalize('NFKC').toLowerCase()
+}
+
+/** A counted phrase with its number in bold, wherever the language puts it: "<b>162</b> battles". */
+function Counted({ text, n }: { text: string; n: string }) {
+  const at = text.indexOf(n)
+  if (at === -1) return <>{text}</>
+  return <>{text.slice(0, at)}<b>{n}</b>{text.slice(at + n.length)}</>
 }
 
 /** Adds the squadron to the viewer's favourites, the filter of the /clans table. */
@@ -267,9 +300,144 @@ function Standing({ clan, ranking }: { clan: Clan; ranking: ClanDetail['ranking'
   )
 }
 
+/** A figure that holds a season record: a gold star beside its name, the record named on hover. */
+function RecordMark({ title }: { title: string }) {
+  return (
+    <span className="stat-record" title={title}>
+      <StarIcon filled size={10} />
+      {t('clan.record')}
+    </span>
+  )
+}
+
+/** A win rate as a ring: the arc is the share of wins. */
+function Ring({ fraction }: { fraction: number | null }) {
+  const radius = 15
+  const circumference = 2 * Math.PI * radius
+  const share = fraction === null ? 0 : Math.max(0, Math.min(1, fraction))
+  return (
+    <svg className="clan-stat__ring" width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+      <circle cx="20" cy="20" r={radius} fill="none" className="donut-track" strokeWidth="5" />
+      <circle
+        cx="20" cy="20" r={radius} fill="none" className="donut-arc"
+        strokeWidth="5" strokeLinecap="round"
+        strokeDasharray={`${(circumference * share).toFixed(1)} ${circumference.toFixed(1)}`}
+        transform="rotate(-90 20 20)"
+      />
+    </svg>
+  )
+}
+
 /**
- * Who the squadron is and where it stands: its place in the colour of the reward it holds (the
- * ranking's zones), the rating with its 24 h change and places moved, the gaps to its neighbours.
+ * One figure of a strip: its name, the value, a line under it. Tone classes colour it above or below
+ * the norm, has-record turns it gold; a win rate gets its ring.
+ */
+function Stat({ label, value, sub, className = '', title, ring, record = null }: {
+  label: string
+  value: ReactNode
+  sub?: ReactNode
+  className?: string
+  title?: string | undefined
+  ring?: number | null
+  /** The record's tooltip; null — no record. */
+  record?: string | null
+}) {
+  return (
+    <div className={`clan-stat${ring !== undefined ? ' has-ring' : ''}${className}`} title={title}>
+      {ring !== undefined && <Ring fraction={ring} />}
+      <div className="clan-stat__body">
+        <div className="clan-stat__label">
+          {label}
+          {record !== null && <RecordMark title={record} />}
+        </div>
+        <div className="clan-stat__value">{value}</div>
+        {sub !== undefined && <div className="clan-stat__sub">{sub}</div>}
+      </div>
+    </div>
+  )
+}
+
+/** Win rate and K/D toned as on /clans; fewer than MIN_RATE_BATTLES battles stay grey. */
+function rateTone(score: number | null, battles: number): string {
+  return battles >= MIN_RATE_BATTLES ? toneClass(score) : ' is-few'
+}
+
+function WinsLosses({ wins, losses }: { wins: number | null; losses: number | null }) {
+  return (
+    <>
+      {/* The numbers are their own spans: only the words come from the "{n} wins" templates. */}
+      <span className="ok">{fmtInt(wins)}</span> {t('metric.wins.count', { n: '' }).trim()}
+      {' · '}
+      <span className="fail">{fmtInt(losses)}</span> {t('metric.losses.count', { n: '' }).trim()}
+    </>
+  )
+}
+
+/**
+ * The season from the game's leaderboard (not from the bot's replays), under the squadron's name:
+ * figures toned against the norm as in the ranking, gold where the squadron holds the season's record.
+ */
+function SeasonFigures({ detail }: { detail: ClanDetail }) {
+  const { clan, ranking } = detail
+  if (!clan.official || clan.seasonBattles === null) return null
+  const battles = clan.seasonBattles
+  const winRate = seasonWinRate(clan)
+  const kd = seasonKd(clan)
+  const losses = clan.seasonWins === null ? null : battles - clan.seasonWins
+  const kills = clan.airKills === null && clan.groundKills === null ? null : (clan.airKills ?? 0) + (clan.groundKills ?? 0)
+  const holds = (key: keyof ClanRecords): boolean => ranking.records[key] === clan.coreTag
+  const few = battles < MIN_RATE_BATTLES ? t('clans.rate.few', { n: MIN_RATE_BATTLES }) : null
+  const heading = seasonHeading(detail.season, detail.officialSeason)
+  const line = seasonLine(detail.season)
+  let day: ReactNode
+  if (clan.battles24h !== null) {
+    day = clan.battles24h > 0
+      ? <span className="clan-stat__day">{t('clans.battles.day', { n: fmtInt(clan.battles24h) })}</span>
+      : t('clan.stat.day.none')
+  }
+  return (
+    <section className="clan-season" aria-label={heading}>
+      <div className="clan-season__head">
+        <h2>{heading}</h2>
+        {line !== null && <span className="clan-season__line">{line}</span>}
+        <span className="clan-season__hint">{t('clan.official.hint')}</span>
+      </div>
+      <div className="clan-stats">
+        <Stat
+          label={t('metric.battles')}
+          value={fmtInt(battles)}
+          className={holds('battles') ? ' has-record' : ''}
+          record={holds('battles') ? t('clans.record.battles') : null}
+          sub={day}
+        />
+        <Stat
+          label={t('metric.winrate')}
+          value={fmtPercent(winRate)}
+          ring={winRate}
+          className={`${rateTone(winRateScore(winRate), battles)}${winRate !== null && winRate < 0.5 ? ' is-losing' : ''}${holds('winRate') ? ' has-record' : ''}`}
+          title={few ?? undefined}
+          record={holds('winRate') ? t('clans.record.winRate', { n: MIN_RATE_BATTLES }) : null}
+          sub={<WinsLosses wins={clan.seasonWins} losses={losses} />}
+        />
+        <Stat
+          label={t('metric.kd')}
+          value={fmtRatio(kd)}
+          className={`${rateTone(kdScore(kd), battles)}${holds('kd') ? ' has-record' : ''}`}
+          title={joinTitles(`${fmtInt(clan.airKills)} ${t('metric.killsAir')} · ${fmtInt(clan.groundKills)} ${t('metric.killsGround')}`, few)}
+          record={holds('kd') ? t('clans.record.kd', { n: MIN_RATE_BATTLES }) : null}
+          sub={`${t('metric.kills.count', { n: fmtInt(kills) })} · ${t('metric.deaths.count', { n: fmtInt(clan.deaths) })}`}
+        />
+        <Stat label={t('clan.official.flightTime')} value={fmtHours(clan.flightTimeMin === null ? null : clan.flightTimeMin * 60)} />
+        <Stat label={t('clan.official.activity')} value={fmtInt(clan.activity)} />
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Who the squadron is and how its season goes, in one card: its place in the colour of the reward it
+ * holds (the ranking's zones), the rating with its 24 h change and places moved, the gaps to its
+ * neighbours, then the season's figures.
  */
 function ClanHero({ detail }: { detail: ClanDetail }) {
   const { clan, ranking } = detail
@@ -332,93 +500,248 @@ function ClanHero({ detail }: { detail: ClanDetail }) {
         </div>
       </div>
       {clan.leaderboard === 'current' && <Standing clan={clan} ranking={ranking} />}
+      <SeasonFigures detail={detail} />
     </header>
   )
 }
 
-/** A KPI that holds a season record: gold, with the record named on hover. */
-function RecordMark({ title }: { title: string }) {
+/** The squadron's own text, cut to a few lines while longer, with a button for the rest. */
+function ClampedText({ children }: { children: ReactNode }) {
+  const boxRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [cut, setCut] = useState(false)
+  useLayoutEffect(() => {
+    const box = boxRef.current
+    if (box === null) return
+    const measure = (): void => setCut(box.scrollHeight > box.clientHeight + 1)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(box)
+    return () => observer.disconnect()
+  }, [])
   return (
-    <span className="kpi-record" title={title}>
-      <StarIcon filled size={11} />
-      {t('clan.record')}
-    </span>
+    <div className="clan-about__text">
+      <div ref={boxRef} className={`clan-about__clamp${open ? ' is-open' : cut ? ' is-cut' : ''}`}>{children}</div>
+      {(cut || open) && (
+        <button type="button" className="clan-about__more" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {t(open ? 'clan.about.less' : 'clan.about.more')}
+          <svg className={open ? 'is-up' : undefined} width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
+            <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        </button>
+      )}
+    </div>
   )
 }
 
-/** Win rate and K/D toned as on /clans; fewer than MIN_RATE_BATTLES battles stay grey. */
-function rateTone(score: number | null, battles: number): string {
-  return battles >= MIN_RATE_BATTLES ? toneClass(score) : ' is-few'
+interface SeasonReward {
+  season: number
+  /** The season's best title ("top10@historical"): the chart's colour and height. */
+  title: string
+  /** Every title of the season, as text. */
+  labels: string[]
+  level: number
+}
+
+/** Past seasons' ranking rewards, oldest first, each by its best title. */
+function rewardHistory(rewards: ClanSeasonRewards | null): SeasonReward[] {
+  const history: SeasonReward[] = []
+  for (const [season, titles] of rewards?.log ?? []) {
+    let best: { title: string; level: number } | null = null
+    for (const title of titles) {
+      const level = rewardLevel(title)
+      if (level > 0 && (best === null || level > best.level)) best = { title, level }
+    }
+    if (best === null) continue
+    const labels = titles.map(rewardText).filter((label): label is string => label !== null)
+    history.push({ season, title: best.title, labels, level: best.level })
+  }
+  return history.sort((left, right) => left.season - right.season)
+}
+
+/** The reward the squadron's place holds in the current season, as a title; null — none. */
+function liveTitle(clan: Clan): string | null {
+  if (clan.leaderboard !== 'current') return null
+  if (clan.rank <= 3) return `place${clan.rank}`
+  const tier = rewardTierOf(clan.rank)
+  return tier === undefined ? null : `top${tier.top}`
+}
+
+/** A bar's height in the rewards chart: the top 100 a sixth of the plot, place 1 all of it. */
+function rewardHeight(level: number): string {
+  return (0.16 + (0.84 * (level - 1)) / 7).toFixed(3)
 }
 
 /**
- * The season from the game's leaderboard (not from the bot's replays): figures toned against the
- * norm as in the ranking, gold where the squadron holds the season's record.
+ * Season rewards: how often the squadron took each reward, then a bar per season in the reward's
+ * colour and height (seasons without a reward stay a dot) up to the current season, whose bar is the
+ * reward its place holds so far.
  */
-function SeasonCard({ detail }: { detail: ClanDetail }) {
-  const { clan, ranking } = detail
-  if (!clan.official || clan.seasonBattles === null) return null
-  const battles = clan.seasonBattles
-  const winRate = seasonWinRate(clan)
-  const kd = seasonKd(clan)
-  const losses = clan.seasonWins === null ? null : battles - clan.seasonWins
-  const holds = (key: keyof ClanRecords): boolean => ranking.records[key] === clan.coreTag
-  const few = battles < MIN_RATE_BATTLES ? t('clans.rate.few', { n: MIN_RATE_BATTLES }) : null
-  const line = seasonLine(detail.season)
+function RewardHistory({ history, live }: { history: SeasonReward[]; live: { season: number; title: string } | null }) {
+  const latest = history[history.length - 1]!.season
+  const last = live === null ? latest : Math.max(latest, live.season - 1)
+  const first = Math.max(history[0]!.season, last - REWARD_SEASONS_SHOWN + 1)
+  const bySeason = new Map(history.map((entry) => [entry.season, entry]))
+  const seasons: number[] = []
+  for (let season = first; season <= last; season += 1) seasons.push(season)
+  const current = live !== null && live.season === last + 1
+    ? { ...live, label: t('clan.rewards.live', { n: live.season, reward: rewardText(live.title) ?? '' }) }
+    : null
+  const count = seasons.length + (current === null ? 0 : 1)
+
+  const tally = new Map<string, { title: string; level: number; count: number }>()
+  for (const entry of history) {
+    const label = rewardText(entry.title)
+    if (label === null) continue
+    const item = tally.get(label)
+    if (item) item.count += 1
+    else tally.set(label, { title: entry.title, level: entry.level, count: 1 })
+  }
+  // Best first; a mode other than RB (" · AB") after RB's own.
+  const chips = [...tally.entries()].sort(([leftLabel, left], [rightLabel, right]) =>
+    right.level - left.level || leftLabel.length - rightLabel.length)
+
+  const labelled = (season: number, index: number): boolean => {
+    if (count <= REWARD_LABEL_ALL || season % 5 === 0) return true
+    // The first and the last season, unless a fifth stands close by.
+    if (index === 0) return season % 5 < 3
+    return season === last && season % 5 > 2
+  }
+
   return (
-    <section className="card clan-season">
-      <div className="clan-card__head">
-        <SecHead title={seasonHeading(detail.season, detail.officialSeason)} hint={t('clan.official.hint')} />
-        {line !== null && <div className="clan-card__meta">{line}</div>}
+    <div className="clan-rewards">
+      <div className="clan-rewards__head">
+        <h3>{t('clan.about.rewards')}</h3>
+        <ul className="clan-rewards__tally">
+          {chips.map(([label, item], index) => (
+            <li
+              key={label}
+              className={`reward-chip${rewardClass(item.title)}`}
+              style={cascade(index)}
+              title={tp('clan.rewards.tally', item.count, { reward: label })}
+            >
+              <span className="reward-chip__medal" aria-hidden="true" />
+              {label}
+              <b>×{fmtInt(item.count)}</b>
+            </li>
+          ))}
+        </ul>
       </div>
-      <div className="kpis clan-kpis">
-        <Kpi
-          label={t('metric.battles')}
-          value={fmtInt(battles)}
-          className={holds('battles') ? 'has-record' : undefined}
-          sub={clan.battles24h !== null && clan.battles24h > 0
-            ? <span className="kpi-day">{t('clans.battles.day', { n: fmtInt(clan.battles24h) })}</span>
-            : undefined}
-        >
-          {holds('battles') && <RecordMark title={t('clans.record.battles')} />}
-        </Kpi>
-        <DonutKpi
-          label={t('metric.winrate')}
-          fraction={winRate}
-          text={fmtPercent(winRate)}
-          className={`${rateTone(winRateScore(winRate), battles)}${winRate !== null && winRate < 0.5 ? ' is-losing' : ''}${holds('winRate') ? ' has-record' : ''}`}
-          title={joinTitles(holds('winRate') ? t('clans.record.winRate', { n: MIN_RATE_BATTLES }) : null, few)}
-          sub={<>
-            <span className="ok" style={{ fontWeight: 700 }}>{fmtInt(clan.seasonWins)}</span> {t('metric.wins.count', { n: '' }).trim()}<br />
-            <span className="fail" style={{ fontWeight: 700 }}>{fmtInt(losses)}</span> {t('metric.losses.count', { n: '' }).trim()}
-          </>}
-        >
-          {holds('winRate') && <RecordMark title={t('clans.record.winRate', { n: MIN_RATE_BATTLES })} />}
-        </DonutKpi>
-        <Kpi
-          label={t('metric.kd')}
-          value={fmtRatio(kd)}
-          className={`${rateTone(kdScore(kd), battles)}${holds('kd') ? ' has-record' : ''}`}
-          title={joinTitles(holds('kd') ? t('clans.record.kd', { n: MIN_RATE_BATTLES }) : null, few)}
-          sub={`${fmtInt(clan.airKills)} ${t('metric.killsAir')} · ${fmtInt(clan.groundKills)} ${t('metric.killsGround')} · ${t('metric.deaths.count', { n: fmtInt(clan.deaths) })}`}
-        >
-          {holds('kd') && <RecordMark title={t('clans.record.kd', { n: MIN_RATE_BATTLES })} />}
-        </Kpi>
-        <Kpi label={t('clan.official.flightTime')} value={fmtHours(clan.flightTimeMin === null ? null : clan.flightTimeMin * 60)} />
-        <Kpi label={t('clan.official.activity')} value={fmtInt(clan.activity)} />
+      <ol className="reward-ladder" style={{ '--n': count } as CSSProperties} aria-label={t('clan.about.rewards')}>
+        {seasons.map((season, index) => {
+          // A phone leaves the earliest seasons out (theme.css): their bars would be slivers.
+          const early = index < seasons.length - REWARD_SEASONS_NARROW
+          const entry = bySeason.get(season)
+          const label = entry
+            ? `${t('clan.reward.season', { n: season })}: ${entry.labels.join(', ')}`
+            : t('clan.rewards.none', { n: season })
+          return (
+            <li
+              key={season}
+              className={`reward-ladder__season${entry ? rewardClass(entry.title) : ' is-empty'}${labelled(season, index) ? ' is-labelled' : ''}${early ? ' is-early' : ''}`}
+              style={{ '--h': entry ? rewardHeight(entry.level) : '0', '--i': index } as CSSProperties}
+              title={label}
+              aria-label={label}
+            >
+              <span className="reward-ladder__slot" aria-hidden="true"><span className="reward-ladder__bar" /></span>
+              <span className="reward-ladder__label" aria-hidden="true">{season}</span>
+            </li>
+          )
+        })}
+        {current !== null && (
+          <li
+            key="live"
+            className={`reward-ladder__season is-live is-labelled${rewardClass(current.title)}`}
+            style={{ '--h': rewardHeight(rewardLevel(current.title)), '--i': seasons.length } as CSSProperties}
+            title={current.label}
+            aria-label={current.label}
+          >
+            <span className="reward-ladder__slot" aria-hidden="true"><span className="reward-ladder__bar" /></span>
+            <span className="reward-ladder__label" aria-hidden="true">{current.season}</span>
+          </li>
+        )}
+      </ol>
+    </div>
+  )
+}
+
+/**
+ * The squadron's profile from the leaderboard: its own text (shown as text only, cut while long), the
+ * facts beside it, then its season rewards.
+ */
+function ClanAboutCard({ detail }: { detail: ClanDetail }) {
+  const { clan } = detail
+  const profile = clan.profile
+  const typeLabel = clan.clanType === 'battalion'
+    ? t('clan.type.battalion')
+    : clan.clanType === 'normal' ? t('clan.type.normal') : null
+  const applications = profile ? applicationsText(profile) : null
+  const requirements = profile?.requirements ? requirementLines(profile.requirements) : null
+  const history = rewardHistory(clan.rewards)
+  const title = liveTitle(clan)
+  const live = title !== null && detail.officialSeason !== null ? { season: detail.officialSeason.seasonId, title } : null
+  // The tag's decoration is last season's reward: the chart shows it, unless the log lacks it.
+  const regalia = profile?.regalia ?? null
+  const regaliaLabel = regalia !== null && history.at(-1)?.title.split('@')[0] !== regalia ? clanRewardLabel(regalia) : null
+  const facts: [string, ReactNode][] = []
+  if (clan.region) facts.push([t('clan.about.region'), clan.region])
+  if (typeLabel) facts.push([t('clan.about.type'), typeLabel])
+  if (clan.foundedAt !== null) {
+    facts.push([t('clan.about.founded'), <>{fmtDate(clan.foundedAt)}<span className="clan-facts__note"> · {fmtAge(clan.foundedAt)}</span></>])
+  }
+  if (applications) facts.push([t('clan.about.applications'), applications])
+  if (requirements !== null) {
+    facts.push([
+      t('clan.about.requirements'),
+      requirements.length === 0 ? t('clan.about.requirements.none') : requirements.map((line) => <div key={line}>{line}</div>),
+    ])
+  }
+  if (regalia !== null && regaliaLabel !== null) {
+    facts.push([t('clan.about.regalia'), <span className={`reward-chip is-mini${rewardClass(regalia)}`}>{regaliaLabel}</span>])
+  }
+  const hasText = Boolean(clan.slogan || profile?.description || profile?.announcement)
+  if (profile === null && !hasText && facts.length === 0 && history.length === 0) return null
+
+  return (
+    <section className="card clan-about">
+      <SecHead title={t('clan.about')} hint={t('clan.about.hint')} />
+      <div className={`clan-about__grid${facts.length === 0 ? ' is-single' : ''}`}>
+        <ClampedText>
+          {clan.slogan && <p className="free-text clan-about__slogan">{clan.slogan}</p>}
+          {profile?.description && <p className="free-text">{profile.description}</p>}
+          {!clan.slogan && !profile?.description && <p className="muted small">{t('clan.about.noDescription')}</p>}
+          {profile?.announcement && (
+            <>
+              <div className="clan-about__label">{t('clan.about.announcement')}</div>
+              <p className="free-text">{profile.announcement}</p>
+            </>
+          )}
+        </ClampedText>
+        {facts.length > 0 && (
+          <dl className="clan-facts">
+            {facts.map(([label, value]) => (
+              <div className="clan-facts__row" key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </div>
+      {history.length > 0 && <RewardHistory history={history} live={live} />}
     </section>
   )
 }
 
 /** The rating over the season's last 90 days: the official one, or the members' PSR sum. */
-function RatingChartCard({ clan, history, truncated, error }: {
+function RatingPane({ clan, history, truncated, error }: {
   clan: Clan
   history: ClanHistoryPoint[] | null
   truncated: boolean
   error: unknown
 }) {
   const { locale } = useLocale()
+  const [hover, setHover] = useState<number | null>(null)
   // A new array would rebuild the chart: one per history and language.
   const chart = useMemo(() => history === null ? null : {
     xs: history.map((point) => point.t),
@@ -430,14 +753,18 @@ function RatingChartCard({ clan, history, truncated, error }: {
       stepped: true,
     }],
   }, [history, locale])
-  const hint = `${t(clan.official ? 'clan.dynamics.hint.official' : 'clan.dynamics.hint')}${truncated ? ` · ${t('clan.dynamics.truncated')}` : ''}`
+  const point = hover === null ? null : history?.[hover] ?? null
+  // The hovered reading takes the hint's place: uPlot's own legend is off for a single line.
+  const hint = point !== null
+    ? <span className="clan-chart__readout">{fmtDateTime(point.t)} · <b>{fmtInt(point.total)}</b></span>
+    : `${t(clan.official ? 'clan.dynamics.hint.official' : 'clan.dynamics.hint')}${truncated ? ` · ${t('clan.dynamics.truncated')}` : ''}`
   let body: ReactNode
   if (error !== null) body = <ErrorNotice error={error} />
   else if (chart === null) body = <div className="clan-chart__wait"><Loading /></div>
   else if (chart.xs.length < 2) body = <div className="clan-chart__wait muted small">{t('common.chart.noData')}</div>
-  else body = <TimeChart xs={chart.xs} series={chart.series} height={RATING_CHART_HEIGHT} />
+  else body = <TimeChart xs={chart.xs} series={chart.series} height={RATING_CHART_HEIGHT} dayTicks onCursor={setHover} />
   return (
-    <section className="card clan-chart">
+    <div className="clan-dynamics__pane clan-chart">
       <SecHead title={t('clan.dynamics')} hint={hint}>
         {clan.delta30d !== null && clan.delta30d !== 0 && (
           <span className="clan-chart__month" title={t(clan.official ? 'clan.deltaTooltip.official' : 'clan.deltaTooltip')}>
@@ -446,7 +773,7 @@ function RatingChartCard({ clan, history, truncated, error }: {
         )}
       </SecHead>
       {body}
-    </section>
+    </div>
   )
 }
 
@@ -501,37 +828,82 @@ function utcTime(timestamp: number): string {
 }
 
 /**
- * Battles per day, each bar split into wins and losses; the busiest day is marked. It replaces a
- * chart of the season's running totals, two near-flat lines.
+ * Battles per day, each bar split into wins and losses, over a line at the average of the full days:
+ * days at or above it are bright, the busiest is labelled in gold, the day still counting is hatched.
+ * Above the bars the period's totals, the win rate toned as the season's.
  */
-function DailyBattlesCard({ days, until }: { days: BattleDay[] | null; until: number | null }) {
+function DailyPane({ days, until }: { days: BattleDay[] | null; until: number | null }) {
+  const head = (
+    <SecHead title={t('clan.daily')} hint={t('clan.daily.hint')} />
+  )
   if (days === null) {
     return (
-      <section className="card clan-daily">
-        <SecHead title={t('clan.daily')} hint={t('clan.daily.hint')} />
+      <div className="clan-dynamics__pane clan-daily">
+        {head}
         <div className="clan-chart__wait"><Loading /></div>
-      </section>
+      </div>
     )
   }
-  if (days.length === 0) return null
+  const total = days.reduce((sum, day) => sum + day.battles, 0)
+  const wins = days.reduce((sum, day) => sum + day.wins, 0)
+  const full = days.filter((day) => !day.partial)
+  const base = full.length > 0 ? full : days
+  const average = base.reduce((sum, day) => sum + day.battles, 0) / base.length
   const max = Math.max(1, ...days.map((day) => day.battles))
   const peak = days.reduce((best, day) => (day.battles > best.battles ? day : best))
-  // Day numbers under every day, every second or every third, counted back from the last one.
-  const labelStep = days.length > 20 ? 3 : days.length > 10 ? 2 : 1
-  const range = `${utcDay(days[0]!.day)} – ${utcDay(days[days.length - 1]!.day)}`
-  const none = days.every((day) => day.battles === 0)
+  const winRate = total > 0 ? wins / total : null
+  const none = total === 0
+  const compare = days.length >= 3 && average > 0
+  // Day numbers under every day, every second or every fourth, counted back from the last one;
+  // the month by the first label and wherever it changes.
+  const labelStep = days.length > 20 ? 4 : days.length > 10 ? 2 : 1
+  let lastMonth = -1
   return (
-    <section className="card clan-daily">
-      <SecHead title={t('clan.daily')} hint={t('clan.daily.hint')} />
-      <ol className={`daily-bars${none ? ' is-none' : ''}`} style={{ '--n': days.length } as CSSProperties} aria-label={t('clan.daily')}>
+    <div className={`clan-dynamics__pane clan-daily${none ? ' is-none' : ''}`}>
+      {head}
+      <div className="daily-summary">
+        {none ? (
+          <span className="daily-summary__none">{t('clan.daily.since', { date: utcDay(days[0]!.day) })}</span>
+        ) : (
+          <>
+            <span><Counted text={tp('common.battles', total)} n={fmtInt(total)} /></span>
+            <span className={`daily-summary__rate${rateTone(winRateScore(winRate), total)}`}>
+              <Counted text={t('clan.daily.winRate', { pct: fmtPercent(winRate) })} n={fmtPercent(winRate)} />
+            </span>
+            <span className={compare ? 'daily-summary__avg' : undefined} title={t('clan.daily.avg.title')}>
+              <Counted text={t('clan.daily.avg', { n: fmtInt(Math.round(average)) })} n={fmtInt(Math.round(average))} />
+            </span>
+          </>
+        )}
+        {!none && (
+          <span className="daily-summary__legend" aria-hidden="true">
+            <span><i className="swatch is-win" />{t('battles.filter.wins')}</span>
+            <span><i className="swatch is-loss" />{t('battles.filter.losses')}</span>
+          </span>
+        )}
+      </div>
+      {/* The dashed line at the average matches the underline of the average in the summary. */}
+      <ol
+        className={`daily-bars${compare && !none ? ' has-avg' : ''}`}
+        style={{ '--n': days.length, '--a': (average / max).toFixed(4) } as CSSProperties}
+        aria-label={t('clan.daily')}
+      >
         {days.map((day, index) => {
           const when = day.partial && until !== null ? `${utcDay(day.day)}, ${t('clan.daily.until', { time: utcTime(until) })}` : utcDay(day.day)
           const label = `${when}: ${t('clans.change.day', { battles: fmtInt(day.battles), wins: fmtInt(day.wins) })}`
           const isPeak = day.battles > 0 && day === peak
+          const high = compare && day.battles > 0 && day.battles >= average
+          const date = new Date(day.day * 1000)
+          const shown = (days.length - 1 - index) % labelStep === 0
+          let text = ''
+          if (shown) {
+            text = lastMonth === date.getUTCMonth() ? String(date.getUTCDate()) : utcDay(day.day)
+            lastMonth = date.getUTCMonth()
+          }
           return (
             <li
               key={day.day}
-              className={`daily-bars__day${isPeak ? ' is-peak' : ''}${day.partial ? ' is-partial' : ''}${day.battles === 0 ? ' is-empty' : ''}${(days.length - 1 - index) % labelStep === 0 ? ' is-labelled' : ''}`}
+              className={`daily-bars__day${isPeak ? ' is-peak' : ''}${high ? ' is-high' : ''}${day.partial ? ' is-partial' : ''}${day.battles === 0 ? ' is-empty' : ''}`}
               style={{
                 '--h': (day.battles / max).toFixed(4),
                 '--w': day.battles > 0 ? (day.wins / day.battles).toFixed(4) : '0',
@@ -541,25 +913,41 @@ function DailyBattlesCard({ days, until }: { days: BattleDay[] | null; until: nu
               aria-label={label}
             >
               <span className="daily-bars__slot" aria-hidden="true">
-                {isPeak && <span className="daily-bars__value">{fmtInt(day.battles)}</span>}
+                {day.battles > 0 && (isPeak || days.length <= DAILY_VALUES_ALL) && (
+                  <span className="daily-bars__value">{fmtInt(day.battles)}</span>
+                )}
                 <span className="daily-bars__bar"><span className="daily-bars__wins" /></span>
               </span>
-              <span className="daily-bars__label" aria-hidden="true">{new Date(day.day * 1000).getUTCDate()}</span>
+              <span className="daily-bars__label" aria-hidden="true">{text}</span>
             </li>
           )
         })}
       </ol>
-      {none && <div className="daily-none">{t('clan.daily.none')}</div>}
-      <div className="daily-legend">
-        <span><span className="swatch is-win" />{t('battles.filter.wins')}</span>
-        <span><span className="swatch is-loss" />{t('battles.filter.losses')}</span>
-        <span className="daily-legend__range">{range}</span>
-      </div>
+    </div>
+  )
+}
+
+/**
+ * The season's course in one card: the rating line and, beside it, the battles per day from the
+ * same readings (a PSR estimate has no battle counts, a failed history no days: the line takes the row).
+ */
+function DynamicsCard({ clan, history, truncated, error }: {
+  clan: Clan
+  history: ClanHistoryPoint[] | null
+  truncated: boolean
+  error: unknown
+}) {
+  const daily = useMemo(() => history === null ? null : battleDays(history, DAILY_DAYS), [history])
+  const dailyShown = clan.official && error === null && (daily === null || daily.length > 0)
+  return (
+    <section className={`card clan-dynamics${dailyShown ? ' has-daily' : ''}`}>
+      <RatingPane clan={clan} history={history} truncated={truncated} error={error} />
+      {dailyShown && <DailyPane days={daily} until={history?.at(-1)?.t ?? null} />}
     </section>
   )
 }
 
-const ROSTER_SORT_KEYS = ['psr', 'nick', 'change', 'activity', 'joined'] as const
+const ROSTER_SORT_KEYS = ['place', 'psr', 'nick', 'change', 'activity', 'joined'] as const
 type RosterSort = (typeof ROSTER_SORT_KEYS)[number]
 type SortDir = 'asc' | 'desc'
 
@@ -576,9 +964,9 @@ interface RosterView {
   all: boolean
 }
 
-/** The nick from A, every figure from the largest, the join date from the newest. */
+/** The place and the nick from the top, every figure from the largest, the join date from the newest. */
 function defaultRosterDir(key: RosterSort): SortDir {
-  return key === 'nick' ? 'asc' : 'desc'
+  return key === 'nick' || key === 'place' ? 'asc' : 'desc'
 }
 
 function readRosterView(params: URLSearchParams): RosterView {
@@ -602,9 +990,10 @@ interface RosterRow {
   place: number
 }
 
-/** Rows without the value come last in either direction; ties keep the PSR order. */
+/** Rows without the value come last in either direction; ties keep the PSR order. The place is the PSR order. */
 function sortRoster(rows: readonly RosterRow[], key: RosterSort, dir: SortDir): RosterRow[] {
   const sign = dir === 'asc' ? 1 : -1
+  if (key === 'place') return [...rows].sort((left, right) => sign * (left.place - right.place))
   if (key === 'psr') return [...rows].sort((left, right) => sign * (right.place - left.place))
   if (key === 'nick') {
     return [...rows].sort((left, right) =>
@@ -659,6 +1048,8 @@ interface RosterRowContext {
   topRating: number
   pattern: RegExp | null
   nowSec: number
+  /** Some member has a PSR change: the column is shown. */
+  changes: boolean
   onOpen: ReturnType<typeof useRowLink>
 }
 
@@ -674,6 +1065,7 @@ function RosterLine({ row, index, context }: { row: RosterRow; index: number; co
   const psrTitle = member.rating > 0
     ? t('clan.roster.psr.hold', { pct: Math.round(holdWinRate(member.rating) * 100) })
     : t('clan.roster.psr.zero')
+  const age = member.joinedAt === null ? null : t('clan.roster.joined.title', { age: memberAge(member.joinedAt, context.nowSec) })
   return (
     <tr className={classes} style={cascade(index)} onClick={(event) => context.onOpen(event, href)}>
       <td className="col-rank">
@@ -683,7 +1075,7 @@ function RosterLine({ row, index, context }: { row: RosterRow; index: number; co
         <div className="member-cell__inner">
           <Link to={href} className="member-cell__nick"><Marked text={member.nick} pattern={context.pattern} /></Link>
           {member.role !== null && member.role !== 'Private' && <RoleBadge role={member.role} />}
-          {isNewMember(member, context.nowSec) && <span className="member-badge is-new">{t('clan.roster.new')}</span>}
+          {isNewMember(member, context.nowSec) && <span className="member-badge is-new" title={age ?? undefined}>{t('clan.roster.new')}</span>}
         </div>
       </td>
       <td className="num col-psr">
@@ -701,27 +1093,18 @@ function RosterLine({ row, index, context }: { row: RosterRow; index: number; co
           </span>
         </div>
       </td>
-      <td className="num col-change"><MemberChange member={member} /></td>
+      {context.changes && <td className="num col-change"><MemberChange member={member} /></td>}
       <td className="num col-activity">{member.activity === null ? <span className="muted">—</span> : <ActivityMeter value={member.activity} />}</td>
-      <td
-        className="num col-joined"
-        title={member.joinedAt === null ? undefined : t('clan.roster.joined.title', {
-          age: context.nowSec - member.joinedAt < 31 * DAY_SEC
-            ? tp('season.days', Math.max(1, Math.floor((context.nowSec - member.joinedAt) / DAY_SEC)))
-            : fmtAge(member.joinedAt, context.nowSec),
-        })}
-      >
-        {fmtDate(member.joinedAt)}
-      </td>
+      <td className="num col-joined" title={age ?? undefined}>{fmtDate(member.joinedAt)}</td>
     </tr>
   )
 }
 
 /** The line under the members whose PSR counts in full: everyone below adds SQUADRON_REST_SHARE of theirs. */
-function RosterCut({ index }: { index: number }) {
+function RosterCut({ index, columns }: { index: number; columns: number }) {
   return (
     <tr className="tier-cut roster-cut" style={cascade(index)}>
-      <td colSpan={ROSTER_COLUMNS} title={t('clan.roster.cut.title', { n: SQUADRON_TOP, share: Math.round(SQUADRON_REST_SHARE * 100) })}>
+      <td colSpan={columns} title={t('clan.roster.cut.title', { n: SQUADRON_TOP, share: Math.round(SQUADRON_REST_SHARE * 100) })}>
         <div className="tier-cut__inner">
           <span className="tier-cut__label">
             <Triangle size={8} />
@@ -760,7 +1143,7 @@ function RosterHead({ label, title, sortKey, view, className, onSort }: {
 
 /**
  * Members by PSR, with a line under those counted in full; search by nick, filters by role and
- * newcomers, sorting by every column. The view lives in the URL.
+ * newcomers, sorting by every column (the place is the PSR order). The view lives in the URL.
  */
 function RosterCard({ clan, roster }: { clan: Clan; roster: Member[] }) {
   const openRow = useRowLink()
@@ -849,29 +1232,36 @@ function RosterCard({ clan, roster }: { clan: Clan; roster: Member[] }) {
   const collapsed = !view.all && sorted.length > ROSTER_PREVIEW + ROSTER_PREVIEW_SLACK
   const shown = collapsed ? sorted.slice(0, ROSTER_PREVIEW) : sorted
   // The plain roster reads in PSR order: the line under the members counted in full goes there.
-  const plain = view.sort === 'psr' && view.dir === 'desc' && query === '' && view.roles.length === 0 && !view.fresh
+  const psrOrder = (view.sort === 'psr' && view.dir === 'desc') || (view.sort === 'place' && view.dir === 'asc')
+  const plain = psrOrder && query === '' && view.roles.length === 0 && !view.fresh
   const customized = !plain || view.all
   const roleCounts = new Map<string, number>()
   for (const member of roster) if (member.role !== null) roleCounts.set(member.role, (roleCounts.get(member.role) ?? 0) + 1)
   const newCount = roster.filter((member) => isNewMember(member, nowSec)).length
+  // Before a member's second reading this season every change is "—": the column waits for one.
+  const changes = roster.some((member) => member.delta !== null)
   const context: RosterRowContext = {
     topRating: Math.max(1, roster[0]?.rating ?? 1),
     pattern: searchPattern(draft.trim()),
     nowSec,
+    changes,
     onOpen: openRow,
   }
   const rows: ReactNode[] = []
   for (const row of shown) {
     rows.push(<RosterLine key={row.member.nick} row={row} index={rows.length} context={context} />)
-    if (plain && row.place === SQUADRON_TOP && ranked.length > SQUADRON_TOP) rows.push(<RosterCut key="cut" index={rows.length} />)
+    if (plain && row.place === SQUADRON_TOP && ranked.length > SQUADRON_TOP) {
+      rows.push(<RosterCut key="cut" index={rows.length} columns={changes ? 6 : 5} />)
+    }
   }
   const hasDetails = roster.some((member) => member.role !== null || member.joinedAt !== null || member.activity !== null)
   const sortOptions: { key: RosterSort; label: string }[] = [
     { key: 'psr', label: t('metric.pkr') },
     { key: 'nick', label: t('clan.roster.col.player') },
-    { key: 'change', label: t('clan.roster.col.change') },
+    ...(changes || view.sort === 'change' ? [{ key: 'change' as const, label: t('clan.roster.col.change') }] : []),
     { key: 'activity', label: t('clan.official.activity') },
     { key: 'joined', label: t('clan.roster.col.joined') },
+    ...(view.sort === 'place' ? [{ key: 'place' as const, label: t('clans.col.place') }] : []),
   ]
   const share = Math.round(SQUADRON_REST_SHARE * 100)
 
@@ -890,7 +1280,7 @@ function RosterCard({ clan, roster }: { clan: Clan; roster: Member[] }) {
     // The ranking's table card (ClansPage.tsx): the same head, filters, sticky column heads, rows and lines.
     <section
       ref={cardRef}
-      className={`card clans-table roster-card sorted-${view.sort}`}
+      className={`card clans-table roster-card sorted-${view.sort}${changes ? '' : ' no-changes'}`}
       style={topBar === null ? undefined : ({ '--sticky-top': `${topBar}px` } as CSSProperties)}
     >
       <div className="clans-table__head">
@@ -990,7 +1380,7 @@ function RosterCard({ clan, roster }: { clan: Clan; roster: Member[] }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th className="col-rank">#</th>
+                <RosterHead className="col-rank" label="#" title={t('clan.roster.col.place.title')} sortKey="place" view={view} onSort={sortBy} />
                 <RosterHead className="member-cell" label={t('clan.roster.col.player')} sortKey="nick" view={view} onSort={sortBy} />
                 <RosterHead
                   className="num col-psr"
@@ -1000,14 +1390,16 @@ function RosterCard({ clan, roster }: { clan: Clan; roster: Member[] }) {
                   view={view}
                   onSort={sortBy}
                 />
-                <RosterHead
-                  className="num col-change"
-                  label={t('clan.roster.col.change')}
-                  title={t('clan.roster.col.change.title')}
-                  sortKey="change"
-                  view={view}
-                  onSort={sortBy}
-                />
+                {changes && (
+                  <RosterHead
+                    className="num col-change"
+                    label={t('clan.roster.col.change')}
+                    title={t('clan.roster.col.change.title')}
+                    sortKey="change"
+                    view={view}
+                    onSort={sortBy}
+                  />
+                )}
                 <RosterHead
                   className="num col-activity"
                   label={t('clan.official.activity')}
@@ -1095,28 +1487,32 @@ function ReplayBattlesCard({ detail, days, onDays, refreshing }: {
         </div>
       ) : (
         <>
-          <div className="kpis clan-kpis">
-            <Kpi label={t('metric.battles')} value={fmtInt(battles.total)} sub={t('clan.battles.noresult', { n: fmtInt(battles.unknownResults) })} />
-            <DonutKpi
+          <div className="clan-stats is-four">
+            <Stat
+              label={t('metric.battles')}
+              value={fmtInt(battles.total)}
+              sub={battles.unknownResults > 0 ? t('clan.battles.noresult', { n: fmtInt(battles.unknownResults) }) : undefined}
+            />
+            <Stat
               label={t('metric.winrate')}
-              fraction={battles.winRate}
-              text={fmtPercent(battles.winRate)}
+              value={fmtPercent(battles.winRate)}
+              ring={battles.winRate}
               className={`${rateTone(winRateScore(battles.winRate), decided)}${battles.winRate !== null && battles.winRate < 0.5 ? ' is-losing' : ''}`}
               title={few}
-              sub={<>
-                {/* The number is its own span: only the word is taken from the "{n} wins" template. */}
-                <span className="ok" style={{ fontWeight: 700 }}>{fmtInt(battles.wins)}</span> {t('metric.wins.count', { n: '' }).trim()}<br />
-                <span className="fail" style={{ fontWeight: 700 }}>{fmtInt(battles.losses)}</span> {t('metric.losses.count', { n: '' }).trim()}
-              </>}
+              sub={<WinsLosses wins={battles.wins} losses={battles.losses} />}
             />
-            <Kpi
+            <Stat
               label={t('metric.kd')}
               value={fmtRatio(kd)}
               className={rateTone(kdScore(kd), decided)}
               title={few}
               sub={`${t('metric.kills.count', { n: fmtInt(battles.kills) })} · ${t('metric.deaths.count', { n: fmtInt(battles.deaths) })}`}
             />
-            <Kpi label={t('metric.score')} value={fmtInt(battles.score)} sub={perBattle === null ? undefined : t('clan.battles.perBattle', { n: fmtInt(perBattle) })} />
+            <Stat
+              label={t('metric.score')}
+              value={fmtInt(battles.score)}
+              sub={perBattle === null ? undefined : t('clan.battles.perBattle', { n: fmtInt(perBattle) })}
+            />
           </div>
           <div className="clan-recent">
             <div className="clan-recent__head">
@@ -1160,102 +1556,6 @@ function ReplayBattlesCard({ detail, days, onDays, refreshing }: {
   )
 }
 
-/** Past seasons' rewards shown at once; older ones are counted. */
-const REWARD_SHELF = 12
-
-/**
- * The squadron's profile from the leaderboard and its past rewards as medals in the ranking's
- * colours. The description and announcement are the squadron's own text, shown as text only.
- */
-function ClanAboutCard({ clan }: { clan: Clan }) {
-  const profile = clan.profile
-  const typeLabel = clan.clanType === 'battalion'
-    ? t('clan.type.battalion')
-    : clan.clanType === 'normal' ? t('clan.type.normal') : null
-  const applications = profile ? applicationsText(profile) : null
-  const requirements = profile?.requirements ? requirementLines(profile.requirements) : null
-  const regalia = profile?.regalia ? clanRewardLabel(profile.regalia) : null
-  const rewards = (clan.rewards?.log ?? [])
-    .map(([season, titles]) => ({
-      season,
-      titles,
-      labels: titles.map(rewardText).filter((label): label is string => label !== null),
-    }))
-    .filter((entry) => entry.labels.length > 0)
-    .sort((left, right) => right.season - left.season)
-  const facts: [string, ReactNode][] = []
-  if (clan.region) facts.push([t('clan.about.region'), clan.region])
-  if (typeLabel) facts.push([t('clan.about.type'), typeLabel])
-  if (clan.foundedAt !== null) facts.push([t('clan.about.founded'), fmtDate(clan.foundedAt)])
-  if (applications) facts.push([t('clan.about.applications'), applications])
-  if (regalia && profile?.regalia) {
-    facts.push([t('clan.about.regalia'), <span className={`reward-medal is-mini${rewardClass(profile.regalia)}`}>{regalia}</span>])
-  }
-  if (profile === null && clan.slogan === null && facts.length === 0 && rewards.length === 0) return null
-
-  return (
-    <section className="card clan-about">
-      <SecHead title={t('clan.about')} hint={t('clan.about.hint')} />
-      <div className="grid-2">
-        <div style={{ minWidth: 0 }}>
-          {clan.slogan && <p className="free-text clan-about__slogan">{clan.slogan}</p>}
-          {profile?.description
-            ? <p className="free-text">{profile.description}</p>
-            : <p className="muted small">{t('clan.about.noDescription')}</p>}
-          {profile?.announcement && (
-            <>
-              <div className="muted small" style={{ marginBottom: 4 }}>{t('clan.about.announcement')}</div>
-              <p className="free-text">{profile.announcement}</p>
-            </>
-          )}
-        </div>
-        <div style={{ minWidth: 0 }}>
-          {facts.map(([label, value]) => (
-            <div className="row" key={label}>
-              <span className="muted">{label}</span>
-              <span style={{ flexShrink: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{value}</span>
-            </div>
-          ))}
-          {requirements !== null && (
-            <div className="row" style={{ display: 'block' }}>
-              <div className="muted">{t('clan.about.requirements')}</div>
-              {requirements.length === 0
-                ? <div>{t('clan.about.requirements.none')}</div>
-                : requirements.map((line) => <div key={line}>{line}</div>)}
-            </div>
-          )}
-          {rewards.length > 0 && (
-            <div className="reward-shelf-wrap">
-              <div className="muted small" style={{ marginBottom: 8 }}>{t('clan.about.rewards')}</div>
-              <div className="reward-shelf">
-                {rewards.slice(0, REWARD_SHELF).map((entry, index) => (
-                  <span
-                    key={entry.season}
-                    className={`reward-medal${rewardClass(entry.titles[0] ?? '')}`}
-                    style={cascade(index)}
-                    title={`${t('clan.reward.season', { n: entry.season })}: ${entry.labels.join(', ')}`}
-                  >
-                    <b className="reward-medal__season">{entry.season}</b>
-                    {entry.labels.join(', ')}
-                  </span>
-                ))}
-                {rewards.length > REWARD_SHELF && (
-                  <span
-                    className="reward-medal is-more"
-                    title={rewards.slice(REWARD_SHELF).map((entry) => `${t('clan.reward.season', { n: entry.season })}: ${entry.labels.join(', ')}`).join('\n')}
-                  >
-                    {t('clan.reward.more', { n: rewards.length - REWARD_SHELF })}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
-  )
-}
-
 export function ClanPage() {
   const { coreTag = '' } = useParams()
   // Every label is built at render: a new language re-renders the page.
@@ -1267,7 +1567,6 @@ export function ClanPage() {
   const [historyError, setHistoryError] = useState<unknown>(null)
   const [days, setDays] = useState<Period>('30')
   const [error, setError] = useState<unknown>(null)
-  const daily = useMemo(() => history === null ? null : battleDays(history, DAILY_DAYS), [history])
 
   // Another squadron: the previous one's data is not shown for a moment.
   useEffect(() => {
@@ -1315,9 +1614,6 @@ export function ClanPage() {
   if (!detail) return <Loading text={t('clan.loading')} />
 
   const { clan } = detail
-  // Without the leaderboard's battle counts (a PSR estimate) or with too few readings, the rating
-  // chart takes the whole row.
-  const dailyShown = clan.official && historyError === null && (daily === null || daily.length > 0)
   return (
     <div className="clan-page">
       <div className="crumbs">
@@ -1327,14 +1623,10 @@ export function ClanPage() {
       </div>
       {error !== null && <ErrorNotice error={error} />}
       <ClanHero detail={detail} />
-      <SeasonCard detail={detail} />
-      <div className={dailyShown ? 'grid-2 clan-charts' : 'clan-charts'}>
-        <RatingChartCard clan={clan} history={history} truncated={historyTruncated} error={historyError} />
-        {dailyShown && <DailyBattlesCard days={daily} until={history?.at(-1)?.t ?? null} />}
-      </div>
+      <ClanAboutCard detail={detail} />
+      <DynamicsCard clan={clan} history={history} truncated={historyTruncated} error={historyError} />
       <RosterCard key={clan.coreTag} clan={clan} roster={detail.roster} />
       <ReplayBattlesCard detail={detail} days={days} onDays={setDays} refreshing={refreshing} />
-      <ClanAboutCard clan={clan} />
     </div>
   )
 }

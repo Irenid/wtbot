@@ -24,17 +24,14 @@ export function useRowLink(): (event: MouseEvent<HTMLTableRowElement>, path: str
   }
 }
 
-export function Kpi({ label, value, sub, children, className, title }: {
+export function Kpi({ label, value, sub, children }: {
   label: string
   value: ReactNode
   sub?: ReactNode
   children?: ReactNode
-  /** Extra classes: a tone or a record (ClanPage.tsx). */
-  className?: string | undefined
-  title?: string | undefined
 }) {
   return (
-    <div className={`kpi${className ? ` ${className}` : ''}`} title={title}>
+    <div className="kpi">
       <div className="l">{label}</div>
       <div className="v">{value}</div>
       {sub !== undefined && <div className="s">{sub}</div>}
@@ -62,23 +59,19 @@ export function Donut({ fraction, text }: { fraction: number | null; text: strin
   )
 }
 
-/* A win-rate KPI with the ring on the left, as on the player and squadron pages. */
-export function DonutKpi({ label, fraction, text, sub, children, className, title }: {
+/* A win-rate KPI with the ring on the left, as on the player page. */
+export function DonutKpi({ label, fraction, text, sub }: {
   label: string
   fraction: number | null
   text: string
   sub: ReactNode
-  children?: ReactNode
-  className?: string | undefined
-  title?: string | undefined
 }) {
   return (
-    <div className={`kpi with-donut${className ? ` ${className}` : ''}`} title={title}>
+    <div className="kpi with-donut">
       <Donut fraction={fraction} text={text} />
       <div style={{ minWidth: 0 }}>
         <div className="l">{label}</div>
         <div className="s" style={{ marginTop: 4 }}>{sub}</div>
-        {children}
       </div>
     </div>
   )
