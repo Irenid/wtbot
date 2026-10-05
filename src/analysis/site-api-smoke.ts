@@ -231,6 +231,9 @@ async function main(): Promise<void> {
   ])
   saveClanRatingSnapshots('=BIG=', [{ nick: 'B1', rating: 110 }, { nick: 'B2', rating: 100 }])
 
+  // Seen in an earlier season's battles: this season's PSR is zero for every member.
+  saveClanRatingSnapshots('=NIL=', [{ nick: 'NilOne', rating: 0 }, { nick: 'NilTwo', rating: 0 }])
+
   // Бои: победа и поражение клана + одиночный replay-only игрок.
   saveBattle(battle('100200301', nowSec - 3_600, 1, [
     player('501', 'PilotOne', 1, 'test_tank', { clanTag: CLAN_RAW_TAG, score: 1_200 }),
@@ -942,6 +945,9 @@ async function main(): Promise<void> {
       )
       assert.equal(officialList.find((clan) => clan.coreTag === 'form')?.rank, 8, 'a PSR sum must not outrank official squadrons')
       assert.equal(officialList.find((clan) => clan.coreTag === 'form')?.leaderboard, null)
+      // No season rating at all: out of the list, its page still opens.
+      assert.equal(officialList.some((clan) => clan.coreTag === 'nil'), false)
+      assert.equal((await officialApp.inject({ method: 'GET', url: '/api/clans/nil' })).statusCode, 200)
       // The page mixes the latest and the full crawl: the older one is the page's time ([ZRO]'s
       // zero is confirmed by the full crawl).
       assert.equal(officialBody.updatedAt, fullCrawlAt)

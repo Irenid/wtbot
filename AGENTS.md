@@ -484,7 +484,9 @@ Data:
   latest crawl, earlier crawls of the season, clans with a rating above zero
   missed by the last full crawl (`wt-clans:full-crawl-at`; disbanded or fallen
   to zero: a stale rating would outrank clans in the table), then clans
-  without official data, rated by the PSR sum from snapshots. A zero rating
+  without official data, rated by the PSR sum from snapshots (a zero sum —
+  seen only in an earlier season — is left out of the list and the home
+  count; its page still opens). A zero rating
   below the crawled part is confirmed by the full crawl, not dropped. A
   renamed squadron (one leaderboard `_id`, else one founding time) is one row
   under its newest core tag (`renamedClanCores`; its old core used to keep its

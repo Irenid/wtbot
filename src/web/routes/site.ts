@@ -568,7 +568,10 @@ function buildClanSnapshot(): ClanSnapshot {
       if (group !== undefined) group.recentBattles = battles
     }
   }
-  const rows: SiteClanRow[] = ranked.map((group) => {
+  // A squadron with no season rating at all (no leaderboard row, members' PSR all zero: seen in
+  // battles of an earlier season) is left out of the list; its page still opens.
+  const listed = ranked.filter((group) => group.rankTier !== RANK_TIER_PSR || group.totalRating > 0)
+  const rows: SiteClanRow[] = listed.map((group) => {
     const official = group.official
     return {
       group,
@@ -930,10 +933,6 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     return clanSnapshot
   }
 
-  function clanGroups(): Map<string, SiteClanGroup> {
-    return cachedClanSnapshot().groups
-  }
-
   /** The squadron under a core tag, a former one included (renamedClanCores). */
   function findClanGroup(core: string): SiteClanGroup | undefined {
     const snapshot = cachedClanSnapshot()
@@ -1256,7 +1255,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     const counts = getSiteBattleCounts(sinceTs)
     return {
       players: getSiteReplayPlayerCount(),
-      clans: clanGroups().size,
+      clans: cachedClanSnapshot().rows.length,
       battlesTotal: counts.total,
       battlesRecent: counts.recent,
       lastBattleAt: counts.lastStartAt,
