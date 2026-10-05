@@ -488,9 +488,31 @@ export interface ClanProfile {
   regalia: string | null
 }
 
+/** A squadron one place higher or lower in the leaderboard. */
+export interface ClanNeighbor {
+  coreTag: string
+  displayTag: string
+  rank: number
+  rating: number
+}
+
 export interface ClanDetail {
   ok: true
   season: ClanSeasonContext
+  officialSeason: OfficialClanSeason | null
+  /** The squadron's standing in the whole ranking (the same figures as fetchClans). */
+  ranking: {
+    /** Squadrons in the ranking. */
+    total: number
+    leaderRating: number | null
+    /** The rating at each reward tier's last place, top 5 to top 100. */
+    tierCutoffs: { place: number; rating: number }[]
+    records: ClanRecords
+    live: { count: number; at: number; windowSec: number } | null
+    /** The squadrons one place higher and lower; null — none, or one of the two is not in the leaderboard. */
+    above: ClanNeighbor | null
+    below: ClanNeighbor | null
+  }
   clan: {
     coreTag: string
     displayTag: string
@@ -502,18 +524,27 @@ export interface ClanDetail {
     lastSeenAt: number
     rank: number
     delta30d: number | null
+    /** The 24 h figures and their window, as in ClanListEntry. */
+    delta24h: number | null
+    delta24hFrom: number | null
+    delta24hTo: number | null
+    battles24h: number | null
+    wins24h: number | null
+    rankChange24h: number | null
+    recentBattles: number
+    leaderboard: ClanListEntry['leaderboard']
     rosterKnown: boolean
-    /** true — рейтинг и дельта с официального лидерборда, иначе по снимкам ПКР. */
+    /** true — the rating and its change come from the official leaderboard, else from PSR snapshots. */
     official: boolean
-    /** Статистика сезона из лидерборда; null — клана в нём нет. */
+    /** Season figures from the leaderboard; null — the squadron is not in it. */
     airKills: number | null
     groundKills: number | null
     deaths: number | null
-    /** Налёт участников за сезон, минуты. */
+    /** Members' season flight time, minutes. */
     flightTimeMin: number | null
     activity: number | null
     region: string | null
-    /** normal — полк, battalion — батальон. */
+    /** normal — a squadron, battalion — a battalion. */
     clanType: string | null
     foundedAt: number | null
     slogan: string | null
@@ -523,14 +554,16 @@ export interface ClanDetail {
   roster: {
     nick: string
     rating: number
+    /** The last PSR change, recorded at seenAt; null — one reading so far this season. */
     delta: number | null
     seenAt: number
     identityId: number | null
     wtUserId: string | null
-    /** Commander, Deputy, Officer, Sergeant, Private — со страницы клана. */
+    /** Commander, Deputy, Officer, Sergeant, Private — from the squadron page. */
     role: string | null
-    /** Дата вступления, Unix-секунды. */
+    /** Join date, Unix seconds. */
     joinedAt: number | null
+    /** Activity from the squadron page, 0 to ACTIVITY_MAX (ClanPage.tsx). */
     activity: number | null
   }[]
   battles: {
@@ -543,7 +576,7 @@ export interface ClanDetail {
     score: number
     kills: number
     deaths: number
-    /** Только при total = 0: первый бой в базе бота; null — боёв нет вовсе. */
+    /** Only when total is 0: the first battle in the bot's database; null — none at all. */
     collectedSince: number | null
   }
   recent: BattleListEntry[]

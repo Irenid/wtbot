@@ -49,6 +49,14 @@ export function fmtDateTime(ts: number | null | undefined): string {
     : new Date(ts * 1000).toLocaleString(localeTag(), { dateStyle: 'short', timeStyle: 'short' })
 }
 
+/** The time alone today, with the date on other days: a crawl, a recent battle. */
+export function fmtRecentTime(ts: number): string {
+  const date = new Date(ts * 1000)
+  return date.toDateString() === new Date().toDateString()
+    ? date.toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' })
+    : fmtDateTime(ts)
+}
+
 export function fmtDate(ts: number | null | undefined): string {
   return ts === null || ts === undefined ? '—' : new Date(ts * 1000).toLocaleDateString(localeTag())
 }

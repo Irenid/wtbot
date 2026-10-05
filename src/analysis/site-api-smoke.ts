@@ -923,7 +923,7 @@ async function main(): Promise<void> {
         records: { winRate: string | null; kd: string | null; battles: string | null; gain: string | null }
         live: { count: number; at: number; windowSec: number } | null
         clans: {
-          coreTag: string; name: string | null; totalRating: number; members: number; avgRating: number | null
+          coreTag: string; displayTag: string; name: string | null; totalRating: number; members: number; avgRating: number | null
           seasonBattles: number | null; seasonWins: number | null; delta24h: number | null
           delta24hFrom: number | null; delta24hTo: number | null
           battles24h: number | null; wins24h: number | null; rankChange24h: number | null
@@ -1058,6 +1058,57 @@ async function main(): Promise<void> {
       assert.equal(leaderBody.clan.seasonWins, 2_274)
       assert.equal(leaderBody.clan.delta30d, 48_400 - 40_000, 'the delta is from the official value a month ago')
       assert.equal(leaderBody.roster.length, 0)
+
+      // A squadron's page carries its row's day figures and its standing in the same ranking:
+      // the neighbours one place up and down, only between two squadrons in the table.
+      type StandingBody = {
+        ranking: {
+          total: number
+          leaderRating: number | null
+          tierCutoffs: ClansBody['tierCutoffs']
+          records: ClansBody['records']
+          live: ClansBody['live']
+          above: { coreTag: string; displayTag: string; rank: number; rating: number } | null
+          below: { coreTag: string; displayTag: string; rank: number; rating: number } | null
+        }
+        clan: Pick<ClansBody['clans'][number], 'delta24h' | 'delta24hFrom' | 'delta24hTo' | 'battles24h' | 'wins24h'
+          | 'rankChange24h' | 'recentBattles' | 'leaderboard'>
+      }
+      const standing = async (tag: string): Promise<StandingBody> => {
+        const response = await officialApp.inject({ method: 'GET', url: `/api/clans/${tag}` })
+        assert.equal(response.statusCode, 200, tag)
+        return response.json() as StandingBody
+      }
+      const leaderStanding = await standing('avr')
+      assert.equal(leaderStanding.ranking.total, officialBody.total)
+      assert.equal(leaderStanding.ranking.leaderRating, 48_400)
+      assert.deepEqual(leaderStanding.ranking.tierCutoffs, officialBody.tierCutoffs)
+      assert.deepEqual(leaderStanding.ranking.records, officialBody.records)
+      assert.deepEqual(leaderStanding.ranking.live, officialBody.live)
+      assert.equal(leaderStanding.ranking.above, null, 'nobody above the first place')
+      const second = officialList[1]
+      assert.deepEqual(leaderStanding.ranking.below, {
+        coreTag: 'tst', displayTag: second?.displayTag, rank: 2, rating: second?.totalRating,
+      })
+      assert.ok(leader)
+      const { delta24h, delta24hFrom, delta24hTo, battles24h, wins24h, rankChange24h, recentBattles, leaderboard } = leader
+      assert.deepEqual(leaderStanding.clan, {
+        ...leaderStanding.clan,
+        delta24h, delta24hFrom, delta24hTo, battles24h, wins24h, rankChange24h, recentBattles, leaderboard,
+      }, 'the page and the list agree on the day')
+      const secondStanding = await standing('tst')
+      assert.deepEqual(
+        [secondStanding.ranking.above?.coreTag, secondStanding.ranking.below?.coreTag],
+        ['avr', 'new'],
+      )
+      // [ZRO] is last in the table: [OLD] below it is dropped, a rating no longer there to pass.
+      assert.equal((await standing('zro')).ranking.below, null)
+      const droppedStanding = await standing('old')
+      assert.deepEqual([droppedStanding.ranking.above, droppedStanding.ranking.below], [null, null])
+      assert.equal(droppedStanding.clan.leaderboard, 'dropped')
+      const estimateStanding = await standing('form')
+      assert.deepEqual([estimateStanding.ranking.above, estimateStanding.ranking.below], [null, null])
+      assert.equal(estimateStanding.clan.leaderboard, null)
 
       const leaderHistory = await officialApp.inject({ method: 'GET', url: '/api/clans/avr/history?days=90' })
       const leaderPoints = (leaderHistory.json() as { points: { t: number; total: number }[] }).points

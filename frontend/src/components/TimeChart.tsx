@@ -7,11 +7,22 @@ export interface TimeSeries {
   label: string
   color: string
   values: (number | null)[]
-  /** Ступенчатая линия для накопительных метрик (ПКР, бои). */
+  /** A stepped line for running totals (PSR, battles). */
   stepped?: boolean
+  /** A gradient under the line, from `top` at the plot's top edge to `bottom` at its foot; none by default. */
+  area?: { top: string; bottom: string }
 }
 
-/** Обёртка uPlot: тёмные оси, ресайз по контейнеру, время по X в секундах. */
+/** The area's gradient spans the plot box, which uPlot measures anew on every resize and redraw. */
+function areaFill(plot: uPlot, area: { top: string; bottom: string }): CanvasGradient {
+  const { top, height } = plot.bbox
+  const gradient = plot.ctx.createLinearGradient(0, top, 0, top + height)
+  gradient.addColorStop(0, area.top)
+  gradient.addColorStop(1, area.bottom)
+  return gradient
+}
+
+/** A uPlot wrapper: dark axes, sized to its container, time on X in seconds. */
 export function TimeChart({ xs, series, height = 220, percent = false }: {
   xs: number[]
   series: TimeSeries[]
@@ -35,7 +46,7 @@ export function TimeChart({ xs, series, height = 220, percent = false }: {
       width: box.clientWidth,
       height,
       series: [
-        // Подпись оси X в легенде: без неё uPlot подставляет своё английское «Time».
+        // The X axis's legend label: without it uPlot shows its own English "Time".
         { label: t('common.chart.date') },
         ...series.map((entry) => ({
           label: entry.label,
@@ -43,6 +54,7 @@ export function TimeChart({ xs, series, height = 220, percent = false }: {
           width: 2,
           points: { show: xs.length <= 60, size: 5, fill: entry.color },
           ...(entry.stepped ? { paths: uPlot.paths.stepped!({ align: 1 }) } : {}),
+          ...(entry.area !== undefined ? { fill: (plot: uPlot) => areaFill(plot, entry.area!) } : {}),
           value: (_u: uPlot, value: number | null) =>
             value === null ? '—' : percent ? `${(value * 100).toFixed(1)}%` : value.toLocaleString(localeTag()),
         })),

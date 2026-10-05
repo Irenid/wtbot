@@ -252,6 +252,8 @@ test('fetchClanMembers читает активность, роль и дату �
       </div>${cell('1779')}${cell('1440')}${cell('Commander', true)}${cell('01.11.2023', true)}
       ${cell('2')}<div class="squadrons-members__grid-item"><a href="en/community/userinfo/?nick=Rookie">Rookie</a></div>
       ${cell('0')}${cell('963')}${cell('Private', true)}${cell('31.02.2022', true)}
+      ${cell('3')}<div class="squadrons-members__grid-item"><a href="en/community/userinfo/?nick=Second">Second</a></div>
+      ${cell('1532')}${cell('3960')}${cell('clan/deputy', true)}${cell('06.06.2026', true)}
     </div>`)
   initDb(':memory:')
 
@@ -261,6 +263,8 @@ test('fetchClanMembers читает активность, роль и дату �
       { nick: 'Boss', rating: 1779, activity: 1440, role: 'Commander', joinedAt: Date.UTC(2023, 10, 1) / 1_000 },
       // Несуществующая дата — null, остальное читается.
       { nick: 'Rookie', rating: 0, activity: 963, role: 'Private', joinedAt: null },
+      // The deputy's role comes as the untranslated key.
+      { nick: 'Second', rating: 1532, activity: 3960, role: 'Deputy', joinedAt: Date.UTC(2026, 5, 6) / 1_000 },
     ])
     saveClanRatingSnapshots('[CLAN]', members)
     assert.deepEqual(getSiteClanRosterDetails('clan').get('Boss'), {

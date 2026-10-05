@@ -238,6 +238,28 @@ function SeasonTrack({ stages, seasonEndsAt, now }: { stages: ClanSeasonStage[];
 }
 
 /**
+ * The forum's season name is Russian, so the heading is built in the UI language; the number
+ * comes from the game when its dates match the forum schedule's.
+ */
+export function seasonHeading(context: ClanSeasonContext, official: OfficialClanSeason | null): string {
+  const season = context.season
+  return season !== null && official !== null && official.startsAt === season.startsAt && official.endsAt === season.endsAt
+    ? t('season.titleNumbered', { n: official.seasonId })
+    : t('season.title')
+}
+
+/** One line: the season's dates and its current stage ("Sep 1 – Oct 31, 2026 · week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
+export function seasonLine(context: ClanSeasonContext): string | null {
+  const season = context.season
+  if (!season) return null
+  const current = context.currentStage
+  const currentText = current
+    ? `${stageLabel(current, season.endsAt)} · ${stageRange(current)}`
+    : season.active ? t('season.waiting') : t('season.ended')
+  return `${dayRange(season.startsAt, season.endsAt)} · ${currentText}`
+}
+
+/**
  * Stage schedule from the forum, season number from the game's leaderboard. If
  * the game's and the forum's dates disagree, the stages may be wrong: say so.
  */
@@ -249,24 +271,18 @@ export function SeasonPanel({ context, official = null, compact = false }: {
   const now = useNowSec()
   const season = context.season
   if (!season) return null
-  // The forum's season name is Russian, so the heading is built from dates in
-  // the UI language; the number comes from the game when its dates match.
   const sameDates = official !== null && official.startsAt === season.startsAt && official.endsAt === season.endsAt
-  const heading = sameDates ? t('season.titleNumbered', { n: official.seasonId }) : t('season.title')
+  const heading = seasonHeading(context, official)
   const range = dayRange(season.startsAt, season.endsAt)
   const mismatch = official !== null && !sameDates
     ? t('season.mismatch', { n: official.seasonId, range: dayRange(official.startsAt, official.endsAt) })
     : null
 
   if (compact) {
-    const current = context.currentStage
-    const currentText = current
-      ? `${stageLabel(current, season.endsAt)} · ${stageRange(current)}`
-      : season.active ? t('season.waiting') : t('season.ended')
     return (
       <div className="notice" style={{ marginBottom: 16 }}>
         <strong>{heading}</strong>
-        <span className="muted" style={{ marginLeft: 8 }}>{range} · {currentText}</span>
+        <span className="muted" style={{ marginLeft: 8 }}>{seasonLine(context)}</span>
         {mismatch && <div className="small" style={{ marginTop: 4 }}>{mismatch}</div>}
       </div>
     )

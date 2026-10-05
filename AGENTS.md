@@ -260,8 +260,9 @@ Sources (constants live in their files under `src/parsers/sources/`):
   `membership_req` `{ranks, battles}`, auto-accept, undecorated tag
   `lastPaidTag`, last season's decoration. Then the claninfo roster of 5
   leaders whose roster is older than a day (otherwise only clans from drawn
-  battles would have rosters and PSR): role, join date, activity; an unknown
-  cell value becomes `NULL`. Founding date — the leaderboard's `cdate`:
+  battles would have rosters and PSR): role (the deputy's cell reads the
+  untranslated key `clan/deputy`), join date, activity; an unknown cell value
+  becomes `NULL`. Founding date — the leaderboard's `cdate`:
   claninfo shows "01.01.1970".
 - `wt-clan-season` — every 6 h the first post of
   `forum.warthunder.ru/raw/2509/1` (not warthunder.com: no Cloudflare, a plain
@@ -500,7 +501,11 @@ Data:
   otherwise at the last history point before that mark (alone it gave the
   rest 32–36 h, 2026-10-05). `/api/clans` returns the window
   (`delta24hFrom`, `delta24hTo`; null after that fallback: history cannot
-  tell when the base was read). `clan_roster` is the last
+  tell when the base was read). A squadron's page (`/api/clans/:coreTag`)
+  carries its row's day figures, places moved and live mark from the same
+  snapshot, and `ranking`: the table's size, leader, tier cut-offs, records
+  and the neighbours one place up and down (null unless both are `current`:
+  a dropped or estimated rating is no score to pass). `clan_roster` is the last
   non-empty roster; the roster, members' PSR and their deltas are filtered by
   it. A member links to an identity by alias, else to the single WT user id
   of the exact nick in replays (a reused nick: none), else to

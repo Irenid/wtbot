@@ -186,6 +186,8 @@ export interface ClanPageMember {
 }
 
 const MEMBER_CELL_RE = /<div class="squadrons-members__grid-item[^"]*">\s*([^<]*?)\s*<\/div>/g
+/** The page prints the deputy's role as its untranslated key "clan/deputy" (2026-10-05): the name is its tail. */
+const ROLE_KEY_RE = /^clan\/([a-z]{1,31})$/i
 
 /** «26.05.2021» → Unix-секунды полуночи UTC; иное — null. */
 export function parseClanEntryDate(value: string): number | null {
@@ -199,13 +201,14 @@ export function parseClanEntryDate(value: string): number | null {
 }
 
 /**
- * Ячейки строки участника после ПКР: активность, роль, дата вступления. Ищутся
- * до ссылки следующего участника; незнакомое значение — null, а не ошибка:
- * ростер и ПКР от них не зависят.
+ * A member row's cells after the PSR: activity, role, join date, read up to the next member's link.
+ * An unknown value is null, not an error: the roster and PSR do not depend on them.
  */
 function memberDetails(tail: string): Pick<ClanPageMember, 'activity' | 'role' | 'joinedAt'> {
   const cells = [...tail.matchAll(MEMBER_CELL_RE)].slice(0, 3).map((cell) => decodeHtmlEntities(cell[1]!).trim())
-  const [activity = '', role = '', joined = ''] = cells
+  const [activity = '', roleCell = '', joined = ''] = cells
+  const roleKey = ROLE_KEY_RE.exec(roleCell)?.[1]
+  const role = roleKey === undefined ? roleCell : roleKey.charAt(0).toUpperCase() + roleKey.slice(1).toLowerCase()
   return {
     activity: /^\d{1,9}$/.test(activity) ? Number(activity) : null,
     role: /^[A-Za-z][A-Za-z ]{0,31}$/.test(role) ? role : null,

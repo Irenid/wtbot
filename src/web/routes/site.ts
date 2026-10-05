@@ -1580,9 +1580,28 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
 
     const recent = listSiteBattles({ clanTags: group.rawTags.slice(0, 8), from: fromTs, limit: 20 })
 
+    // Rows are a prefix of the ranking (zero-rated PSR estimates come last and are left out), so a
+    // listed squadron's row index is its rank − 1. The gap to a neighbour counts only between two
+    // squadrons in the table: a dropped or estimated rating is not a score to pass.
+    const status = leaderboardStatus(group)
+    const neighbor = (row: SiteClanRow | undefined) => row === undefined || !row.current || status !== 'current'
+      ? null
+      : { coreTag: row.coreTag, displayTag: clanDisplayName(row.group.displayTag), rank: row.rank, rating: row.rating }
+
     return {
       ok: true,
       season,
+      officialSeason: getOfficialClanSeason(),
+      // The squadron's standing in the whole ranking, as /api/clans reports it.
+      ranking: {
+        total: snapshot.rows.length,
+        leaderRating: snapshot.ranked[0]?.totalRating ?? null,
+        tierCutoffs: snapshot.tierCutoffs,
+        records: snapshot.records,
+        live: snapshot.live,
+        above: neighbor(snapshot.rows[group.rank - 2]),
+        below: neighbor(snapshot.rows[group.rank]),
+      },
       clan: {
         coreTag: group.coreTag,
         displayTag: clanDisplayName(group.displayTag),
@@ -1605,6 +1624,14 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         lastSeenAt: group.lastSeenAt,
         rank: group.rank,
         delta30d: clanDelta30d(snapshot, group),
+        delta24h: group.delta24h,
+        delta24hFrom: group.delta24hFrom,
+        delta24hTo: group.delta24hFrom === null ? null : group.official?.confirmedAt ?? null,
+        battles24h: group.battles24h,
+        wins24h: group.wins24h,
+        rankChange24h: group.rankChange24h,
+        recentBattles: group.recentBattles,
+        leaderboard: status,
         rosterKnown: group.rosterKnown,
         official: group.official !== null,
       },

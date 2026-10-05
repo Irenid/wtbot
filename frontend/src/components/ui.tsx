@@ -24,14 +24,17 @@ export function useRowLink(): (event: MouseEvent<HTMLTableRowElement>, path: str
   }
 }
 
-export function Kpi({ label, value, sub, children }: {
+export function Kpi({ label, value, sub, children, className, title }: {
   label: string
   value: ReactNode
   sub?: ReactNode
   children?: ReactNode
+  /** Extra classes: a tone or a record (ClanPage.tsx). */
+  className?: string | undefined
+  title?: string | undefined
 }) {
   return (
-    <div className="kpi">
+    <div className={`kpi${className ? ` ${className}` : ''}`} title={title}>
       <div className="l">{label}</div>
       <div className="v">{value}</div>
       {sub !== undefined && <div className="s">{sub}</div>}
@@ -40,38 +43,42 @@ export function Kpi({ label, value, sub, children }: {
   )
 }
 
-/* Кольцевой индикатор винрейта из макета: дуга по доле, значение в центре. */
+/* The win-rate ring of the design: an arc by the share, the value in the middle. */
 export function Donut({ fraction, text }: { fraction: number | null; text: string }) {
   const circumference = 2 * Math.PI * 26
   const clamped = fraction === null ? 0 : Math.max(0, Math.min(1, fraction))
   return (
     <svg width="66" height="66" viewBox="0 0 64 64" style={{ flex: 'none' }} aria-label={t('a11y.winrate', { value: text })}>
       <circle cx="32" cy="32" r="26" fill="none" className="donut-track" strokeWidth="8" />
+      {/* Green by default; a parent's --donut recolours the arc and its glow (theme.css). */}
       <circle
-        cx="32" cy="32" r="26" fill="none"
-        stroke="var(--ok)" strokeWidth="8" strokeLinecap="round"
+        cx="32" cy="32" r="26" fill="none" className="donut-arc"
+        strokeWidth="8" strokeLinecap="round"
         strokeDasharray={`${(circumference * clamped).toFixed(1)} ${circumference.toFixed(1)}`}
         transform="rotate(-90 32 32)"
-        filter="drop-shadow(0 0 4px rgba(142, 230, 161, 0.45))"
       />
       <text x="32" y="36" textAnchor="middle" className="donut-text">{text}</text>
     </svg>
   )
 }
 
-/* Винрейт-KPI с донатом слева, как в макете игрока/клана. */
-export function DonutKpi({ label, fraction, text, sub }: {
+/* A win-rate KPI with the ring on the left, as on the player and squadron pages. */
+export function DonutKpi({ label, fraction, text, sub, children, className, title }: {
   label: string
   fraction: number | null
   text: string
   sub: ReactNode
+  children?: ReactNode
+  className?: string | undefined
+  title?: string | undefined
 }) {
   return (
-    <div className="kpi with-donut">
+    <div className={`kpi with-donut${className ? ` ${className}` : ''}`} title={title}>
       <Donut fraction={fraction} text={text} />
       <div style={{ minWidth: 0 }}>
         <div className="l">{label}</div>
         <div className="s" style={{ marginTop: 4 }}>{sub}</div>
+        {children}
       </div>
     </div>
   )

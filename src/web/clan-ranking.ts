@@ -11,7 +11,7 @@ export type ClanSortDirection = 'asc' | 'desc'
 
 /**
  * Last places of the season's reward tiers, top 5 to top 100; places 1–3 also have rewards of
- * their own. The SPA keeps the same list (REWARD_TIERS in ClansPage.tsx).
+ * their own. The SPA keeps the same list (REWARD_TIERS in frontend/src/components/clan-ui.tsx).
  */
 export const CLAN_REWARD_TIER_PLACES = [5, 10, 20, 50, 100] as const
 
