@@ -1,6 +1,8 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import type { ClanSeasonContext, ClanSeasonStage, OfficialClanSeason } from '../api'
 import { localeTag, t, tp } from '../i18n'
+import { fmtInt } from '../lib/format'
+import { REWARD_TIERS, type TierCutoff } from '../lib/reward-tiers'
 import { BATTLE_WINDOWS } from '../pages/guides/measurements'
 
 const MINUTE_SEC = 60
@@ -109,13 +111,73 @@ function windowTimes(now: number): string {
   return new Intl.ListFormat(localeTag(), { type: 'conjunction' }).format(windows)
 }
 
-/** Squadron battles running now (a green dot) and until when, or when the next window opens; the hover lists the windows. */
+/** Squadron battles running now (a green pill) and until when, or when the next window opens; the hover lists the windows. */
 function BattleStatus({ now }: { now: number }) {
   const { open, at } = battleState(now)
   return (
     <span className={open ? 'season-battles is-open' : 'season-battles'} title={t('season.windowsTitle', { windows: windowTimes(now) })}>
+      <span className="season-battles__dot" aria-hidden="true" />
       {t(open ? 'season.battlesUntil' : 'season.battlesFrom', { time: clock(at) })}
     </span>
+  )
+}
+
+/** "day 35 of 61": the current UTC day of the season, counting from 1; null outside it. */
+function seasonDay(startsAt: number, endsAt: number, now: number): string | null {
+  if (now < startsAt || now >= endsAt) return null
+  return t('season.day', {
+    n: fmtInt(Math.floor((now - startsAt) / DAY_SEC) + 1),
+    total: fmtInt(Math.round((endsAt - startsAt) / DAY_SEC)),
+  })
+}
+
+/** /api/clans figures for the reward cut-offs. */
+export interface SeasonRewards {
+  cutoffs: readonly TierCutoff[]
+  /** The leader's rating: each cut-off's bar is a share of it, as the ranking's bars are. */
+  leaderRating: number | null
+}
+
+/**
+ * The rating at each reward tier's last place, in the tier colours of the ranking below: what a
+ * squadron has to pass to hold that reward at the season's end.
+ */
+function RewardCutoffs({ cutoffs, leaderRating }: SeasonRewards) {
+  const tiers = REWARD_TIERS.flatMap((tier) => {
+    const cutoff = cutoffs.find((candidate) => candidate.place === tier.top)
+    return cutoff === undefined ? [] : [{ tier, rating: cutoff.rating }]
+  })
+  if (tiers.length === 0) return null
+  return (
+    <div className="season-rewards">
+      <h3 className="season-panel__label">{t('season.cutoffs')}</h3>
+      <ol className="season-rewards__tiers" style={{ '--n': tiers.length } as CSSProperties}>
+        {tiers.map(({ tier, rating }, index) => {
+          const reward = t('clan.reward.top', { n: tier.top })
+          const share = leaderRating !== null && leaderRating > 0 ? Math.max(0, Math.min(1, rating / leaderRating)) : null
+          return (
+            <li
+              key={tier.top}
+              className={`season-rewards__tier zone-${tier.top}`}
+              style={{ '--s': index } as CSSProperties}
+              title={[
+                t('clans.tier.title', { from: tier.from, to: tier.top, reward }),
+                t('season.cutoff.title', { place: tier.top, rating: fmtInt(rating) }),
+                ...(share !== null ? [t('home.share.leader', { pct: Math.round(share * 100) })] : []),
+              ].join(' · ')}
+            >
+              <span className="season-rewards__top">{reward}</span>
+              <span className="season-rewards__rating">{fmtInt(rating)}</span>
+              {share !== null && (
+                <span className="season-rewards__bar" aria-hidden="true">
+                  <span className="season-rewards__fill" style={{ width: `${(share * 100).toFixed(2)}%` }} />
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </div>
   )
 }
 
@@ -141,6 +203,7 @@ function SeasonTrack({ stages, seasonEndsAt, now }: { stages: ClanSeasonStage[];
 
   return (
     <div className="season-track" style={style}>
+      <h3 className="season-panel__label">{t('season.caption')}</h3>
       <ol className="season-track__stages" aria-label={t('a11y.seasonStages')}>
         {stages.map((stage, index) => {
           const state = index === currentIndex ? 'current' : stage.endsAt <= now ? 'past' : 'next'
@@ -148,6 +211,7 @@ function SeasonTrack({ stages, seasonEndsAt, now }: { stages: ClanSeasonStage[];
             <li
               key={stage.week}
               className={`season-track__stage is-${state}`}
+              style={{ '--s': index } as CSSProperties}
               aria-current={state === 'current' ? 'step' : undefined}
               title={`${stageLabel(stage, seasonEndsAt)} · ${stageRange(stage)}`}
             >
@@ -179,10 +243,12 @@ function SeasonTrack({ stages, seasonEndsAt, now }: { stages: ClanSeasonStage[];
 /**
  * Stage schedule from the forum, season number from the game's leaderboard. If
  * the game's and the forum's dates disagree, the stages may be wrong: say so.
+ * `rewards` (on /clans) adds the rating each reward tier takes now.
  */
-export function SeasonPanel({ context, official = null, compact = false }: {
+export function SeasonPanel({ context, official = null, rewards = null, compact = false }: {
   context: ClanSeasonContext
   official?: OfficialClanSeason | null
+  rewards?: SeasonRewards | null
   compact?: boolean
 }) {
   const now = useNowSec()
@@ -213,18 +279,23 @@ export function SeasonPanel({ context, official = null, compact = false }: {
 
   // The client's clock, not the API's answer: an open page follows the season's end.
   const live = season.active && now < season.endsAt
-  const meta = [context.stages.length > 0 ? t('season.caption') : null, range, live ? null : t('season.ended')]
+  const meta = [range, live ? seasonDay(season.startsAt, season.endsAt, now) : t('season.ended')]
     .filter((part) => part !== null)
-    .join(' · ')
 
   return (
     <section className="card season-panel" aria-label={heading}>
       <div className="season-panel__head">
-        <div className="sec-head"><h2>{heading}</h2></div>
+        <div className="season-panel__title">
+          <div className="sec-head"><h2>{heading}</h2></div>
+          {/* A part wraps whole: "Tag 35 von 61" never splits in a guide column. */}
+          <div className="season-panel__meta">
+            {meta.map((part, index) => <span key={part}>{index > 0 && ' · '}<span>{part}</span></span>)}
+          </div>
+        </div>
         {live && <BattleStatus now={now} />}
-        <span className="season-panel__meta">{meta}</span>
       </div>
       {context.stages.length > 0 && <SeasonTrack stages={context.stages} seasonEndsAt={season.endsAt} now={now} />}
+      {rewards !== null && <RewardCutoffs cutoffs={rewards.cutoffs} leaderRating={rewards.leaderRating} />}
       {mismatch && <div className="notice small">{mismatch}</div>}
     </section>
   )

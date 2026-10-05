@@ -71,6 +71,9 @@ export const ru = {
   'season.minutes.few': '{n} минуты',
   'season.minutes.many': '{n} минут',
   'season.minutes.other': '{n} минуты',
+  'season.day': 'день {n} из {total}',
+  'season.cutoffs': 'Пороги наград сейчас',
+  'season.cutoff.title': 'у {place}-го места сейчас {rating}',
   'season.mismatch': 'Сезон {n} в игре идёт {range} — даты расходятся с расписанием с форума, этапы могут быть неверны.',
 
   // --- Навигация и заголовок вкладки ---
