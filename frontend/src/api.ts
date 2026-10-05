@@ -304,16 +304,23 @@ export interface ClanListEntry {
   lastSeenAt: number
   /**
    * Official rating change over the day before the rating was last confirmed (its crawl; for a
-   * zero below the crawled part, the last full crawl); null — no point that old in the season, no
-   * official data, or the squadron left the leaderboard.
+   * zero below the crawled part, the last full crawl); null — no figures that old in the season,
+   * no official data, or the squadron left the leaderboard.
    */
   delta24h: number | null
-  /** Season battles and wins over the same day; null — no point that old or no counts. */
+  /**
+   * The window of delta24h, battles24h and wins24h: from the crawl that read the squadron nearest
+   * to a day before delta24hTo (below the top 100 crawls come ~11 h apart, so it may be off by
+   * hours) to its last confirmation; null — no change.
+   */
+  delta24hFrom: number | null
+  delta24hTo: number | null
+  /** Season battles and wins over the same window; null — no figures that old or no counts. */
   battles24h: number | null
   wins24h: number | null
-  /** Places gained (+) or lost (−) over the day; null — no place a day ago. */
+  /** Places gained (+) or lost (−) since the table a day before the latest crawl; null — no place then. */
   rankChange24h: number | null
-  /** Season battles shortly before the latest crawl of the top 100: above 0 — playing now. */
+  /** Squadron battles that ended within the live window (replays): above 0 — playing now. */
   recentBattles: number
   /** The rating one place higher; null — first place or not in the leaderboard. */
   aboveRating: number | null
@@ -361,8 +368,6 @@ export function fetchClans(params: {
   /** Without it: by place, a search by relevance. */
   sort?: ClanSortKey
   dir?: 'asc' | 'desc'
-  /** Only the first N places of the leaderboard: 5, 10, 20, 50 or 100. */
-  top?: number
   /** Only squadrons playing now. */
   live?: boolean
   /** Only these core tags (an empty list matches nothing). */
@@ -380,7 +385,7 @@ export function fetchClans(params: {
   /** The rating at each reward tier's last place, top 5 to top 100; a tier not filled is missing. */
   tierCutoffs: { place: number; rating: number }[]
   records: ClanRecords
-  /** Squadrons playing now in the whole ranking; null — no fresh crawl of the top 100. */
+  /** Squadrons playing now in the whole ranking and when the window ended; null — replays are not coming in. */
   live: { count: number; at: number; windowSec: number } | null
   clans: ClanListEntry[]
 }> {
@@ -390,7 +395,6 @@ export function fetchClans(params: {
   if (params.limit) search.set('limit', String(params.limit))
   if (params.sort) search.set('sort', params.sort)
   if (params.dir) search.set('dir', params.dir)
-  if (params.top) search.set('top', String(params.top))
   if (params.live) search.set('live', 'true')
   if (params.tags) search.set('tags', params.tags.join(','))
   const suffix = search.size > 0 ? `?${search.toString()}` : ''

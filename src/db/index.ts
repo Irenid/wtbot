@@ -844,6 +844,21 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       addColumnIfMissing(database, 'battle_players', 'bot_user_id', 'TEXT')
     },
   },
+  {
+    version: 20,
+    apply(database) {
+      // The crawl log (saveClanLeaderboard): the site's day figures and places a
+      // day ago need to know which crawls read a squadron. Starts empty: until it
+      // holds a day, the site falls back to history points (src/web/routes/site.ts).
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS clan_crawls (
+          captured_at INTEGER PRIMARY KEY,
+          full_crawl  INTEGER NOT NULL,
+          cores       TEXT    NOT NULL
+        );
+      `)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -985,6 +1000,15 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       deaths       INTEGER,
       PRIMARY KEY (clan_core, captured_at)
     ) WITHOUT ROWID;
+
+    -- Core tags each leaderboard crawl read, in place order (v20): the history
+    -- above cannot tell an unchanged squadron from one the crawl did not reach.
+    -- Kept for CLAN_CRAWL_KEEP_SEC.
+    CREATE TABLE IF NOT EXISTS clan_crawls (
+      captured_at INTEGER PRIMARY KEY,
+      full_crawl  INTEGER NOT NULL,
+      cores       TEXT    NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS clan_seasons (
       season_id  TEXT PRIMARY KEY,
@@ -1646,6 +1670,14 @@ export function getLatestParsePerSource(): ParseRecord[] {
     `)
     .all() as unknown as ParseRow[]
   return rows.map(toParseRecord)
+}
+
+/** Unix seconds of the source's last successful run among the kept 1,000; null — none. */
+export function getLastSuccessfulParseAt(source: string): number | null {
+  const row = getDb()
+    .prepare('SELECT parsed_at FROM parse_results WHERE source = ? AND ok = 1 ORDER BY id DESC LIMIT 1')
+    .get(source) as { parsed_at: number } | undefined
+  return row?.parsed_at ?? null
 }
 
 /** История запусков одного источника */
@@ -2724,17 +2756,24 @@ export interface ClanRequirements {
   battles: { difficulty: string; count: number }[]
 }
 
+/** How long `clan_crawls` keeps a crawl: the site's day figures look back up to ~2 days. */
+export const CLAN_CRAWL_KEEP_SEC = 3 * 86_400
+
 /**
- * Обход официального лидерборда одной транзакцией: словарь «тег → имя» и
- * статистика клана на момент capturedAt (у всех строк обхода он общий — по
- * нему сайт отличает свежий обход от прежних). История по ядру тега
- * пополняется только при изменении рейтинга, боёв, побед, фрагов или
- * смертей — как снимки ПКР. Клан без рейтинга обновляет лишь имя и не
- * затирает прежнюю статистику.
+ * One leaderboard crawl in one transaction: the tag → name dictionary and each squadron's figures
+ * at capturedAt (shared by the whole crawl: the site tells the latest crawl from earlier ones by
+ * it). History by core tag gets a row only when the rating, battles, wins, kills or deaths change;
+ * `clan_crawls` records which squadrons the crawl read (`full` — the whole leaderboard, not only
+ * the top CLAN_TOP_CRAWL_PLACES). A squadron without a rating updates its name only and keeps its
+ * figures.
  */
-export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], capturedAt: number): void {
+export function saveClanLeaderboard(
+  entries: readonly ClanLeaderboardEntry[],
+  capturedAt: number,
+  options: { full?: boolean } = {},
+): void {
   if (!Number.isSafeInteger(capturedAt) || capturedAt <= 0) {
-    throw new RangeError('capturedAt лидерборда должен быть положительным Unix-временем')
+    throw new RangeError('The leaderboard capturedAt must be positive Unix seconds')
   }
   const database = getDb()
   const upsertStats = database.prepare(`
@@ -2793,6 +2832,13 @@ export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], ca
       ground_kills = excluded.ground_kills,
       deaths = excluded.deaths
   `)
+  const insertCrawl = database.prepare(`
+    INSERT INTO clan_crawls (captured_at, full_crawl, cores) VALUES (?, ?, ?)
+    ON CONFLICT (captured_at) DO UPDATE SET full_crawl = excluded.full_crawl, cores = excluded.cores
+  `)
+  const pruneCrawls = database.prepare('DELETE FROM clan_crawls WHERE captured_at < ?')
+  // Core tags read, in place order; a core met twice (decorated variants) keeps its higher place.
+  const cores = new Set<string>()
   database.exec('BEGIN IMMEDIATE')
   try {
     for (const entry of entries) {
@@ -2838,6 +2884,7 @@ export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], ca
       )
       const core = clanCoreOf(entry.tag)
       if (!core) continue
+      cores.add(core)
       const last = lastPoint.get(core) as
         | { rating: number; battles: number | null; wins: number | null; air_kills: number | null; ground_kills: number | null; deaths: number | null }
         | undefined
@@ -2848,6 +2895,8 @@ export function saveClanLeaderboard(entries: readonly ClanLeaderboardEntry[], ca
         insertHistory.run(core, capturedAt, ...point)
       }
     }
+    insertCrawl.run(capturedAt, options.full === true ? 1 : 0, JSON.stringify([...cores]))
+    pruneCrawls.run(capturedAt - CLAN_CRAWL_KEEP_SEC)
     database.exec('COMMIT')
   } catch (err) {
     database.exec('ROLLBACK')
@@ -2896,6 +2945,36 @@ export const CLAN_TOP_CRAWL_PLACES = 100
 export function getLastFullClanCrawlAt(): number | null {
   const value = Number(getBotState(CLAN_FULL_CRAWL_KEY))
   return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+/** A leaderboard crawl from `clan_crawls`. */
+export interface ClanCrawl {
+  capturedAt: number
+  /** The whole leaderboard was read, not only the top CLAN_TOP_CRAWL_PLACES. */
+  full: boolean
+  /** Core tags the crawl read, in place order. */
+  cores: string[]
+}
+
+/** Crawls from fromTs on (the log keeps CLAN_CRAWL_KEEP_SEC), oldest first. */
+export function getClanCrawls(fromTs: number): ClanCrawl[] {
+  if (!Number.isSafeInteger(fromTs) || fromTs < 0) {
+    throw new RangeError('The crawl log bound must be non-negative Unix seconds')
+  }
+  const rows = siteStatement('clanCrawlsSince').all(fromTs) as unknown as {
+    captured_at: number
+    full_crawl: number
+    cores: string
+  }[]
+  return rows.map((row) => {
+    const cores: unknown = JSON.parse(row.cores)
+    if (!Array.isArray(cores)) throw new Error(`clan_crawls ${row.captured_at}: cores is not an array`)
+    return {
+      capturedAt: row.captured_at,
+      full: row.full_crawl === 1,
+      cores: cores.filter((core): core is string => typeof core === 'string'),
+    }
+  })
 }
 
 /**
@@ -5785,6 +5864,19 @@ export const SITE_SQL = {
     ORDER BY captured_at
     LIMIT ?
   `,
+  clanCrawlsSince: `
+    SELECT captured_at, full_crawl, cores
+    FROM clan_crawls
+    WHERE captured_at >= ?
+    ORDER BY captured_at
+  `,
+  // CROSS JOIN keeps the order: the start-time range first, then each battle's players.
+  battleTeamsEndedAfter: `
+    SELECT DISTINCT b.session_id, bp.team, bp.clan_tag
+    FROM battles b
+    CROSS JOIN battle_players bp ON bp.session_id = b.session_id
+    WHERE b.start_time >= ? AND b.start_time + b.duration_sec > ? AND bp.team > 0 AND bp.clan_tag <> ''
+  `,
   battleTeamClans: `
     SELECT team, clan_tag, COUNT(*) AS players
     FROM battle_players
@@ -6473,6 +6565,25 @@ export function getSiteClanOfficialRatingAt(
 ): { capturedAt: number; rating: number } | null {
   const stats = getSiteClanOfficialStatsAt(clanCore, fromTs, atTs)
   return stats ? { capturedAt: stats.capturedAt, rating: stats.rating } : null
+}
+
+/**
+ * Tagged teams of battles that ended after endAfter, started from startFrom on (the bound keeps
+ * the start-time index range short): one row per battle, team and tag.
+ */
+export function getBattleTeamsEndedAfter(
+  endAfter: number,
+  startFrom: number,
+): { sessionId: string; team: number; clanTag: string }[] {
+  if (!Number.isSafeInteger(endAfter) || !Number.isSafeInteger(startFrom) || startFrom < 0) {
+    throw new RangeError('Battle time bounds must be non-negative Unix seconds')
+  }
+  const rows = siteStatement('battleTeamsEndedAfter').all(startFrom, endAfter) as unknown as {
+    session_id: string
+    team: number
+    clan_tag: string
+  }[]
+  return rows.map((row) => ({ sessionId: row.session_id, team: row.team, clanTag: row.clan_tag }))
 }
 
 /**

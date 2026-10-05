@@ -248,7 +248,10 @@ Sources (constants live in their files under `src/parsers/sources/`):
   found is retried after 15 min, doubling up to 12 h), then fetches claninfo
   and redraws the post. A crawl writes `clans` with one shared `rating_at`,
   change points of rating, battles,
-  wins, kills and deaths to `clan_rating_history`, the leaderboard season to
+  wins, kills and deaths to `clan_rating_history`, the core tags it read in
+  place order and whether it was full to `clan_crawls` (kept
+  `CLAN_CRAWL_KEEP_SEC`, 3 days: change points cannot tell an unchanged
+  squadron from one the crawl missed), the leaderboard season to
   `bot_state` `wt-clans:season` (a mismatch with the forum shows in the
   status). Region, type, slogan and rewards arrive HTML-escaped with game
   markup (`<color=#…>`, `<b>`) — plain text is stored; tag and name stay as
@@ -483,8 +486,13 @@ Data:
   or fallen to zero: a stale rating would outrank clans in the table), then
   clans without official data, rated by the PSR sum from snapshots. A zero
   rating below the crawled part is confirmed by the full crawl, not dropped.
-  The 24 h change ends at the clan's own confirmation time (top 100 every
-  20 min, the rest at full crawls). `clan_roster` is the last
+  The 24 h change and the day's battles and wins end at the clan's own
+  confirmation time (top 100 every 20 min, the rest at full crawls) and start
+  at the `clan_crawls` read nearest a day before it, at most
+  `DAY_BASE_MAX_SHIFT_SEC` (6 h) off and no further than the log's start;
+  otherwise at the last history point before that mark (alone it gave the
+  rest 32–36 h, 2026-10-05). `/api/clans` returns the window
+  (`delta24hFrom`, `delta24hTo`). `clan_roster` is the last
   non-empty roster; the roster, members' PSR and their deltas are filtered by
   it. A member links to an identity by alias, else to the single WT user id
   of the exact nick in replays (a reused nick: none), else to
@@ -492,15 +500,19 @@ Data:
   writes: a GET creates no identity; that page then looks the id up
   (`POST /api/player-id`).
 - `/api/clans` views (`src/web/clan-ranking.ts`): `sort`
-  (place/change/battles/winRate/kd/members), `dir`, `top` (reward tiers
-  5–100), `live`, `tags` (≤ 50 core tags: the SPA's favourites, kept only in
-  the browser's localStorage); search → filters → sort → page. A win rate or
-  K/D from fewer than `MIN_RATE_BATTLES` (50) season battles sorts after the
-  rest and holds no record. The day's battles, wins and places moved use the
-  same point as the 24 h change. "Playing now" (`recentBattles`): season
-  battles grew within 45 min before the latest crawl, only for the 100 places
-  every crawl reads (below them the last point can be 12 h old) and only while
-  that crawl is under an hour old.
+  (place/change/battles/winRate/kd/members), `dir`, `live`, `tags` (≤ 50 core
+  tags: the SPA's favourites, kept only in the browser's localStorage); search
+  → filters → sort → page. A win rate or K/D from fewer than
+  `MIN_RATE_BATTLES` (50) season battles sorts after the rest and holds no
+  record. Places moved compare with the table a day before the latest crawl,
+  rebuilt from `clan_crawls` (`clanPlacesAt`: squadrons dropped since keep
+  their place; none until the log holds a full crawl before that moment).
+  "Playing now" (`recentBattles`): squadron battles from replays that ended
+  within `LIVE_WINDOW_SEC` (45 min), for every squadron; a team counts when its
+  tagged players share one core tag; no marks while `wt-replays` has had no
+  successful run for `LIVE_MAX_REPLAY_AGE_SEC` (10 min). The leaderboard's
+  battle counts lagged a crawl or two and marked top-100 entrants for old
+  battles.
 - `CLAN_SEASON_SCHEDULES` — UTC `[startsAt, endsAt)`; changing a built-in
   schedule takes reconciliation or a data migration, never a manual database
   edit. New seasons come from `wt-clan-season` (`src/clan-season-forum.ts`),

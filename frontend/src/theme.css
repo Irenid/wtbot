@@ -781,13 +781,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 }
 .clan-search:focus-within .clan-search__key { opacity: 0; }
 @media (hover: none) { .clan-search__key { display: none; } }
-/* Filters under the head: every squadron or one reward tier (chips in the tier's colour), squadrons
-   playing now, favourites; phones get a sort control instead of the hidden column heads. */
+/* Filters under the head: squadrons playing now, favourites; phones get a sort control instead of
+   the hidden column heads. */
 .clans-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 20px 14px; }
 .clan-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
-.clan-filters__tiers { display: contents; }
-/* The tier chips pick one; the toggles after the divider add to that choice. */
-.clan-filters__tiers::after { content: ''; flex: none; width: 1px; height: 16px; margin: 0 4px; background: var(--line2); }
 .clan-chip {
   display: inline-flex; align-items: center; gap: 6px; flex: none;
   padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line);
@@ -805,10 +802,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   color: var(--zone, var(--accent));
 }
 .clan-chip.is-on b { color: inherit; }
-.clan-chip__dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--zone);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--zone) 55%, transparent);
-}
 .clan-chip.is-live { --zone: var(--ok); }
 .clan-chip.is-fav { --zone: var(--accent); }
 .clan-chip.is-fav svg { color: var(--accent); }
@@ -962,9 +955,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .clans-table .tone-down-2 { color: color-mix(in srgb, var(--fail) 75%, var(--ink)); }
 .clans-table .tone-down-3 { color: var(--fail); text-shadow: 0 0 12px rgba(255, 143, 163, 0.4); }
 .clans-table td.is-few { color: color-mix(in srgb, var(--muted) 75%, transparent); }
-/* The season's best figure: a gold crown and gold digits. */
-.clans-table .record { display: inline-block; margin-right: 5px; color: var(--accent); filter: drop-shadow(0 0 4px rgba(245, 188, 74, 0.55)); }
-.clans-table .record svg { display: block; }
+/* The season's best figure: gold digits; the cell's tooltip names the record. */
 .clans-table td.has-record { color: var(--accent); font-weight: 700; text-shadow: 0 0 12px rgba(245, 188, 74, 0.35); }
 /* A reward tier's line under its last place, in the tier's colour; it replaces the row lines. */
 .clans-table tr.tier-cut > td { height: 30px; padding-top: 0; padding-bottom: 0; }

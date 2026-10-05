@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  CLAN_CRAWL_KEEP_SEC,
   closeDb,
+  getClanCrawls,
   getSiteClanDictionary,
   getSiteClanOfficialRatingAt,
   getSiteClanOfficialStatsAt,
@@ -58,6 +60,34 @@ test('saveClanLeaderboard пишет статистику клана и исто
     assert.deepEqual(getSiteClanOfficialStatsAt('avr', 0, 3_000), { capturedAt: 3_000, rating: 48_300, battles: 10, wins: 7 })
     assert.equal(getSiteClanOfficialStatsAt('', 0, 3_000), null)
     assert.throws(() => getSiteClanOfficialStatsAt('avr', -1, 3_000), RangeError)
+  } finally {
+    closeDb()
+  }
+})
+
+test('saveClanLeaderboard logs the core tags each crawl read and prunes old crawls', () => {
+  initDb(':memory:')
+  try {
+    saveClanLeaderboard([
+      entry('[AVR]', 'AVANGARD', 48_000),
+      entry('[B]', 'Bravo', 900, { position: 2 }),
+      // A decorated variant of a core read above keeps the higher place.
+      entry('╍AVR╎', 'AVANGARD', 800, { position: 3 }),
+      { tag: '[N]', name: 'No rating', rating: null, position: null, members: null, battles: null, wins: null },
+    ], 1_000, { full: true })
+    saveClanLeaderboard([entry('[B]', 'Bravo', 950)], 2_000)
+    assert.deepEqual(getClanCrawls(0), [
+      { capturedAt: 1_000, full: true, cores: ['avr', 'b'] },
+      { capturedAt: 2_000, full: false, cores: ['b'] },
+    ])
+    assert.deepEqual(getClanCrawls(1_500).map((crawl) => crawl.capturedAt), [2_000])
+    // A rerun at the same moment replaces its row.
+    saveClanLeaderboard([entry('[C]', 'Charlie', 10)], 2_000, { full: true })
+    assert.deepEqual(getClanCrawls(1_500), [{ capturedAt: 2_000, full: true, cores: ['c'] }])
+    const later = 1_000 + CLAN_CRAWL_KEEP_SEC + 1
+    saveClanLeaderboard([entry('[B]', 'Bravo', 960)], later)
+    assert.deepEqual(getClanCrawls(0).map((crawl) => crawl.capturedAt), [2_000, later], 'a crawl past the keep window is pruned')
+    assert.throws(() => getClanCrawls(-1), RangeError)
   } finally {
     closeDb()
   }

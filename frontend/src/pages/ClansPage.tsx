@@ -52,8 +52,6 @@ interface View {
   query: string
   sort: ClanSortKey
   dir: SortDir
-  /** Only the first N places; null — every squadron. */
-  top: number | null
   live: boolean
   favorites: boolean
 }
@@ -68,13 +66,11 @@ function readView(params: URLSearchParams): View {
   const sortParam = params.get('sort')
   const sort = SORT_KEYS.find((key) => key === sortParam) ?? 'place'
   const dir = params.get('dir')
-  const top = Number(params.get('top'))
   return {
     page: Number.isSafeInteger(page) && page >= 1 ? page : 1,
     query: (params.get('q') ?? '').trim().slice(0, MAX_QUERY_LENGTH),
     sort,
     dir: dir === 'asc' || dir === 'desc' ? dir : defaultDir(sort),
-    top: REWARD_TIERS.some((tier) => tier.top === top) ? top : null,
     live: params.get('live') === '1',
     favorites: params.get('fav') === '1',
   }
@@ -189,17 +185,6 @@ function Triangle({ size = 7, down = false }: { size?: number; down?: boolean })
   )
 }
 
-/** A season record: a small gold crown before the value. */
-function Crown({ title }: { title: string }) {
-  return (
-    <span className="record" title={title} role="img" aria-label={title}>
-      <svg width="11" height="9" viewBox="0 0 12 10" aria-hidden="true">
-        <path d="M1 9.2h10l1-6.4-3.3 2.6L6 .8 3.3 5.4 0 2.8z" fill="currentColor" />
-      </svg>
-    </span>
-  )
-}
-
 /** Places gained or lost over the day, next to the place. */
 function Move({ value }: { value: number | null }) {
   if (value === null || value === 0) return null
@@ -213,16 +198,26 @@ function Move({ value }: { value: number | null }) {
   )
 }
 
-/** The 24 h rating change: a signed pill, stronger for a big move; 0 and "no data" stay quiet. */
-function Change({ clan }: { clan: ClanListEntry }) {
+/**
+ * The 24 h rating change: a signed pill, stronger for a big move; 0 and "no data" stay quiet. The
+ * tooltip names the window: below the top 100 only full crawls read a squadron, hours apart, so it
+ * is a day give or take a few hours.
+ */
+function Change({ clan, note = null }: { clan: ClanListEntry; note?: string | null }) {
   const value = clan.delta24h
   if (value === null) {
     // Dropped and PSR-rated rows explain themselves; for the rest the dash is missing history.
     return <span className="change none" title={clan.leaderboard === 'current' ? t('clans.change.none') : undefined}>—</span>
   }
-  const title = clan.battles24h !== null && clan.wins24h !== null
-    ? t('clans.change.day', { battles: fmtInt(clan.battles24h), wins: fmtInt(clan.wins24h) })
-    : undefined
+  const title = joinTitles(
+    note,
+    clan.delta24hFrom !== null && clan.delta24hTo !== null
+      ? t('clans.change.window', { from: fmtDateTime(clan.delta24hFrom), to: fmtDateTime(clan.delta24hTo) })
+      : null,
+    clan.battles24h !== null && clan.wins24h !== null
+      ? t('clans.change.day', { battles: fmtInt(clan.battles24h), wins: fmtInt(clan.wins24h) })
+      : null,
+  )
   if (value === 0) return <span className="change flat" title={title}>0</span>
   const size = Math.abs(value)
   const level = size >= CHANGE_HUGE ? 3 : size >= CHANGE_STRONG ? 2 : 1
@@ -332,39 +327,43 @@ function ClanRow({ clan, index, context }: { clan: ClanListEntry; index: number;
           </span>
         </div>
       </td>
-      <td className={`num col-change${record('gain') ? ' has-record' : ''}`}>
-        {record('gain') && <Crown title={t('clans.record.gain')} />}
-        <Change clan={clan} />
+      <td
+        className={`num col-change${record('gain') ? ' has-record' : ''}`}
+        title={record('gain') ? t('clans.record.gain') : undefined}
+      >
+        <Change clan={clan} note={record('gain') ? t('clans.record.gain') : null} />
       </td>
       <td
         className={`num col-battles${record('battles') ? ' has-record' : ''}`}
-        title={clan.battles24h !== null && clan.battles24h > 0 ? t('clans.battles.day', { n: fmtInt(clan.battles24h) }) : undefined}
+        title={joinTitles(
+          record('battles') ? t('clans.record.battles') : null,
+          clan.battles24h !== null && clan.battles24h > 0 ? t('clans.battles.day', { n: fmtInt(clan.battles24h) }) : null,
+        )}
       >
-        {record('battles') && <Crown title={t('clans.record.battles')} />}
         {fmtInt(clan.seasonBattles)}
       </td>
       <td
         className={`num col-wr${reliable ? toneClass(winRateScore(winRate)) : winRate !== null ? ' is-few' : ''}${record('winRate') ? ' has-record' : ''}`}
         title={joinTitles(
+          record('winRate') ? t('clans.record.winRate', { n: MIN_RATE_BATTLES }) : null,
           clan.seasonBattles !== null && clan.seasonWins !== null
             ? t('clans.winRate.title', { wins: fmtInt(clan.seasonWins), battles: fmtInt(clan.seasonBattles) })
             : null,
           winRate !== null ? fewTitle : null,
         )}
       >
-        {record('winRate') && <Crown title={t('clans.record.winRate', { n: MIN_RATE_BATTLES })} />}
         {fmtPercent(winRate)}
       </td>
       <td
         className={`num col-kd${reliable ? toneClass(kdScore(kd)) : kd !== null ? ' is-few' : ''}${record('kd') ? ' has-record' : ''}`}
         title={joinTitles(
+          record('kd') ? t('clans.record.kd', { n: MIN_RATE_BATTLES }) : null,
           clan.deaths === null
             ? null
             : `${fmtInt(clan.airKills)} ${t('metric.killsAir')} · ${fmtInt(clan.groundKills)} ${t('metric.killsGround')} · ${t('metric.deaths.count', { n: fmtInt(clan.deaths) })}`,
           kd !== null ? fewTitle : null,
         )}
       >
-        {record('kd') && <Crown title={t('clans.record.kd', { n: MIN_RATE_BATTLES })} />}
         {fmtRatio(kd)}
       </td>
       <td className="num col-members">{fmtInt(clan.members)}</td>
@@ -403,30 +402,25 @@ function rankingRows(clans: readonly ClanListEntry[], withTiers: boolean, contex
   return rows
 }
 
-/**
- * A sortable column head. The Rating column sorts by place, so its arrow shows the rating's
- * direction: places up are ratings down.
- */
-function SortHeader({ label, title, sortKey, view, invert = false, className, onSort }: {
+/** A sortable column head. */
+function SortHeader({ label, title, sortKey, view, className, onSort }: {
   label: string
   title?: string
   sortKey: ClanSortKey
   view: View
-  invert?: boolean
   className: string
   onSort: (key: ClanSortKey) => void
 }) {
   const active = view.sort === sortKey
-  const shown = invert ? (view.dir === 'asc' ? 'desc' : 'asc') : view.dir
   return (
-    <th className={className} aria-sort={active ? (shown === 'asc' ? 'ascending' : 'descending') : undefined}>
+    <th className={className} aria-sort={active ? (view.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
       <button
         type="button"
         className={`sort-button${active ? ' is-active' : ''}`}
         onClick={() => onSort(sortKey)}
         title={title ?? t('a11y.sort', { col: label })}
       >
-        {active && <span className="sort-arrow" aria-hidden="true">{shown === 'asc' ? '↑' : '↓'}</span>}
+        {active && <span className="sort-arrow" aria-hidden="true">{view.dir === 'asc' ? '↑' : '↓'}</span>}
         {label}
       </button>
     </th>
@@ -454,11 +448,11 @@ export function ClansPage() {
   const openRow = useRowLink()
   const [searchParams, setSearchParams] = useSearchParams()
   const view = readView(searchParams)
-  const { page, query, sort, dir, top, live } = view
+  const { page, query, sort, dir, live } = view
   const favoriteList = useFavoriteClans()
   // The favourites filter asks the server for these tags; without it a new star changes nothing there.
   const favoriteTags = view.favorites ? favoriteList.join(',') : null
-  const requestKey = [page, query, sort, dir, top ?? '', live ? 'live' : '', favoriteTags ?? ''].join('|')
+  const requestKey = [page, query, sort, dir, live ? 'live' : '', favoriteTags ?? ''].join('|')
   const [draft, setDraft] = useState(query)
   // The query this page last wrote to the URL: other URL changes (Back, a link) reach the field.
   const writtenQuery = useRef(query)
@@ -511,13 +505,12 @@ export function ClansPage() {
   useEffect(() => {
     let cancelled = false
     setError(null)
-    const requested: View = { page, query, sort, dir, top, live, favorites: favoriteTags !== null }
+    const requested: View = { page, query, sort, dir, live, favorites: favoriteTags !== null }
     fetchClans({
       ...(query !== '' ? { query } : {}),
       offset: (page - 1) * PAGE_SIZE,
       limit: PAGE_SIZE,
       ...(sort !== 'place' || dir !== 'asc' ? { sort, dir } : {}),
-      ...(top !== null ? { top } : {}),
       ...(live ? { live: true } : {}),
       ...(favoriteTags !== null ? { tags: favoriteTags === '' ? [] : favoriteTags.split(',') } : {}),
     })
@@ -549,7 +542,7 @@ export function ClansPage() {
   }, [loaded])
 
   // A phone scrolls the chips sideways: the chosen filter (from a link or Back) comes into view.
-  const activeFilters = [top ?? '', live ? 'live' : '', view.favorites ? 'fav' : ''].join('|')
+  const activeFilters = [live ? 'live' : '', view.favorites ? 'fav' : ''].join('|')
   const hasRows = loaded !== null
   useLayoutEffect(() => {
     const row = filtersRef.current
@@ -597,10 +590,6 @@ export function ClansPage() {
     if (on) params.set(name, '1')
     else params.delete(name)
   })
-  const setTop = (next: number | null): void => updateView((params) => {
-    if (next === null) params.delete('top')
-    else params.set('top', String(next))
-  })
   const resetView = (): void => {
     writtenQuery.current = ''
     setDraft('')
@@ -616,12 +605,12 @@ export function ClansPage() {
   const body = loaded?.body ?? null
   // A failed request leaves the previous rows in place, under the error.
   const busy = loaded !== null && error === null && loaded.key !== requestKey
-  const customized = query !== '' || sort !== 'place' || dir !== 'asc' || top !== null || live || view.favorites
+  const customized = query !== '' || sort !== 'place' || dir !== 'asc' || live || view.favorites
 
   let content: ReactNode = null
   if (loaded === null || body === null) {
     content = error === null ? <Loading /> : null
-  } else if (body.total === 0 && isRankingView(loaded.view) && loaded.view.top === null) {
+  } else if (body.total === 0 && isRankingView(loaded.view)) {
     content = (
       <>
         {error !== null && <ErrorNotice error={error} />}
@@ -632,7 +621,7 @@ export function ClansPage() {
     const shown = loaded.view
     const offset = (shown.page - 1) * PAGE_SIZE
     const liveMinutes = Math.round((body.live?.windowSec ?? 2_700) / 60)
-    const plain = isRankingView(shown) && shown.top === null
+    const plain = isRankingView(shown)
     const meta = [
       plain
         ? t('clans.places', { from: fmtInt(offset + 1), to: fmtInt(offset + body.clans.length), total: fmtInt(body.total) })
@@ -649,23 +638,21 @@ export function ClansPage() {
       pattern: searchPattern(shown.query),
       onOpen: openRow,
     }
-    const filtered = shown.top !== null || shown.live || shown.favorites
+    const filtered = shown.live || shown.favorites
     let empty: string
     if (shown.favorites && favoriteList.length === 0) empty = t('clans.empty.favorites')
     else if (shown.query !== '' && !filtered) empty = t('clans.search.empty', { q: shown.query })
-    else if (shown.live && shown.top === null && !shown.favorites && shown.query === '') empty = t('clans.empty.live', { min: liveMinutes })
+    else if (shown.live && !shown.favorites && shown.query === '') empty = t('clans.empty.live', { min: liveMinutes })
     else empty = t('clans.empty.filtered')
     const liveOff = body.live === null || body.live.count === 0
     const sortOptions: { key: ClanSortKey; label: string }[] = [
-      { key: 'place', label: t('clans.col.rating') },
+      { key: 'place', label: t('clans.col.place') },
       { key: 'change', label: t('clans.col.change') },
       { key: 'battles', label: t('metric.battles') },
       { key: 'winRate', label: t('metric.winrate') },
       { key: 'kd', label: t('clans.col.kd') },
       { key: 'members', label: t('clans.col.members') },
     ]
-    // The phone control shows the rating's direction for place, as the column head does.
-    const shownDir = sort === 'place' ? (dir === 'asc' ? 'desc' : 'asc') : dir
     content = (
       <div
         ref={tableRef}
@@ -711,34 +698,6 @@ export function ClansPage() {
         </div>
         <div className="clans-tools">
           <div className="clan-filters" ref={filtersRef}>
-            <div className="clan-filters__tiers" role="group" aria-label={t('clans.filter.tiers')}>
-              <button
-                type="button"
-                className={`clan-chip${top === null ? ' is-on' : ''}`}
-                aria-pressed={top === null}
-                onClick={() => setTop(null)}
-              >
-                {t('common.all')}
-              </button>
-              {REWARD_TIERS.map((tier) => {
-                const cutoff = body.tierCutoffs.find((entry) => entry.place === tier.top)
-                return (
-                  <button
-                    key={tier.top}
-                    type="button"
-                    className={`clan-chip zone-${tier.top}${top === tier.top ? ' is-on' : ''}`}
-                    aria-pressed={top === tier.top}
-                    title={cutoff === undefined
-                      ? t('clans.filter.top.places', { n: tier.top })
-                      : t('clans.filter.top.title', { n: tier.top, rating: fmtInt(cutoff.rating) })}
-                    onClick={() => setTop(top === tier.top ? null : tier.top)}
-                  >
-                    <span className="clan-chip__dot" aria-hidden="true" />
-                    {t('clan.reward.top', { n: tier.top })}
-                  </button>
-                )
-              })}
-            </div>
             <button
               type="button"
               className={`clan-chip is-live${live ? ' is-on' : ''}`}
@@ -787,10 +746,10 @@ export function ClansPage() {
               type="button"
               className="clan-sort__dir"
               onClick={() => applySort(sort, dir === 'asc' ? 'desc' : 'asc')}
-              aria-label={t(shownDir === 'asc' ? 'clans.sort.asc' : 'clans.sort.desc')}
-              title={t(shownDir === 'asc' ? 'clans.sort.asc' : 'clans.sort.desc')}
+              aria-label={t(dir === 'asc' ? 'clans.sort.asc' : 'clans.sort.desc')}
+              title={t(dir === 'asc' ? 'clans.sort.asc' : 'clans.sort.desc')}
             >
-              {shownDir === 'asc' ? '↑' : '↓'}
+              {dir === 'asc' ? '↑' : '↓'}
             </button>
           </div>
         </div>
@@ -802,9 +761,16 @@ export function ClansPage() {
             <table className="tbl">
               <thead>
                 <tr>
-                  <th className="col-rank">#</th>
+                  <SortHeader
+                    className="col-rank"
+                    label="#"
+                    title={t('a11y.sort', { col: t('clans.col.place') })}
+                    sortKey="place"
+                    view={view}
+                    onSort={sortBy}
+                  />
                   <th className="clan-cell">{t('clans.col.clan')}</th>
-                  <SortHeader className="num" label={t('clans.col.rating')} sortKey="place" invert view={view} onSort={sortBy} />
+                  <th className="num">{t('clans.col.rating')}</th>
                   <SortHeader
                     className="num col-change"
                     label={t('clans.col.change')}

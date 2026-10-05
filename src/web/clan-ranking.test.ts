@@ -2,12 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   MIN_RATE_BATTLES,
-  clanPlaceChanges,
+  clanCrawlReads,
+  clanPlacesAt,
   clanRecords,
   clanTierCutoffs,
   defaultClanSortDirection,
   filterClanRows,
+  nearestCrawl,
   sortClanRows,
+  squadronBattleCounts,
+  type ClanCrawlRead,
   type ClanRankingRow,
 } from './clan-ranking.js'
 
@@ -64,7 +68,7 @@ test('defaultClanSortDirection sorts places up and figures from the largest', ()
   assert.equal(defaultClanSortDirection('members'), 'desc')
 })
 
-test('filterClanRows combines the top, live and tag filters', () => {
+test('filterClanRows combines the live and tag filters', () => {
   const rows = [
     row('a', 1, { recentBattles: 2 }),
     row('b', 4),
@@ -72,9 +76,7 @@ test('filterClanRows combines the top, live and tag filters', () => {
     row('d', 7, { current: false, recentBattles: 3 }),
   ]
   assert.deepEqual(tags(filterClanRows(rows, {})), ['a', 'b', 'c', 'd'])
-  assert.deepEqual(tags(filterClanRows(rows, { top: 5 })), ['a', 'b'])
-  assert.deepEqual(tags(filterClanRows(rows, { top: 10 })), ['a', 'b', 'c'], 'a squadron out of the table holds no tier')
-  assert.deepEqual(tags(filterClanRows(rows, { live: true })), ['a', 'c', 'd'])
+  assert.deepEqual(tags(filterClanRows(rows, { live: true })), ['a', 'c', 'd'], 'a squadron out of the table still plays')
   assert.deepEqual(tags(filterClanRows(rows, { live: true, tags: new Set(['c', 'd', 'x']) })), ['c', 'd'])
   assert.deepEqual(tags(filterClanRows(rows, { tags: new Set() })), [])
 })
@@ -106,13 +108,59 @@ test('clanTierCutoffs reads the rating at each filled tier boundary', () => {
   assert.deepEqual(clanTierCutoffs(dropped), [{ place: 5, rating: 9_500 }])
 })
 
-test('clanPlaceChanges ranks the earlier ratings and skips rows without one', () => {
-  const changes = clanPlaceChanges([
-    { coreTag: 'a', rank: 1, earlierRating: 900 },
-    { coreTag: 'b', rank: 2, earlierRating: 1_000 },
-    { coreTag: 'c', rank: 3, earlierRating: null },
-    { coreTag: 'd', rank: 4, earlierRating: 900 },
+const crawl = (capturedAt: number, cores: string[], full = false): ClanCrawlRead => ({ capturedAt, full, cores })
+
+test('nearestCrawl picks the read nearest the mark within the shift', () => {
+  const times = [100, 200, 400]
+  assert.equal(nearestCrawl(times, 290, 50), null, 'nothing within 50')
+  assert.equal(nearestCrawl(times, 290, 100), 200)
+  assert.equal(nearestCrawl(times, 300, 100), 200, 'the earlier read on a tie')
+  assert.equal(nearestCrawl(times, 390, 100), 400)
+  assert.equal(nearestCrawl(times, 50, 60), 100, 'before the first read')
+  assert.equal(nearestCrawl(times, 460, 60), 400, 'after the last read')
+  assert.equal(nearestCrawl([], 100, 1_000), null)
+})
+
+test('clanCrawlReads lists the crawls that read each squadron', () => {
+  const reads = clanCrawlReads([crawl(10, ['a', 'b'], true), crawl(20, ['a']), crawl(30, ['b', 'a'])])
+  assert.deepEqual([...reads], [['a', [10, 20, 30]], ['b', [10, 30]]])
+})
+
+test('clanPlacesAt rebuilds the table at a moment, dropped squadrons left out', () => {
+  // Full crawl at 10: a b c d; top crawls at 20 and 30 read a and b (c fell out of the top);
+  // the full crawl at 40 comes after the moment.
+  const crawls = [
+    crawl(5, ['a', 'b', 'c', 'x'], true),
+    crawl(10, ['a', 'b', 'c', 'd'], true),
+    crawl(20, ['a', 'b', 'c']),
+    crawl(30, ['b', 'a']),
+    crawl(40, ['a', 'b', 'c', 'd', 'e'], true),
+  ]
+  const ratings: Record<string, number> = { a: 500, b: 600, c: 700, d: 100, x: 900 }
+  const places = clanPlacesAt(crawls, 35, (core) => ratings[core] ?? null, () => 0)
+  // c's stale 700 stays below the squadrons the latest crawl read; x, missed by the full crawl at
+  // 10, holds no place despite its rating; e appeared later.
+  assert.deepEqual([...(places ?? [])], [['b', 1], ['a', 2], ['c', 3], ['d', 4]])
+  assert.deepEqual([...(clanPlacesAt(crawls, 10, (core) => ratings[core] ?? null, () => 0) ?? [])], [['c', 1], ['b', 2], ['a', 3], ['d', 4]])
+  assert.equal(clanPlacesAt(crawls, 4, () => 1, () => 0), null, 'no crawl before the moment')
+  assert.equal(clanPlacesAt(crawls.slice(2), 35, () => 1, () => 0), null, 'no full crawl in the log')
+  // Equal ratings keep today's order; a squadron without a rating then holds no place.
+  const tied = clanPlacesAt([crawl(1, ['p', 'q', 'r'], true)], 1, (core) => (core === 'r' ? null : 5), (core) => (core === 'p' ? 2 : 1))
+  assert.deepEqual([...(tied ?? [])], [['q', 1], ['p', 2]])
+})
+
+test('squadronBattleCounts counts battles of teams under one squadron tag', () => {
+  const counts = squadronBattleCounts([
+    { sessionId: 's1', team: 1, core: 'a' },
+    { sessionId: 's1', team: 2, core: 'b' },
+    { sessionId: 's2', team: 1, core: 'a' },
+    { sessionId: 's2', team: 2, core: 'c' },
+    // A random battle (several tags on a team) counts for nobody.
+    { sessionId: 's3', team: 1, core: 'a' },
+    { sessionId: 's3', team: 1, core: 'd' },
+    // Two squadrons whose tags share a core: one battle, not two.
+    { sessionId: 's4', team: 1, core: 'e' },
+    { sessionId: 's4', team: 2, core: 'e' },
   ])
-  // c entered the table within the day: d was third among the earlier ratings and is fourth now.
-  assert.deepEqual([...changes], [['b', -1], ['a', 1], ['d', -1]])
+  assert.deepEqual([...counts].sort(), [['a', 2], ['b', 1], ['c', 1], ['e', 1]])
 })

@@ -366,7 +366,7 @@ export const wtClans: ParserSource = {
       throw new Error('the leaderboard returned no clans: the response or access changed')
     }
 
-    saveClanLeaderboard(entries, capturedAt)
+    saveClanLeaderboard(entries, capturedAt, { full })
     if (full) setBotState(CLAN_FULL_CRAWL_KEY, String(capturedAt))
     if (season) saveOfficialClanSeason(season)
 

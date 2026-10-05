@@ -1,7 +1,7 @@
 /**
- * Views of the squadron ranking for /api/clans: sort orders, filters, season records and the
- * reward tiers' cut-off ratings. Pure functions over the ranked snapshot (routes/site.ts), which
- * owns SQLite.
+ * Views of the squadron ranking for /api/clans: sort orders, filters, season records, the reward
+ * tiers' cut-off ratings, places a day ago and who is playing now. Pure functions over the ranked
+ * snapshot and the crawl log (routes/site.ts), which owns SQLite.
  */
 
 /** Sort keys of /api/clans?sort=; 'place' is the ranking's own order. */
@@ -36,7 +36,7 @@ export interface ClanRankingRow {
   kills: number | null
   deaths: number | null
   delta24h: number | null
-  /** Season battles shortly before the latest top crawl; above 0 — playing now. */
+  /** Squadron battles that ended within the live window (squadronBattleCounts); above 0 — playing now. */
   recentBattles: number
 }
 
@@ -92,8 +92,6 @@ export function sortClanRows<T extends ClanRankingRow>(
 }
 
 export interface ClanRankingFilter {
-  /** Only the top N places of the official table. */
-  top?: number | undefined
   /** Only squadrons playing now. */
   live?: boolean | undefined
   /** Only these core tags. */
@@ -102,8 +100,7 @@ export interface ClanRankingFilter {
 
 export function filterClanRows<T extends ClanRankingRow>(rows: readonly T[], filter: ClanRankingFilter): T[] {
   return rows.filter((row) =>
-    (filter.top === undefined || (row.current && row.rank <= filter.top))
-    && (filter.live !== true || row.recentBattles > 0)
+    (filter.live !== true || row.recentBattles > 0)
     && (filter.tags === undefined || filter.tags.has(row.coreTag)))
 }
 
@@ -150,15 +147,103 @@ export function clanTierCutoffs(ranked: readonly ClanRankingRow[]): { place: num
   })
 }
 
+/** A leaderboard crawl: when it ran, whether it read the whole table, the core tags it read. */
+export interface ClanCrawlRead {
+  capturedAt: number
+  full: boolean
+  cores: readonly string[]
+}
+
+/** Core tag → the times crawls read it, oldest first; `crawls` oldest first. */
+export function clanCrawlReads(crawls: readonly ClanCrawlRead[]): Map<string, number[]> {
+  const reads = new Map<string, number[]>()
+  for (const crawl of crawls) {
+    for (const core of crawl.cores) {
+      const times = reads.get(core)
+      if (times === undefined) reads.set(core, [crawl.capturedAt])
+      else times.push(crawl.capturedAt)
+    }
+  }
+  return reads
+}
+
+/** The time in sorted `times` nearest to target, at most maxShift away (the earlier one on a tie); null — none. */
+export function nearestCrawl(times: readonly number[], target: number, maxShift: number): number | null {
+  let low = 0
+  let high = times.length
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if (times[middle]! < target) low = middle + 1
+    else high = middle
+  }
+  // times[low] is the first at or after target, times[low − 1] the last before it.
+  const after = times[low]
+  const before = times[low - 1]
+  const best = before !== undefined && (after === undefined || target - before <= after - target) ? before : after
+  return best !== undefined && Math.abs(best - target) <= maxShift ? best : null
+}
+
 /**
- * Places gained (+) or lost (−) since an earlier ranking: the rows with an earlier rating, ranked
- * by it (ties by today's place). Returns core tag → change; a row without one is left out.
+ * Places in the table as it stood at `at`, in the order of compareClanGroups (routes/site.ts):
+ * the squadrons the latest crawl up to `at` read, then the rest read since the last full crawl
+ * up to it, each part by its rating then (ratingAt), ties by tieRank. A squadron that full crawl
+ * missed (dropped) or without a rating then holds no place. null — the log does not reach a full
+ * crawl before `at`. `crawls` oldest first.
  */
-export function clanPlaceChanges(
-  rows: readonly { coreTag: string; rank: number; earlierRating: number | null }[],
+export function clanPlacesAt(
+  crawls: readonly ClanCrawlRead[],
+  at: number,
+  ratingAt: (core: string) => number | null,
+  tieRank: (core: string) => number,
+): Map<string, number> | null {
+  let latest = crawls.length - 1
+  while (latest >= 0 && crawls[latest]!.capturedAt > at) latest--
+  let full = latest
+  while (full >= 0 && !crawls[full]!.full) full--
+  if (full < 0) return null
+  const tiers = new Map<string, number>()
+  for (const core of crawls[latest]!.cores) tiers.set(core, 0)
+  for (let index = full; index < latest; index++) {
+    for (const core of crawls[index]!.cores) {
+      if (!tiers.has(core)) tiers.set(core, 1)
+    }
+  }
+  const entries = [...tiers].flatMap(([core, tier]) => {
+    const rating = ratingAt(core)
+    return rating === null ? [] : [{ core, tier, rating, tie: tieRank(core) }]
+  })
+  entries.sort((left, right) =>
+    left.tier - right.tier
+    || right.rating - left.rating
+    || left.tie - right.tie
+    || left.core.localeCompare(right.core))
+  return new Map(entries.map((entry, index) => [entry.core, index + 1]))
+}
+
+/**
+ * Squadron battles per core tag: a battle counts for a team whose tagged players all wear one
+ * squadron's tag, as every squadron-battle team did on 2026-10-05; a team of several tags (a
+ * random battle stored by `npm run battle`) counts for nobody.
+ */
+export function squadronBattleCounts(
+  teams: readonly { sessionId: string; team: number; core: string }[],
 ): Map<string, number> {
-  const earlier = rows
-    .flatMap((row) => (row.earlierRating === null ? [] : [{ row, rating: row.earlierRating }]))
-    .sort((left, right) => right.rating - left.rating || left.row.rank - right.row.rank)
-  return new Map(earlier.map((entry, index) => [entry.row.coreTag, index + 1 - entry.row.rank]))
+  const byTeam = new Map<string, { sessionId: string; cores: Set<string> }>()
+  for (const { sessionId, team, core } of teams) {
+    const key = `${sessionId} ${team}`
+    const entry = byTeam.get(key)
+    if (entry === undefined) byTeam.set(key, { sessionId, cores: new Set([core]) })
+    else entry.cores.add(core)
+  }
+  // Sessions, not teams: two squadrons whose tags share a core can meet, and that is one battle.
+  const sessionsByCore = new Map<string, Set<string>>()
+  for (const { sessionId, cores } of byTeam.values()) {
+    if (cores.size !== 1) continue
+    for (const core of cores) {
+      const sessions = sessionsByCore.get(core)
+      if (sessions === undefined) sessionsByCore.set(core, new Set([sessionId]))
+      else sessions.add(sessionId)
+    }
+  }
+  return new Map([...sessionsByCore].map(([core, sessions]) => [core, sessions.size]))
 }

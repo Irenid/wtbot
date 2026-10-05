@@ -468,6 +468,12 @@ the CDN while their parts are there (~2 weeks).
   it ingests get no facts; back on v19, delete the `bot_state` keys
   `db-maintenance:battle-repair-v2-after` and `-v2-done`, and pass v2 fills
   them.
+- **v20** only adds the `clan_crawls` log (which squadrons each leaderboard
+  crawl read): the v19 image runs on a v20 database after
+  `PRAGMA user_version = 19` with the bot stopped and ignores the table. Back
+  on v20 the migration finds the table in place; the crawls in between are
+  missing, so the 24 h change and places moved fall back as after the first
+  deploy (`src/web/routes/site.ts`) until the log covers a day again.
 
 ## Should we move to PostgreSQL
 

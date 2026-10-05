@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import {
-  CLAN_TOP_CRAWL_PLACES,
   findKnownPlayerMatches,
   getClanSeasonContext,
   getClanRatingsWithDelta,
@@ -31,7 +30,10 @@ import {
   getSiteClanRatingEvents,
   getSiteClanProfile,
   getSiteFirstBattleAt,
+  getBattleTeamsEndedAfter,
+  getClanCrawls,
   getLastFullClanCrawlAt,
+  getLastSuccessfulParseAt,
   getSiteClanRosterAll,
   getSiteClanRosterDetails,
   getSiteExternalAggregateHistory,
@@ -57,13 +59,15 @@ import { clanDisplayName, plainClanTag } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict, type VehicleDict } from '../../wrpl/vehicles.js'
 import {
   CLAN_SORT_KEYS,
-  CLAN_REWARD_TIER_PLACES,
-  clanPlaceChanges,
+  clanCrawlReads,
+  clanPlacesAt,
   clanRecords,
   clanTierCutoffs,
   defaultClanSortDirection,
   filterClanRows,
+  nearestCrawl,
   sortClanRows,
+  squadronBattleCounts,
   type ClanRankingRow,
   type ClanRecords,
   type ClanSortDirection,
@@ -85,12 +89,28 @@ const MAX_IP_BUCKETS = 2_048
 const CLAN_CACHE_TTL_MS = 60_000
 const DAY_SEC = 86_400
 /**
- * A squadron whose season battles grew within this window before the latest top crawl is playing
- * now: two crawl intervals (wt-clans, 20 min) and slack, so a long battle does not blink it off.
+ * A day figure starts at the crawl that read the squadron nearest to a day before its end, at
+ * most this far off: below the top 100 only full crawls read it, every ~11 h and on demand for an
+ * unknown tag (13 in the 3 days to 2026-10-05).
+ */
+const DAY_BASE_MAX_SHIFT_SEC = 6 * 3_600
+/** The crawl log a snapshot reads: day figures of the rest reach back ~42 h (12 + 24 + 6). */
+const CRAWL_LOG_READ_SEC = 2 * DAY_SEC
+/**
+ * A squadron whose battle ended within this window is playing now. Replays are stored ~25 s
+ * after a battle ends (p50, 2026-10-05), so the mark comes within a minute of the first battle
+ * and outlasts a battle and the queue before the next one.
  */
 const LIVE_WINDOW_SEC = 45 * 60
-/** A top crawl older than this shows nobody playing: the crawler has stopped or is failing. */
-const LIVE_MAX_CRAWL_AGE_SEC = 60 * 60
+/** Squadron battles last up to ~25 min: one started this long before the window cannot end in it. */
+const LIVE_MAX_BATTLE_SEC = 2 * 3_600
+/**
+ * wt-replays runs every 20 s and fails while its session is expired: without a successful run
+ * this long, the snapshot shows no live marks instead of a table where nobody plays.
+ */
+const LIVE_MAX_REPLAY_AGE_SEC = 10 * 60
+/** The parser source whose replays feed the battles table (src/parsers/sources/wt-replays.ts). */
+const REPLAY_SOURCE = 'wt-replays'
 /** Core tags one /api/clans?tags= request may filter by (the SPA's followed squadrons). */
 const MAX_FILTER_TAGS = 50
 const VEHICLE_DICT_TIMEOUT_MS = 10_000
@@ -145,18 +165,26 @@ interface SiteClanGroup {
   /** One of the RANK_TIER_* values. */
   rankTier: number
   /**
-   * Official rating change over the day before the rating was last confirmed: the top 100 are
-   * read every 20 minutes and the rest at full crawls, so a shared "now − 24 h" mark would give
-   * the rest a shorter window. null — no official data, the squadron left the table, or no
-   * history point that old inside the season.
+   * Official rating change over the day before the rating was last confirmed (the top 100 are
+   * read every 20 minutes, the rest at full crawls), from delta24hFrom. null — no official data,
+   * the squadron left the table, or no figures that old inside the season.
    */
   delta24h: number | null
-  /** Season battles and wins over the same day; null — no point that old or no counts. */
+  /**
+   * Start of the day figures: the crawl that read the squadron nearest to a day before
+   * confirmedAt, within DAY_BASE_MAX_SHIFT_SEC; without one (the crawl log is younger, a zero no
+   * crawl reaches) that mark itself, read from the last history point before it.
+   */
+  delta24hFrom: number | null
+  /** Season battles and wins over the same window; null — no figures that old or no counts. */
   battles24h: number | null
   wins24h: number | null
-  /** Places gained (+) or lost (−) over the day (clanPlaceChanges); null — no place a day ago. */
+  /**
+   * Places gained (+) or lost (−) since the table stood a day before the latest crawl
+   * (clanPlacesAt); null — the squadron had no place then or has left the table.
+   */
   rankChange24h: number | null
-  /** Season battles within LIVE_WINDOW_SEC before the latest top crawl: above 0 — playing now. */
+  /** Squadron battles that ended within LIVE_WINDOW_SEC (replays): above 0 — playing now. */
   recentBattles: number
 }
 
@@ -231,7 +259,7 @@ interface ClanSnapshot {
   rowByCore: Map<string, SiteClanRow>
   records: ClanRecords
   tierCutoffs: { place: number; rating: number }[]
-  /** Squadrons playing now and the top crawl the window ends at; null — no fresh top crawl. */
+  /** Squadrons playing now and when the window ended; null — replays are not coming in. */
   live: { count: number; at: number; windowSec: number } | null
 }
 
@@ -306,6 +334,7 @@ function buildClanSnapshot(): ClanSnapshot {
         official: null,
         rankTier: RANK_TIER_PSR,
         delta24h: null,
+        delta24hFrom: null,
         battles24h: null,
         wins24h: null,
         rankChange24h: null,
@@ -397,6 +426,7 @@ function buildClanSnapshot(): ClanSnapshot {
         official: null,
         rankTier: RANK_TIER_PSR,
         delta24h: null,
+        delta24hFrom: null,
         battles24h: null,
         wins24h: null,
         rankChange24h: null,
@@ -437,39 +467,64 @@ function buildClanSnapshot(): ClanSnapshot {
   ranked.forEach((group, index) => {
     group.rank = index + 1
   })
-  // The day's figures and the live mark of every squadron in the table, eagerly: sorts and
-  // filters need all of them. One or two indexed point queries per squadron (~650: a few ms).
+  // The day's figures, places and live marks of every squadron, eagerly: sorts and filters need
+  // all of them. One or two indexed point queries per squadron (~650: a few ms).
   const nowSec = Math.floor(Date.now() / 1000)
-  const liveFrom = latestOfficialAt - LIVE_WINDOW_SEC
-  const liveFresh = latestOfficialAt > 0 && nowSec - latestOfficialAt <= LIVE_MAX_CRAWL_AGE_SEC && liveFrom >= seasonStart
-  const dayRatings = new Map<string, number>()
+  // History keeps change points only: the crawl log tells which crawls read a squadron.
+  const crawls = latestOfficialAt > 0 ? getClanCrawls(Math.max(0, latestOfficialAt - CRAWL_LOG_READ_SEC)) : []
+  const readsByCore = clanCrawlReads(crawls)
+  const logFrom = crawls[0]?.capturedAt
   for (const group of ranked) {
     const official = group.official
     if (official === null || group.rankTier > RANK_TIER_EARLIER) continue
-    const dayAgo = official.confirmedAt - DAY_SEC
-    const day = dayAgo >= seasonStart ? getSiteClanOfficialStatsAt(group.coreTag, seasonStart, dayAgo) : null
+    // The plain "last point a day before" put the rest's start a full crawl further back: with
+    // full crawls ~11 h apart their "24 h" spanned 32–36 h (2026-10-05). A read is nearest only
+    // if none before the log's start could be nearer (a log younger than the window: after v20).
+    const mark = official.confirmedAt - DAY_SEC
+    const shift = logFrom === undefined ? -1 : Math.min(DAY_BASE_MAX_SHIFT_SEC, mark - logFrom)
+    const read = shift >= 0 ? nearestCrawl(readsByCore.get(group.coreTag) ?? [], mark, shift) : null
+    const from = read ?? mark
+    const day = from >= seasonStart ? getSiteClanOfficialStatsAt(group.coreTag, seasonStart, from) : null
     if (day !== null) {
       group.delta24h = official.rating - day.rating
+      group.delta24hFrom = from
       group.battles24h = countGrowth(official.battles, day.battles)
       group.wins24h = countGrowth(official.wins, day.wins)
-      dayRatings.set(group.coreTag, day.rating)
-    }
-    // Only places the 20-minute crawl reads: below them the last point can be 12 h old, and its
-    // growth says nothing about now.
-    if (
-      liveFresh && group.rankTier === RANK_TIER_LATEST
-      && official.position !== null && official.position <= CLAN_TOP_CRAWL_PLACES
-    ) {
-      const before = getSiteClanOfficialStatsAt(group.coreTag, seasonStart, liveFrom)
-      group.recentBattles = countGrowth(official.battles, before?.battles ?? null) ?? 0
     }
   }
-  const placeChanges = clanPlaceChanges(ranked.map((group) => ({
-    coreTag: group.coreTag,
-    rank: group.rank,
-    earlierRating: dayRatings.get(group.coreTag) ?? null,
-  })))
-  for (const group of ranked) group.rankChange24h = placeChanges.get(group.coreTag) ?? null
+  // Places a day ago from the table as it stood then, squadrons dropped since included: ranking
+  // only today's squadrons by their old ratings moved everyone below a dropped one up a place.
+  const placesAt = latestOfficialAt - DAY_SEC
+  const earlierPlaces = placesAt >= seasonStart
+    ? clanPlacesAt(
+      crawls,
+      placesAt,
+      (core) => getSiteClanOfficialStatsAt(core, seasonStart, placesAt)?.rating ?? null,
+      (core) => groups.get(core)?.rank ?? Number.MAX_SAFE_INTEGER,
+    )
+    : null
+  for (const group of ranked) {
+    const earlier = earlierPlaces?.get(group.coreTag)
+    group.rankChange24h = earlier !== undefined && group.official !== null && group.rankTier <= RANK_TIER_EARLIER
+      ? earlier - group.rank
+      : null
+  }
+  // Playing now: squadron battles from replays, every squadron; the leaderboard's battle counts
+  // lagged a crawl or two and marked a squadron entering the top 100 for hours-old battles.
+  const replaysAt = getLastSuccessfulParseAt(REPLAY_SOURCE)
+  const liveFresh = replaysAt !== null && nowSec - replaysAt <= LIVE_MAX_REPLAY_AGE_SEC
+  if (liveFresh) {
+    const liveFrom = nowSec - LIVE_WINDOW_SEC
+    const teams = getBattleTeamsEndedAfter(liveFrom, Math.max(0, seasonStart, liveFrom - LIVE_MAX_BATTLE_SEC))
+      .flatMap((team) => {
+        const core = plainClanTag(team.clanTag)
+        return core ? [{ sessionId: team.sessionId, team: team.team, core }] : []
+      })
+    for (const [core, battles] of squadronBattleCounts(teams)) {
+      const group = groups.get(core)
+      if (group !== undefined) group.recentBattles = battles
+    }
+  }
   const rows: SiteClanRow[] = ranked.map((group) => {
     const official = group.official
     return {
@@ -516,7 +571,7 @@ function buildClanSnapshot(): ClanSnapshot {
     records: clanRecords(rows),
     tierCutoffs: clanTierCutoffs(rows),
     live: liveFresh
-      ? { count: rows.filter((row) => row.recentBattles > 0).length, at: latestOfficialAt, windowSec: LIVE_WINDOW_SEC }
+      ? { count: rows.filter((row) => row.recentBattles > 0).length, at: nowSec, windowSec: LIVE_WINDOW_SEC }
       : null,
   }
 }
@@ -1202,7 +1257,6 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       limit?: number
       sort?: ClanSortKey
       dir?: ClanSortDirection
-      top?: number
       live?: boolean
       tags?: string
     }
@@ -1217,7 +1271,6 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
           limit: { type: 'integer', minimum: 1, maximum: 100 },
           sort: { type: 'string', enum: [...CLAN_SORT_KEYS] },
           dir: { type: 'string', enum: ['asc', 'desc'] },
-          top: { type: 'integer', enum: [...CLAN_REWARD_TIER_PLACES] },
           live: { type: 'boolean' },
           // Comma-separated core tags, only the first MAX_FILTER_TAGS count; empty matches nothing.
           tags: { type: 'string', maxLength: 2_048 },
@@ -1229,7 +1282,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     // Matches the server snapshot TTL: Home → Clans → Battles does not fetch the same data again.
     void reply.header('Cache-Control', 'public, max-age=60')
     const snapshot = cachedClanSnapshot()
-    const { offset = 0, limit = 100, sort, dir, top, live, tags } = request.query
+    const { offset = 0, limit = 100, sort, dir, live, tags } = request.query
     const query = request.query.query?.trim() ?? ''
     // A search keeps its own order (exact tags first) unless a sort is asked for.
     const found = query === ''
@@ -1241,7 +1294,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     const tagSet = tags === undefined
       ? undefined
       : new Set(tags.split(',', MAX_FILTER_TAGS).map((tag) => plainClanTag(tag)).filter((tag) => tag !== ''))
-    const filtered = filterClanRows(found, { top, live, tags: tagSet })
+    const filtered = filterClanRows(found, { live, tags: tagSet })
     const sortKey = sort ?? (dir === undefined ? undefined : 'place')
     const ordered = sortKey === undefined
       ? filtered
@@ -1282,6 +1335,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         clanType: group.official?.clanType ?? null,
         lastSeenAt: group.lastSeenAt,
         delta24h: group.delta24h,
+        // The window of the day figures: a day or a full crawl's interval around it.
+        delta24hFrom: group.delta24hFrom,
+        delta24hTo: group.delta24hFrom === null ? null : group.official?.confirmedAt ?? null,
         battles24h: group.battles24h,
         wins24h: group.wins24h,
         rankChange24h: group.rankChange24h,
