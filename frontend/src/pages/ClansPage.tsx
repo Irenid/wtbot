@@ -3,7 +3,6 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { fetchClans, type ClanListEntry, type ClanRecords, type ClanSortKey } from '../api'
 import { fmtDateTime, fmtInt, fmtPercent, fmtRatio } from '../lib/format'
 import { MAX_FAVORITE_CLANS, toggleFavoriteClan, useFavoriteClans } from '../lib/favorite-clans'
-import { REWARD_TIERS, type RewardTier, type TierCutoff } from '../lib/reward-tiers'
 import { localeTag, t, tp } from '../i18n'
 import { SeasonPanel } from '../components/SeasonPanel'
 import { ErrorNotice, Loading, Pager, SecHead, StarIcon, useRowLink } from '../components/ui'
@@ -27,7 +26,22 @@ const MIN_RATE_BATTLES = 50
 const CHANGE_STRONG = 250
 const CHANGE_HUGE = 700
 
+/**
+ * Season reward tiers by place: places 1–3 have their own rewards, the rest share one per tier
+ * (see the rewards on a squadron page). A line under a tier's last place closes it. The server
+ * keeps the same list (CLAN_REWARD_TIER_PLACES in src/web/clan-ranking.ts).
+ */
+const REWARD_TIERS = [
+  { top: 5, from: 4 },
+  { top: 10, from: 6 },
+  { top: 20, from: 11 },
+  { top: 50, from: 21 },
+  { top: 100, from: 51 },
+] as const
+
+type RewardTier = (typeof REWARD_TIERS)[number]
 type SortDir = 'asc' | 'desc'
+type TierCutoff = { place: number; rating: number }
 
 const SORT_KEYS: readonly ClanSortKey[] = ['place', 'change', 'battles', 'winRate', 'kd', 'members']
 
@@ -357,7 +371,7 @@ function ClanRow({ clan, index, context }: { clan: ClanListEntry; index: number;
   )
 }
 
-/** The line under a reward tier's last place closes the tier: every squadron above it is in that top. */
+/** The line under a reward tier's last place: every squadron above it is in that top. */
 function TierCut({ tier, index }: { tier: RewardTier; index: number }) {
   const reward = t('clan.reward.top', { n: tier.top })
   return (
@@ -808,13 +822,7 @@ export function ClansPage() {
         <h1>{t('clans.title')}</h1>
       </div>
       {error !== null && loaded === null && <ErrorNotice error={error} />}
-      {body !== null && (
-        <SeasonPanel
-          context={body.season}
-          official={body.officialSeason}
-          rewards={{ cutoffs: body.tierCutoffs, leaderRating: body.leaderRating }}
-        />
-      )}
+      {body !== null && <SeasonPanel context={body.season} official={body.officialSeason} />}
       {content}
     </>
   )

@@ -43,9 +43,6 @@
   --gold-grad: linear-gradient(135deg, #ffdf8a, #f0a72e);
   --gold-bar: linear-gradient(90deg, #e89b1f, #ffd873);
   --gold-vert: linear-gradient(180deg, #ffd873, #e89b1f);
-  /* Season reward tiers (lib/reward-tiers.ts), warm to cool; past the top 100 — slate. */
-  --zone-5: #f5bc4a; --zone-10: #f2984a; --zone-20: #ec6f8e; --zone-50: #a08af2; --zone-100: #6f96ff;
-  --zone-rest: #5f6680;
 }
 
 * { box-sizing: border-box; margin: 0; }
@@ -156,56 +153,77 @@ input[type='range'] { accent-color: var(--accent); }
 .chip.fail { color: var(--fail); border-color: rgba(255, 143, 163, 0.3); background: rgba(255, 143, 163, 0.14); }
 .chip.accent { color: var(--accent); border-color: rgba(245, 188, 74, 0.35); background: rgba(245, 188, 74, 0.16); font-weight: 700; }
 
-/* Squadron season, in the ranking's language (.clans-table): a top edge, the title with a meta
-   line under it, a status pill on the right, uppercase band labels like column heads. Bands:
-   every stage's max BR on one rail, then the reward cut-offs in the tier colours. The panel and
-   every stage are size containers: the layout follows the panel's width (it also sits in a guide
-   column), type sizes in cqi follow the stage column's width. */
+/* Squadron season: a gold top edge; the title (the game's season number in gold digits) with the
+   dates and the season's day under it; on the right one status capsule — the next max BR, then the
+   battle windows; under them every stage's max BR on one rail. The panel and every stage are size
+   containers: the layout follows the panel's width (it also sits in a guide column), type sizes in
+   cqi follow the stage column's width. */
 .season-panel {
   container: season-panel / inline-size; padding: 16px 20px 18px;
   background:
     linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 0%, transparent) 70%) top / 100% 2px no-repeat padding-box,
     linear-gradient(180deg, var(--card-top), var(--card-bottom)) border-box;
 }
-.season-panel__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 24px; margin-bottom: 16px; }
+.season-panel__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin-bottom: 20px; }
 .season-panel__title { min-width: 0; }
 /* A long title ("Temporada del escuadrón 62" in a guide column) wraps beside its bar. */
-.season-panel__title > .sec-head { margin-bottom: 3px; flex-wrap: nowrap; }
-.season-panel__title > .sec-head h2 { white-space: normal; text-wrap: balance; }
+.season-panel__title > .sec-head { margin-bottom: 5px; flex-wrap: nowrap; }
+.season-panel__title > .sec-head h2 { white-space: normal; text-wrap: balance; color: var(--ink); }
+.season-panel__no {
+  font-family: var(--font-display); font-size: 16px; font-weight: 700; letter-spacing: 0; line-height: 1;
+  background: var(--gold-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 /* Aligned with the title text, past the gold marker (3 px + the 8 px gap). */
-.season-panel__meta { padding-left: 11px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.season-panel__meta span span { white-space: nowrap; }
-.season-panel__label {
-  margin: 0 0 10px; padding-left: 11px;
-  font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+.season-panel__meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 16px; padding-left: 11px;
+  font-size: 12.5px; line-height: 18px; color: var(--ink2); font-variant-numeric: tabular-nums;
 }
-/* Squadron battles now: a green pill with the site's live pulse, or a plain one with a ring and the
-   next start (the ranking's chip shape; a status, not a button). */
-.season-battles {
-  display: inline-flex; align-items: center; gap: 7px; flex: none;
-  padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-soft);
-  font-size: 12px; font-weight: 500; line-height: 16px; color: var(--ink2); white-space: nowrap; cursor: default;
+.season-panel__part { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.season-panel__part svg { flex: none; color: var(--muted); }
+.season-panel__meta b { font-weight: 600; color: var(--ink); }
+/* The status capsule (the ranking's chip shape): two parts split by a hairline. Battles running
+   tint their part gold and pulse; outside the windows a grey ring names the next start. */
+.season-status {
+  display: inline-flex; flex: none; max-width: 100%; overflow: hidden;
+  border: 1px solid var(--line2); border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01)), var(--bg-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 10px 24px -16px rgba(0, 0, 0, 0.9);
+  font-size: 12.5px; line-height: 16px; color: var(--ink2);
 }
-.season-battles__dot { flex: none; width: 7px; height: 7px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--muted); }
-.season-battles.is-open {
-  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
-  background: color-mix(in srgb, var(--ok) 11%, transparent); color: var(--ok);
+.season-status__item { display: inline-flex; align-items: center; gap: 8px; padding: 7px 15px; white-space: nowrap; cursor: default; }
+.season-status__item + .season-status__item { box-shadow: inset 1px 0 0 var(--line2); }
+.season-status__item > svg { flex: none; color: var(--accent); }
+.season-status b { font-weight: 600; color: var(--ink); }
+.season-status b.season-status__br {
+  font-family: var(--font-display); font-size: 13.5px; font-weight: 700;
+  background: var(--gold-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-.season-battles.is-open .season-battles__dot { border: 0; background: var(--ok); animation: livePulse 2.4s ease-out infinite; }
+.season-status__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--muted); }
+.season-status__battles { color: var(--muted); }
+.season-status__battles b { color: var(--ink2); }
+.season-status__battles.is-open { background: linear-gradient(90deg, rgba(245, 188, 74, 0.14), rgba(245, 188, 74, 0.05)); color: var(--accent-hover); }
+.season-status__battles.is-open b { color: var(--accent-hover); }
+.season-status__battles.is-open .season-status__dot { border: 0; background: var(--accent); animation: seasonPulse 2.4s ease-out infinite; }
+/* A narrow panel stacks the two parts in one block under the title. */
+@container season-panel (max-width: 520px) {
+  .season-status { display: flex; flex-direction: column; width: 100%; border-radius: 12px; }
+  .season-status__item { padding: 8px 13px; white-space: normal; }
+  .season-status__item + .season-status__item { box-shadow: inset 0 1px 0 var(--line2); }
+}
 .season-panel > .notice { margin-top: 14px; }
-.season-track { --br-row: 30px; }
-.season-track__stages {
+.season-track {
+  --br-row: 30px;
   position: relative; list-style: none; margin: 0; padding: 0;
   display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr));
 }
 /* The rail joins the node centres (first column's to last column's) at mid node row;
    gold up to --i: the current stage's node plus the elapsed share of its week. */
-.season-track__stages::before, .season-track__stages::after {
+.season-track::before, .season-track::after {
   content: ''; position: absolute; top: calc(var(--br-row) + 14px); left: calc(50% / var(--n));
   height: 2px; border-radius: 1px; pointer-events: none;
 }
-.season-track__stages::before { right: calc(50% / var(--n)); background: rgba(255, 255, 255, 0.1); }
-.season-track__stages::after {
+.season-track::before { right: calc(50% / var(--n)); background: rgba(255, 255, 255, 0.1); }
+.season-track::after {
   width: calc(100% / var(--n) * var(--i));
   background: var(--gold-bar); box-shadow: 0 0 10px rgba(245, 188, 74, 0.4);
   transform-origin: left center; animation: seasonRail 900ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
@@ -266,67 +284,12 @@ input[type='range'] { accent-color: var(--accent); }
   .season-track__stage.is-current .season-track__br { font-size: 10.5px; }
   .season-track__axis { font-size: 10px; }
 }
-/* The countdown note: its point at fraction --x of its own width sits at fraction --x of
-   the row, so it stays inside the panel and its caret (at --x too) under the current node. */
-.season-track__timer { margin-top: 12px; }
-.season-track__note {
-  position: relative; left: calc(var(--x) * 100%); transform: translateX(calc(var(--x) * -100%));
-  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
-  padding: 5px 11px; border-radius: 8px; border: 1px solid rgba(245, 188, 74, 0.32);
-  background: linear-gradient(rgba(245, 188, 74, 0.12), rgba(245, 188, 74, 0.12)), var(--card-bottom);
-  font-size: 12px; font-weight: 600; line-height: 1.3; color: var(--accent-hover); text-wrap: balance;
-}
-.season-track__note::before {
-  content: ''; position: absolute; top: -5px; left: calc(var(--x) * 100%); width: 9px; height: 9px; margin-left: -4.5px;
-  box-sizing: border-box; background: inherit; border: 1px solid rgba(245, 188, 74, 0.32);
-  border-right: 0; border-bottom: 0; transform: rotate(45deg);
-}
-.season-track__note svg { flex: none; color: var(--accent); }
-/* Reward cut-offs: one column per tier, its label in the ranking's tier-line pill, the rating and the
-   ranking's bar (the share of the leader's rating) under it. */
-.season-rewards { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
-.season-rewards__tiers {
-  list-style: none; margin: 0; padding: 0;
-  display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 8px;
-}
-.season-rewards__tier {
-  display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 2px 0 8px;
-  border-radius: 10px; text-align: center; cursor: default; transition: background-color 0.2s ease;
-  animation: seasonIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) calc(300ms + var(--s, 0) * 60ms) backwards;
-}
-.season-rewards__tier:hover { background-color: rgba(255, 255, 255, 0.035); }
-.season-rewards__top {
-  max-width: 100%; padding: 2px 9px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--zone) 32%, transparent);
-  background: color-mix(in srgb, var(--zone) 12%, transparent);
-  color: var(--zone); font-size: 10px; font-weight: 700; line-height: 14px; letter-spacing: 0.1em; text-transform: uppercase;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.season-rewards__rating { font-family: var(--font-display); font-size: 14.5px; font-weight: 700; line-height: 18px; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.season-rewards__bar { position: relative; width: min(100%, 132px); height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.055); }
-.season-rewards__fill {
-  position: absolute; inset: 0 auto 0 0; border-radius: inherit;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--zone) 30%, transparent), var(--zone));
-  transform-origin: left center;
-  animation: clanGrowX 0.9s cubic-bezier(0.22, 1, 0.36, 1) calc(420ms + var(--s, 0) * 60ms) backwards;
-  transition: filter 0.2s ease;
-}
-.season-rewards__tier:hover .season-rewards__fill { filter: brightness(1.2) saturate(1.1); }
 @keyframes seasonIn { from { opacity: 0; transform: translateY(6px); } }
 @keyframes seasonRail { from { transform: scaleX(0); } }
+@keyframes seasonPulse { 0% { box-shadow: 0 0 0 0 rgba(245, 188, 74, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(245, 188, 74, 0); } }
 @keyframes seasonNode {
   0%, 100% { box-shadow: 0 0 0 4px rgba(245, 188, 74, 0.24), 0 0 14px rgba(245, 188, 74, 0.75); }
   50% { box-shadow: 0 0 0 6px rgba(245, 188, 74, 0.12), 0 0 20px rgba(245, 188, 74, 0.95); }
-}
-/* Phone columns (~50 px a tier): the pill gives way to coloured text. */
-@container season-panel (max-width: 460px) {
-  .season-rewards__tiers { gap: 4px; }
-  .season-rewards__top { padding: 0; border: 0; background: none; letter-spacing: 0.04em; }
-  .season-rewards__rating { font-size: 13px; }
-}
-@container season-panel (max-width: 360px) {
-  .season-track__note { gap: 5px; padding: 4px 9px; font-size: 11.5px; }
-  .season-rewards__rating { font-size: 12px; }
 }
 @media (max-width: 640px) {
   .season-panel { padding: 14px 14px 16px; }
@@ -802,6 +765,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
    the colours; past the top 100 the bars are slate. --- */
 /* Under the sticky top bar when the pager scrolls back to the table. */
 .clans-table {
+  --zone-5: #f5bc4a; --zone-10: #f2984a; --zone-20: #ec6f8e; --zone-50: #a08af2; --zone-100: #6f96ff;
+  --zone-rest: #5f6680;
   padding: 0; scroll-margin-top: 80px;
   background:
     linear-gradient(90deg, var(--zone-5), var(--zone-10) 25%, var(--zone-20) 50%, var(--zone-50) 75%, var(--zone-100))
@@ -968,11 +933,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   animation: clanGrowX 0.9s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--delay, 0ms) + 0.12s) backwards;
   transition: filter 0.2s ease;
 }
-.zone-5 { --zone: var(--zone-5); }
-.zone-10 { --zone: var(--zone-10); }
-.zone-20 { --zone: var(--zone-20); }
-.zone-50 { --zone: var(--zone-50); }
-.zone-100 { --zone: var(--zone-100); }
+.clans-table .zone-5 { --zone: var(--zone-5); }
+.clans-table .zone-10 { --zone: var(--zone-10); }
+.clans-table .zone-20 { --zone: var(--zone-20); }
+.clans-table .zone-50 { --zone: var(--zone-50); }
+.clans-table .zone-100 { --zone: var(--zone-100); }
 /* Places 1–3: the row is like the rest; a metal numeral and a metal bar that a light crosses
    every few seconds. */
 .clans-table .place-1 { --zone: #f7c55a; --metal: linear-gradient(90deg, #d98a12, #ffe08a); }
@@ -1361,12 +1326,10 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .week-chart__bar,
   .week-chart__bar-value,
-  .season-track__stages::after,
+  .season-track::after,
   .season-track__stage,
   .season-track__stage.is-current .season-track__node::before,
-  .season-battles.is-open .season-battles__dot,
-  .season-rewards__tier,
-  .season-rewards__fill,
+  .season-status__battles.is-open .season-status__dot,
   .refresh-status.active::before,
   .live-dot,
   .clan-chip__pulse,

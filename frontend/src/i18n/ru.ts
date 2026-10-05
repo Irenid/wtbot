@@ -53,9 +53,8 @@ export const ru = {
   'season.untilEnd': 'до конца сезона',
   'season.waiting': 'между этапами',
   'season.ended': 'сезон завершён',
-  'season.caption': 'Макс. БР по неделям',
-  'season.nextIn': 'смена БР через {time}',
-  'season.endsIn': 'конец сезона через {time}',
+  'season.nextBr': 'Макс. БР {br} через {time}',
+  'season.endsIn': 'Конец сезона через {time}',
   'season.battlesUntil': 'Бои идут до {time}',
   'season.battlesFrom': 'Бои начнутся в {time}',
   'season.windowsTitle': 'Полковые бои каждый день, по местному времени: {windows}',
@@ -72,8 +71,6 @@ export const ru = {
   'season.minutes.many': '{n} минут',
   'season.minutes.other': '{n} минуты',
   'season.day': 'день {n} из {total}',
-  'season.cutoffs': 'Пороги наград сейчас',
-  'season.cutoff.title': 'у {place}-го места сейчас {rating}',
   'season.mismatch': 'Сезон {n} в игре идёт {range} — даты расходятся с расписанием с форума, этапы могут быть неверны.',
 
   // --- Навигация и заголовок вкладки ---
