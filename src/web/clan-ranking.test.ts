@@ -6,6 +6,7 @@ import {
   clanPlacesAt,
   clanRecords,
   clanTierCutoffs,
+  dayBaseRead,
   defaultClanSortDirection,
   filterClanRows,
   nearestCrawl,
@@ -119,6 +120,16 @@ test('nearestCrawl picks the read nearest the mark within the shift', () => {
   assert.equal(nearestCrawl(times, 50, 60), 100, 'before the first read')
   assert.equal(nearestCrawl(times, 460, 60), 400, 'after the last read')
   assert.equal(nearestCrawl([], 100, 1_000), null)
+})
+
+test('dayBaseRead trusts a read only as far from the mark as the log reaches back', () => {
+  const times = [1_000, 1_900, 2_600]
+  assert.equal(dayBaseRead(times, 2_000, 0, 500), 1_900)
+  assert.equal(dayBaseRead(times, 2_000, undefined, 500), null, 'no log')
+  assert.equal(dayBaseRead(times, 2_000, 2_100, 500), null, 'the log starts after the mark')
+  // A read 600 after the mark, but the log starts only 50 before it: an earlier read may be nearer.
+  assert.equal(dayBaseRead([2_600], 2_000, 1_950, 1_000), null)
+  assert.equal(dayBaseRead([2_600], 2_000, 1_000, 1_000), 2_600, 'the log reaches back far enough')
 })
 
 test('clanCrawlReads lists the crawls that read each squadron', () => {

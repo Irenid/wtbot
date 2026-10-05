@@ -962,9 +962,10 @@ async function main(): Promise<void> {
       assert.equal(leader?.avgRating, null, 'без снимков состава средний ПКР неизвестен')
       assert.equal(leader?.lastSeenAt, topCrawlAt)
       // The official value at the crawl nearest a day before the latest one; without a point that
-      // old, the season start's (or none).
+      // old, the season start's (or none), with no known window.
       const expectedDelta24h = hasDayPoints ? 48_400 - 47_000 : leader?.delta24h === null ? null : 48_400 - 40_000
       assert.equal(leader?.delta24h, expectedDelta24h)
+      if (!hasDayPoints) assert.equal(leader?.delta24hFrom, null)
       if (hasDayPoints && logStartAt > baseAt) {
         assert.deepEqual([leader?.delta24hFrom, leader?.delta24hTo], [dayAgoAt, topCrawlAt])
         // [LOW] is read by full crawls only: its day starts at the full crawl ~2 h after the mark

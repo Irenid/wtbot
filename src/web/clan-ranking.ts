@@ -184,6 +184,17 @@ export function nearestCrawl(times: readonly number[], target: number, maxShift:
 }
 
 /**
+ * The read a squadron's day figures start at: the one nearest to `mark` within maxShift and no
+ * further from it than the log's first crawl, `logFrom` (a read before the log could be nearer:
+ * a log younger than the window, after v20); null — none.
+ */
+export function dayBaseRead(times: readonly number[], mark: number, logFrom: number | undefined, maxShift: number): number | null {
+  if (logFrom === undefined) return null
+  const shift = Math.min(maxShift, mark - logFrom)
+  return shift >= 0 ? nearestCrawl(times, mark, shift) : null
+}
+
+/**
  * Places in the table as it stood at `at`, in the order of compareClanGroups (routes/site.ts):
  * the squadrons the latest crawl up to `at` read, then the rest read since the last full crawl
  * up to it, each part by its rating then (ratingAt), ties by tieRank. A squadron that full crawl

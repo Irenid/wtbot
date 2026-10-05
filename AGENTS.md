@@ -492,7 +492,8 @@ Data:
   `DAY_BASE_MAX_SHIFT_SEC` (6 h) off and no further than the log's start;
   otherwise at the last history point before that mark (alone it gave the
   rest 32–36 h, 2026-10-05). `/api/clans` returns the window
-  (`delta24hFrom`, `delta24hTo`). `clan_roster` is the last
+  (`delta24hFrom`, `delta24hTo`; null after that fallback: history cannot
+  tell when the base was read). `clan_roster` is the last
   non-empty roster; the roster, members' PSR and their deltas are filtered by
   it. A member links to an identity by alias, else to the single WT user id
   of the exact nick in replays (a reused nick: none), else to

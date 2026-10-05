@@ -310,8 +310,9 @@ export interface ClanListEntry {
   delta24h: number | null
   /**
    * The window of delta24h, battles24h and wins24h: from the crawl that read the squadron nearest
-   * to a day before delta24hTo (below the top 100 crawls come ~11 h apart, so it may be off by
-   * hours) to its last confirmation; null — no change.
+   * to a day before delta24hTo (below the top 100 only full crawls read it, so it may be off by
+   * hours) to its last confirmation. null — no change, or no logged crawl read it near that mark:
+   * the figures then start at its last read before the mark, at an unknown time.
    */
   delta24hFrom: number | null
   delta24hTo: number | null

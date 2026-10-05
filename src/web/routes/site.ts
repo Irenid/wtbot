@@ -63,9 +63,9 @@ import {
   clanPlacesAt,
   clanRecords,
   clanTierCutoffs,
+  dayBaseRead,
   defaultClanSortDirection,
   filterClanRows,
-  nearestCrawl,
   sortClanRows,
   squadronBattleCounts,
   type ClanRankingRow,
@@ -166,14 +166,15 @@ interface SiteClanGroup {
   rankTier: number
   /**
    * Official rating change over the day before the rating was last confirmed (the top 100 are
-   * read every 20 minutes, the rest at full crawls), from delta24hFrom. null — no official data,
-   * the squadron left the table, or no figures that old inside the season.
+   * read every 20 minutes, the rest at full crawls); its start — delta24hFrom. null — no official
+   * data, the squadron left the table, or no figures that old inside the season.
    */
   delta24h: number | null
   /**
    * Start of the day figures: the crawl that read the squadron nearest to a day before
-   * confirmedAt, within DAY_BASE_MAX_SHIFT_SEC; without one (the crawl log is younger, a zero no
-   * crawl reaches) that mark itself, read from the last history point before it.
+   * confirmedAt, within DAY_BASE_MAX_SHIFT_SEC. null — no such read (the crawl log is younger, a
+   * zero no crawl reaches): the figures then start at its last read before that mark, at a time
+   * history cannot tell (change points only).
    */
   delta24hFrom: number | null
   /** Season battles and wins over the same window; null — no figures that old or no counts. */
@@ -478,16 +479,14 @@ function buildClanSnapshot(): ClanSnapshot {
     const official = group.official
     if (official === null || group.rankTier > RANK_TIER_EARLIER) continue
     // The plain "last point a day before" put the rest's start a full crawl further back: with
-    // full crawls ~11 h apart their "24 h" spanned 32–36 h (2026-10-05). A read is nearest only
-    // if none before the log's start could be nearer (a log younger than the window: after v20).
+    // full crawls ~11 h apart their "24 h" spanned 32–36 h (2026-10-05).
     const mark = official.confirmedAt - DAY_SEC
-    const shift = logFrom === undefined ? -1 : Math.min(DAY_BASE_MAX_SHIFT_SEC, mark - logFrom)
-    const read = shift >= 0 ? nearestCrawl(readsByCore.get(group.coreTag) ?? [], mark, shift) : null
+    const read = dayBaseRead(readsByCore.get(group.coreTag) ?? [], mark, logFrom, DAY_BASE_MAX_SHIFT_SEC)
     const from = read ?? mark
     const day = from >= seasonStart ? getSiteClanOfficialStatsAt(group.coreTag, seasonStart, from) : null
     if (day !== null) {
       group.delta24h = official.rating - day.rating
-      group.delta24hFrom = from
+      group.delta24hFrom = read
       group.battles24h = countGrowth(official.battles, day.battles)
       group.wins24h = countGrowth(official.wins, day.wins)
     }
