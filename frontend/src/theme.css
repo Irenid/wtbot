@@ -153,27 +153,28 @@ input[type='range'] { accent-color: var(--accent); }
 .chip.fail { color: var(--fail); border-color: rgba(255, 143, 163, 0.3); background: rgba(255, 143, 163, 0.14); }
 .chip.accent { color: var(--accent); border-color: rgba(245, 188, 74, 0.35); background: rgba(245, 188, 74, 0.16); font-weight: 700; }
 
-/* Squadron season: a gold top edge; the title (the game's season number in gold digits) with the
-   dates and the season's day under it, the battle status on the right; under them every stage's max
-   BR on one rail, the countdown to the next in a gold bubble over the current one. The panel and every
-   stage are size containers: the layout follows the panel's width (it also sits in a guide column),
-   type sizes in cqi follow the stage column's width. */
+/* Squadron season: a gold top edge; the title (the game's season number in gold digits), the dates
+   and the season's day, the battle status on the right; under them every stage's max BR on one rail,
+   the countdown to the next in a gold bubble over the current one. The panel and every stage are size
+   containers: the layout follows the panel's width (it also sits in a guide column), type sizes in cqi
+   follow the stage column's width. */
 .season-panel {
-  container: season-panel / inline-size; padding: 16px 20px 18px;
+  container: season-panel / inline-size; padding: 12px 18px;
   background:
     linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 0%, transparent) 70%) top / 100% 2px no-repeat padding-box,
     linear-gradient(180deg, var(--card-top), var(--card-bottom)) border-box;
 }
-.season-panel__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin-bottom: 20px; }
-.season-panel__title { min-width: 0; }
+/* One line where it fits; a narrower panel puts the meta under the title, then the pill under both. */
+.season-panel__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 10px; }
+.season-panel__title { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; min-width: 0; }
 /* A long title ("Temporada del escuadrón 62" in a guide column) wraps beside its bar. */
-.season-panel__title > .sec-head { margin-bottom: 5px; flex-wrap: nowrap; }
+.season-panel__title > .sec-head { margin: 0; flex-wrap: nowrap; }
 .season-panel__title > .sec-head h2 { white-space: normal; text-wrap: balance; color: var(--ink); }
 .season-panel__no {
   font-family: var(--font-display); font-size: 16px; font-weight: 700; letter-spacing: 0; line-height: 1;
   background: var(--gold-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-/* Aligned with the title text, past the gold marker (3 px + the 8 px gap). */
+/* Wrapped, aligned with the title text past the gold marker (3 px + the 8 px gap); beside it, 16 px away. */
 .season-panel__meta {
   display: flex; flex-wrap: wrap; align-items: center; gap: 2px 16px; padding-left: 11px;
   font-size: 12.5px; line-height: 18px; color: var(--ink2); font-variant-numeric: tabular-nums;
@@ -184,14 +185,14 @@ input[type='range'] { accent-color: var(--accent); }
 /* Squadron battles (the ranking's chip shape): a window open tints the pill gold and pulses, with
    the closing time; outside the windows a grey ring names the next start. */
 .season-battles {
-  display: inline-flex; flex: none; align-items: center; gap: 8px; max-width: 100%; padding: 7px 15px;
+  display: inline-flex; flex: none; align-items: center; gap: 7px; max-width: 100%; padding: 4px 12px;
   border: 1px solid var(--line2); border-radius: 999px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01)), var(--bg-soft);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 10px 24px -16px rgba(0, 0, 0, 0.9);
-  font-size: 12.5px; line-height: 16px; color: var(--muted); white-space: nowrap; cursor: default;
+  font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap; cursor: default;
 }
 .season-battles b { font-weight: 600; color: var(--ink2); }
-.season-battles__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--muted); }
+.season-battles__dot { flex: none; width: 7px; height: 7px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--muted); }
 .season-battles.is-open {
   border-color: rgba(245, 188, 74, 0.35); color: var(--accent-hover);
   background: linear-gradient(90deg, rgba(245, 188, 74, 0.16), rgba(245, 188, 74, 0.05)), var(--bg-soft);
@@ -203,44 +204,42 @@ input[type='range'] { accent-color: var(--accent); }
    panel's edge. The caret is placed by the row (the bubble is not positioned and never transformed),
    so it stays on the column's centre. */
 .season-countdown {
-  position: relative; display: flex; padding-bottom: 7px; margin-bottom: -4px;
+  position: relative; display: flex; padding-bottom: 5px;
   animation: seasonDrop 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s backwards;
 }
 .season-countdown::before, .season-countdown::after { content: ''; flex: 1 1 0; }
 .season-countdown::before { flex-basis: max(0%, (2 * var(--x) - 1) * 100%); }
 .season-countdown::after { flex-basis: max(0%, (1 - 2 * var(--x)) * 100%); }
 .season-countdown__bubble {
-  flex: none; max-width: 100%; padding: 6px 15px;
-  border: 1px solid rgba(245, 188, 74, 0.4); border-radius: 15px;
+  flex: none; max-width: 100%; padding: 3px 11px;
+  border: 1px solid rgba(245, 188, 74, 0.4); border-radius: 11px;
   background: color-mix(in srgb, var(--accent) 13%, var(--bg-soft));
   box-shadow: inset 0 1px 0 rgba(255, 233, 180, 0.08), 0 10px 26px -12px rgba(245, 188, 74, 0.5);
-  font-size: 12.5px; line-height: 16px; color: var(--ink2); text-align: center; text-wrap: balance; cursor: default;
+  font-size: 12px; line-height: 15px; color: var(--ink2); text-align: center; text-wrap: balance; cursor: default;
 }
-/* Inline, so wrapped lines (a guide column, long locales) centre as one text. */
-.season-countdown__bubble > svg { margin-right: 8px; vertical-align: -2px; color: var(--accent); }
 .season-countdown__bubble b { font-weight: 600; color: var(--ink); white-space: nowrap; }
 .season-countdown__bubble b.season-countdown__br {
-  font-family: var(--font-display); font-size: 13.5px; font-weight: 700;
+  font-family: var(--font-display); font-size: 13px; font-weight: 700;
   background: var(--gold-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 /* A rotated square: its lower sides continue the bubble's border, its upper half hides the border
    above it (one solid colour: separately blended layers outlined that half). Kept off the bubble's
    rounded corners at the panel's edges. */
 .season-countdown__bubble::after {
-  content: ''; position: absolute; bottom: 3px; left: clamp(16px, var(--x) * 100%, 100% - 16px);
-  width: 9px; height: 9px; margin-left: -4.5px; transform: rotate(45deg);
+  content: ''; position: absolute; bottom: 2px; left: clamp(16px, var(--x) * 100%, 100% - 16px);
+  width: 7px; height: 7px; margin-left: -3.5px; transform: rotate(45deg);
   background: inherit; border: solid rgba(245, 188, 74, 0.4); border-width: 0 1px 1px 0;
 }
 .season-panel > .notice { margin-top: 14px; }
 .season-track {
-  --br-row: 30px;
+  --br-row: 26px;
   position: relative; list-style: none; margin: 0; padding: 0;
   display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr));
 }
 /* The rail joins the node centres (first column's to last column's) at mid node row;
    gold up to --i: the current stage's node plus the elapsed share of its week. */
 .season-track::before, .season-track::after {
-  content: ''; position: absolute; top: calc(var(--br-row) + 14px); left: calc(50% / var(--n));
+  content: ''; position: absolute; top: calc(var(--br-row) + 11px); left: calc(50% / var(--n));
   height: 2px; border-radius: 1px; pointer-events: none;
 }
 .season-track::before { right: calc(50% / var(--n)); background: rgba(255, 255, 255, 0.1); }
@@ -254,7 +253,7 @@ input[type='range'] { accent-color: var(--accent); }
 .season-track__stage {
   container: season-stage / inline-size;
   position: relative; z-index: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; text-align: center;
-  padding-bottom: 4px; border-radius: 10px; transition: background-color 0.2s ease;
+  padding-bottom: 2px; border-radius: 10px; transition: background-color 0.2s ease;
   animation: seasonIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) calc(var(--s, 0) * 40ms) backwards;
 }
 .season-track__stage:hover { background-color: rgba(255, 255, 255, 0.035); }
@@ -263,7 +262,7 @@ input[type='range'] { accent-color: var(--accent); }
   font-family: var(--font-display); font-size: clamp(11px, 27cqi, 16px); font-weight: 600; line-height: 1;
   color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.season-track__node { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; height: 14px; margin: 8px 0; }
+.season-track__node { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; height: 14px; margin: 5px 0; }
 .season-track__node::before {
   content: ''; width: 10px; height: 10px; border-radius: 50%; box-sizing: border-box;
   background: var(--bg-soft); border: 2px solid rgba(255, 255, 255, 0.24);
@@ -314,7 +313,7 @@ input[type='range'] { accent-color: var(--accent); }
   50% { box-shadow: 0 0 0 6px rgba(245, 188, 74, 0.12), 0 0 20px rgba(245, 188, 74, 0.95); }
 }
 @media (max-width: 640px) {
-  .season-panel { padding: 14px 14px 16px; }
+  .season-panel { padding: 12px 14px; }
 }
 
 .delta { font-size: 11.5px; margin-left: 5px; font-variant-numeric: tabular-nums; }

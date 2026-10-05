@@ -121,15 +121,6 @@ function richT(key: MessageKey, nodes: Record<string, ReactNode>): ReactNode[] {
   })
 }
 
-function ClockIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M8 4.75V8l2.25 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
 function CalendarIcon() {
   return (
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
@@ -174,12 +165,9 @@ function SeasonCountdown({ change, stageCount, now }: { change: StageChange; sta
   return (
     <div className="season-countdown" style={{ '--x': ((change.index + 0.5) / stageCount).toFixed(4) } as CSSProperties}>
       <span className="season-countdown__bubble" title={moment(change.at)}>
-        <ClockIcon />
-        <span>
-          {change.br === null
-            ? richT('season.endsIn', { time })
-            : richT('season.nextBr', { br: <b className="season-countdown__br">{change.br.toFixed(1)}</b>, time })}
-        </span>
+        {change.br === null
+          ? richT('season.endsIn', { time })
+          : richT('season.nextBr', { br: <b className="season-countdown__br">{change.br.toFixed(1)}</b>, time })}
       </span>
     </div>
   )
