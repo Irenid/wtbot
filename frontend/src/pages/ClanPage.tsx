@@ -69,7 +69,7 @@ const DAY_SEC = 86_400
  * with a value sat exactly at it, none above.
  */
 const ACTIVITY_MAX = 3_960
-/** Members' activity median and upper quartile over every stored roster (2026-10-05): its green steps. */
+/** Members' activity median and upper quartile over every stored roster (2026-10-05): its gold steps. */
 const ACTIVITY_MEDIAN = 1_621
 const ACTIVITY_HIGH = 3_111
 /**
@@ -101,6 +101,11 @@ const SEARCH_DELAY_MS = 300
 /** Seasons in the rewards chart: 40 (about six and a half years), 20 on a phone; the tally counts every season. */
 const REWARD_SEASONS_SHOWN = 40
 const REWARD_SEASONS_NARROW = 20
+/**
+ * The chart's first column names its year unless a year opens within this many columns: a year
+ * label (~24 px) centred on that boundary would run into it (columns are 13 px apart).
+ */
+const REWARD_FIRST_YEAR_GAP = 3
 /**
  * Squadron Battles seasons last two calendar months: counted so from the leaderboard's season, the
  * first rewarded season of all but 3 of 185 squadrons fits their founding date, 2017 to 2026
@@ -172,18 +177,7 @@ function memberPath(member: Member): string {
   return `/players/nick/${encodeURIComponent(member.nick)}`
 }
 
-/**
- * A member's PSR in the colour of the win rate it takes to hold it (holdWinRate on the win-rate
- * scale): green from ≈1570 (60 % wins), brighter from ≈1647 (70 %) and ≈1741 (80 %) — about the top
- * 10, 5 and 2.5 % of members with PSR this season (2026-10-05). PSR starts at 0 every season, so a
- * low one is no fault and gets no red.
- */
-function psrTone(psr: number): string {
-  const score = winRateScore(holdWinRate(psr))
-  return score !== null && score > 0 ? toneClass(score) : ''
-}
-
-/** Activity in green from the members' median up, brightest at the maximum; none is muted. */
+/** Activity in gold from the members' median up, brightest at the maximum; none is muted. */
 function activityTone(activity: number): string {
   if (activity <= 0) return ' is-idle'
   if (activity >= ACTIVITY_MAX) return ' tone-up-3'
@@ -446,21 +440,22 @@ function ClanHero({ detail }: { detail: ClanDetail }) {
   return (
     <header className={classes}>
       <div className="clan-hero__main">
-        <div
-          className="clan-medal"
-          role="img"
-          aria-label={t('clan.hero.place', { n: fmtInt(clan.rank), total: fmtInt(ranking.total) })}
-          title={t('clan.hero.place', { n: fmtInt(clan.rank), total: fmtInt(ranking.total) })}
-          style={{ '--len': fmtInt(clan.rank).length } as CSSProperties}
-        >
-          <span className="clan-medal__hash" aria-hidden="true">#</span>
-          <span className="clan-medal__n" aria-hidden="true">{fmtInt(clan.rank)}</span>
-        </div>
         <div className="clan-hero__who">
-          <h1>
-            <span className="clan-hero__tag">{clan.displayTag}</span>
-            {showName && <span className="clan-hero__name">{clan.name}</span>}
-          </h1>
+          <div className="clan-hero__title">
+            <span
+              className="clan-hero__place"
+              role="img"
+              aria-label={t('clan.hero.place', { n: fmtInt(clan.rank), total: fmtInt(ranking.total) })}
+              title={t('clan.hero.place', { n: fmtInt(clan.rank), total: fmtInt(ranking.total) })}
+            >
+              <span className="clan-hero__hash">#</span>
+              {fmtInt(clan.rank)}
+            </span>
+            <h1>
+              <span className="clan-hero__tag">{clan.displayTag}</span>
+              {showName && <span className="clan-hero__name">{clan.name}</span>}
+            </h1>
+          </div>
           <div className="clan-hero__chips">
             {clan.leaderboard === 'current' && <RewardBadge rank={clan.rank} />}
             {ranking.live !== null && clan.recentBattles > 0 && (
@@ -585,7 +580,8 @@ function seasonDates(season: number, anchor: SeasonAnchor): string {
 /**
  * Season rewards: a legend of how often the squadron took each reward, then a bar per season in the
  * reward's colour and height (a season without one is a dot) up to the current season, whose dashed
- * bar is the reward its place holds so far. Years stand under the seasons that open them.
+ * bar is the reward its place holds so far. A line marks where a year opens, its year centred under
+ * it; the first column names its own year.
  */
 function RewardHistory({ history, live, anchor }: {
   history: SeasonReward[]
@@ -614,17 +610,19 @@ function RewardHistory({ history, live, anchor }: {
   const legend = [...tally.entries()].sort(([leftLabel, left], [rightLabel, right]) =>
     right.level - left.level || leftLabel.length - rightLabel.length)
 
-  // A year under the season that opens it (the current one too), and under the first column unless
-  // a year opens within two columns of it; a phone, which shows only the last REWARD_SEASONS_NARROW,
-  // names its own first.
+  // A phone shows only the last REWARD_SEASONS_NARROW seasons and names the first of them itself.
   const yearOf = (season: number): number => seasonSpan(season, anchor)[0].getUTCFullYear()
   const narrowFirst = Math.max(0, seasons.length - REWARD_SEASONS_NARROW)
-  const yearAt = (index: number, from: number): number | null => {
-    const year = yearOf(seasons[index]!)
-    if (index > from) return yearOf(seasons[index - 1]!) === year ? null : year
-    return seasons.slice(index + 1, index + 3).some((season) => yearOf(season) !== year) ? null : year
+  const opensYear = (index: number): boolean => index > 0 && yearOf(seasons[index]!) !== yearOf(seasons[index - 1]!)
+  const firstYear = (from: number): number | null => {
+    for (let index = from + 1; index <= from + REWARD_FIRST_YEAR_GAP && index < seasons.length; index += 1) {
+      if (opensYear(index)) return null
+    }
+    return yearOf(seasons[from]!)
   }
-  const liveYear = current !== null && yearOf(current.season) !== yearOf(last) ? yearOf(current.season) : null
+  const wideFirst = firstYear(0)
+  const narrowYear = narrowFirst > 0 ? firstYear(narrowFirst) : null
+  const liveOpens = current !== null && yearOf(current.season) !== yearOf(last)
 
   return (
     <div className="clan-rewards">
@@ -652,32 +650,44 @@ function RewardHistory({ history, live, anchor }: {
           const entry = bySeason.get(season)
           const when = t('clan.rewards.season', { n: season, dates: seasonDates(season, anchor) })
           const label = entry ? `${when}: ${entry.labels.join(', ')}` : t('clan.rewards.none', { season: when })
-          const year = yearAt(index, 0)
-          const narrowYear = index === narrowFirst && narrowFirst > 0 && year === null ? yearAt(index, narrowFirst) : null
+          const opens = opensYear(index)
+          // A phone's first column names its year itself, left-aligned, whether or not it opens one.
+          const narrow = index === narrowFirst && narrowFirst > 0
+          const classes = [
+            'reward-ladder__season',
+            entry ? rewardClass(entry.title).trim() : 'is-empty',
+            early ? 'is-early' : null,
+            opens ? 'opens-year' : null,
+            narrow ? 'is-narrow-first' : null,
+          ].filter(Boolean).join(' ')
           return (
             <li
               key={season}
-              className={`reward-ladder__season${entry ? rewardClass(entry.title) : ' is-empty'}${early ? ' is-early' : ''}${year !== null ? ' has-year' : ''}${narrowYear !== null ? ' has-narrow-year' : ''}`}
+              className={classes}
               style={{ '--h': entry ? rewardHeight(entry.level) : '0', '--i': index } as CSSProperties}
               title={label}
               aria-label={label}
             >
               <span className="reward-ladder__bar" aria-hidden="true" />
-              {year !== null && <span className="reward-ladder__year" aria-hidden="true">{year}</span>}
-              {narrowYear !== null && <span className="reward-ladder__year is-narrow" aria-hidden="true">{narrowYear}</span>}
+              {(opens || (index === 0 && wideFirst !== null)) && (
+                <span className={`reward-ladder__year${opens ? '' : ' is-first'}`} aria-hidden="true">{yearOf(season)}</span>
+              )}
+              {narrow && !opens && narrowYear !== null && (
+                <span className="reward-ladder__year is-first is-narrow" aria-hidden="true">{narrowYear}</span>
+              )}
             </li>
           )
         })}
         {current !== null && (
           <li
             key="live"
-            className={`reward-ladder__season is-live${rewardClass(current.title)}${liveYear !== null ? ' has-year' : ''}`}
+            className={`reward-ladder__season is-live${rewardClass(current.title)}${liveOpens ? ' opens-year' : ''}`}
             style={{ '--h': rewardHeight(rewardLevel(current.title)), '--i': seasons.length } as CSSProperties}
             title={current.label}
             aria-label={current.label}
           >
             <span className="reward-ladder__bar" aria-hidden="true" />
-            {liveYear !== null && <span className="reward-ladder__year" aria-hidden="true">{liveYear}</span>}
+            {liveOpens && <span className="reward-ladder__year" aria-hidden="true">{yearOf(current.season)}</span>}
           </li>
         )}
       </ol>
@@ -799,6 +809,8 @@ function ClanAboutCard({ detail }: { detail: ClanDetail }) {
   const applications = profile ? applicationsText(profile) : null
   const official = profile?.requirements ? requirementLines(profile.requirements) : null
   const chips = requirementChips(about?.requirements ?? [])
+  // A requirement naming a service the texts link to ("Discord") opens that link.
+  const chipLink = (kind: ClanTextRequirement['kind']): ClanLink | undefined => about?.links.find((link) => link.kind === kind)
   const history = rewardHistory(clan.rewards)
   const title = liveTitle(clan)
   const live = title !== null && detail.officialSeason !== null ? { season: detail.officialSeason.seasonId, title } : null
@@ -821,12 +833,27 @@ function ClanAboutCard({ detail }: { detail: ClanDetail }) {
         {official !== null && official.length === 0 && chips.length === 0 && t('clan.about.requirements.none')}
         {chips.length > 0 && (
           <ul className="clan-reqs">
-            {chips.map((chip) => (
-              <li key={chip.key} className={`clan-req is-${chip.kind}`} title={chip.title}>
-                {chip.kind === 'discord' && <BrandIcon kind="discord" size={12} />}
-                {chip.text}
-              </li>
-            ))}
+            {chips.map((chip) => {
+              const link = chipLink(chip.kind)
+              const body = <>{chip.kind === 'discord' && <BrandIcon kind="discord" size={12} />}{chip.text}</>
+              return (
+                <li key={chip.key}>
+                  {link === undefined ? (
+                    <span className={`clan-req is-${chip.kind}`} title={chip.title}>{body}</span>
+                  ) : (
+                    <a
+                      className={`clan-req is-${chip.kind} is-link`}
+                      href={link.url}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow ugc"
+                      title={`${t('clan.link.title', { address: link.label })}\n${chip.title}`}
+                    >
+                      {body}
+                    </a>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </>,
@@ -1165,7 +1192,7 @@ function MemberChange({ member }: { member: Member }) {
   )
 }
 
-/** Activity as a share of ACTIVITY_MAX and its figure, green from the members' median. */
+/** Activity as a share of ACTIVITY_MAX and its figure, gold from the members' median. */
 function ActivityMeter({ value }: { value: number }) {
   const title = value >= ACTIVITY_MAX
     ? t('clan.roster.activity.max')
@@ -1192,12 +1219,10 @@ interface RosterRowContext {
 function RosterLine({ row, index, context }: { row: RosterRow; index: number; context: RosterRowContext }) {
   const { member, place } = row
   const href = memberPath(member)
-  const counted = place <= SQUADRON_TOP
-  const podium = place <= 3 && member.rating > 0
+  // The place in the ranking's tier colours (metal for 1–3, then gold to blue); past 100 or no PSR — slate.
+  const zone = member.rating > 0 ? rewardZone(place, 'current') : null
   const share = context.topRating > 0 ? Math.max(0, Math.min(1, member.rating / context.topRating)) : 0
-  const classes = ['row-link', counted ? 'is-counted' : null, podium ? `is-podium place-${place}` : null]
-    .filter(Boolean)
-    .join(' ')
+  const classes = ['row-link', zone].filter(Boolean).join(' ')
   const psrTitle = member.rating > 0
     ? t('clan.roster.psr.hold', { pct: Math.round(holdWinRate(member.rating) * 100) })
     : t('clan.roster.psr.zero')
@@ -1221,7 +1246,7 @@ function RosterLine({ row, index, context }: { row: RosterRow; index: number; co
             <span className="rating-bar__fill" style={{ width: `${(share * 100).toFixed(2)}%` }} />
           </span>
           <span className="rating-cell__value">
-            <span className={`rating${psrTone(member.rating)}${member.rating === 0 ? ' is-zero' : ''}`} title={psrTitle}>
+            <span className={`rating${member.rating === 0 ? ' is-zero' : ''}`} title={psrTitle}>
               {fmtInt(member.rating)}
             </span>
             {/* On a phone the change column folds under the PSR; zero and "no data" are left out. */}
