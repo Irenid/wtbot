@@ -152,45 +152,47 @@ function ProgressIcon({ share }: { share: number }) {
   )
 }
 
-/** The next max BR and when it starts; br null — the season's end, from its last stage; null — nothing ahead. */
-function nextChange(stages: readonly ClanSeasonStage[], seasonEndsAt: number, now: number): { at: number; br: number | null } | null {
-  const current = stages.find((stage) => now >= stage.startsAt && now < stage.endsAt)
-  if (current !== undefined && current.endsAt >= seasonEndsAt) return { at: current.endsAt, br: null }
-  const next = stages.find((stage) => stage.startsAt > now)
-  return next === undefined ? null : { at: next.startsAt, br: next.maxBr }
+/** The next max BR and when it starts (br null — the season's end, from its last stage), over the stage at index. */
+interface StageChange { index: number; at: number; br: number | null }
+
+/** Counted from the current stage, between stages from the next one; null — nothing ahead. */
+function nextChange(stages: readonly ClanSeasonStage[], seasonEndsAt: number, now: number): StageChange | null {
+  const currentIndex = stages.findIndex((stage) => now >= stage.startsAt && now < stage.endsAt)
+  const current = stages[currentIndex]
+  if (current !== undefined && current.endsAt >= seasonEndsAt) return { index: currentIndex, at: current.endsAt, br: null }
+  const nextIndex = stages.findIndex((stage) => stage.startsAt > now)
+  const next = stages[nextIndex]
+  return next === undefined ? null : { index: current !== undefined ? currentIndex : nextIndex, at: next.startsAt, br: next.maxBr }
 }
 
 /**
- * The head's status capsule: the next max BR and when, then squadron battles — open now (a gold
- * pulse) and until when, or when the next window opens. Hovers: the exact moment, the daily windows.
+ * The countdown in a gold bubble over its stage's max BR, centred on the stage's column (--x of the
+ * track's width). Hover: the exact moment in the viewer's time zone (stage dates are UTC days).
  */
-function SeasonStatus({ stages, seasonEndsAt, now }: { stages: readonly ClanSeasonStage[]; seasonEndsAt: number; now: number }) {
-  const change = nextChange(stages, seasonEndsAt, now)
-  const { open, at } = battleState(now)
+function SeasonCountdown({ change, stageCount, now }: { change: StageChange; stageCount: number; now: number }) {
+  const time = <b>{duration(change.at - now)}</b>
   return (
-    <div className="season-status">
-      {change !== null && (
-        // The exact moment in the viewer's time zone: stage dates are UTC days.
-        <span className="season-status__item" title={moment(change.at)}>
-          <ClockIcon />
-          <span>
-            {change.br === null
-              ? richT('season.endsIn', { time: <b>{duration(change.at - now)}</b> })
-              : richT('season.nextBr', {
-                br: <b className="season-status__br">{change.br.toFixed(1)}</b>,
-                time: <b>{duration(change.at - now)}</b>,
-              })}
-          </span>
+    <div className="season-countdown" style={{ '--x': ((change.index + 0.5) / stageCount).toFixed(4) } as CSSProperties}>
+      <span className="season-countdown__bubble" title={moment(change.at)}>
+        <ClockIcon />
+        <span>
+          {change.br === null
+            ? richT('season.endsIn', { time })
+            : richT('season.nextBr', { br: <b className="season-countdown__br">{change.br.toFixed(1)}</b>, time })}
         </span>
-      )}
-      <span
-        className={`season-status__item season-status__battles${open ? ' is-open' : ''}`}
-        title={t('season.windowsTitle', { windows: windowTimes(now) })}
-      >
-        <span className="season-status__dot" aria-hidden="true" />
-        <span>{richT(open ? 'season.battlesUntil' : 'season.battlesFrom', { time: <b>{clock(at)}</b> })}</span>
       </span>
     </div>
+  )
+}
+
+/** Squadron battles: open now (a gold pulse) and until when, or when the next window opens; the hover names the daily windows. */
+function BattleStatus({ now }: { now: number }) {
+  const { open, at } = battleState(now)
+  return (
+    <span className={`season-battles${open ? ' is-open' : ''}`} title={t('season.windowsTitle', { windows: windowTimes(now) })}>
+      <span className="season-battles__dot" aria-hidden="true" />
+      <span>{richT(open ? 'season.battlesUntil' : 'season.battlesFrom', { time: <b>{clock(at)}</b> })}</span>
+    </span>
   )
 }
 
@@ -284,6 +286,7 @@ export function SeasonPanel({ context, official = null, compact = false }: {
 
   // The client's clock, not the API's answer: an open page follows the season's end.
   const live = season.active && now < season.endsAt
+  const change = live ? nextChange(context.stages, season.endsAt, now) : null
 
   return (
     <section className="card season-panel" aria-label={heading}>
@@ -304,8 +307,9 @@ export function SeasonPanel({ context, official = null, compact = false }: {
               : <span className="season-panel__part">{t('season.ended')}</span>}
           </div>
         </div>
-        {live && <SeasonStatus stages={context.stages} seasonEndsAt={season.endsAt} now={now} />}
+        {live && <BattleStatus now={now} />}
       </div>
+      {change !== null && <SeasonCountdown change={change} stageCount={context.stages.length} now={now} />}
       {context.stages.length > 0 && <SeasonTrack stages={context.stages} seasonEndsAt={season.endsAt} now={now} />}
       {mismatch && <div className="notice small">{mismatch}</div>}
     </section>

@@ -154,10 +154,10 @@ input[type='range'] { accent-color: var(--accent); }
 .chip.accent { color: var(--accent); border-color: rgba(245, 188, 74, 0.35); background: rgba(245, 188, 74, 0.16); font-weight: 700; }
 
 /* Squadron season: a gold top edge; the title (the game's season number in gold digits) with the
-   dates and the season's day under it; on the right one status capsule — the next max BR, then the
-   battle windows; under them every stage's max BR on one rail. The panel and every stage are size
-   containers: the layout follows the panel's width (it also sits in a guide column), type sizes in
-   cqi follow the stage column's width. */
+   dates and the season's day under it, the battle status on the right; under them every stage's max
+   BR on one rail, the countdown to the next in a gold bubble over the current one. The panel and every
+   stage are size containers: the layout follows the panel's width (it also sits in a guide column),
+   type sizes in cqi follow the stage column's width. */
 .season-panel {
   container: season-panel / inline-size; padding: 16px 20px 18px;
   background:
@@ -181,34 +181,55 @@ input[type='range'] { accent-color: var(--accent); }
 .season-panel__part { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .season-panel__part svg { flex: none; color: var(--muted); }
 .season-panel__meta b { font-weight: 600; color: var(--ink); }
-/* The status capsule (the ranking's chip shape): two parts split by a hairline. Battles running
-   tint their part gold and pulse; outside the windows a grey ring names the next start. */
-.season-status {
-  display: inline-flex; flex: none; max-width: 100%; overflow: hidden;
+/* Squadron battles (the ranking's chip shape): a window open tints the pill gold and pulses, with
+   the closing time; outside the windows a grey ring names the next start. */
+.season-battles {
+  display: inline-flex; flex: none; align-items: center; gap: 8px; max-width: 100%; padding: 7px 15px;
   border: 1px solid var(--line2); border-radius: 999px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01)), var(--bg-soft);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 10px 24px -16px rgba(0, 0, 0, 0.9);
-  font-size: 12.5px; line-height: 16px; color: var(--ink2);
+  font-size: 12.5px; line-height: 16px; color: var(--muted); white-space: nowrap; cursor: default;
 }
-.season-status__item { display: inline-flex; align-items: center; gap: 8px; padding: 7px 15px; white-space: nowrap; cursor: default; }
-.season-status__item + .season-status__item { box-shadow: inset 1px 0 0 var(--line2); }
-.season-status__item > svg { flex: none; color: var(--accent); }
-.season-status b { font-weight: 600; color: var(--ink); }
-.season-status b.season-status__br {
+.season-battles b { font-weight: 600; color: var(--ink2); }
+.season-battles__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--muted); }
+.season-battles.is-open {
+  border-color: rgba(245, 188, 74, 0.35); color: var(--accent-hover);
+  background: linear-gradient(90deg, rgba(245, 188, 74, 0.16), rgba(245, 188, 74, 0.05)), var(--bg-soft);
+}
+.season-battles.is-open b { color: var(--accent-hover); }
+.season-battles.is-open .season-battles__dot { border: 0; background: var(--accent); animation: seasonPulse 2.4s ease-out infinite; }
+/* The countdown over the current stage. The spacers' bases put the bubble's centre at --x of the
+   row, the stage column's centre; with too little room one shrinks to 0 and the bubble rests on the
+   panel's edge. The caret is placed by the row (the bubble is not positioned and never transformed),
+   so it stays on the column's centre. */
+.season-countdown {
+  position: relative; display: flex; padding-bottom: 7px; margin-bottom: -4px;
+  animation: seasonDrop 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s backwards;
+}
+.season-countdown::before, .season-countdown::after { content: ''; flex: 1 1 0; }
+.season-countdown::before { flex-basis: max(0%, (2 * var(--x) - 1) * 100%); }
+.season-countdown::after { flex-basis: max(0%, (1 - 2 * var(--x)) * 100%); }
+.season-countdown__bubble {
+  flex: none; max-width: 100%; padding: 6px 15px;
+  border: 1px solid rgba(245, 188, 74, 0.4); border-radius: 15px;
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-soft));
+  box-shadow: inset 0 1px 0 rgba(255, 233, 180, 0.08), 0 10px 26px -12px rgba(245, 188, 74, 0.5);
+  font-size: 12.5px; line-height: 16px; color: var(--ink2); text-align: center; text-wrap: balance; cursor: default;
+}
+/* Inline, so wrapped lines (a guide column, long locales) centre as one text. */
+.season-countdown__bubble > svg { margin-right: 8px; vertical-align: -2px; color: var(--accent); }
+.season-countdown__bubble b { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.season-countdown__bubble b.season-countdown__br {
   font-family: var(--font-display); font-size: 13.5px; font-weight: 700;
   background: var(--gold-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-.season-status__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--muted); }
-.season-status__battles { color: var(--muted); }
-.season-status__battles b { color: var(--ink2); }
-.season-status__battles.is-open { background: linear-gradient(90deg, rgba(245, 188, 74, 0.14), rgba(245, 188, 74, 0.05)); color: var(--accent-hover); }
-.season-status__battles.is-open b { color: var(--accent-hover); }
-.season-status__battles.is-open .season-status__dot { border: 0; background: var(--accent); animation: seasonPulse 2.4s ease-out infinite; }
-/* A narrow panel stacks the two parts in one block under the title. */
-@container season-panel (max-width: 520px) {
-  .season-status { display: flex; flex-direction: column; width: 100%; border-radius: 12px; }
-  .season-status__item { padding: 8px 13px; white-space: normal; }
-  .season-status__item + .season-status__item { box-shadow: inset 0 1px 0 var(--line2); }
+/* A rotated square: its lower sides continue the bubble's border, its upper half hides the border
+   above it (one solid colour: separately blended layers outlined that half). Kept off the bubble's
+   rounded corners at the panel's edges. */
+.season-countdown__bubble::after {
+  content: ''; position: absolute; bottom: 3px; left: clamp(16px, var(--x) * 100%, 100% - 16px);
+  width: 9px; height: 9px; margin-left: -4.5px; transform: rotate(45deg);
+  background: inherit; border: solid rgba(245, 188, 74, 0.4); border-width: 0 1px 1px 0;
 }
 .season-panel > .notice { margin-top: 14px; }
 .season-track {
@@ -286,6 +307,7 @@ input[type='range'] { accent-color: var(--accent); }
 }
 @keyframes seasonIn { from { opacity: 0; transform: translateY(6px); } }
 @keyframes seasonRail { from { transform: scaleX(0); } }
+@keyframes seasonDrop { from { opacity: 0; transform: translateY(-6px); } }
 @keyframes seasonPulse { 0% { box-shadow: 0 0 0 0 rgba(245, 188, 74, 0.6); } 70%, 100% { box-shadow: 0 0 0 6px rgba(245, 188, 74, 0); } }
 @keyframes seasonNode {
   0%, 100% { box-shadow: 0 0 0 4px rgba(245, 188, 74, 0.24), 0 0 14px rgba(245, 188, 74, 0.75); }
@@ -1329,7 +1351,8 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
   .season-track::after,
   .season-track__stage,
   .season-track__stage.is-current .season-track__node::before,
-  .season-status__battles.is-open .season-status__dot,
+  .season-battles.is-open .season-battles__dot,
+  .season-countdown,
   .refresh-status.active::before,
   .live-dot,
   .clan-chip__pulse,
