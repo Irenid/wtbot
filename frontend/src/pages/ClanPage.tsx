@@ -4,13 +4,17 @@ import {
   fetchClan,
   fetchClanHistory,
   SiteApiError,
+  type ClanAbout,
   type ClanDetail,
   type ClanHistoryPoint,
+  type ClanLink,
   type ClanNeighbor,
   type ClanProfile,
   type ClanRecords,
   type ClanRequirements,
   type ClanSeasonRewards,
+  type ClanTextField,
+  type ClanTextRequirement,
 } from '../api'
 import {
   battleVersusLabel,
@@ -50,7 +54,8 @@ import {
 } from '../components/clan-ui'
 import { MAX_FAVORITE_CLANS, toggleFavoriteClan, useFavoriteClans } from '../lib/favorite-clans'
 import { holdWinRate, PSR_K, SQUADRON_REST_SHARE, SQUADRON_TOP } from '../lib/psr'
-import { seasonHeading, seasonLine } from '../components/SeasonPanel'
+import { seasonHeading, seasonParts } from '../components/SeasonPanel'
+import { BrandIcon } from '../components/BrandIcon'
 import { TimeChart } from '../components/TimeChart'
 import { localeTag, t, tp, useLocale } from '../i18n'
 
@@ -96,8 +101,15 @@ const SEARCH_DELAY_MS = 300
 /** Seasons in the rewards chart: 40 (about six and a half years), 20 on a phone; the tally counts every season. */
 const REWARD_SEASONS_SHOWN = 40
 const REWARD_SEASONS_NARROW = 20
-/** A rewards chart this short labels every season; a longer one every fifth. */
-const REWARD_LABEL_ALL = 12
+/**
+ * Squadron Battles seasons last two calendar months: counted so from the leaderboard's season, the
+ * first rewarded season of all but 3 of 185 squadrons fits their founding date, 2017 to 2026
+ * (2026-10-05). Without the leaderboard's season, season 62 began on 2026-09-01.
+ */
+const SEASON_MONTHS = 2
+const SEASON_ANCHOR = { seasonId: 62, startsAt: Date.UTC(2026, 8, 1) / 1000 }
+/** Links shown under the squadron's name, one plain site among them at most; the About text links the rest. */
+const HERO_LINKS = 3
 
 /** Season title of a reward ("place3@historical"); the mode is named only when it is not RB squadron battles. */
 function rewardText(code: string): string | null {
@@ -310,49 +322,27 @@ function RecordMark({ title }: { title: string }) {
   )
 }
 
-/** A win rate as a ring: the arc is the share of wins. */
-function Ring({ fraction }: { fraction: number | null }) {
-  const radius = 15
-  const circumference = 2 * Math.PI * radius
-  const share = fraction === null ? 0 : Math.max(0, Math.min(1, fraction))
-  return (
-    <svg className="clan-stat__ring" width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
-      <circle cx="20" cy="20" r={radius} fill="none" className="donut-track" strokeWidth="5" />
-      <circle
-        cx="20" cy="20" r={radius} fill="none" className="donut-arc"
-        strokeWidth="5" strokeLinecap="round"
-        strokeDasharray={`${(circumference * share).toFixed(1)} ${circumference.toFixed(1)}`}
-        transform="rotate(-90 20 20)"
-      />
-    </svg>
-  )
-}
-
 /**
  * One figure of a strip: its name, the value, a line under it. Tone classes colour it above or below
- * the norm, has-record turns it gold; a win rate gets its ring.
+ * the norm, has-record turns it gold.
  */
-function Stat({ label, value, sub, className = '', title, ring, record = null }: {
+function Stat({ label, value, sub, className = '', title, record = null }: {
   label: string
   value: ReactNode
   sub?: ReactNode
   className?: string
   title?: string | undefined
-  ring?: number | null
   /** The record's tooltip; null — no record. */
   record?: string | null
 }) {
   return (
-    <div className={`clan-stat${ring !== undefined ? ' has-ring' : ''}${className}`} title={title}>
-      {ring !== undefined && <Ring fraction={ring} />}
-      <div className="clan-stat__body">
-        <div className="clan-stat__label">
-          {label}
-          {record !== null && <RecordMark title={record} />}
-        </div>
-        <div className="clan-stat__value">{value}</div>
-        {sub !== undefined && <div className="clan-stat__sub">{sub}</div>}
+    <div className={`clan-stat${className}`} title={title}>
+      <div className="clan-stat__label">
+        {label}
+        {record !== null && <RecordMark title={record} />}
       </div>
+      <div className="clan-stat__value">{value}</div>
+      {sub !== undefined && <div className="clan-stat__sub">{sub}</div>}
     </div>
   )
 }
@@ -374,8 +364,9 @@ function WinsLosses({ wins, losses }: { wins: number | null; losses: number | nu
 }
 
 /**
- * The season from the game's leaderboard (not from the bot's replays), under the squadron's name:
- * figures toned against the norm as in the ranking, gold where the squadron holds the season's record.
+ * The season from the game's leaderboard (not from the bot's replays), on its own band at the foot of
+ * the hero: its name, dates and current week, then figures toned against the norm as in the ranking,
+ * gold where the squadron holds the season's record.
  */
 function SeasonFigures({ detail }: { detail: ClanDetail }) {
   const { clan, ranking } = detail
@@ -388,7 +379,7 @@ function SeasonFigures({ detail }: { detail: ClanDetail }) {
   const holds = (key: keyof ClanRecords): boolean => ranking.records[key] === clan.coreTag
   const few = battles < MIN_RATE_BATTLES ? t('clans.rate.few', { n: MIN_RATE_BATTLES }) : null
   const heading = seasonHeading(detail.season, detail.officialSeason)
-  const line = seasonLine(detail.season)
+  const parts = seasonParts(detail.season)
   let day: ReactNode
   if (clan.battles24h !== null) {
     day = clan.battles24h > 0
@@ -399,8 +390,12 @@ function SeasonFigures({ detail }: { detail: ClanDetail }) {
     <section className="clan-season" aria-label={heading}>
       <div className="clan-season__head">
         <h2>{heading}</h2>
-        {line !== null && <span className="clan-season__line">{line}</span>}
-        <span className="clan-season__hint">{t('clan.official.hint')}</span>
+        {parts !== null && (
+          <>
+            <span className="clan-season__dates">{parts.range}</span>
+            <span className="clan-season__stage">{parts.stage}</span>
+          </>
+        )}
       </div>
       <div className="clan-stats">
         <Stat
@@ -413,8 +408,7 @@ function SeasonFigures({ detail }: { detail: ClanDetail }) {
         <Stat
           label={t('metric.winrate')}
           value={fmtPercent(winRate)}
-          ring={winRate}
-          className={`${rateTone(winRateScore(winRate), battles)}${winRate !== null && winRate < 0.5 ? ' is-losing' : ''}${holds('winRate') ? ' has-record' : ''}`}
+          className={`${rateTone(winRateScore(winRate), battles)}${holds('winRate') ? ' has-record' : ''}`}
           title={few ?? undefined}
           record={holds('winRate') ? t('clans.record.winRate', { n: MIN_RATE_BATTLES }) : null}
           sub={<WinsLosses wins={clan.seasonWins} losses={losses} />}
@@ -482,6 +476,7 @@ function ClanHero({ detail }: { detail: ClanDetail }) {
             {estimate && <span className="chip" title={t('clans.psr.title')}>{t('clan.hero.estimate')}</span>}
             <span className="chip">{tp('common.members', clan.members)}</span>
             <FavoriteChip coreTag={clan.coreTag} />
+            {heroLinks(clan.about).map((link) => <ClanLinkChip key={link.url} link={link} />)}
           </div>
         </div>
         <div className="clan-hero__score">
@@ -567,17 +562,36 @@ function liveTitle(clan: Clan): string | null {
   return tier === undefined ? null : `top${tier.top}`
 }
 
-/** A bar's height in the rewards chart: the top 100 a sixth of the plot, place 1 all of it. */
+/** A bar's height in the rewards chart: the top 100 a fifth of the plot, place 1 all of it. */
 function rewardHeight(level: number): string {
-  return (0.16 + (0.84 * (level - 1)) / 7).toFixed(3)
+  return (0.2 + (0.8 * (level - 1)) / 7).toFixed(3)
+}
+
+type SeasonAnchor = { seasonId: number; startsAt: number }
+
+/** A season's first and last month (UTC), counting two-month seasons back from the anchor. */
+function seasonSpan(season: number, anchor: SeasonAnchor): [Date, Date] {
+  const base = new Date(anchor.startsAt * 1000)
+  const start = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - SEASON_MONTHS * (anchor.seasonId - season), 1))
+  return [start, new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + SEASON_MONTHS - 1, 1))]
+}
+
+/** "Jul – Aug 2026". */
+function seasonDates(season: number, anchor: SeasonAnchor): string {
+  const [start, end] = seasonSpan(season, anchor)
+  return new Intl.DateTimeFormat(localeTag(), { month: 'short', year: 'numeric', timeZone: 'UTC' }).formatRange(start, end)
 }
 
 /**
- * Season rewards: how often the squadron took each reward, then a bar per season in the reward's
- * colour and height (seasons without a reward stay a dot) up to the current season, whose bar is the
- * reward its place holds so far.
+ * Season rewards: a legend of how often the squadron took each reward, then a bar per season in the
+ * reward's colour and height (a season without one is a dot) up to the current season, whose dashed
+ * bar is the reward its place holds so far. Years stand under the seasons that open them.
  */
-function RewardHistory({ history, live }: { history: SeasonReward[]; live: { season: number; title: string } | null }) {
+function RewardHistory({ history, live, anchor }: {
+  history: SeasonReward[]
+  live: { season: number; title: string } | null
+  anchor: SeasonAnchor
+}) {
   const latest = history[history.length - 1]!.season
   const last = live === null ? latest : Math.max(latest, live.season - 1)
   const first = Math.max(history[0]!.season, last - REWARD_SEASONS_SHOWN + 1)
@@ -587,7 +601,6 @@ function RewardHistory({ history, live }: { history: SeasonReward[]; live: { sea
   const current = live !== null && live.season === last + 1
     ? { ...live, label: t('clan.rewards.live', { n: live.season, reward: rewardText(live.title) ?? '' }) }
     : null
-  const count = seasons.length + (current === null ? 0 : 1)
 
   const tally = new Map<string, { title: string; level: number; count: number }>()
   for (const entry of history) {
@@ -598,66 +611,73 @@ function RewardHistory({ history, live }: { history: SeasonReward[]; live: { sea
     else tally.set(label, { title: entry.title, level: entry.level, count: 1 })
   }
   // Best first; a mode other than RB (" · AB") after RB's own.
-  const chips = [...tally.entries()].sort(([leftLabel, left], [rightLabel, right]) =>
+  const legend = [...tally.entries()].sort(([leftLabel, left], [rightLabel, right]) =>
     right.level - left.level || leftLabel.length - rightLabel.length)
 
-  const labelled = (season: number, index: number): boolean => {
-    if (count <= REWARD_LABEL_ALL || season % 5 === 0) return true
-    // The first and the last season, unless a fifth stands close by.
-    if (index === 0) return season % 5 < 3
-    return season === last && season % 5 > 2
+  // A year under the season that opens it (the current one too), and under the first column unless
+  // a year opens within two columns of it; a phone, which shows only the last REWARD_SEASONS_NARROW,
+  // names its own first.
+  const yearOf = (season: number): number => seasonSpan(season, anchor)[0].getUTCFullYear()
+  const narrowFirst = Math.max(0, seasons.length - REWARD_SEASONS_NARROW)
+  const yearAt = (index: number, from: number): number | null => {
+    const year = yearOf(seasons[index]!)
+    if (index > from) return yearOf(seasons[index - 1]!) === year ? null : year
+    return seasons.slice(index + 1, index + 3).some((season) => yearOf(season) !== year) ? null : year
   }
+  const liveYear = current !== null && yearOf(current.season) !== yearOf(last) ? yearOf(current.season) : null
 
   return (
     <div className="clan-rewards">
       <div className="clan-rewards__head">
         <h3>{t('clan.about.rewards')}</h3>
-        <ul className="clan-rewards__tally">
-          {chips.map(([label, item], index) => (
+        <ul className="reward-legend">
+          {legend.map(([label, item], index) => (
             <li
               key={label}
-              className={`reward-chip${rewardClass(item.title)}`}
+              className={`reward-legend__item${rewardClass(item.title)}`}
               style={cascade(index)}
               title={tp('clan.rewards.tally', item.count, { reward: label })}
             >
-              <span className="reward-chip__medal" aria-hidden="true" />
+              <i aria-hidden="true" />
               {label}
               <b>×{fmtInt(item.count)}</b>
             </li>
           ))}
         </ul>
       </div>
-      <ol className="reward-ladder" style={{ '--n': count } as CSSProperties} aria-label={t('clan.about.rewards')}>
+      <ol className="reward-ladder" aria-label={t('clan.about.rewards')}>
         {seasons.map((season, index) => {
           // A phone leaves the earliest seasons out (theme.css): their bars would be slivers.
-          const early = index < seasons.length - REWARD_SEASONS_NARROW
+          const early = index < narrowFirst
           const entry = bySeason.get(season)
-          const label = entry
-            ? `${t('clan.reward.season', { n: season })}: ${entry.labels.join(', ')}`
-            : t('clan.rewards.none', { n: season })
+          const when = t('clan.rewards.season', { n: season, dates: seasonDates(season, anchor) })
+          const label = entry ? `${when}: ${entry.labels.join(', ')}` : t('clan.rewards.none', { season: when })
+          const year = yearAt(index, 0)
+          const narrowYear = index === narrowFirst && narrowFirst > 0 && year === null ? yearAt(index, narrowFirst) : null
           return (
             <li
               key={season}
-              className={`reward-ladder__season${entry ? rewardClass(entry.title) : ' is-empty'}${labelled(season, index) ? ' is-labelled' : ''}${early ? ' is-early' : ''}`}
+              className={`reward-ladder__season${entry ? rewardClass(entry.title) : ' is-empty'}${early ? ' is-early' : ''}${year !== null ? ' has-year' : ''}${narrowYear !== null ? ' has-narrow-year' : ''}`}
               style={{ '--h': entry ? rewardHeight(entry.level) : '0', '--i': index } as CSSProperties}
               title={label}
               aria-label={label}
             >
-              <span className="reward-ladder__slot" aria-hidden="true"><span className="reward-ladder__bar" /></span>
-              <span className="reward-ladder__label" aria-hidden="true">{season}</span>
+              <span className="reward-ladder__bar" aria-hidden="true" />
+              {year !== null && <span className="reward-ladder__year" aria-hidden="true">{year}</span>}
+              {narrowYear !== null && <span className="reward-ladder__year is-narrow" aria-hidden="true">{narrowYear}</span>}
             </li>
           )
         })}
         {current !== null && (
           <li
             key="live"
-            className={`reward-ladder__season is-live is-labelled${rewardClass(current.title)}`}
+            className={`reward-ladder__season is-live${rewardClass(current.title)}${liveYear !== null ? ' has-year' : ''}`}
             style={{ '--h': rewardHeight(rewardLevel(current.title)), '--i': seasons.length } as CSSProperties}
             title={current.label}
             aria-label={current.label}
           >
-            <span className="reward-ladder__slot" aria-hidden="true"><span className="reward-ladder__bar" /></span>
-            <span className="reward-ladder__label" aria-hidden="true">{current.season}</span>
+            <span className="reward-ladder__bar" aria-hidden="true" />
+            {liveYear !== null && <span className="reward-ladder__year" aria-hidden="true">{liveYear}</span>}
           </li>
         )}
       </ol>
@@ -666,20 +686,123 @@ function RewardHistory({ history, live }: { history: SeasonReward[]; live: { sea
 }
 
 /**
- * The squadron's profile from the leaderboard: its own text (shown as text only, cut while long), the
- * facts beside it, then its season rewards.
+ * The squadron's own text with its links clickable: the API's spans are offsets into this very text.
+ * The leaderboard keeps some line breaks as a literal "\n"; they break the line here.
+ */
+function LinkedText({ text, field, about }: { text: string; field: ClanTextField; about: ClanAbout | null }) {
+  const plain = (part: string): string => part.replaceAll('\\n', '\n')
+  const parts: ReactNode[] = []
+  let at = 0
+  for (const [where, start, end, index] of about?.spans ?? []) {
+    const link = about!.links[index]
+    if (where !== field || link === undefined || start < at || end > text.length) continue
+    parts.push(plain(text.slice(at, start)))
+    parts.push(
+      <a key={start} className="clan-about__link" href={link.url} target="_blank" rel="noopener noreferrer nofollow ugc">
+        {text.slice(start, end)}
+      </a>,
+    )
+    at = end
+  }
+  parts.push(plain(text.slice(at)))
+  return <>{parts}</>
+}
+
+/** "1.0", "0.75", "10.7": K/D and BR with a dot in every language, as the game writes them. */
+function fmtThreshold(value: number): string {
+  const text = String(Math.round(value * 100) / 100)
+  return text.includes('.') ? text : `${text}.0`
+}
+
+/** A language's own name in the page's language: "English", "Английский". */
+function languageName(code: string): string {
+  try {
+    const name = new Intl.DisplayNames([localeTag()], { type: 'language' }).of(code) ?? code
+    return name.charAt(0).toLocaleUpperCase(localeTag()) + name.slice(1)
+  } catch {
+    return code
+  }
+}
+
+/**
+ * Requirements read from the squadron's texts as short chips, one per kind: a K/D, BR or vehicle
+ * rank asked per branch joins its values ("K/D 1.0+ ground / 0.8+ air").
+ */
+function requirementChips(items: ClanTextRequirement[]): { key: string; kind: ClanTextRequirement['kind']; text: string; title: string }[] {
+  const chips: { key: string; kind: ClanTextRequirement['kind']; text: string; title: string }[] = []
+  const kinds = [...new Set(items.map((item) => item.kind))]
+  for (const kind of kinds) {
+    const group = items.filter((item) => item.kind === kind)
+    const title = group.map((item) => t('clan.req.from', { text: item.source })).filter((line, index, all) => all.indexOf(line) === index).join('\n')
+    if (kind === 'language') {
+      for (const item of group) {
+        if (item.language !== null) chips.push({ key: `language-${item.language}`, kind, text: languageName(item.language), title })
+      }
+      continue
+    }
+    const value = (item: ClanTextRequirement): string => {
+      const n = item.min ?? 0
+      const shown = kind === 'rank' ? romanRank(n) : kind === 'kd' || kind === 'br' ? fmtThreshold(n) : fmtInt(n)
+      return item.branch === null
+        ? t('clan.req.value', { n: shown })
+        : t('clan.req.value.branch', { n: shown, branch: t(item.branch === 'air' ? 'clan.req.branch.air' : 'clan.req.branch.ground') })
+    }
+    // Either branch first, then ground and air, as the game lists them.
+    const sorted = [...group].sort((left, right) => branchOrder(left.branch) - branchOrder(right.branch))
+    const values = sorted.map(value).join(' / ')
+    const text = kind === 'mic' || kind === 'discord' || kind === 'topTier'
+      ? t(`clan.req.text.${kind}`)
+      : t(`clan.req.text.${kind}`, { values })
+    chips.push({ key: kind, kind, text, title })
+  }
+  return chips
+}
+
+function branchOrder(branch: ClanTextRequirement['branch']): number {
+  return branch === null ? 0 : branch === 'ground' ? 1 : 2
+}
+
+/** The links under the squadron's name: services first as written, one plain site at most. */
+function heroLinks(about: ClanAbout | null): ClanLink[] {
+  const sites = (about?.links ?? []).filter((link) => link.kind === 'web').slice(0, 1)
+  return (about?.links ?? []).filter((link) => link.kind !== 'web' || sites.includes(link)).slice(0, HERO_LINKS)
+}
+
+/** A link from the squadron's texts: the service's logo, then the address; it opens in a new tab. */
+function ClanLinkChip({ link }: { link: ClanLink }) {
+  return (
+    <a
+      className={`clan-link is-${link.kind}`}
+      href={link.url}
+      target="_blank"
+      rel="noopener noreferrer nofollow ugc"
+      title={t('clan.link.title', { address: link.label })}
+    >
+      <BrandIcon kind={link.kind} size={13} />
+      <span className="clan-link__label">{link.label}</span>
+    </a>
+  )
+}
+
+/**
+ * The squadron's profile from the leaderboard: its own text (cut while long, links clickable) with
+ * its season rewards under it, the facts beside them. Requirements join the game's own conditions
+ * with those its text states.
  */
 function ClanAboutCard({ detail }: { detail: ClanDetail }) {
   const { clan } = detail
   const profile = clan.profile
+  const about = clan.about
   const typeLabel = clan.clanType === 'battalion'
     ? t('clan.type.battalion')
     : clan.clanType === 'normal' ? t('clan.type.normal') : null
   const applications = profile ? applicationsText(profile) : null
-  const requirements = profile?.requirements ? requirementLines(profile.requirements) : null
+  const official = profile?.requirements ? requirementLines(profile.requirements) : null
+  const chips = requirementChips(about?.requirements ?? [])
   const history = rewardHistory(clan.rewards)
   const title = liveTitle(clan)
   const live = title !== null && detail.officialSeason !== null ? { season: detail.officialSeason.seasonId, title } : null
+  const anchor = detail.officialSeason ?? SEASON_ANCHOR
   // The tag's decoration is last season's reward: the chart shows it, unless the log lacks it.
   const regalia = profile?.regalia ?? null
   const regaliaLabel = regalia !== null && history.at(-1)?.title.split('@')[0] !== regalia ? clanRewardLabel(regalia) : null
@@ -690,14 +813,27 @@ function ClanAboutCard({ detail }: { detail: ClanDetail }) {
     facts.push([t('clan.about.founded'), <>{fmtDate(clan.foundedAt)}<span className="clan-facts__note"> · {fmtAge(clan.foundedAt)}</span></>])
   }
   if (applications) facts.push([t('clan.about.applications'), applications])
-  if (requirements !== null) {
+  if (official !== null || chips.length > 0) {
     facts.push([
       t('clan.about.requirements'),
-      requirements.length === 0 ? t('clan.about.requirements.none') : requirements.map((line) => <div key={line}>{line}</div>),
+      <>
+        {official?.map((line) => <div key={line}>{line}</div>)}
+        {official !== null && official.length === 0 && chips.length === 0 && t('clan.about.requirements.none')}
+        {chips.length > 0 && (
+          <ul className="clan-reqs">
+            {chips.map((chip) => (
+              <li key={chip.key} className={`clan-req is-${chip.kind}`} title={chip.title}>
+                {chip.kind === 'discord' && <BrandIcon kind="discord" size={12} />}
+                {chip.text}
+              </li>
+            ))}
+          </ul>
+        )}
+      </>,
     ])
   }
   if (regalia !== null && regaliaLabel !== null) {
-    facts.push([t('clan.about.regalia'), <span className={`reward-chip is-mini${rewardClass(regalia)}`}>{regaliaLabel}</span>])
+    facts.push([t('clan.about.regalia'), <span className={`reward-legend__item is-fact${rewardClass(regalia)}`}><i aria-hidden="true" />{regaliaLabel}</span>])
   }
   const hasText = Boolean(clan.slogan || profile?.description || profile?.announcement)
   if (profile === null && !hasText && facts.length === 0 && history.length === 0) return null
@@ -707,13 +843,13 @@ function ClanAboutCard({ detail }: { detail: ClanDetail }) {
       <SecHead title={t('clan.about')} hint={t('clan.about.hint')} />
       <div className={`clan-about__grid${facts.length === 0 ? ' is-single' : ''}`}>
         <ClampedText>
-          {clan.slogan && <p className="free-text clan-about__slogan">{clan.slogan}</p>}
-          {profile?.description && <p className="free-text">{profile.description}</p>}
+          {clan.slogan && <p className="free-text clan-about__slogan"><LinkedText text={clan.slogan} field="slogan" about={about} /></p>}
+          {profile?.description && <p className="free-text"><LinkedText text={profile.description} field="description" about={about} /></p>}
           {!clan.slogan && !profile?.description && <p className="muted small">{t('clan.about.noDescription')}</p>}
           {profile?.announcement && (
             <>
               <div className="clan-about__label">{t('clan.about.announcement')}</div>
-              <p className="free-text">{profile.announcement}</p>
+              <p className="free-text"><LinkedText text={profile.announcement} field="announcement" about={about} /></p>
             </>
           )}
         </ClampedText>
@@ -727,8 +863,8 @@ function ClanAboutCard({ detail }: { detail: ClanDetail }) {
             ))}
           </dl>
         )}
+        {history.length > 0 && <RewardHistory history={history} live={live} anchor={anchor} />}
       </div>
-      {history.length > 0 && <RewardHistory history={history} live={live} />}
     </section>
   )
 }
@@ -1496,8 +1632,7 @@ function ReplayBattlesCard({ detail, days, onDays, refreshing }: {
             <Stat
               label={t('metric.winrate')}
               value={fmtPercent(battles.winRate)}
-              ring={battles.winRate}
-              className={`${rateTone(winRateScore(battles.winRate), decided)}${battles.winRate !== null && battles.winRate < 0.5 ? ' is-losing' : ''}`}
+              className={rateTone(winRateScore(battles.winRate), decided)}
               title={few}
               sub={<WinsLosses wins={battles.wins} losses={battles.losses} />}
             />

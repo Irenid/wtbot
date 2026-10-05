@@ -248,15 +248,21 @@ export function seasonHeading(context: ClanSeasonContext, official: OfficialClan
     : t('season.title')
 }
 
-/** One line: the season's dates and its current stage ("Sep 1 – Oct 31, 2026 · week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
-export function seasonLine(context: ClanSeasonContext): string | null {
+/** The season's dates ("Sep 1 – Oct 31, 2026") and its current stage ("week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
+export function seasonParts(context: ClanSeasonContext): { range: string; stage: string } | null {
   const season = context.season
   if (!season) return null
   const current = context.currentStage
-  const currentText = current
+  const stage = current
     ? `${stageLabel(current, season.endsAt)} · ${stageRange(current)}`
     : season.active ? t('season.waiting') : t('season.ended')
-  return `${dayRange(season.startsAt, season.endsAt)} · ${currentText}`
+  return { range: dayRange(season.startsAt, season.endsAt), stage }
+}
+
+/** One line: the season's dates and its current stage ("Sep 1 – Oct 31, 2026 · week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
+export function seasonLine(context: ClanSeasonContext): string | null {
+  const parts = seasonParts(context)
+  return parts === null ? null : `${parts.range} · ${parts.stage}`
 }
 
 /**

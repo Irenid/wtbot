@@ -488,6 +488,36 @@ export interface ClanProfile {
   regalia: string | null
 }
 
+/** A link from the squadron's own texts; the service names its icon. */
+export interface ClanLink {
+  kind: 'discord' | 'telegram' | 'youtube' | 'twitch' | 'vk' | 'tiktok' | 'facebook' | 'steam' | 'web'
+  url: string
+  /** The address without its scheme and "www.". */
+  label: string
+}
+
+export type ClanTextField = 'slogan' | 'description' | 'announcement'
+
+/** A join requirement read from the squadron's own texts (src/web/clan-about.ts). */
+export interface ClanTextRequirement {
+  kind: 'kd' | 'br' | 'rank' | 'topTier' | 'battles' | 'level' | 'psr' | 'activity' | 'age' | 'language' | 'mic' | 'discord'
+  /** The least value; null for a flag. Vehicle ranks are 1–8. */
+  min: number | null
+  branch: 'air' | 'ground' | null
+  /** ISO 639-1 code of the language asked for. */
+  language: string | null
+  /** The sentence it was read from, as the squadron wrote it. */
+  source: string
+}
+
+/** Links and join requirements read from the squadron's slogan, description and announcement. */
+export interface ClanAbout {
+  links: ClanLink[]
+  /** Where each link stands: [field, start, end, index in links], UTF-16 offsets into the field's text. */
+  spans: [ClanTextField, number, number, number][]
+  requirements: ClanTextRequirement[]
+}
+
 /** A squadron one place higher or lower in the leaderboard. */
 export interface ClanNeighbor {
   coreTag: string
@@ -540,7 +570,7 @@ export interface ClanDetail {
     airKills: number | null
     groundKills: number | null
     deaths: number | null
-    /** Members' season flight time, minutes. */
+    /** Members' season time in battle, minutes (the leaderboard's "flight time"). */
     flightTimeMin: number | null
     activity: number | null
     region: string | null
@@ -550,6 +580,8 @@ export interface ClanDetail {
     slogan: string | null
     rewards: ClanSeasonRewards | null
     profile: ClanProfile | null
+    /** null — the texts hold no link or requirement. */
+    about: ClanAbout | null
   }
   roster: {
     nick: string

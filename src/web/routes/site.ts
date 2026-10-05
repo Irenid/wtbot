@@ -56,6 +56,7 @@ import { runWorkerTask } from '../../workers/pool.js'
 import { buildBattleSceneGzip, loadBattleSceneMap } from '../../wrpl/battle-scene.js'
 import { clanDisplayName, plainClanTag } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict, type VehicleDict } from '../../wrpl/vehicles.js'
+import { readClanAbout } from '../clan-about.js'
 import {
   CLAN_SORT_KEYS,
   clanCrawlReads,
@@ -1587,6 +1588,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     const neighbor = (row: SiteClanRow | undefined) => row === undefined || !row.current || status !== 'current'
       ? null
       : { coreTag: row.coreTag, displayTag: clanDisplayName(row.group.displayTag), rank: row.rank, rating: row.rating }
+    const profile = group.official === null ? null : getSiteClanProfile(group.official.tag)
 
     return {
       ok: true,
@@ -1619,7 +1621,12 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         foundedAt: group.official?.foundedAt ?? null,
         slogan: group.official?.slogan ?? null,
         rewards: group.official?.rewards ?? null,
-        profile: group.official === null ? null : getSiteClanProfile(group.official.tag),
+        profile,
+        about: readClanAbout({
+          slogan: group.official?.slogan ?? null,
+          description: profile?.description ?? null,
+          announcement: profile?.announcement ?? null,
+        }),
         totalRating: group.totalRating,
         lastSeenAt: group.lastSeenAt,
         rank: group.rank,

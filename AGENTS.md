@@ -526,6 +526,16 @@ Data:
   successful run for `LIVE_MAX_REPLAY_AGE_SEC` (10 min). The leaderboard's
   battle counts lagged a crawl or two and marked top-100 entrants for old
   battles.
+- `clan.about` of `/api/clans/:coreTag` (`readClanAbout`,
+  `src/web/clan-about.ts`): links and join requirements read on request
+  from the squadron's untrusted slogan, description and announcement. The
+  parser builds every address itself (http/https only; a bare host needs
+  "www." or a path in a known zone) and returns `spans` (UTF-16 offsets per
+  text) for the SPA's clickable text; links open with
+  `rel="noopener noreferrer nofollow ugc"`. Requirements put precision
+  first: a figure counts beside its keyword and with a "+", "from", "min" or
+  in a requirements sentence; Discord counts only as a condition. A new
+  wording goes into `clan-about.test.ts` as written.
 - `CLAN_SEASON_SCHEDULES` — UTC `[startsAt, endsAt)`; changing a built-in
   schedule takes reconciliation or a data migration, never a manual database
   edit. New seasons come from `wt-clan-season` (`src/clan-season-forum.ts`),
