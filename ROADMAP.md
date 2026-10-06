@@ -50,8 +50,7 @@ full texts are in Git (commit `46b6950` and earlier).
   Logs quoted in docs (`[ingest] бой …`, `API вернул пустой список`, the verify
   skill) change together with the code. Slash-command descriptions reach
   Discord only after `npm run deploy:commands`. Also remove `.cbmignore`
-  (codebase-memory-mcp is not configured) and move
-  `Редизайн игрового портала/` to `frontend/design/portal-redesign/`.
+  (codebase-memory-mcp is not configured).
 - **Squadron page in de/fr/es.** The redesigns of 2026-10-05 added 71
   `clan.*` keys (hero, standing track, season tiles, daily bars, rewards
   chart, roster filters, requirement chips) to `ru.ts` and `en.ts` only:
