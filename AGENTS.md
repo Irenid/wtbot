@@ -18,10 +18,10 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
   revert, reformat, delete or include them in your commit.
 - Documents: `README.md` — running; this file — contracts; `ROADMAP.md` — the
   only list of open tasks (closed items are deleted); `docs/` — measurements
-  and notes (`performance.md`, `database.md`, `replay-data-quality.md`);
-  `LICENSES/` — licenses of ported code; skills — `.claude/skills/verify/`
-  (checks, live bot), `.agents/skills/monorepo-debug/` (diagnostics). Do not
-  add new plans or audits to the repository root.
+  and notes (`performance.md`, `database.md`, `replay-data-quality.md`,
+  `opponent-scouting.md`); `LICENSES/` — licenses of ported code; skills —
+  `.claude/skills/verify/` (checks, live bot), `.agents/skills/monorepo-debug/`
+  (diagnostics). Do not add new plans or audits to the repository root.
 - Do not read or print `.env` values without a direct need; for diagnostics
   print the key name and `set/empty`.
 
