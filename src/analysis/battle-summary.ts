@@ -1,11 +1,12 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { config } from '../config.js'
-import { closeDb, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
+import { closeDb, getBattleWinner, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
 import { levelId } from '../wrpl/battle-assets.js'
 import { buildBattleMedia, cachedBattleMeta } from '../wrpl/battle-media.js'
+import { battlePsr } from '../wrpl/battle-psr.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../wrpl/replay.js'
-import { buildRosters, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
+import { buildRosters, psrLabel, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
 import { configureReplayUrlPolicy } from '../wrpl/replay-url-policy.js'
 import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 
@@ -105,8 +106,11 @@ console.log(
 )
 
 const teamSummaries = summarizeTeams(results, dict)
-// ПКР обеих команд (пишет снимки в БД); без сети таблица выйдет с прочерками
-const ratings = await fetchRatingsForTags(teamSummaries.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+// Both squadron pages (stores PSR snapshots); without the network the PSR comes from stored readings or is a dash
+await fetchRatingsForTags(teamSummaries.flatMap((t) => (t.rawTag ? [t.rawTag] : [])))
+// The winner from the stored battle, else from the media metadata (--media)
+const winnerTeam = getBattleWinner(sessionId) ?? (await cachedBattleMeta(header.sessionIdHex))?.teamWon ?? null
+const psr = battlePsr({ sessionId, startTime: header.startTime, duration: results.timePlayed, players: results.players, winnerTeam })
 
 // Ростеры в том же порядке, что и на картинке (и в teamSummaries):
 // первой идёт команда с большей суммой очков
@@ -125,8 +129,10 @@ for (const [ti, roster] of rosters.entries()) {
     const name = p.clanTag ? `${p.clanTag} ${displayName}` : displayName
     const disconnected = p.name === '' || p.vehicles.length === 0
     const craftNames = disconnected ? 'Disconnected' : p.vehicles.map((v) => vehicleInfo(dict, v).name).join(', ')
-    const r = ratings.get(p.name) ?? ratings.get(p.name.replace(/@(psn|live|epic)$/i, ''))
-    const rStr = r ? `${r.rating}${r.delta ? ` (${r.delta > 0 ? '+' : ''}${r.delta})` : ''}` : '—'
+    // PSR after the battle and the battle's points (battle-psr.ts)
+    const entry = psr.get(p.userId)
+    const label = entry ? psrLabel(entry) : null
+    const rStr = label ? `${label.psr}${label.change ? ` (${label.change > 0 ? '+' : '−'}${Math.abs(label.change)})` : ''}` : '—'
     console.log(
       `${pad(cut(name, 28), 28)} ${pad(cut(craftNames || '—', 30), 30)} ${pad(rStr, 10)} ` +
         `${pad(String(Math.max(p.kills, 0)), 5)} ${pad(String(Math.max(p.groundKills, 0)), 6)} ${pad(String(Math.max(p.assists, 0)), 7)} ` +
@@ -145,9 +151,8 @@ if (flags.has('--image')) {
       header,
       results,
       dict,
-      ratings,
-      // победитель — из меты, если материалы уже собирались (--media)
-      winnerTeam: (await cachedBattleMeta(header.sessionIdHex))?.teamWon ?? null,
+      psr,
+      winnerTeam,
     },
     'normal',
   )

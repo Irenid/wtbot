@@ -115,7 +115,8 @@ full texts are in Git (commit `46b6950` and earlier).
 - `src/player-stats/service.ts` — smoke scripts only.
 - Frontend: no tests and no test setup (error states, resetting
   `vehicleDictPromise` after a failure, battle pagination, `lib/psr.ts`
-  against the numbers the guide prose quotes: 780, 903, the ceilings).
+  against the numbers the guide prose quotes beyond the per-battle points
+  that `src/psr.test.ts` checks: 903, the ceilings).
 
 ## Performance
 

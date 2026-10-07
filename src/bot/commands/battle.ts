@@ -33,9 +33,10 @@ import {
 } from '../../wrpl/battle-media.js'
 import { isBattleHeatmapKind } from '../../wrpl/battle-media-kind.js'
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
-import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags, type ClanRating } from '../../wrpl/clan-info.js'
+import { battlePsr, type BattlePsr } from '../../wrpl/battle-psr.js'
+import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
-import { renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
+import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 import type { WorkerPriority } from '../../workers/pool.js'
 
@@ -103,7 +104,7 @@ export interface BattlePost {
   sessionIdHex: string
   /** null — durable summary уже доступен; иначе ожидание ingest вернёт обновлённый payload. */
   buildWinnerPayload: (() => Promise<BattlePostPayload | null>) | null
-  /** null — фоновое обновление ПКР не требуется. */
+  /** Reads the squadron pages and redraws the PSR column; null — the post has read them already. */
   buildRatingsPayload: (() => Promise<BattlePostPayload | null>) | null
   /**
    * Runs last: looks up squadron tags missing from the clans dictionary (up
@@ -153,18 +154,21 @@ export async function renderBattlePost(
   // units that actually spawned.
   let hasAir = true
 
-  // Interactive /battle gets the current PSR. A background announcement
-  // first draws dashes until a separate update gets fresh points.
+  // Interactive /battle reads the squadron pages first. A background
+  // announcement draws dashes until a separate update reads them.
   const clanTags = teams.flatMap((t) => (t.rawTag ? [t.rawTag] : []))
   // A squadron that began playing after the last full leaderboard crawl has
   // no name for its claninfo page yet: the last update looks it up and redraws.
   const unknownTags = unknownClanTags(clanTags)
-  let ratings: Map<string, ClanRating>
-  if (priority === 'background') {
-    ratings = new Map()
-  } else {
-    ratings = await fetchRatingsForTags(clanTags)
-  }
+  let pagesRead = priority !== 'background'
+  if (pagesRead) await fetchRatingsForTags(clanTags)
+  // The PSR column (battle-psr.ts), recomputed on every draw: the winner, the
+  // stored rows and the page readings change between draws.
+  let shownPsr = new Map<string, BattlePsr>()
+  const readPsr = (winnerTeam: number | null): Map<string, BattlePsr> =>
+    pagesRead
+      ? battlePsr({ sessionId, startTime: header.startTime, duration: results.timePlayed, players: results.players, winnerTeam })
+      : new Map()
 
   // The text next to the image: Match ID, then each team's clan, composition and players
   const buildContent = (): string => {
@@ -230,9 +234,11 @@ export async function renderBattlePost(
   const makePayload = async (
     winnerTeam: number | null,
     hasChat: boolean,
+    psr: Map<string, BattlePsr>,
     renderPriority: WorkerPriority = priority,
   ): Promise<BattlePostPayload> => {
-    const png = await renderBattleImage({ missionName, header, results, dict, ratings, winnerTeam }, renderPriority)
+    const png = await renderBattleImage({ missionName, header, results, dict, psr, winnerTeam }, renderPriority)
+    shownPsr = psr
     return {
       content,
       files: [new AttachmentBuilder(png, { name: `battle-${header.sessionIdHex}.png` })],
@@ -257,23 +263,21 @@ export async function renderBattlePost(
   const initialHasChat = hasChat
   let currentWinnerTeam = winner > 0 ? winner : null
   let currentHasChat = hasChat
-  const payload = await makePayload(currentWinnerTeam, currentHasChat)
-  const buildRatingsPayload = priority === 'background' && clanTags.length > 0
-    ? async (): Promise<BattlePostPayload | null> => {
-        const freshRatings = await fetchRatingsForTags(clanTags)
-        if (sameRatings(ratings, freshRatings)) return null
-        ratings = freshRatings
-        return makePayload(currentWinnerTeam, currentHasChat, 'background')
-      }
-    : null
+  const payload = await makePayload(currentWinnerTeam, currentHasChat, readPsr(currentWinnerTeam))
+  // Reads the squadron pages; a redraw only when the column's numbers change.
+  const redrawPsr = async (): Promise<BattlePostPayload | null> => {
+    await fetchRatingsForTags(clanTags)
+    pagesRead = true
+    const psr = readPsr(currentWinnerTeam)
+    if (samePsr(shownPsr, psr)) return null
+    return makePayload(currentWinnerTeam, currentHasChat, psr, 'background')
+  }
+  const buildRatingsPayload = priority === 'background' && clanTags.length > 0 ? redrawPsr : null
   const buildLookupPayload = unknownTags.length > 0
     ? async (): Promise<BattlePostPayload | null> => {
         await lookupUnknownClanTags(unknownTags)
         if (unknownClanTags(unknownTags).length === unknownTags.length) return null
-        const freshRatings = await fetchRatingsForTags(clanTags)
-        if (sameRatings(ratings, freshRatings)) return null
-        ratings = freshRatings
-        return makePayload(currentWinnerTeam, currentHasChat, 'background')
+        return redrawPsr()
       }
     : null
   const buildWinnerPayload = shouldQueueWinnerUpdate(dbSummary !== null, mediaMeta !== null)
@@ -296,7 +300,7 @@ export async function renderBattlePost(
         hasAir = freshHasAir
         currentWinnerTeam = fresh.teamWon > 0 ? fresh.teamWon : null
         currentHasChat = freshHasChat
-        return makePayload(currentWinnerTeam, currentHasChat, 'background')
+        return makePayload(currentWinnerTeam, currentHasChat, readPsr(currentWinnerTeam), 'background')
       }
     : null
   return {
@@ -398,14 +402,15 @@ function estimatePostUpdateBytes(results: ReplayResults, content: string): numbe
     + Buffer.byteLength(JSON.stringify(results), 'utf8')
 }
 
-function sameRatings(
-  left: ReadonlyMap<string, { rating: number; delta: number | null }>,
-  right: ReadonlyMap<string, { rating: number; delta: number | null }>,
-): boolean {
+/** Whether two PSR columns draw the same numbers. */
+function samePsr(left: ReadonlyMap<string, BattlePsr>, right: ReadonlyMap<string, BattlePsr>): boolean {
   if (left.size !== right.size) return false
-  for (const [nick, rating] of left) {
-    const other = right.get(nick)
-    if (!other || other.rating !== rating.rating || other.delta !== rating.delta) return false
+  for (const [userId, entry] of left) {
+    const other = right.get(userId)
+    if (!other) return false
+    const shown = psrLabel(entry)
+    const fresh = psrLabel(other)
+    if (shown.psr !== fresh.psr || shown.change !== fresh.change) return false
   }
   return true
 }

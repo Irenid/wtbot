@@ -464,6 +464,13 @@ Data:
   permission.
 - `/battle` and the announcer share `renderBattlePost()`; `battle:*` buttons
   are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral.
+- The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
+  the guides' formula above, PSR after the battle below (before it while the
+  winner is unknown). A claninfo read at the announcement lags up to 15 min,
+  so the PSR before the battle is the last readings (snapshot changes, the
+  last roster read) carried over the player's stored battles; which battles a
+  reading counts is a Viterbi path over read times and values (accuracy in
+  the module header).
 - Announcer: attempts and message state in `announce_state`, the baseline in
   `bot_state`; the first start does not publish history; battles older than
   `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()`. A
@@ -569,7 +576,8 @@ Data:
 - Guides (`/guides`, `frontend/src/pages/GuidesPage.tsx`, `pages/guides/`)
   hold three kinds of facts. The PSR rule is `frontend/src/lib/psr.ts`: tables
   and the calculator compute from it, the prose quotes its results, so a new
-  constant means rewriting those sentences in every locale. Measurements are
+  constant means rewriting those sentences in every locale; the battle image
+  uses the bot's copy `src/psr.ts`, and `src/psr.test.ts` keeps both equal. Measurements are
   dated in `pages/guides/measurements.ts` (`MEASURED_AT`), reach the texts as
   arguments and are refreshed together. Live data comes from `/api/clans` and
   the season panel; a failed request leaves the static text, never stale

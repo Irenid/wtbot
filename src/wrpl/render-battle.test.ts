@@ -128,7 +128,7 @@ test('значок платформы не сдвигает колонку те�
   assert.doesNotMatch(svg, /<text x="180" y="410"/)
 })
 
-test('длинный ник обрезается до колонки ПКР', () => {
+test('a long nickname is cut before the PSR column', () => {
   const longName = 'КРЫМСКИЙПОДПИВАС'
   const longPlayer = { ...player, name: longName, vehicles: ['test_tank'] }
   const results: ReplayResults = { status: 'success', timePlayed: 60, players: [longPlayer] }
@@ -138,7 +138,7 @@ test('длинный ник обрезается до колонки ПКР', ()
       header,
       results,
       dict: { test_tank: { name: 'Test Tank', cls: 'T', country: 'ussr' } },
-      ratings: new Map([[longName, { rating: 1658, delta: null }]]),
+      psr: new Map([['1', { psr: 1658, change: null }]]),
       winnerTeam: 1,
     },
     { unitIcons: new Map(), mapImage: null, gameFont: false },
@@ -150,7 +150,7 @@ test('длинный ник обрезается до колонки ПКР', ()
   assert.match(svg, /clip-path="url\(#player-name-0-0\)"/)
 })
 
-test('до передачи рейтингов в таблице стоят прочерки', () => {
+test('the PSR column shows dashes until the squadron pages are read', () => {
   const ratedPlayer = { ...player, vehicles: ['test_tank'] }
   const results: ReplayResults = { status: 'success', timePlayed: 60, players: [ratedPlayer] }
   const svg = buildBattleSvg(
@@ -159,13 +159,52 @@ test('до передачи рейтингов в таблице стоят пр
       header,
       results,
       dict: { test_tank: { name: 'Test Tank', cls: 'T', country: 'usa' } },
-      ratings: new Map(),
+      psr: new Map(),
       winnerTeam: 1,
     },
     { unitIcons: new Map(), mapImage: null, gameFont: false },
   )
 
   assert.match(svg, /<text x="522" y="388"[^>]*>—<\/text>/)
+})
+
+test('the PSR column shows the battle\'s points above the PSR after it', () => {
+  const results: ReplayResults = {
+    status: 'success',
+    timePlayed: 60,
+    players: [
+      { ...player, userId: 'winner', name: 'Winner', team: 1, score: 3 },
+      { ...player, userId: 'pending', name: 'Pending', team: 1, score: 2 },
+      { ...player, userId: 'floor', name: 'Floor', team: 1, score: 1 },
+      { ...player, userId: 'loser', name: 'Loser', team: 2 },
+    ],
+  }
+  const svg = buildBattleSvg(
+    {
+      missionName: '[Domination] Test',
+      header,
+      results,
+      dict: {},
+      psr: new Map([
+        ['winner', { psr: 1516.4, change: 16 }],
+        ['pending', { psr: 1499.6, change: null }],
+        ['floor', { psr: 0, change: -0.4 }],
+        ['loser', { psr: 1483.6, change: -16.5 }],
+      ]),
+      winnerTeam: 1,
+    },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+
+  // Rows are 88 px apart from y 340; the column is at x 522 (left team) and 1482 (right team).
+  assert.match(svg, /<text x="522" y="364"[^>]*fill="#7ee787"[^>]*>\+16<\/text>/)
+  assert.match(svg, /<text x="522" y="396"[^>]*>1516<\/text>/)
+  assert.doesNotMatch(svg, /<text x="522" y="452"/)
+  assert.match(svg, /<text x="522" y="484"[^>]*>1500<\/text>/)
+  assert.doesNotMatch(svg, /<text x="522" y="540"/)
+  assert.match(svg, /<text x="522" y="572"[^>]*>0<\/text>/)
+  assert.match(svg, /<text x="1482" y="364"[^>]*fill="#ff7b72"[^>]*>−17<\/text>/)
+  assert.match(svg, /<text x="1482" y="396"[^>]*>1484<\/text>/)
 })
 
 test('SVG сохраняет оригинальные Unicode-символы в никах игроков', () => {

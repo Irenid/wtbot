@@ -55,6 +55,9 @@ let selectItemBreakdownStatement: StatementSync | null = null
 let selectLatestItemSummariesStatement: StatementSync | null = null
 let selectIngestStatsStatement: StatementSync | null = null
 let selectBattlePostSummaryStatement: StatementSync | null = null
+let selectPsrSnapshotsStatement: StatementSync | null = null
+let selectPsrRosterReadStatement: StatementSync | null = null
+let selectPlayerBattleResultsStatement: StatementSync | null = null
 let selectDataVersionStatement: StatementSync | null = null
 let commandStatsCache: VersionedCache<CommandStats> | null = null
 let itemStatsCache: VersionedCache<ItemStats> | null = null
@@ -85,6 +88,9 @@ function resetPreparedStatements(): void {
   selectLatestItemSummariesStatement = null
   selectIngestStatsStatement = null
   selectBattlePostSummaryStatement = null
+  selectPsrSnapshotsStatement = null
+  selectPsrRosterReadStatement = null
+  selectPlayerBattleResultsStatement = null
   selectDataVersionStatement = null
   commandStatsCache = null
   itemStatsCache = null
@@ -4821,6 +4827,69 @@ export function getClanRatingsWithDelta(clanTag: string): Map<string, ClanRating
     }
   }
   return result
+}
+
+/** The squadron page showed this PSR of a member at `at` (unix s). */
+export interface PsrReading {
+  at: number
+  psr: number
+}
+
+/**
+ * PSR readings of one member since `since`, oldest first: every change as
+ * first seen (clan_rating_snapshots keeps changes only) and, when the roster
+ * was read later, that read with the latest value (clan_roster).
+ */
+export function getPsrReadings(clanTag: string, nick: string, since: number): PsrReading[] {
+  const database = getDb()
+  // Covering idx_snapshots_clan_latest: one member's rows, no table reads.
+  selectPsrSnapshotsStatement ??= database.prepare(`
+    SELECT rating, seen_at FROM clan_rating_snapshots
+    WHERE clan_tag = ? AND nick = ? AND seen_at >= ?
+    ORDER BY id
+  `)
+  selectPsrRosterReadStatement ??= database.prepare(
+    'SELECT last_present_at FROM clan_roster WHERE clan_core = ? AND nick = ?',
+  )
+  const rows = selectPsrSnapshotsStatement.all(clanTag, nick, since) as unknown as { rating: number; seen_at: number }[]
+  const readings = rows.map((row) => ({ at: row.seen_at, psr: row.rating }))
+  const latest = readings.at(-1)
+  const roster = selectPsrRosterReadStatement.get(clanCoreOf(clanTag), nick) as { last_present_at: number } | undefined
+  if (latest && roster && roster.last_present_at > latest.at) readings.push({ at: roster.last_present_at, psr: latest.psr })
+  return readings
+}
+
+/** A player's battle: its end (start + length, unix s) and their result; null — the winner or their team is unknown. */
+export interface PlayerBattleResult {
+  sessionId: string
+  endAt: number
+  won: boolean | null
+}
+
+/**
+ * The player's battles that started at or after `since`, oldest end first.
+ * Reads every idx_bp_user_id row of the player with a battles lookup each:
+ * the heaviest player, 748 rows (436 this season), 0.9 ms (2026-10-07).
+ */
+export function getPlayerBattleResults(userId: string, since: number): PlayerBattleResult[] {
+  selectPlayerBattleResultsStatement ??= getDb().prepare(`
+    SELECT b.session_id, b.start_time + b.duration_sec AS end_at, b.team_won, bp.team
+    FROM battle_players bp
+    JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.user_id = ? AND b.start_time >= ?
+    ORDER BY end_at, b.session_id
+  `)
+  const rows = selectPlayerBattleResultsStatement.all(userId, since) as unknown as {
+    session_id: string
+    end_at: number
+    team_won: number
+    team: number
+  }[]
+  return rows.map((row) => ({
+    sessionId: row.session_id,
+    endAt: row.end_at,
+    won: row.team_won > 0 && row.team > 0 ? row.team === row.team_won : null,
+  }))
 }
 
 // ---------- Разобранные бои (ingest) ----------

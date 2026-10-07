@@ -1,5 +1,5 @@
 import { ensureUnitIcons, loadMapBackground } from './battle-assets.js'
-import type { ClanRating } from './clan-info.js'
+import type { BattlePsr } from './battle-psr.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 import { ensureGameFlags } from './game-flags.js'
@@ -7,22 +7,21 @@ import { ensureGameFonts, GAME_SYMBOLS_FAMILY } from './wt-fonts.js'
 import { runWorkerTask, transferableBuffer, transferableCopy, type WorkerPriority } from '../workers/pool.js'
 
 /**
- * Рендер таблицы результатов боя в PNG в стиле Boris Stats:
- * фон — скриншот карты (data/maps/, если положен) с затемнением,
- * шапка с картой/режимом/временем, две команды с клан-тегами,
- * флаги наций, состав (4F/3T/1AA), силуэты техники из датамайна,
- * значки платформ (@psn/@live), колонка личного кланового рейтинга
- * (⊛: дельта сверху, рейтинг снизу) и возд./назем./ассисты/захваты/смерти.
- * Отключившиеся игроки помечаются красным значком и словом Disconnected,
- * запись без строки результатов — «Unknown Player».
+ * The battle results table as PNG, in the style of Boris Stats: the map
+ * screenshot (data/maps/, when present) darkened as the background, a header
+ * with map, mode and time, two teams with squadron tags, nation flags, the
+ * composition (4F/3T/1AA), datamine vehicle silhouettes, platform marks
+ * (@psn/@live), the PSR column (⊛: the battle's points above, PSR after it
+ * below; battle-psr.ts) and air/ground kills, assists, captures, deaths. A
+ * disconnected player gets a red mark and the word Disconnected, a row without
+ * results — "Unknown Player".
  *
- * Украшения клан-тегов (⚔, львы, пламя…) — box-drawing символы, которые
- * рисуются фирменным шрифтом игры (см. wt-fonts.ts); если шрифта нет,
- * подменяются ближайшим юникодом по DECOR_MAP.
+ * Squadron tag decorations (⚔, lions, flames…) are box-drawing characters
+ * that the game's own font draws (wt-fonts.ts); without it they become the
+ * nearest Unicode by DECOR_MAP.
  *
- * SVG собирается строками и растеризуется через resvg (без браузера).
- * Шрифты системные — Segoe UI + Microsoft YaHei, поэтому русские и
- * китайские ники рисуются нормально.
+ * The SVG is built from strings and rasterized by resvg (no browser) with the
+ * fonts of workers/render-fonts.ts.
  */
 
 const W = 1920
@@ -51,8 +50,8 @@ const TEAM_THEME = [
 const STAT_COLORS = ['#7ee787', '#7ee787', '#f2cc60', '#6cb6ff', '#ff7b72'] // возд, назем, ассист, захв, смерти
 const ZERO_COLOR = '#d7dee8'
 const FONTS = `Segoe UI, Segoe UI Symbol, Microsoft YaHei, Malgun Gothic, Yu Gothic UI, Arial, sans-serif`
-// Резервируем место под самый широкий обычный ПКР, чтобы длинный ник не
-// пересекался с числом в соседней колонке. Единица trimToWidth — примерно 24 px.
+// Room for the widest usual PSR, so a long nickname does not run into the
+// number in the next column. A trimToWidth unit is about 24 px.
 const NAME_RATING_GAP_PX = 56
 const NAME_UNIT_PX = 24
 
@@ -152,15 +151,20 @@ export function tagMarkup(tag: string, gameFont: boolean): string {
 }
 
 export interface BattleImageInput {
-  /** " [Conquest #1] Fire Arc" — как отдаёт сайт */
+  /** " [Conquest #1] Fire Arc", as the site gives it */
   missionName: string
   header: WrplHeader
   results: ReplayResults
   dict: VehicleDict
-  /** ПКР и дельта по никам (см. clan-info.ts); нет карты — колонка с прочерками */
-  ratings?: Map<string, ClanRating>
-  /** Номер победившей команды (team из results; см. cachedBattleMeta) или null */
+  /** PSR by user id (battle-psr.ts): a player missing from the map gets a dash; no map — an empty column */
+  psr?: Map<string, BattlePsr>
+  /** The winning team (a results team; cachedBattleMeta) or null */
   winnerTeam?: number | null
+}
+
+/** The whole numbers the table shows: PSR rounded as the site does, points as the guides' tables (0 — no points line). */
+export function psrLabel(entry: BattlePsr): { psr: number; change: number } {
+  return { psr: Math.round(entry.psr), change: entry.change === null ? 0 : Number(entry.change.toFixed(0)) }
 }
 
 export interface BattleAssets {
@@ -248,7 +252,7 @@ export function summarizeTeams(results: ReplayResults, dict: VehicleDict): TeamS
 }
 
 export function buildBattleSvg(
-  { missionName, header, results, dict, ratings, winnerTeam }: BattleImageInput,
+  { missionName, header, results, dict, psr, winnerTeam }: BattleImageInput,
   assets: BattleAssets = { unitIcons: new Map(), mapImage: null, gameFlags: new Map(), gameFont: false },
 ): string {
   // " [Conquest #1] Fire Arc" → режим и имя карты
@@ -313,7 +317,7 @@ export function buildBattleSvg(
   rosters.forEach((roster, i) => {
     const theme = TEAM_THEME[Math.min(i, TEAM_THEME.length - 1)]!
     const won = winnerTeam != null && winnerTeam > 0 && roster[0]?.team === winnerTeam
-    parts.push(renderTeam(roster, i * TEAM_WIDTH + TEAM_SIDE_PADDING, CONTENT_TOP, dict, theme, assets, i, won, ratings))
+    parts.push(renderTeam(roster, i * TEAM_WIDTH + TEAM_SIDE_PADDING, CONTENT_TOP, dict, theme, assets, i, won, psr))
   })
 
   parts.push(text(W / 2, H - 26, `Match ID: ${header.sessionId}`, 30, '#aab4c0', 'middle'))
@@ -330,7 +334,7 @@ function renderTeam(
   assets: BattleAssets,
   teamIndex: number,
   won: boolean,
-  ratings?: Map<string, ClanRating>,
+  psr?: Map<string, BattlePsr>,
 ): string {
   const parts: string[] = []
   // The first column is the personal squadron rating (⊛), then battle stats
@@ -440,14 +444,14 @@ function renderTeam(
       nameX += 36
     }
     const defaultNameWidth = platform ? 18 : 20
-    const nameWidth = ratings
+    const nameWidth = psr
       ? Math.max(
           1,
           Math.min(defaultNameWidth, Math.floor(Math.max(0, ratingX - nameX - NAME_RATING_GAP_PX) / NAME_UNIT_PX)),
         )
       : defaultNameWidth
     const displayName = esc(trimToWidth(name || 'Unknown Player', nameWidth))
-    if (ratings) {
+    if (psr) {
       const clipId = `player-name-${teamIndex}-${row}`
       parts.push(
         `<clipPath id="${clipId}"><rect x="${nameX}" y="${y + 2}" width="${Math.max(0, ratingX - NAME_RATING_GAP_PX - nameX)}" height="44"/></clipPath>`,
@@ -469,17 +473,18 @@ function renderTeam(
       parts.push(text(vehicleX, y + 70, esc(trimToWidth(first.name, bot ? 20 : 26)) + extra + bot, 26, color))
     }
 
-    // Personal squadron rating: the battle's delta above, the current value below
-    const rating = name ? ratings?.get(p.name) ?? ratings?.get(name) : undefined
-    if (rating) {
-      if (rating.delta !== null && rating.delta !== 0) {
-        const up = rating.delta > 0
+    // PSR: the battle's points above, PSR after the battle below (before it while the winner is unknown)
+    const entry = psr?.get(p.userId)
+    if (entry) {
+      const label = psrLabel(entry)
+      if (label.change !== 0) {
+        const up = label.change > 0
         parts.push(
-          text(ratingX, y + 24, `${up ? '+' : '−'}${Math.abs(rating.delta)}`, 22, up ? '#7ee787' : '#ff7b72', 'middle', 600),
+          text(ratingX, y + 24, `${up ? '+' : '−'}${Math.abs(label.change)}`, 22, up ? '#7ee787' : '#ff7b72', 'middle', 600),
         )
       }
-      parts.push(text(ratingX, y + 56, String(rating.rating), 30, '#ffffff', 'middle', 600))
-    } else if (ratings) {
+      parts.push(text(ratingX, y + 56, String(label.psr), 30, '#ffffff', 'middle', 600))
+    } else if (psr) {
       parts.push(text(ratingX, y + 48, '—', 30, ZERO_COLOR, 'middle'))
     }
 
