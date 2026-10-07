@@ -327,12 +327,14 @@ export function PlayerPage({ kind }: { kind: PlayerKind }) {
   const vehiclesAccount = accounts.find((account) => account.vehicles.length > 0) ?? null
   const nationsAccount = accounts.find((account) => account.countries.length > 0) ?? null
   const topNationVehicles = Math.max(1, ...(nationsAccount?.countries ?? []).map((row) => row.vehicles ?? 0))
+  const companion = accounts.find((account) => account.source === 'companion-profile')?.account ?? null
   const statShark = accounts.find((account) => account.source === 'statshark')?.account ?? null
   const official = accounts.find((account) => account.source === 'official-profile')?.account ?? null
+  // Gaijin's sources first; StatShark only for what they lack (the last login).
   const heroAccount = {
-    level: statShark?.level ?? official?.level ?? null,
-    title: statShark?.title ?? null,
-    registeredAt: statShark?.registeredAt ?? official?.registeredAt ?? null,
+    level: companion?.level ?? official?.level ?? statShark?.level ?? null,
+    title: companion?.title ?? statShark?.title ?? null,
+    registeredAt: official?.registeredAt ?? statShark?.registeredAt ?? null,
     lastOnlineAt: statShark?.lastOnlineAt ?? null,
   }
   const updatedAt = primaryAccount ? primaryAccount.sourceUpdatedAt ?? primaryAccount.checkedAt : null

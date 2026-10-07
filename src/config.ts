@@ -102,11 +102,11 @@ export const config = {
   dbPath: process.env['DB_PATH'] ?? './data/wtbot.db',
   /** Ленивое получение account-статистики известных игроков с профиля warthunder.com. */
   playerStatsEnabled: envBoolean('WT_PLAYER_STATS_ENABLED', true),
-  /** Account snapshot через официальный companion API без Cloudflare-транспорта сайта. */
-  companionProfilePlayerStatsEnabled: envBoolean('WT_COMPANION_PROFILE_ENABLED', false),
-  /** Сессия официального companion-app; не совпадает с WT_COOKIE. */
+  /** Primary account source: Gaijin's companion API (no Cloudflare); runs only with WT_COMPANION_COOKIE. */
+  companionProfilePlayerStatsEnabled: envBoolean('WT_COMPANION_PROFILE_ENABLED', true),
+  /** A separate logged-in companion-app session (Cookie header); never the WT_COOKIE session. */
   companionCookie: process.env['WT_COMPANION_COOKIE'] ?? '',
-  /** Дополнительный lazy snapshot StatShark по стабильному WT user id. */
+  /** Fallback StatShark snapshot by a stable WT user id: what Gaijin's sources lack or when they fail. */
   statSharkPlayerStatsEnabled: envBoolean('STATSHARK_PLAYER_STATS_ENABLED', false),
   /** A nick-only profile looks up its WT user id: public companion search, then the Replay API (WT_COOKIE). */
   playerIdLookupEnabled: envBoolean('WT_PLAYER_ID_LOOKUP_ENABLED', true),

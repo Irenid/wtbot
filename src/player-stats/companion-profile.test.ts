@@ -125,6 +125,9 @@ test('companion protobuf нормализует профиль, PvP и техн�
     navalKills: 0,
     timePlayedSec: null,
   }])
+  assert.equal(profile.stats.account?.level, 100)
+  assert.equal(profile.stats.account?.title, 'Tank Destroyer')
+  assert.equal(profile.stats.account?.registeredAt, null)
 })
 
 test('companion protobuf распознаёт ответ об отсутствии авторизации', () => {
@@ -164,4 +167,26 @@ test('companion provider связывает точный ник с WT user id и
   assert.equal(result.player.nick, 'Venukbr')
   assert.deepEqual(result.normalized, document.stats)
   assert.match(result.rawJson ?? '', /"userId":"123456"/)
+})
+
+test('a companion session that is not logged in is a retryable error, not a private profile', async () => {
+  const { CompanionProfileProvider, COMPANION_PROFILE_SOURCE } = await import(
+    './providers/companion-profile.js'
+  )
+  const provider = new CompanionProfileProvider({
+    now: () => 1_700_000_000,
+    fetchProfile: async () => {
+      throw new CompanionProfileAuthError('!ERROR:AUTH_RESPONSE_STATUS_IS_LOGINERROR')
+    },
+  })
+  const result = await provider.fetchPlayerStats({
+    source: COMPANION_PROFILE_SOURCE,
+    sourcePlayerId: '123456',
+    wtUserId: '123456',
+    nick: 'Pilot',
+    platform: null,
+  })
+  assert.equal(result.status, 'error')
+  assert.equal(result.normalized, null)
+  assert.match(result.error ?? '', /LOGINERROR/)
 })

@@ -37,7 +37,10 @@ function errorMessage(error: unknown): string {
 }
 
 function failureStatus(error: unknown): PlayerStatsFailureStatus {
-  if (error instanceof CompanionProfileAuthError) return 'private'
+  // A session that is missing or no longer logged in is the source being down,
+  // not a private profile: 'error' is retried with backoff, while 'private'
+  // would wait the whole TTL even after WT_COMPANION_COOKIE is renewed.
+  if (error instanceof CompanionProfileAuthError) return 'error'
   if (error instanceof CompanionHttpError) {
     if (error.status === 404) return 'not_found'
     if (error.status === 401 || error.status === 403 || error.status === 400) return 'private'
@@ -134,6 +137,24 @@ function requireCookie(cookie: string): string {
   return normalized
 }
 
+let sessionRotationLogged = false
+
+/**
+ * The warthunder.com session rotates through Set-Cookie; whether the companion
+ * one does is not known yet (2026-10-07), and WT_COMPANION_COOKIE is static.
+ * Logs once which identity_* cookies the server sets — names only — as the
+ * signal that the session needs a jar like data/wt-cookies.json.
+ */
+function noteSessionRotation(response: Response): void {
+  if (sessionRotationLogged) return
+  const names = response.headers.getSetCookie()
+    .map((header) => header.slice(0, Math.max(0, header.indexOf('='))).trim())
+    .filter((name) => name.startsWith('identity_'))
+  if (names.length === 0) return
+  sessionRotationLogged = true
+  console.warn(`[companion-profile] the server sets ${names.join(', ')}: the session rotates, WT_COMPANION_COOKIE may go stale`)
+}
+
 async function fetchCompanionProfile(
   userId: string,
   cookie: string,
@@ -156,9 +177,16 @@ async function fetchCompanionProfile(
     },
     signal: AbortSignal.timeout(20_000),
   })
+  noteSessionRotation(response)
   const body = await readResponseBuffer(response, PROFILE_MAX_BYTES, `companion profile ${normalizedUserId}`)
   if (!response.ok) {
     const preview = body.toString('utf8').slice(0, 240)
+    // HTTP 400 with this marker in the protobuf body (2026-10-07): no logged-in session.
+    if (preview.includes('AUTH_RESPONSE_STATUS_IS_LOGINERROR')) {
+      throw new CompanionProfileAuthError(
+        `companion profile ${normalizedUserId}: the session is not logged in (HTTP ${response.status}); renew WT_COMPANION_COOKIE`,
+      )
+    }
     throw new CompanionHttpError(
       response.status,
       `companion profile ${normalizedUserId}: HTTP ${response.status}${preview ? ` (${preview})` : ''}`,

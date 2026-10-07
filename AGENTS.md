@@ -107,7 +107,7 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WT_VNC_PASSWORD` | VNC to the browser's Xvfb display in Docker: manual login and Cloudflare checks |
 | `WT_REPLAY_HOSTS` | allowlist of CDN hosts for replay parts (`src/wrpl/replay-url-policy.ts`); structural SSRF protection applies without it |
 | `WT_PLAYER_NAMES` | nicknames for `wt-players`: Replay API and HTML profile |
-| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=false`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: site profile, companion, StatShark (only with a known numeric WT user id) |
+| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=true`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: companion (primary; runs only with `WT_COMPANION_COOKIE`), site profile, StatShark (fallback, only with a known numeric WT user id) |
 | `WT_PLAYER_ID_LOOKUP_ENABLED=true` | with `WT_PLAYER_STATS_ENABLED`: a profile without an id looks its WT user id up (`POST /api/player-id`, section 8); the Replay API step only with `WT_COOKIE` |
 | `WT_WORKER_THREADS=auto` | from CPU, RAM and reserves; cap 8, estimate 320 MiB per worker |
 | `WT_WORKER_BACKGROUND_RESERVE`, `WT_WORKER_MAX_OLD_SPACE_MB` | slots reserved for interactive work; old space of one worker |
@@ -583,7 +583,13 @@ Data:
   source has a single-slot lazy queue, 24 h TTL (younger snapshots are not
   refetched), stale fallback, schema validation and its own rate limit.
   Replay and account coverage are never summed; the primary snapshot is
-  `account`, all of them `accountSources`.
+  `account`, all of them `accountSources`. Precedence: Gaijin's companion API,
+  the warthunder.com profile, StatShark; the primary is the first source with a
+  fresh snapshot (last check `ok` within the TTL), else the first with any
+  snapshot, and the site lists sources in the same order, fresh first. The
+  player page takes level and title from companion, the registration date from
+  the site profile, and only what neither publishes from StatShark: the last
+  login, squadron and nickname history, WT leaderboard places.
 - `POST /api/player-id` (asked once by a profile without an id, which then
   opens `/players/<id>`): `WtUserIdResolver` (`src/player-stats/id-lookup.ts`)
   answers from local data (one id; the nick's nick-only identity adopts it),
@@ -610,7 +616,10 @@ Provider invariants:
   elite vehicles, medals per nation) → `player_external_countries`; a missing
   block or unknown markup gives an empty list, not a snapshot error.
 - Companion uses its own official session and does not touch the site's
-  Cloudflare.
+  Cloudflare. Its profile method answers only a logged-in session
+  (`!ERROR:AUTH_RESPONSE_STATUS_IS_LOGINERROR` without one, 2026-10-07); per
+  mode and vehicle it gives battles, victories, deaths, respawns and air,
+  ground and naval kills, plus level and title — not SL/RP.
 - StatShark only by a numeric user id through the shared browser; the
   Turnstile token stays in the browser's `localStorage` (never in Node,
   SQLite, env or logs), the analytics endpoint is blocked.

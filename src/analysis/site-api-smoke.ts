@@ -376,6 +376,40 @@ async function main(): Promise<void> {
     assert.deepEqual(account?.squadrons.map((squadron) => squadron.coreTag), ['tst', null],
       'ссылка только на клан, который есть на сайте')
     assert.equal(account?.ranks[0]?.place, 3_778)
+
+    // Source order (AGENTS.md §8): Gaijin's companion first, fresh before stale.
+    const ordered = savePlayerIdentity({
+      wtUserId: '511',
+      canonicalNick: 'PilotOrder',
+      platform: null,
+      aliases: [{
+        source: 'wrpl', externalId: '511', nick: 'PilotOrder', seenAt: nowSec - 86_400,
+        matchMethod: 'user_id', matchConfidence: 'high',
+      }],
+    })
+    const orderedSnapshot = (source: string, ageSec: number) => savePlayerExternalSnapshot({
+      identityId: ordered.id,
+      source,
+      sourcePlayerId: '511',
+      nick: 'PilotOrder',
+      fetchedAt: nowSec - ageSec,
+      sourceUpdatedAt: null,
+      status: 'ok',
+      rawJson: '{}',
+      parserVersion: 'site-smoke-v1',
+      error: null,
+      normalized: aggregateTotals(10, 5),
+    })
+    const accountOrder = async () => ((await app.inject({ method: 'GET', url: '/api/players/511' })).json() as {
+      accounts: { source: string }[]
+    }).accounts.map((view) => view.source)
+    orderedSnapshot('statshark', 3_600)
+    orderedSnapshot('official-profile', 3_600)
+    orderedSnapshot('companion-profile', 3 * 86_400)
+    assert.deepEqual(await accountOrder(), ['official-profile', 'statshark', 'companion-profile'],
+      'a stale companion snapshot goes after fresh ones')
+    orderedSnapshot('companion-profile', 60)
+    assert.deepEqual(await accountOrder(), ['companion-profile', 'official-profile', 'statshark'])
     // Клан игрока: по снимку ПКР сезона, роль и дата — из ростера claninfo.
     assert.equal(profileBody.clan?.coreTag, 'tst')
     assert.equal(profileBody.clan?.role, 'Commander')

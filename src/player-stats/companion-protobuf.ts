@@ -1,3 +1,4 @@
+import { companionProfileAccount } from './account.js'
 import type {
   NormalizedPlayerExternalTotal,
   NormalizedPlayerExternalVehicle,
@@ -302,34 +303,37 @@ export function decodeCompanionProfile(
   rawBytes: Uint8Array,
   requestedUserId: string,
 ): CompanionProfile {
-  if (rawBytes.byteLength === 0) throw new CompanionProfileSchemaError('профиль companion пуст')
+  if (rawBytes.byteLength === 0) throw new CompanionProfileSchemaError('companion profile is empty')
   const root = readMessage(rawBytes, 'profile', 0)
   const first = field(root, 1)
   if (first?.wireType === 0) {
-    const message = stringField(root, 2, 'error') ?? 'companion вернул ошибку авторизации'
+    const message = stringField(root, 2, 'error') ?? 'companion answered with an authorization error'
     if (/login|auth|session/i.test(message)) throw new CompanionProfileAuthError(message)
     throw new CompanionProfileSchemaError(message)
   }
 
   const base = nestedField(root, 1, 'profile', 0)
-  if (base === null) throw new CompanionProfileSchemaError('profile.1: базовая информация отсутствует')
+  if (base === null) throw new CompanionProfileSchemaError('profile.1: no base information')
   const nick = stringField(base, 2, 'profile.base', true)
-  if (nick === null) throw new CompanionProfileSchemaError('profile.base.2: ник отсутствует')
+  if (nick === null) throw new CompanionProfileSchemaError('profile.base.2: no nickname')
   const level = nestedField(root, 2, 'profile', 0)
   const stats = parseCommonTotals(root)
   const vehicles = parseVehicles(root)
   if (stats.length === 0 && vehicles.length === 0) {
-    throw new CompanionProfileSchemaError('profile: не найдены статистические строки')
+    throw new CompanionProfileSchemaError('profile: no statistics rows')
   }
+  const title = stringField(base, 4, 'profile.base')
+  const levelValue = level === null ? null : integerField(level, 1, 'profile.level')
   return {
     userId: requestedUserId,
     nick,
-    title: stringField(base, 4, 'profile.base'),
+    title,
     clanTag: stringField(base, 6, 'profile.base'),
-    level: level === null ? null : integerField(level, 1, 'profile.level'),
+    level: levelValue,
     stats: {
       totals: stats,
       vehicles,
+      account: companionProfileAccount({ level: levelValue, title }),
     },
   }
 }

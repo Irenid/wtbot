@@ -133,7 +133,9 @@ const officialPlayerStatsService = config.playerStatsEnabled
       parserVersion: OFFICIAL_PROFILE_PARSER_VERSION,
     })
   : null
-const companionProfilePlayerStatsService = config.companionProfilePlayerStatsEnabled
+// Gaijin's companion API answers a profile only to a logged-in session.
+const companionCookieSet = config.companionCookie.trim() !== ''
+const companionProfilePlayerStatsService = config.companionProfilePlayerStatsEnabled && companionCookieSet
   ? new PlayerStatsService({
       provider: new CompanionProfileProvider(),
       parserVersion: COMPANION_PROFILE_PARSER_VERSION,
@@ -145,29 +147,26 @@ const statSharkPlayerStatsService = config.statSharkPlayerStatsEnabled
       parserVersion: STATSHARK_PARSER_VERSION,
     })
   : null
+// Precedence (AGENTS.md §8): Gaijin's companion first, the warthunder.com
+// profile next, StatShark for what neither publishes or when they fail.
 const playerStatsServices = [
-  officialPlayerStatsService,
   companionProfilePlayerStatsService,
+  officialPlayerStatsService,
   statSharkPlayerStatsService,
 ].filter((service): service is PlayerStatsService => service !== null)
 const playerStatsCoordinator = new PlayerStatsCoordinator({
   externalServices: playerStatsServices,
-  externalSource: officialPlayerStatsService?.source
-    ?? companionProfilePlayerStatsService?.source
-    ?? statSharkPlayerStatsService?.source
-    ?? OFFICIAL_PROFILE_SOURCE,
+  externalSource: playerStatsServices[0]?.source ?? OFFICIAL_PROFILE_SOURCE,
 })
 playerStats = playerStatsCoordinator
-console.log(
-  `[player-stats] Профиль warthunder.com: ${officialPlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
-)
-console.log(
-  `[player-stats] ${COMPANION_PROFILE_SOURCE}: ` +
-    `${companionProfilePlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
-)
-console.log(
-  `[player-stats] ${STATSHARK_SOURCE}: ${statSharkPlayerStatsService === null ? 'выключен' : 'включён (lazy)'}`,
-)
+const companionState = companionProfilePlayerStatsService !== null
+  ? 'on (lazy, primary)'
+  : !config.companionProfilePlayerStatsEnabled
+    ? 'off'
+    : 'off: WT_COMPANION_COOKIE is empty'
+console.log(`[player-stats] ${COMPANION_PROFILE_SOURCE}: ${companionState}`)
+console.log(`[player-stats] warthunder.com profile: ${officialPlayerStatsService === null ? 'off' : 'on (lazy)'}`)
+console.log(`[player-stats] ${STATSHARK_SOURCE}: ${statSharkPlayerStatsService === null ? 'off' : 'on (lazy, fallback)'}`)
 if (config.playerStatsEnabled && config.playerIdLookupEnabled) {
   const withReplayApi = config.wtCookie.trim() !== ''
   playerIdLookup = new WtUserIdResolver({ steps: defaultWtUserIdLookupSteps(withReplayApi) })

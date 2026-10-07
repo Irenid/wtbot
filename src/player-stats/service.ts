@@ -6,7 +6,7 @@ import {
   savePlayerExternalSnapshot,
   savePlayerIdentity,
 } from '../db/index.js'
-import { PLAYER_EXTERNAL_SNAPSHOT_STATUSES } from './types.js'
+import { PLAYER_EXTERNAL_SNAPSHOT_STATUSES, PLAYER_STATS_TTL_SECONDS } from './types.js'
 import {
   PlayerStatsProviderFailure,
   type PlayerExternalStats,
@@ -18,7 +18,7 @@ import {
   type RawPlayerStats,
 } from './types.js'
 
-const DEFAULT_TTL_SECONDS = 24 * 60 * 60
+const DEFAULT_TTL_SECONDS = PLAYER_STATS_TTL_SECONDS
 const DEFAULT_RETRY_BASE_SECONDS = 5 * 60
 const DEFAULT_RETRY_MAX_SECONDS = 6 * 60 * 60
 

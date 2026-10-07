@@ -300,6 +300,15 @@ export function statSharkAccount(bundle: { profile: unknown; leaderboardHistory?
   }
 }
 
+/** Account from the companion-app profile: level and title (no dates or history there). */
+export function companionProfileAccount(document: { level?: unknown; title?: unknown }): PlayerAccount {
+  return {
+    ...emptyAccount(),
+    level: integer(document.level, 1, 1_000),
+    title: cleanText(document.title, MAX_TITLE),
+  }
+}
+
 /** Аккаунт из шапки официального профиля: уровень и дата регистрации. */
 export function officialProfileAccount(document: { level?: unknown; registrationDate?: unknown }): PlayerAccount {
   return {

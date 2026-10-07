@@ -51,7 +51,7 @@ import {
 } from '../../db/index.js'
 import type { ClanSeasonRewards, PlayerReplayInsights, SiteClanRosterDetails } from '../../db/index.js'
 import type { PlayerAccount, PlayerAccountSquadron } from '../../player-stats/account.js'
-import type { PlayerIdentity } from '../../player-stats/types.js'
+import { PLAYER_STATS_TTL_SECONDS, type PlayerIdentity } from '../../player-stats/types.js'
 import { runWorkerTask } from '../../workers/pool.js'
 import { buildBattleSceneGzip, loadBattleSceneMap } from '../../wrpl/battle-scene.js'
 import { clanDisplayName, plainClanTag } from '../../wrpl/render-battle.js'
@@ -80,8 +80,12 @@ import {
 // не ставят внешние запросы в очередь и не трогают Edge-транспорт — обновление
 // внешних снимков остаётся за POST /api/player-stats и фоновыми задачами.
 
-/** Источники внешних снимков, которые показывает сайт. */
-const SITE_ACCOUNT_SOURCES = ['official-profile', 'companion-profile', 'statshark'] as const
+/**
+ * Account sources in precedence order (AGENTS.md §8): Gaijin's companion API,
+ * the warthunder.com profile, then StatShark. The SPA takes each block from the
+ * first source that has it, so the order decides whose numbers are shown.
+ */
+const SITE_ACCOUNT_SOURCES = ['companion-profile', 'official-profile', 'statshark'] as const
 
 const RATE_WINDOW_MS = 60_000
 const PER_IP_LIMIT = 60
@@ -709,7 +713,8 @@ function buildAccountViews(
   identity: PlayerIdentity,
   knownClanCore: (tag: string) => string | null,
 ): SiteAccountView[] {
-  const views: SiteAccountView[] = []
+  const views: { view: SiteAccountView; fresh: boolean }[] = []
+  const nowSec = Math.floor(Date.now() / 1_000)
   for (const source of SITE_ACCOUNT_SOURCES) {
     const lastCheck = getLatestPlayerExternalCheck(identity.id, source)
     const stats = getLatestPlayerExternalStats(identity.id, source)
@@ -718,7 +723,10 @@ function buildAccountViews(
       ? [...stats.vehicles].sort((a, b) => (b.flyouts ?? 0) - (a.flyouts ?? 0)).slice(0, SITE_ACCOUNT_VEHICLES)
       : []
     const account = stats?.account ?? null
-    views.push({
+    // Fresh as PlayerStatsService counts it: the last check succeeded within the TTL.
+    const fresh = stats !== null && lastCheck?.status === 'ok'
+      && nowSec - lastCheck.lastCheckedAt < PLAYER_STATS_TTL_SECONDS
+    views.push({ fresh, view: {
       source,
       status: lastCheck?.status ?? 'ok',
       checkedAt: lastCheck?.lastCheckedAt ?? stats?.snapshot.lastCheckedAt ?? null,
@@ -735,9 +743,11 @@ function buildAccountViews(
           ...account,
           squadrons: account.squadrons.map((squadron) => ({ ...squadron, coreTag: knownClanCore(squadron.tag) })),
         },
-    })
+    } })
   }
-  return views
+  // A source with fresh data goes ahead of a failed or outdated one; the sort is
+  // stable, so the precedence order holds within each group.
+  return views.sort((a, b) => Number(b.fresh) - Number(a.fresh)).map((entry) => entry.view)
 }
 
 interface SiteProfileTarget {

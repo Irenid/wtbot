@@ -6,6 +6,9 @@ export type PlayerIdentityMatchMethod = (typeof PLAYER_IDENTITY_MATCH_METHODS)[n
 export const PLAYER_IDENTITY_MATCH_CONFIDENCES = ['high', 'medium', 'low'] as const
 export type PlayerIdentityMatchConfidence = (typeof PLAYER_IDENTITY_MATCH_CONFIDENCES)[number]
 
+/** An account snapshot younger than this is fresh: not refetched, preferred over stale sources. */
+export const PLAYER_STATS_TTL_SECONDS = 24 * 60 * 60
+
 export const PLAYER_EXTERNAL_SNAPSHOT_STATUSES = [
   'ok',
   'private',

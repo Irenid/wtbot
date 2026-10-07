@@ -7,7 +7,9 @@ import {
   saveBattle,
   savePlayerIdentity,
 } from '../db/index.js'
-import { resolveKnownPlayer } from './comparison.js'
+import { PlayerStatsCoordinator, resolveKnownPlayer } from './comparison.js'
+import { PlayerStatsService } from './service.js'
+import type { PlayerReference, PlayerStatsProvider, RawPlayerStats } from './types.js'
 
 function replayPlayer(userId: string, nick: string) {
   return {
@@ -117,6 +119,80 @@ test('несколько nick-only identity одного ника не слив�
     const resolved = resolveKnownPlayer('Twin')
     assert.equal(resolved.status, 'ambiguous')
     assert.equal(getPlayerIdentityByWtUserId('777'), null, 'неоднозначный ник не должен получить user id')
+  } finally {
+    closeDb()
+  }
+})
+
+class SourceFixture implements PlayerStatsProvider {
+  status: 'ok' | 'error' = 'ok'
+  constructor(readonly source: string, private readonly now: () => number) {}
+
+  async resolvePlayer(nick: string): Promise<PlayerReference[]> {
+    return [{ source: this.source, sourcePlayerId: '555', wtUserId: '555', nick, platform: null }]
+  }
+
+  async fetchPlayerStats(player: PlayerReference): Promise<RawPlayerStats> {
+    const base = { player, fetchedAt: this.now(), sourceUpdatedAt: null }
+    if (this.status !== 'ok') {
+      return { ...base, status: this.status, rawJson: null, error: 'login required', normalized: null }
+    }
+    return {
+      ...base,
+      status: 'ok',
+      rawJson: JSON.stringify({ source: this.source }),
+      error: null,
+      normalized: {
+        totals: [{
+          gameType: null, mode: null, category: null, battles: 10, victories: 5, defeats: 5, deaths: null,
+          timePlayedSec: null, respawns: null, airKills: null, groundKills: null, navalKills: null,
+        }],
+        vehicles: [],
+      },
+    }
+  }
+}
+
+test('the first source with a fresh snapshot is primary; a failed or stale one gives way', async () => {
+  initDb(':memory:')
+  try {
+    saveReplay('10', [replayPlayer('555', 'Primary')])
+    let now = 10_000
+    const companion = new SourceFixture('companion-profile', () => now)
+    const statshark = new SourceFixture('statshark', () => now)
+    const service = (provider: SourceFixture, ttlSeconds: number) => new PlayerStatsService({
+      provider, parserVersion: `${provider.source}-v1`, ttlSeconds, retryBaseSeconds: 1, retryMaxSeconds: 1, now: () => now,
+    })
+    const coordinator = new PlayerStatsCoordinator({
+      externalServices: [service(companion, 60), service(statshark, 600)],
+    })
+    const primary = () => {
+      const result = coordinator.lookup({ player: 'Primary' })
+      assert.ok(result.status === 'ok')
+      assert.equal(result.stats.accountSources[0]?.source, result.stats.account.source)
+      return result.stats.account.source
+    }
+
+    companion.status = 'error'
+    primary()
+    await coordinator.waitForIdle()
+    assert.equal(primary(), 'statshark', 'companion without a session has no snapshot')
+
+    companion.status = 'ok'
+    now += 2
+    primary()
+    await coordinator.waitForIdle()
+    assert.equal(primary(), 'companion-profile')
+
+    now += 61
+    assert.equal(primary(), 'statshark', 'a stale companion snapshot gives way to a fresh StatShark one')
+    await coordinator.waitForIdle()
+    assert.equal(primary(), 'companion-profile', 'refreshed companion leads again')
+
+    now += 700
+    assert.equal(primary(), 'companion-profile', 'with every source stale the configured order holds')
+    await coordinator.waitForIdle()
+    await coordinator.stop()
   } finally {
     closeDb()
   }

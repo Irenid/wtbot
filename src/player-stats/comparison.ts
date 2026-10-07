@@ -572,6 +572,18 @@ export function getPlayerStatsComparison(
   }
 }
 
+/**
+ * The primary account source: the first configured one with a fresh snapshot,
+ * else the first with any snapshot, else the first configured. A source without
+ * data or past its TTL (companion with an expired session) gives way to the
+ * next one instead of hiding it behind an error or old numbers.
+ */
+function primaryContextIndex(contexts: readonly ComparisonContext[]): number {
+  const fresh = contexts.findIndex((context) => context.cache.stats !== null && !context.cache.stale)
+  if (fresh >= 0) return fresh
+  return Math.max(0, contexts.findIndex((context) => context.cache.stats !== null))
+}
+
 /** Синхронный read-model: внешний HTTP только ставится в lazy-очередь и не блокирует Fastify. */
 export class PlayerStatsCoordinator {
   private readonly services = new Map<string, PlayerStatsService>()
@@ -642,10 +654,15 @@ export class PlayerStatsCoordinator {
         history,
       }
     })
-    const primary = contexts[0]!
+    const primaryIndex = primaryContextIndex(contexts)
     return {
       status: 'ok',
-      stats: getPlayerStatsComparison(resolution.identity, period, primary, contexts.slice(1)),
+      stats: getPlayerStatsComparison(
+        resolution.identity,
+        period,
+        contexts[primaryIndex]!,
+        contexts.filter((_, index) => index !== primaryIndex),
+      ),
     }
   }
 
