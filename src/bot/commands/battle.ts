@@ -357,42 +357,41 @@ export function seasonMaxBrSuffix(context: ReturnType<typeof getClanSeasonContex
   return stage ? ` · Макс. БР ${stage.maxBr.toFixed(1)}` : ''
 }
 
-/** Последовательно применяет быстрый ПКР и затем при необходимости durable summary. */
+/** Applies the post's PSR, then the stored winner and flags, then the squadron lookup, in order. */
 export function queueBattlePostUpdates(post: BattlePost, apply: (p: BattlePostPayload) => Promise<unknown>): void {
   const builders = [post.buildRatingsPayload, post.buildWinnerPayload, post.buildLookupPayload].filter(
     (build): build is () => Promise<BattlePostPayload | null> => build !== null,
   )
   const sessionIdHex = post.sessionIdHex
   const estimatedBytes = Math.max(0, Math.floor(post.updateBytes))
-  if (builders.length === 0 || postUpdatesStopping || postUpdates.has(sessionIdHex)) return
+  if (builders.length === 0 || postUpdatesStopping || postUpdates.has(post)) return
   if (!canAdmitWinnerUpdate(postUpdates.size, postUpdatesBytes, estimatedBytes)) {
     console.warn(
-      `[bot] обновление анонса ${sessionIdHex} отложено: ` +
-        `очередь ${postUpdates.size}, ${(postUpdatesBytes / 1024 / 1024).toFixed(1)} МиБ`,
+      `[bot] updates of the post of ${sessionIdHex} skipped: ` +
+        `${postUpdates.size} waiting, ${(postUpdatesBytes / 1024 / 1024).toFixed(1)} MiB`,
     )
     return
   }
   postUpdatesBytes += estimatedBytes
   const task = (async () => {
     try {
-      // Рендеры применяются по порядку: поздний payload обязан включать
-      // уже обновлённые ПКР, winner/chat flags и не откатывать сообщение.
+      // In order: a later payload must keep the PSR, winner and flags drawn before it.
       for (const build of builders) {
         const payload = await build()
         if (payload && !postUpdatesStopping) await apply(payload)
       }
     } catch (err) {
       if (!postUpdatesStopping) {
-        console.warn(`[bot] обновление анонса ${sessionIdHex}: ${(err as Error).message}`)
+        console.warn(`[bot] update of the post of ${sessionIdHex}: ${(err as Error).message}`)
       }
     }
   })().finally(() => {
-    const current = postUpdates.get(sessionIdHex)
+    const current = postUpdates.get(post)
     if (current?.task !== task) return
-    postUpdates.delete(sessionIdHex)
+    postUpdates.delete(post)
     postUpdatesBytes = Math.max(0, postUpdatesBytes - current.estimatedBytes)
   })
-  postUpdates.set(sessionIdHex, { task, estimatedBytes })
+  postUpdates.set(post, { task, estimatedBytes })
   void task
 }
 
@@ -403,8 +402,11 @@ interface BattlePostUpdateEntry {
 
 const WINNER_UPDATE_WAIT_MS = 14 * 60_000
 const WINNER_UPDATE_POLL_MS = 1_000
-/** Сессии, ожидающие обновление ПКР или durable summary; full media здесь не строится. */
-const postUpdates = new Map<string, BattlePostUpdateEntry>()
+/**
+ * Update tasks by post, not by battle: a /battle reply and the announcement of
+ * the same battle each redraw their own message.
+ */
+const postUpdates = new Map<BattlePost, BattlePostUpdateEntry>()
 let postUpdatesBytes = 0
 let postUpdatesStopping = false
 /** Aborts the rechecks' wait for stored battles at shutdown. */
@@ -421,11 +423,11 @@ export async function stopBattlePostUpdates(): Promise<void> {
 }
 
 /**
- * Posts waiting for their PSR recheck, by session. ~1,250 posts a day wait
- * 16 min each, then 3 more in recheckTasks: ~20 at a time, a few times that at
- * the evening peak. The bytes cover both.
+ * Posts waiting for their PSR recheck. ~1,250 posts a day wait 16 min each,
+ * then 3 more in recheckTasks: ~20 at a time, a few times that at the evening
+ * peak. The bytes cover both.
  */
-const postRechecks = new Map<string, { timer: NodeJS.Timeout; bytes: number }>()
+const postRechecks = new Map<BattlePost, { timer: NodeJS.Timeout; bytes: number }>()
 let postRechecksBytes = 0
 const recheckTasks = new Set<Promise<void>>()
 const MAX_POST_RECHECKS = 256
@@ -433,10 +435,11 @@ const MAX_POST_RECHECK_BYTES = 32 * 1024 * 1024
 
 /**
  * Runs the post's PSR recheck (BattlePost.buildRecheckPayload) when it is
- * due, after the post's other updates. Not queued when it is already due:
- * the post's first read of the pages came after the battle was counted; nor
- * when it would redraw after `deadline` (unix ms), when `apply` no longer
- * works. A restart drops the waiting ones.
+ * due, after the post's other updates. Not queued when it is already due (the
+ * post's first read of the pages came after the battle was counted) or would
+ * redraw after `deadline` (unix ms), when `apply` no longer works; dropped when
+ * the post's other updates delay it past the deadline. A restart drops the
+ * waiting ones.
  */
 export function queueBattlePostRecheck(
   post: BattlePost,
@@ -447,7 +450,7 @@ export function queueBattlePostRecheck(
   const sessionIdHex = post.sessionIdHex
   const delayMs = post.recheckAt - Date.now()
   const redrawAt = post.recheckAt + PSR_RECHECK_STORE_WAIT_SEC * 1_000
-  if (!build || postUpdatesStopping || delayMs <= 0 || redrawAt > deadline || postRechecks.has(sessionIdHex)) return
+  if (!build || postUpdatesStopping || delayMs <= 0 || redrawAt > deadline || postRechecks.has(post)) return
   const bytes = Math.max(0, Math.floor(post.updateBytes))
   const waiting = postRechecks.size + recheckTasks.size
   if (waiting >= MAX_POST_RECHECKS || postRechecksBytes + bytes > MAX_POST_RECHECK_BYTES) {
@@ -459,13 +462,14 @@ export function queueBattlePostRecheck(
   }
   postRechecksBytes += bytes
   const timer = setTimeout(() => {
-    postRechecks.delete(sessionIdHex)
+    postRechecks.delete(post)
     const task: Promise<void> = (async () => {
       // The last draw must keep the winner and flags the post's other updates drew.
-      await postUpdates.get(sessionIdHex)?.task
-      if (postUpdatesStopping) return
+      await postUpdates.get(post)?.task
+      // Those updates (a squadron lookup) can hold it past the deadline.
+      if (postUpdatesStopping || Date.now() + PSR_RECHECK_STORE_WAIT_SEC * 1_000 > deadline) return
       const payload = await build(postUpdatesAbort.signal)
-      if (payload && !postUpdatesStopping) await apply(payload)
+      if (payload && !postUpdatesStopping && Date.now() <= deadline) await apply(payload)
     })()
       .catch((err: unknown) => {
         if (!postUpdatesStopping) {
@@ -479,7 +483,7 @@ export function queueBattlePostRecheck(
     recheckTasks.add(task)
   }, delayMs)
   timer.unref()
-  postRechecks.set(sessionIdHex, { timer, bytes })
+  postRechecks.set(post, { timer, bytes })
 }
 
 async function waitForBattlePostSummary(sessionId: string) {
