@@ -619,8 +619,9 @@ Provider invariants:
   Cloudflare. Its profile method answers only a logged-in session
   (`!ERROR:AUTH_RESPONSE_STATUS_IS_LOGINERROR` without one, 2026-10-07). A
   warthunder.com login is not one: its `identity_sid` is a `.warthunder.com`
-  cookie, reaches the companion host and still gets HTTP 400 — the session
-  comes from the WT Assistant app's own login, which is undocumented. Per
+  cookie, reaches the companion host and still gets HTTP 400, as does a fresh
+  login's full set (`identity_sid`/`_token`/`_id`, `_identity`, `_csrf`) — the
+  session comes from the WT Assistant app's own login, which is undocumented. Per
   mode and vehicle it gives battles, victories, deaths, respawns and air,
   ground and naval kills, plus level and title — not SL/RP.
 - StatShark only by a numeric user id through the shared browser; the
