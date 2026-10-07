@@ -21,19 +21,19 @@ export const de: GuideText = {
   quick: {
     points: {
       q: 'Wie viel PSW bringt ein Gefecht?',
-      a: () => 'Das hängt nur von deiner PSW ab. Bis 780 bringt ein Sieg +32 und eine Niederlage −1, bei 1500 sind es +16 und −16, bei 2000 +2 und −30.',
+      a: () => 'Das hängt von deiner PSW ab — und vom gegnerischen Team, wenn dessen durchschnittliche PSW über 1500 liegt. Gegen ein Team mit durchschnittlich höchstens 1500: Bis 780 bringt ein Sieg +32 und eine Niederlage −1, bei 1500 sind es +16 und −16, bei 2000 +2 und −30.',
     },
     grow: {
       q: 'Wie oft muss ich gewinnen, damit meine PSW steigt?',
-      a: () => 'Bei PSW 1300 in mehr als 24 von 100 Gefechten, bei 1500 in mehr als der Hälfte und bei 1800 in mehr als 85 von 100.',
+      a: () => 'Bei PSW 1300 in mehr als 24 von 100 Gefechten, bei 1500 in mehr als der Hälfte und bei 1800 in mehr als 85 von 100, wenn die Gegner im Schnitt höchstens 1500 haben. Gegen stärkere Teams reichen weniger Siege.',
     },
     ceiling: {
       q: 'Wie hoch steigt meine PSW?',
-      a: () => 'Das entscheidet deine Winrate: Bei 50% pendelt sich die PSW um 1500 ein, bei 70% um 1650, bei 90% um 1880.',
+      a: () => 'Das entscheidet deine Winrate: Bei 50% pendelt sich die PSW um 1500 ein, bei 70% um 1650, bei 90% um 1880. Häufige Gefechte gegen Teams mit durchschnittlich über 1500 heben dieses Niveau an.',
     },
     factors: {
       q: 'Zählen der Gegner und meine Leistung im Gefecht?',
-      a: () => 'Nein. Stärke des Gegners, Punkte, Kills, Tode und die Dauer des Gefechts zählen nicht — nur Sieg oder Niederlage und deine PSW.',
+      a: () => 'Deine Leistung nicht: Punkte, Kills, Tode und die Dauer des Gefechts zählen nicht. Der Gegner zählt nur, wenn sein Team im Schnitt über 1500 PSW hat: Dann bringt ein Sieg mehr und eine Niederlage kostet weniger.',
     },
     leave: {
       q: 'Kann ich ein verlorenes Gefecht verlassen, ohne PSW zu verlieren?',
@@ -91,11 +91,12 @@ export const de: GuideText = {
     },
   },
   psr: {
-    lead: 'Die PSW ist die persönliche Schwadronswertung. Nach jedem Schwadronsgefecht steigt sie bei einem Sieg und sinkt bei einer Niederlage. Um wie viel, hängt nur von deiner PSW ab: Je höher sie ist, desto weniger bringt ein Sieg und desto mehr kostet eine Niederlage.',
+    lead: 'Die PSW ist die persönliche Schwadronswertung. Nach jedem Schwadronsgefecht steigt sie bei einem Sieg und sinkt bei einer Niederlage. Um wie viel, hängt von deiner PSW ab — je höher sie ist, desto weniger bringt ein Sieg und desto mehr kostet eine Niederlage — und vom gegnerischen Team, wenn dessen durchschnittliche PSW über 1500 liegt.',
     points: {
       title: 'Punkte pro Gefecht',
       head: ['PSW', 'Sieg', 'Niederlage', 'Winrate'],
       notes: [
+        'Die Tabelle gilt für ein gegnerisches Team mit durchschnittlich höchstens 1500 PSW. Ein stärkeres Team zählt mit seinem Durchschnitt statt 1500: Ein Sieg bringt mehr, eine Niederlage kostet weniger. Bei PSW 1800 gegen ein Team mit durchschnittlich 1800 bringt ein Sieg +16 statt +5 und eine Niederlage −16 statt −27.',
         '**Winrate** — wie viele von 100 Gefechten du gewinnen musst, damit die PSW steigt. Gewinnst du seltener, sinkt sie.',
         'Über 903 sind Sieg und Niederlage zusammen immer 32 Punkte wert: Je weniger ein Sieg bringt, desto mehr kostet eine Niederlage.',
         'Über 1500 kostet eine Niederlage mehr, als ein Sieg bringt: Bei 1800 macht eine Niederlage 5–6 Siege zunichte, bei 2000 etwa 18. Dieselbe Bilanz — 5 Siege und 5 Niederlagen — ergibt deshalb bei PSW 0 ein Plus von 155, bei 1500 genau 0 und bei 2000 ein Minus von 143.',
@@ -104,7 +105,7 @@ export const de: GuideText = {
     },
     calc: {
       title: 'Rechner',
-      intro: 'Gib deine PSW und deine Winrate ein: Der Rechner wendet die Formel an und zeigt, was du bekommst und wie hoch du steigst.',
+      intro: 'Gib deine PSW und deine Winrate ein: Der Rechner wendet die Formel für ein gegnerisches Team mit durchschnittlich höchstens 1500 an und zeigt, was du bekommst und wie hoch du steigst.',
       psr: 'Deine PSW',
       winRate: 'Winrate',
       win: 'Für einen Sieg',
@@ -123,16 +124,16 @@ export const de: GuideText = {
     factors: {
       title: 'Was die PSW beeinflusst',
       items: [
-        '**Stärke des Gegners — kein Einfluss.** Die Formel vergleicht dich nicht mit dem Gegner, sondern mit einem festen Niveau von 1500. Ein Sieg gegen eine Top-Schwadron ist genauso viel wert wie gegen eine schwache.',
+        '**Stärke des Gegners — nur über 1500.** Die Formel vergleicht dich mit der durchschnittlichen PSW des gegnerischen Teams, aber nie mit weniger als 1500. Ein Sieg gegen jedes Team mit durchschnittlich höchstens 1500 ist gleich viel wert; gegen ein stärkeres bringt ein Sieg mehr und eine Niederlage kostet weniger.',
         '**Leistung im Gefecht — kein Einfluss.** Punkte, Kills, Tode und die Dauer des Gefechts zählen nicht. Die PSW ändert sich für das ganze Team: für den besten Spieler, für die, die die Verbindung verloren haben, und für die, die nicht geladen haben.',
         '**Verlassen hilft nicht.** Wer ein verlorenes Gefecht verlässt, verliert genauso viel PSW wie bei einer normalen Niederlage.',
         '**Rang in der Schwadron — kein Einfluss.** Kommandeur, Offizier und Gefreiter bekommen dasselbe.',
-        '**Es zählt nur deine PSW.** Für denselben Sieg bekommt ein Spieler mit PSW 0 +32 und einer mit 1800 +5.',
+        '**Am meisten zählt deine eigene PSW.** Für einen Sieg gegen ein Team mit durchschnittlich höchstens 1500 bekommt ein Spieler mit PSW 0 +32 und einer mit 1800 +5.',
       ],
     },
     ceiling: {
       title: 'Wie hoch die PSW steigen kann',
-      intro: 'Je höher die PSW, desto weniger bringt ein Sieg. Deshalb pendelt sich die PSW auf einem Niveau ein, das nur von deiner Winrate abhängt. Bei 50% Siegen erreicht sie 1500 und schwankt dann um diesen Wert. Mehr Gefechte heben dieses Niveau nicht an — du erreichst es nur schneller.',
+      intro: 'Je höher die PSW, desto weniger bringt ein Sieg. Deshalb pendelt sich die PSW auf einem Niveau ein, das von deiner Winrate abhängt. Bei 50% Siegen erreicht sie 1500 und schwankt dann um diesen Wert. Mehr Gefechte heben dieses Niveau nicht an — du erreichst es nur schneller. Die Tabelle gilt für gegnerische Teams mit durchschnittlich höchstens 1500; stärkere Gegner heben das Niveau: Bei 50% Siegen ist es ihre durchschnittliche PSW.',
       head: ['Winrate', 'PSW pendelt sich ein bei', 'Gefechte ab null'],
       notes: [
         '**Gefechte ab null** — wie viele Gefechte ab Saisonbeginn nötig sind, um bis auf 50 Punkte an dieses Niveau heranzukommen. Eine Glückssträhne kann dich höher bringen, aber die PSW kehrt danach zurück.',
@@ -154,11 +155,12 @@ export const de: GuideText = {
       loss: 'Niederlage',
       atLeast: (n) => `mindestens ${n}`,
       floor: 'Die PSW fällt nie unter 0',
+      opponent: (n) => ['durchschnittliche PSW', 'des gegnerischen Teams,', `mindestens ${n}`],
       body: [
-        '**E** ist der Anteil an Siegen, bei dem die PSW gleich bleibt: die Spalte „Winrate“ der [Tabelle](/guides/psr#points). Unter 903 würde die Formel für eine Niederlage weniger als 1 Punkt abziehen, deshalb sind es dort immer −1, und 3% Siege genügen zum Steigen.',
-        'Beispiel für PSW 1300: x = (1500 − 1300) / 400 = 0,5; 10^0,5 ≈ 3,16; E = 1 / 4,16 ≈ 0,24. Sieg: 32 × 0,76 ≈ +24. Niederlage: 32 × 0,24 ≈ −8.',
+        '**E** ist der Anteil an Siegen, bei dem die PSW gleich bleibt: die Spalte „Winrate“ der [Tabelle](/guides/psr#points), die mit R = 1500 rechnet. Unter 903 würde die Formel für eine Niederlage weniger als 1 Punkt abziehen, deshalb sind es dort immer −1, und 3% Siege genügen zum Steigen.',
+        'Beispiel für PSW 1300 gegen ein Team mit durchschnittlich höchstens 1500: x = (1500 − 1300) / 400 = 0,5; 10^0,5 ≈ 3,16; E = 1 / 4,16 ≈ 0,24. Sieg: 32 × 0,76 ≈ +24. Niederlage: 32 × 0,24 ≈ −8.',
         'Über 903 lässt sich das mittlere Ergebnis eines Gefechts einfacher berechnen: 32 × (Anteil der Siege − E). Bei PSW 1300 und 60% Siegen sind das 32 × (0,60 − 0,24) ≈ +11,5 pro Gefecht.',
-        'Das ist das Elo-System wie im Schach, nur ist der Gegner immer derselbe: ein gedachter Spieler mit PSW 1500.',
+        'Das ist das Elo-System wie im Schach, mit der durchschnittlichen PSW des gegnerischen Teams als Gegner. Ein schwächeres Team zählt als 1500: Ein Sieg gegen dieses Team bringt so viel wie gegen ein Team mit durchschnittlich 1500.',
       ],
     },
   },
@@ -359,9 +361,10 @@ export const de: GuideText = {
     },
     formula: {
       title: 'PSW-Formel',
-      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max }) => [
+      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max, strong, fixed, enemy, weaker }) => [
         `Die Formel wurde an Fällen ermittelt, in denen zwischen zwei Abrufen der PSW eines Spielers genau ein Gefecht lag (${single}). Am besten passte das Elo-System. Die ermittelten Werte (${k}; ${reference}; ${scale}) entsprechen 32, 1500 und 400.`,
         `Für ein einzelnes Gefecht stimmt die Formel in ${withinOne} der Fälle auf 1 Punkt genau mit der Seite des Spiels überein. Änderungen über mehrere Gefechte erklärt sie je nach PSW zu ${chainLow}–${chainHigh}. Bei einer Live-Prüfung stimmten ${liveMatched} von ${liveTotal} Änderungen überein.`,
+        `Eine größere Prüfung im Oktober 2026 zeigte, dass ein starker Gegner doch zählt. In ${strong} Änderungen nach einem Gefecht gegen ein Team mit durchschnittlich über 1500 stimmte ein fester Gegner von 1500 nur in ${fixed} der Fälle auf 1 Punkt genau mit der Seite des Spiels überein, die durchschnittliche PSW des gegnerischen Teams in ${enemy}. Gegen schwächere Teams ergeben beide ${weaker}: Der Gegner zählt nie als schwächer als 1500.`,
         `Geprüft an PSW von 0 bis ${max}, der höchsten PSW in den Daten; darüber gibt es nichts, woran sich die Formel prüfen ließe.`,
       ],
     },

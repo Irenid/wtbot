@@ -150,6 +150,9 @@ export function tagMarkup(tag: string, gameFont: boolean): string {
   return out
 }
 
+/** What the PSR column draws of a player's BattlePsr. */
+export type PsrColumnEntry = Pick<BattlePsr, 'psr' | 'change'>
+
 export interface BattleImageInput {
   /** " [Conquest #1] Fire Arc", as the site gives it */
   missionName: string
@@ -157,13 +160,13 @@ export interface BattleImageInput {
   results: ReplayResults
   dict: VehicleDict
   /** PSR by user id (battle-psr.ts): a player missing from the map gets a dash; no map — an empty column */
-  psr?: Map<string, BattlePsr>
+  psr?: Map<string, PsrColumnEntry>
   /** The winning team (a results team; cachedBattleMeta) or null */
   winnerTeam?: number | null
 }
 
 /** The whole numbers the table shows: PSR rounded as the site does, points as the guides' tables (0 — no points line). */
-export function psrLabel(entry: BattlePsr): { psr: number; change: number } {
+export function psrLabel(entry: PsrColumnEntry): { psr: number; change: number } {
   return { psr: Math.round(entry.psr), change: entry.change === null ? 0 : Number(entry.change.toFixed(0)) }
 }
 
@@ -334,7 +337,7 @@ function renderTeam(
   assets: BattleAssets,
   teamIndex: number,
   won: boolean,
-  psr?: Map<string, BattlePsr>,
+  psr?: Map<string, PsrColumnEntry>,
 ): string {
   const parts: string[] = []
   // The first column is the personal squadron rating (⊛), then battle stats

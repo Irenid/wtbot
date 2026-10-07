@@ -466,11 +466,19 @@ Data:
   are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral.
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
-  winner is unknown). A claninfo read at the announcement lags up to 15 min,
-  so the PSR before the battle is the last readings (snapshot changes, the
-  last roster read) carried over the player's stored battles; which battles a
-  reading counts is a Viterbi path over read times and values (accuracy in
-  the module header).
+  winner is unknown). The formula's opponent is the enemy team's average PSR,
+  at least 1500: the drawn battle's from its players' estimates, an earlier
+  one's from their readings before its start (`getBattleTeamPsr`, cached). A
+  claninfo read at the announcement lags up to 15 min, so the PSR before the
+  battle is the last readings (snapshot changes, the last roster read) carried
+  over the player's stored battles; which battles a reading counts is a
+  Viterbi path over read times and values. `PSR_RECHECK_AFTER_SEC` (16 min)
+  after the battle the post rereads the pages (`freshAfter`) and redraws when
+  a number changes: a reading that counts exactly the battle gives the page's
+  own PSR. The recheck queue is in memory: a restart drops the waiting ones.
+  Rechecked players whose battle two readings isolate feed
+  `psrFormulaCheck()` (`/api/stats` → `psrFormula`, a warning under 90%): a
+  drop means Gaijin changed the rule. Accuracy in the module header.
 - Announcer: attempts and message state in `announce_state`, the baseline in
   `bot_state`; the first start does not publish history; battles older than
   `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()`. A
@@ -575,9 +583,10 @@ Data:
   limit weight 2.
 - Guides (`/guides`, `frontend/src/pages/GuidesPage.tsx`, `pages/guides/`)
   hold three kinds of facts. The PSR rule is `frontend/src/lib/psr.ts`: tables
-  and the calculator compute from it, the prose quotes its results, so a new
-  constant means rewriting those sentences in every locale; the battle image
-  uses the bot's copy `src/psr.ts`, and `src/psr.test.ts` keeps both equal. Measurements are
+  and the calculator compute from it for an enemy team at or below 1500 (the
+  default), the prose quotes its results, so a new constant means rewriting
+  those sentences in every locale; the battle image uses the bot's copy
+  `src/psr.ts`, and `src/psr.test.ts` keeps both equal. Measurements are
   dated in `pages/guides/measurements.ts` (`MEASURED_AT`), reach the texts as
   arguments and are refreshed together. Live data comes from `/api/clans` and
   the season panel; a failed request leaves the static text, never stale

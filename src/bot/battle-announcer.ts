@@ -20,7 +20,12 @@ import { plainClanTag } from '../wrpl/render-battle.js'
 import { isWorkerExecutionTimeout, isWorkerPoolSchedulingError } from '../workers/pool.js'
 import { ExecTimeoutBudget } from '../workers/exec-timeout-budget.js'
 import { battleAnnouncementDecision } from './battle-post-policy.js'
-import { queueBattlePostUpdates, renderBattlePost } from './commands/battle.js'
+import {
+  queueBattlePostRecheck,
+  queueBattlePostUpdates,
+  renderBattlePost,
+  type BattlePostPayload,
+} from './commands/battle.js'
 
 /**
  * The battle announcer waits for durable ingest, then posts the finished post
@@ -154,7 +159,9 @@ export function startBattleAnnouncer(client: Client): void {
         }
         markAnnounce(item.id, 'ok')
         renderExecTimeouts.clear(item.externalId)
-        queueBattlePostUpdates(post, (payload) => message.edit({ ...payload, attachments: [] }))
+        const edit = (payload: BattlePostPayload) => message.edit({ ...payload, attachments: [] })
+        queueBattlePostUpdates(post, edit)
+        queueBattlePostRecheck(post, edit)
         console.log(`[bot] announced battle ${item.externalId} (${item.title.trim()})`)
       } catch (err) {
         if (stopping) break

@@ -21,19 +21,19 @@ export const es: GuideText = {
   quick: {
     points: {
       q: '¿Cuánta CPE da una batalla?',
-      a: () => 'Solo depende de tu CPE: hasta 780, una victoria da +32 y una derrota −1; con 1500, +16 y −16; con 2000, +2 y −30.',
+      a: () => 'Depende de tu CPE y, si la CPE media del equipo rival supera 1500, también de él. Contra un equipo con una media de 1500 o menos: hasta 780, una victoria da +32 y una derrota −1; con 1500, +16 y −16; con 2000, +2 y −30.',
     },
     grow: {
       q: '¿Con qué frecuencia tengo que ganar para que suba la CPE?',
-      a: () => 'Más de 24 batallas de cada 100 con 1300 de CPE, más de la mitad con 1500 y más de 85 de cada 100 con 1800.',
+      a: () => 'Más de 24 batallas de cada 100 con 1300 de CPE, más de la mitad con 1500 y más de 85 de cada 100 con 1800, contra equipos con una media de 1500 o menos. Contra equipos más fuertes bastan menos victorias.',
     },
     ceiling: {
       q: '¿Hasta dónde subirá mi CPE?',
-      a: () => 'Lo decide tu % de victorias: con el 50%, la CPE se estanca en torno a 1500; con el 70%, en torno a 1650; con el 90%, en torno a 1880.',
+      a: () => 'Lo decide tu % de victorias: con el 50%, la CPE se estanca en torno a 1500; con el 70%, en torno a 1650; con el 90%, en torno a 1880. Jugar a menudo contra equipos con una media de más de 1500 sube ese nivel.',
     },
     factors: {
       q: '¿Influyen el rival y mi juego en la batalla?',
-      a: () => 'No. La fuerza del rival, la puntuación, las bajas, las muertes y la duración de la batalla no cuentan: solo la victoria o la derrota y tu CPE.',
+      a: () => 'Tu juego, no: la puntuación, las bajas, las muertes y la duración de la batalla no cuentan. El rival solo cuenta si su equipo tiene una CPE media de más de 1500: entonces una victoria da más y una derrota quita menos.',
     },
     leave: {
       q: '¿Puedo salir de una batalla perdida sin perder CPE?',
@@ -91,11 +91,12 @@ export const es: GuideText = {
     },
   },
   psr: {
-    lead: 'La CPE es la clasificación personal de escuadrón. Tras cada batalla de escuadrón sube si ganas y baja si pierdes. Cuánto, depende solo de tu CPE: cuanto más alta es, menos da una victoria y más quita una derrota.',
+    lead: 'La CPE es la clasificación personal de escuadrón. Tras cada batalla de escuadrón sube si ganas y baja si pierdes. Cuánto depende de tu CPE (cuanto más alta es, menos da una victoria y más quita una derrota) y del equipo rival, si su CPE media supera 1500.',
     points: {
       title: 'Puntos por batalla',
       head: ['CPE', 'Victoria', 'Derrota', '% de victorias'],
       notes: [
+        'La tabla es para un equipo rival con una CPE media de 1500 o menos. Un equipo más fuerte cuenta con su media en lugar de 1500: una victoria da más y una derrota quita menos. Con 1800 de CPE contra un equipo con una media de 1800, una victoria da +16 en lugar de +5 y una derrota −16 en lugar de −27.',
         '**% de victorias** — cuántas batallas de cada 100 tienes que ganar para que la CPE suba. Si ganas menos, baja.',
         'Por encima de 903, una victoria y una derrota valen siempre 32 puntos entre las dos: cuanto menos da una victoria, más quita una derrota.',
         'Por encima de 1500 una derrota quita más de lo que da una victoria: con 1800 una derrota anula 5–6 victorias; con 2000, unas 18. Por eso el mismo balance —5 victorias y 5 derrotas— da +155 con 0 de CPE, 0 con 1500 y −143 con 2000.',
@@ -104,7 +105,7 @@ export const es: GuideText = {
     },
     calc: {
       title: 'Calculadora',
-      intro: 'Introduce tu CPE y tu % de victorias: la calculadora aplica la fórmula para mostrar lo que obtienes y hasta dónde subirás.',
+      intro: 'Introduce tu CPE y tu % de victorias: la calculadora aplica la fórmula para un equipo rival con una media de 1500 o menos y muestra lo que obtienes y hasta dónde subirás.',
       psr: 'Tu CPE',
       winRate: '% de victorias',
       win: 'Por victoria',
@@ -123,16 +124,16 @@ export const es: GuideText = {
     factors: {
       title: 'Qué influye en la CPE',
       items: [
-        '**La fuerza del rival: no influye.** La fórmula no te compara con el rival, sino con un nivel fijo de 1500. Una victoria contra un escuadrón de la élite vale lo mismo que contra uno débil.',
+        '**La fuerza del rival: solo por encima de 1500.** La fórmula te compara con la CPE media del equipo rival, pero nunca con menos de 1500. Una victoria contra cualquier equipo con una media de 1500 o menos vale lo mismo; contra uno más fuerte, una victoria da más y una derrota quita menos.',
         '**El juego en la batalla: no influye.** La puntuación, las bajas, las muertes y la duración de la batalla no cuentan. La CPE cambia para todo el equipo: para el mejor jugador, para los que se desconectaron y para los que no cargaron.',
         '**Salir de la batalla no sirve.** Si sales de una batalla perdida, pierdes la misma CPE que en una derrota normal.',
         '**El rango en el escuadrón: no influye.** El comandante, un oficial y un soldado reciben lo mismo.',
-        '**Solo cuenta tu CPE.** Por la misma victoria, un jugador con 0 de CPE recibe +32 y uno con 1800 recibe +5.',
+        '**Lo que más cuenta es tu CPE.** Por una victoria contra un equipo con una media de 1500 o menos, un jugador con 0 de CPE recibe +32 y uno con 1800 recibe +5.',
       ],
     },
     ceiling: {
       title: 'Hasta dónde puede subir la CPE',
-      intro: 'Cuanto más alta es la CPE, menos da una victoria, así que la CPE se estanca en un nivel que solo depende de tu % de victorias. Con el 50% de victorias llega a 1500 y luego oscila a su alrededor. Jugar más no sube ese nivel: solo te lleva antes a él.',
+      intro: 'Cuanto más alta es la CPE, menos da una victoria, así que la CPE se estanca en un nivel que depende de tu % de victorias. Con el 50% de victorias llega a 1500 y luego oscila a su alrededor. Jugar más no sube ese nivel: solo te lleva antes a él. La tabla es para equipos rivales con una media de 1500 o menos; los rivales más fuertes suben el nivel: con el 50% de victorias es su CPE media.',
       head: ['% de victorias', 'La CPE se estanca en torno a', 'Batallas desde cero'],
       notes: [
         '**Batallas desde cero** — cuántas batallas desde el inicio de la temporada hacen falta para quedar a menos de 50 puntos de ese nivel. Una racha de suerte puede subirte más, pero luego la CPE vuelve.',
@@ -154,11 +155,12 @@ export const es: GuideText = {
       loss: 'Derrota',
       atLeast: (n) => `como mínimo ${n}`,
       floor: 'La CPE nunca baja de 0',
+      opponent: (n) => ['CPE media del equipo rival,', `como mínimo ${n}`],
       body: [
-        '**E** es la proporción de victorias con la que la CPE no se mueve: la columna «% de victorias» de la [tabla](/guides/psr#points). Por debajo de 903 la fórmula quitaría menos de 1 punto por derrota, así que ahí siempre es −1 y basta con el 3% de victorias para subir.',
-        'Ejemplo con 1300 de CPE: x = (1500 − 1300) / 400 = 0,5; 10^0,5 ≈ 3,16; E = 1 / 4,16 ≈ 0,24. Victoria: 32 × 0,76 ≈ +24. Derrota: 32 × 0,24 ≈ −8.',
+        '**E** es la proporción de victorias con la que la CPE no se mueve: la columna «% de victorias» de la [tabla](/guides/psr#points), que usa R = 1500. Por debajo de 903 la fórmula quitaría menos de 1 punto por derrota, así que ahí siempre es −1 y basta con el 3% de victorias para subir.',
+        'Ejemplo con 1300 de CPE contra un equipo con una media de 1500 o menos: x = (1500 − 1300) / 400 = 0,5; 10^0,5 ≈ 3,16; E = 1 / 4,16 ≈ 0,24. Victoria: 32 × 0,76 ≈ +24. Derrota: 32 × 0,24 ≈ −8.',
         'Por encima de 903, el resultado medio de una batalla se calcula más fácil: 32 × (proporción de victorias − E). Con 1300 de CPE y el 60% de victorias son 32 × (0,60 − 0,24) ≈ +11,5 por batalla.',
-        'Es el sistema Elo, como en el ajedrez, salvo que el rival es siempre el mismo: un jugador imaginario con 1500 de CPE.',
+        'Es el sistema Elo, como en el ajedrez, en el que el rival es la CPE media del equipo contrario. Un equipo más débil cuenta como 1500, así que ganarle da lo mismo que ganar a un equipo con una media de 1500.',
       ],
     },
   },
@@ -359,9 +361,10 @@ export const es: GuideText = {
     },
     formula: {
       title: 'Fórmula de la CPE',
-      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max }) => [
+      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max, strong, fixed, enemy, weaker }) => [
         `La fórmula se ajustó con los casos en que entre dos lecturas de la CPE de un jugador hubo exactamente una batalla (${single}). El sistema Elo fue el que mejor encajó. Los valores obtenidos (${k}; ${reference}; ${scale}) corresponden a 32, 1500 y 400.`,
         `Para una sola batalla, la fórmula coincide con la web del juego con un margen de 1 punto en el ${withinOne} de los casos. Explica entre el ${chainLow} y el ${chainHigh} de los cambios que abarcan varias batallas, según la CPE. En una comprobación en directo coincidieron ${liveMatched} de ${liveTotal} cambios.`,
+        `Una comprobación más amplia en octubre de 2026 mostró que un rival fuerte sí cuenta. En ${strong} cambios de una sola batalla contra un equipo con una CPE media de más de 1500, un rival fijo de 1500 coincidió con la web del juego con un margen de 1 punto solo en el ${fixed} de los casos, y la CPE media del equipo rival en el ${enemy}. Contra equipos más débiles ambos dan el ${weaker}: el rival nunca cuenta como más débil que 1500.`,
         `Comprobada con CPE de 0 a ${max}, la más alta de los datos; por encima no hay con qué comprobar la fórmula.`,
       ],
     },

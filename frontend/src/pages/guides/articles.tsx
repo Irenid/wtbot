@@ -32,6 +32,7 @@ import {
   MATCHMAKING,
   MEASURED_AT,
   NOT_LOADED,
+  OPPONENT,
   PACE,
   PEAK_HOURS,
   PSR_DISTRIBUTION,
@@ -118,8 +119,11 @@ function psrArticle(g: GuideText): GuideArticle {
   const f = p.formula
   const width = Math.max(f.win.length, f.loss.length) + 2
   const label = (text: string) => `${text}:`.padEnd(width)
+  const [opponent = '', ...opponentRest] = f.opponent(psrText(PSR_REFERENCE))
   const formulaLines = [
-    `x = (${PSR_REFERENCE} − ${g.term}) / ${PSR_SCALE}`,
+    `R = ${opponent}`,
+    ...opponentRest.map((line) => `    ${line}`),
+    `x = (R − ${g.term}) / ${PSR_SCALE}`,
     'E = 1 / (1 + 10^x)',
     `${label(f.win)}+ ${PSR_K} × (1 − E)`,
     `${label(f.loss)}− ${PSR_K} × E, ${f.atLeast(String(PSR_MIN_LOSS))}`,
@@ -579,6 +583,10 @@ function methodArticle(g: GuideText): GuideArticle {
               liveMatched: num(FIT.live.matched),
               liveTotal: num(FIT.live.total),
               max: psrText(PSR_DISTRIBUTION.max),
+              strong: num(OPPONENT.strong.changes),
+              fixed: pct(OPPONENT.strong.fixed),
+              enemy: pct(OPPONENT.strong.enemy),
+              weaker: pct(OPPONENT.weaker),
             })}
           />
         ),

@@ -70,7 +70,16 @@ export interface GuideText {
       streakHead: readonly [string, string, string]
     }
     season: { title: string; body: Paragraphs }
-    formula: { title: string; win: string; loss: string; atLeast: (n: string) => string; floor: string; body: Paragraphs }
+    formula: {
+      title: string
+      win: string
+      loss: string
+      atLeast: (n: string) => string
+      floor: string
+      /** The formula's R ("the enemy team's average PSR, at least 1500"), a line each: the block does not wrap. */
+      opponent: (n: string) => readonly string[]
+      body: Paragraphs
+    }
   }
   squadron: {
     lead: string
@@ -160,7 +169,7 @@ export interface GuideText {
     }
     formula: {
       title: string
-      body: (n: Nums<'single' | 'k' | 'reference' | 'scale' | 'withinOne' | 'chainLow' | 'chainHigh' | 'liveMatched' | 'liveTotal' | 'max'>) => Paragraphs
+      body: (n: Nums<'single' | 'k' | 'reference' | 'scale' | 'withinOne' | 'chainLow' | 'chainHigh' | 'liveMatched' | 'liveTotal' | 'max' | 'strong' | 'fixed' | 'enemy' | 'weaker'>) => Paragraphs
     }
     squadron: { title: string; body: (n: Nums<'states' | 'errorLow' | 'errorHigh'>) => Paragraphs }
     timing: {

@@ -16,6 +16,7 @@ import {
 import { decorateTag } from '../../wrpl/render-battle.js'
 import { wtBrowserMetrics } from '../../parsers/sources/wt-browser.js'
 import { wtTransportMode, wtTransportRoutes } from '../../parsers/sources/wt-request.js'
+import { psrFormulaCheck } from '../../wrpl/battle-psr.js'
 
 const DASHBOARD_SNAPSHOT_TTL_MS = 15_000
 
@@ -113,6 +114,7 @@ export const apiRoutes: FastifyPluginAsync<{ deps: WebDeps }> = async (app, { de
       announce: snapshot.data.announce,
       season: snapshot.data.season,
       wtTransport: { mode: wtTransportMode(), routes: wtTransportRoutes(), ...wtBrowserMetrics() },
+      psrFormula: psrFormulaCheck(),
     }
   })
 

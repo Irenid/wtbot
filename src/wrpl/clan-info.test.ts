@@ -185,6 +185,34 @@ test('fetchRatingsForTags не повторяет запрос клана, чь�
   }
 })
 
+test('fetchRatingsForTags with freshAfter re-reads a page read before that moment, within the cooldown too', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls += 1
+    return new Response(`
+      <div class="squadrons-members">
+        <a href="en/community/userinfo/?nick=Player">Player</a>
+        <div class="squadrons-members__grid-item">${500 + calls}</div>
+      </div>
+    `)
+  }
+  initDb(':memory:')
+
+  try {
+    upsertClans([{ tag: 'CLAN', name: 'Clan' }])
+    await fetchRatingsForTags(['CLAN'])
+    await fetchRatingsForTags(['CLAN'], { freshAfter: Date.now() - 60_000 })
+    assert.equal(calls, 1, 'a read after freshAfter is fresh enough')
+    const ratings = await fetchRatingsForTags(['CLAN'], { freshAfter: Date.now() + 1 })
+    assert.equal(calls, 2)
+    assert.deepEqual(ratings.get('Player'), { rating: 502, delta: 1 })
+  } finally {
+    closeDb()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('fetchRatingsForTags ставит страницы кланов на паузу после 404 у трёх кланов подряд', async () => {
   const originalFetch = globalThis.fetch
   const originalWarn = console.warn

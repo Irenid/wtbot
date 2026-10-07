@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  queueBattlePostRecheck,
   queueBattlePostUpdates,
   seasonMaxBrSuffix,
   type BattlePost,
@@ -56,6 +57,8 @@ test('PSR applies at once; the winner and then the squadron lookup follow in ord
     },
     // Built only after the winner is applied, so its redraw keeps the winner.
     buildLookupPayload: async () => payload('lookup'),
+    buildRecheckPayload: null,
+    recheckAt: 0,
     updateBytes: 0,
   }
 
@@ -71,4 +74,62 @@ test('PSR applies at once; the winner and then the squadron lookup follow in ord
   releaseWinner?.()
   await complete
   assert.deepEqual(applied, ['ratings', 'winner', 'lookup'])
+})
+
+test('the PSR recheck waits until due and for the post\'s other updates, then redraws', async () => {
+  let releaseLookup!: () => void
+  const lookupHeld = new Promise<void>((resolve) => {
+    releaseLookup = resolve
+  })
+  let rechecked!: () => void
+  const recheckDone = new Promise<void>((resolve) => {
+    rechecked = resolve
+  })
+  const applied: string[] = []
+  const post: BattlePost = {
+    payload: payload('initial'),
+    sessionIdHex: 'recheck-test',
+    buildRatingsPayload: async () => payload('ratings'),
+    buildWinnerPayload: null,
+    buildLookupPayload: async () => {
+      await lookupHeld
+      return payload('lookup')
+    },
+    buildRecheckPayload: async () => payload('recheck'),
+    recheckAt: Date.now() + 20,
+    updateBytes: 1024,
+  }
+  const apply = async (next: BattlePostPayload) => {
+    applied.push(next.content)
+    if (next.content === 'recheck') rechecked()
+  }
+  queueBattlePostUpdates(post, apply)
+  queueBattlePostRecheck(post, apply)
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 60))
+  assert.deepEqual(applied, ['ratings'], 'due, but the lookup update still runs')
+  releaseLookup()
+  await recheckDone
+  assert.deepEqual(applied, ['ratings', 'lookup', 'recheck'])
+})
+
+test('a PSR recheck already due or due past the deadline is not queued', async () => {
+  let builds = 0
+  const post = (sessionIdHex: string, recheckAt: number): BattlePost => ({
+    payload: payload('initial'),
+    sessionIdHex,
+    buildRatingsPayload: null,
+    buildWinnerPayload: null,
+    buildLookupPayload: null,
+    buildRecheckPayload: async () => {
+      builds += 1
+      return payload('recheck')
+    },
+    recheckAt,
+    updateBytes: 0,
+  })
+  queueBattlePostRecheck(post('recheck-past', Date.now() - 1), async () => undefined)
+  queueBattlePostRecheck(post('recheck-late', Date.now() + 10), async () => undefined, Date.now())
+  await new Promise<void>((resolve) => setTimeout(resolve, 40))
+  assert.equal(builds, 0)
 })

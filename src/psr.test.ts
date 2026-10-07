@@ -15,9 +15,11 @@ test('the bot and the guides compute PSR by the same rule', async () => {
     [psr.PSR_K, psr.PSR_REFERENCE, psr.PSR_SCALE, psr.PSR_MIN_LOSS],
   )
   for (let value = 0; value <= 3000; value += 7.5) {
-    assert.equal(guide.holdWinRate(value), psr.holdWinRate(value))
-    assert.equal(guide.winPoints(value), psr.winPoints(value))
-    assert.equal(guide.lossPoints(value), psr.lossPoints(value))
+    for (const enemy of [undefined, 0, 1499, 1500, 1640.5, 2200]) {
+      assert.equal(guide.holdWinRate(value, enemy), psr.holdWinRate(value, enemy))
+      assert.equal(guide.winPoints(value, enemy), psr.winPoints(value, enemy))
+      assert.equal(guide.lossPoints(value, enemy), psr.lossPoints(value, enemy))
+    }
   }
 })
 
@@ -32,6 +34,17 @@ test('points match the figures the guides quote', () => {
   assert.equal(Math.round(psr.lossPoints(2000)), 30)
 })
 
+test('the enemy team counts with its average PSR, never below 1500', () => {
+  // "At PSR 1800 against a team averaging 1800 a win gives +16 instead of +5 and a loss −16 instead of −27."
+  assert.equal(psr.winPoints(1800, 1800), 16)
+  assert.equal(psr.lossPoints(1800, 1800), 16)
+  assert.equal(Math.round(psr.winPoints(1800)), 5)
+  assert.equal(Math.round(psr.lossPoints(1800)), 27)
+  // A weaker team scores as 1500.
+  assert.equal(psr.winPoints(1300, 900), psr.winPoints(1300))
+  assert.equal(psr.psrAfterBattle(1300, false, 1499), psr.psrAfterBattle(1300, false))
+})
+
 test('a battle never takes PSR below 0, and the inverse undoes it', () => {
   assert.equal(psr.psrAfterBattle(0, false), 0)
   assert.equal(psr.psrAfterBattle(0.4, false), 0)
@@ -40,9 +53,11 @@ test('a battle never takes PSR below 0, and the inverse undoes it', () => {
 
   for (const before of [0, 1, 37.5, 780, 903, 1300, 1500, 1846.25, 2400]) {
     for (const won of [true, false]) {
-      const after = psr.psrAfterBattle(before, won)
-      if (after === 0) continue
-      assert.ok(Math.abs(psr.psrBeforeBattle(after, won) - before) < 1e-9, `${before} ${won}`)
+      for (const enemy of [undefined, 1750]) {
+        const after = psr.psrAfterBattle(before, won, enemy)
+        if (after === 0) continue
+        assert.ok(Math.abs(psr.psrBeforeBattle(after, won, enemy) - before) < 1e-9, `${before} ${won} ${enemy}`)
+      }
     }
   }
 })

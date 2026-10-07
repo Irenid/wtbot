@@ -154,11 +154,17 @@ Open: prove or disprove the RSS plateau for
   2026-10-01; 2026-10-02 brought the first case: a clan changed its tag
   including the core, the number stayed. Open question — show the clan's
   current tag in old battles or the one it had at the time.
+- **Guide calculator: the enemy team.** Since 2026-10-07 the PSR rule scores
+  a battle against the enemy team's average PSR, at least 1500; the
+  calculator and the tables assume a team at or below 1500. A field for the
+  enemy team's average would show what strong opponents give (`lib/psr.ts`
+  takes it; `psrCeiling` and the other average-path helpers need it too).
 - **Guide measurements by script.** `frontend/src/pages/guides/measurements.ts`
-  (data up to 2026-10-03) came from one-off read-only queries; a script over a
-  database copy would refresh it each season and print what changed. `TIMING`
-  comes from a live poll of warthunder.com and cannot be recomputed offline:
-  repeat the poll when the site changes its caching.
+  (data up to 2026-10-03, `OPPONENT` up to 2026-10-07) came from one-off
+  read-only queries; a script over a database copy would refresh it each
+  season and print what changed. `TIMING` comes from a live poll of
+  warthunder.com and cannot be recomputed offline: repeat the poll when the
+  site changes its caching.
 - **Not collected yet** (decide whether needed): player search
   `searchplayers` (up to 100 nicknames by prefix, nickname only; needs the
   browser) — nickname hints for `/api/player-stats`; the player leaderboard

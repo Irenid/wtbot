@@ -21,19 +21,19 @@ export const fr: GuideText = {
   quick: {
     points: {
       q: "Combien de NPE rapporte une bataille ?",
-      a: () => "Seule votre NPE compte : jusqu'à 780, une victoire rapporte +32 et une défaite −1 ; à 1500, +16 et −16 ; à 2000, +2 et −30.",
+      a: () => "Votre NPE décide, et l'équipe adverse aussi si sa NPE moyenne dépasse 1500. Contre une équipe d'une moyenne de 1500 ou moins : jusqu'à 780, une victoire rapporte +32 et une défaite −1 ; à 1500, +16 et −16 ; à 2000, +2 et −30.",
     },
     grow: {
       q: "À quelle fréquence faut-il gagner pour que la NPE monte ?",
-      a: () => "Plus de 24 batailles sur 100 à une NPE de 1300, plus de la moitié à 1500 et plus de 85 sur 100 à 1800.",
+      a: () => "Plus de 24 batailles sur 100 à une NPE de 1300, plus de la moitié à 1500 et plus de 85 sur 100 à 1800, contre des équipes d'une moyenne de 1500 ou moins. Contre des équipes plus fortes, moins de victoires suffisent.",
     },
     ceiling: {
       q: "Jusqu'où montera ma NPE ?",
-      a: () => "Votre taux de victoire en décide : à 50%, la NPE se stabilise vers 1500, à 70% vers 1650, à 90% vers 1880.",
+      a: () => "Votre taux de victoire en décide : à 50%, la NPE se stabilise vers 1500, à 70% vers 1650, à 90% vers 1880. Jouer souvent contre des équipes d'une moyenne supérieure à 1500 relève ce niveau.",
     },
     factors: {
       q: "L'adversaire et mon jeu en bataille comptent-ils ?",
-      a: () => "Non. La force de l'adversaire, le score, les frags, les morts et la durée de la bataille ne comptent pas : seuls comptent la victoire ou la défaite et votre NPE.",
+      a: () => "Votre jeu, non : le score, les frags, les morts et la durée de la bataille ne comptent pas. L'adversaire ne compte que si son équipe a une NPE moyenne supérieure à 1500 : une victoire rapporte alors plus et une défaite coûte moins.",
     },
     leave: {
       q: "Peut-on quitter une bataille perdue sans perdre de NPE ?",
@@ -91,11 +91,12 @@ export const fr: GuideText = {
     },
   },
   psr: {
-    lead: "La NPE est la note personnelle d'escadron. Après chaque bataille d'escadron, elle monte en cas de victoire et baisse en cas de défaite. De combien, cela dépend uniquement de votre NPE : plus elle est élevée, moins une victoire rapporte et plus une défaite coûte.",
+    lead: "La NPE est la note personnelle d'escadron. Après chaque bataille d'escadron, elle monte en cas de victoire et baisse en cas de défaite. De combien, cela dépend de votre NPE — plus elle est élevée, moins une victoire rapporte et plus une défaite coûte — et de l'équipe adverse si sa NPE moyenne dépasse 1500.",
     points: {
       title: "Points par bataille",
       head: ["NPE", "Victoire", "Défaite", "Taux de victoire"],
       notes: [
+        "Le tableau vaut pour une équipe adverse d'une NPE moyenne de 1500 ou moins. Une équipe plus forte compte avec sa moyenne au lieu de 1500 : une victoire rapporte plus et une défaite coûte moins. À une NPE de 1800 contre une équipe d'une moyenne de 1800, une victoire rapporte +16 au lieu de +5 et une défaite −16 au lieu de −27.",
         "**Taux de victoire** — combien de batailles sur 100 il faut gagner pour que la NPE monte. En gagnant moins souvent, elle baisse.",
         "Au-dessus de 903, une victoire et une défaite valent toujours 32 points à elles deux : moins une victoire rapporte, plus une défaite coûte.",
         "Au-dessus de 1500, une défaite coûte plus qu'une victoire ne rapporte : à 1800, une défaite efface 5 à 6 victoires, à 2000 environ 18. Le même bilan — 5 victoires et 5 défaites — donne donc +155 à une NPE de 0, 0 à 1500 et −143 à 2000.",
@@ -104,7 +105,7 @@ export const fr: GuideText = {
     },
     calc: {
       title: "Calculateur",
-      intro: "Saisissez votre NPE et votre taux de victoire : le calculateur applique la formule pour montrer ce que vous gagnez et jusqu'où vous monterez.",
+      intro: "Saisissez votre NPE et votre taux de victoire : le calculateur applique la formule pour une équipe adverse d'une moyenne de 1500 ou moins et montre ce que vous gagnez et jusqu'où vous monterez.",
       psr: "Votre NPE",
       winRate: "Taux de victoire",
       win: "Par victoire",
@@ -123,16 +124,16 @@ export const fr: GuideText = {
     factors: {
       title: "Ce qui influe sur la NPE",
       items: [
-        "**La force de l'adversaire — aucun effet.** La formule ne vous compare pas à l'adversaire mais à un niveau fixe de 1500. Une victoire contre un escadron du top vaut autant qu'une victoire contre un escadron faible.",
+        "**La force de l'adversaire — seulement au-delà de 1500.** La formule vous compare à la NPE moyenne de l'équipe adverse, mais jamais à moins de 1500. Une victoire contre toute équipe d'une moyenne de 1500 ou moins vaut la même chose ; contre une équipe plus forte, une victoire rapporte plus et une défaite coûte moins.",
         "**Le jeu en bataille — aucun effet.** Le score, les frags, les morts et la durée de la bataille ne comptent pas. La NPE change pour toute l'équipe : le meilleur joueur, ceux qui se sont déconnectés et ceux qui n'ont pas chargé.",
         "**Quitter la bataille ne sauve rien.** Si vous quittez une bataille perdue, vous perdez autant de NPE que pour une défaite ordinaire.",
         "**Le rôle dans l'escadron — aucun effet.** Le commandant, un officier et un soldat reçoivent la même chose.",
-        "**Seule votre NPE compte.** Pour la même victoire, un joueur à 0 de NPE reçoit +32 et un joueur à 1800 reçoit +5.",
+        "**Votre propre NPE compte le plus.** Pour une victoire contre une équipe d'une moyenne de 1500 ou moins, un joueur à 0 de NPE reçoit +32 et un joueur à 1800 reçoit +5.",
       ],
     },
     ceiling: {
       title: "Jusqu'où la NPE peut monter",
-      intro: "Plus la NPE est élevée, moins une victoire rapporte : la NPE se stabilise donc à un niveau fixé uniquement par votre taux de victoire. Avec 50% de victoires, elle atteint 1500 puis oscille autour. Jouer plus ne relève pas ce niveau — vous l'atteignez seulement plus vite.",
+      intro: "Plus la NPE est élevée, moins une victoire rapporte : la NPE se stabilise donc à un niveau fixé par votre taux de victoire. Avec 50% de victoires, elle atteint 1500 puis oscille autour. Jouer plus ne relève pas ce niveau — vous l'atteignez seulement plus vite. Le tableau vaut pour des équipes adverses d'une moyenne de 1500 ou moins ; des adversaires plus forts relèvent le niveau : avec 50% de victoires, c'est leur NPE moyenne.",
       head: ["Taux de victoire", "La NPE se stabilise vers", "Batailles depuis zéro"],
       notes: [
         "**Batailles depuis zéro** — combien de batailles depuis le début de la saison il faut pour arriver à moins de 50 points de ce niveau. Une série chanceuse peut vous faire monter plus haut, mais la NPE redescend ensuite.",
@@ -154,11 +155,12 @@ export const fr: GuideText = {
       loss: "Défaite",
       atLeast: (n) => `au moins ${n}`,
       floor: "La NPE ne descend jamais sous 0",
+      opponent: (n) => ["NPE moyenne de l'équipe", `adverse, au moins ${n}`],
       body: [
-        "**E** est la part de victoires à laquelle la NPE ne bouge pas : la colonne « Taux de victoire » du [tableau](/guides/psr#points). Sous 903, la formule retirerait moins de 1 point pour une défaite, c'est donc toujours −1 et 3% de victoires suffisent pour monter.",
-        "Exemple pour une NPE de 1300 : x = (1500 − 1300) / 400 = 0,5 ; 10^0,5 ≈ 3,16 ; E = 1 / 4,16 ≈ 0,24. Victoire : 32 × 0,76 ≈ +24. Défaite : 32 × 0,24 ≈ −8.",
+        "**E** est la part de victoires à laquelle la NPE ne bouge pas : la colonne « Taux de victoire » du [tableau](/guides/psr#points), qui utilise R = 1500. Sous 903, la formule retirerait moins de 1 point pour une défaite, c'est donc toujours −1 et 3% de victoires suffisent pour monter.",
+        "Exemple pour une NPE de 1300 contre une équipe d'une moyenne de 1500 ou moins : x = (1500 − 1300) / 400 = 0,5 ; 10^0,5 ≈ 3,16 ; E = 1 / 4,16 ≈ 0,24. Victoire : 32 × 0,76 ≈ +24. Défaite : 32 × 0,24 ≈ −8.",
         "Au-dessus de 903, le résultat moyen d'une bataille se calcule plus simplement : 32 × (part de victoires − E). Pour une NPE de 1300 et 60% de victoires, cela donne 32 × (0,60 − 0,24) ≈ +11,5 par bataille.",
-        "C'est le système Elo, comme aux échecs, sauf que l'adversaire est toujours le même : un joueur imaginaire avec une NPE de 1500.",
+        "C'est le système Elo, comme aux échecs, où l'adversaire est la NPE moyenne de l'équipe adverse. Une équipe plus faible compte pour 1500 : la battre rapporte autant que battre une équipe d'une moyenne de 1500.",
       ],
     },
   },
@@ -359,9 +361,10 @@ export const fr: GuideText = {
     },
     formula: {
       title: "Formule de la NPE",
-      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max }) => [
+      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max, strong, fixed, enemy, weaker }) => [
         `La formule a été établie sur les cas où exactement une bataille séparait deux relevés de la NPE d'un joueur (${single}). C'est le système Elo qui correspondait le mieux. Les valeurs obtenues (${k} ; ${reference} ; ${scale}) correspondent à 32, 1500 et 400.`,
         `Pour une seule bataille, la formule correspond au site du jeu à 1 point près dans ${withinOne} des cas. Elle explique de ${chainLow} à ${chainHigh} des variations couvrant plusieurs batailles, selon la NPE. Lors d'une vérification en direct, ${liveMatched} variations sur ${liveTotal} correspondaient.`,
+        `Une vérification plus large en octobre 2026 a montré qu'un adversaire fort compte bel et bien. Sur ${strong} variations d'une seule bataille contre une équipe d'une NPE moyenne supérieure à 1500, un adversaire fixe de 1500 correspondait au site du jeu à 1 point près dans seulement ${fixed} des cas, la NPE moyenne de l'équipe adverse dans ${enemy}. Contre des équipes plus faibles, les deux donnent ${weaker} : l'adversaire ne compte jamais comme plus faible que 1500.`,
         `Vérifiée sur des NPE de 0 à ${max}, la NPE la plus élevée des données ; au-delà, il n'y a rien sur quoi vérifier la formule.`,
       ],
     },

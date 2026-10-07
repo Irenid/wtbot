@@ -182,6 +182,21 @@ export const FIT = {
   squadron: { states: 12, errorLow: 0.4, errorHigh: 2.9 },
 }
 
+/**
+ * The opponent in the PSR rule, measured 2026-10-07 on the squadron battles
+ * of 2026-10-03..07: PSR changes of a single battle (two page readings around
+ * it) where the PSR of at least 6 players of each team is known, each
+ * player's before the battle reconstructed from the readings around it.
+ * Shares within 1 point of the page.
+ */
+export const OPPONENT = {
+  changes: 11_114,
+  /** Changes against an enemy team averaging above 1500: a fixed 1500 vs the enemy average as the opponent. */
+  strong: { changes: 796, fixed: 0.484, enemy: 0.886 },
+  /** Against weaker teams both are the same rule. */
+  weaker: 0.981,
+}
+
 /** Live poll of squadron pages during their battles. */
 export const TIMING = {
   pollFrom: Date.UTC(2026, 9, 3, 18, 53) / 1000,

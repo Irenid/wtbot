@@ -58,6 +58,13 @@ let selectBattlePostSummaryStatement: StatementSync | null = null
 let selectPsrSnapshotsStatement: StatementSync | null = null
 let selectPsrRosterReadStatement: StatementSync | null = null
 let selectPlayerBattleResultsStatement: StatementSync | null = null
+let selectBattleTeamPsrStatement: StatementSync | null = null
+/**
+ * getBattleTeamPsr by session, least recently used first. Readings up to a
+ * battle's start never change after it, so entries need no data_version check.
+ */
+const battleTeamPsrCache = new Map<string, Map<number, number>>()
+const BATTLE_TEAM_PSR_CACHE_MAX = 8_192
 let selectDataVersionStatement: StatementSync | null = null
 let commandStatsCache: VersionedCache<CommandStats> | null = null
 let itemStatsCache: VersionedCache<ItemStats> | null = null
@@ -91,6 +98,8 @@ function resetPreparedStatements(): void {
   selectPsrSnapshotsStatement = null
   selectPsrRosterReadStatement = null
   selectPlayerBattleResultsStatement = null
+  selectBattleTeamPsrStatement = null
+  battleTeamPsrCache.clear()
   selectDataVersionStatement = null
   commandStatsCache = null
   itemStatsCache = null
@@ -4859,10 +4868,12 @@ export function getPsrReadings(clanTag: string, nick: string, since: number): Ps
   return readings
 }
 
-/** A player's battle: its end (start + length, unix s) and their result; null — the winner or their team is unknown. */
+/** A player's battle: its start and end (start + length, unix s), their team and result; null — the winner or their team is unknown. */
 export interface PlayerBattleResult {
   sessionId: string
+  startAt: number
   endAt: number
+  team: number
   won: boolean | null
 }
 
@@ -4873,7 +4884,7 @@ export interface PlayerBattleResult {
  */
 export function getPlayerBattleResults(userId: string, since: number): PlayerBattleResult[] {
   selectPlayerBattleResultsStatement ??= getDb().prepare(`
-    SELECT b.session_id, b.start_time + b.duration_sec AS end_at, b.team_won, bp.team
+    SELECT b.session_id, b.start_time, b.start_time + b.duration_sec AS end_at, b.team_won, bp.team
     FROM battle_players bp
     JOIN battles b ON b.session_id = bp.session_id
     WHERE bp.user_id = ? AND b.start_time >= ?
@@ -4881,15 +4892,63 @@ export function getPlayerBattleResults(userId: string, since: number): PlayerBat
   `)
   const rows = selectPlayerBattleResultsStatement.all(userId, since) as unknown as {
     session_id: string
+    start_time: number
     end_at: number
     team_won: number
     team: number
   }[]
   return rows.map((row) => ({
     sessionId: row.session_id,
+    startAt: row.start_time,
     endAt: row.end_at,
+    team: row.team,
     won: row.team_won > 0 && row.team > 0 ? row.team === row.team_won : null,
   }))
+}
+
+/**
+ * Each team's average PSR before a battle, by team: every player's last
+ * squadron page reading from `since` to the battle's start (the page may lag
+ * their last battles), players without one left out; a team without readings
+ * is absent. One indexed lookup per player (idx_snapshots_clan_latest).
+ */
+export function getBattleTeamPsr(sessionId: string, startAt: number, since: number): Map<number, number> {
+  const cached = battleTeamPsrCache.get(sessionId)
+  if (cached) {
+    battleTeamPsrCache.delete(sessionId)
+    battleTeamPsrCache.set(sessionId, cached)
+    return cached
+  }
+  // The page lists a console player with or without the platform suffix.
+  selectBattleTeamPsrStatement ??= getDb().prepare(`
+    SELECT bp.team, COALESCE(
+      (SELECT s.rating FROM clan_rating_snapshots s
+       WHERE s.clan_tag = bp.clan_tag AND s.nick = bp.nick AND s.seen_at BETWEEN ?2 AND ?3
+       ORDER BY s.id DESC LIMIT 1),
+      (SELECT s.rating FROM clan_rating_snapshots s
+       WHERE s.clan_tag = bp.clan_tag AND s.nick = bp.nick_base AND s.seen_at BETWEEN ?2 AND ?3
+       ORDER BY s.id DESC LIMIT 1)
+    ) AS psr
+    FROM battle_players bp
+    WHERE bp.session_id = ?1 AND bp.team > 0 AND bp.clan_tag <> ''
+  `)
+  const rows = selectBattleTeamPsrStatement.all(sessionId, since, startAt) as unknown as { team: number; psr: number | null }[]
+  const sums = new Map<number, { total: number; count: number }>()
+  for (const row of rows) {
+    if (row.psr === null) continue
+    const sum = sums.get(row.team) ?? { total: 0, count: 0 }
+    sum.total += row.psr
+    sum.count += 1
+    sums.set(row.team, sum)
+  }
+  const teams = new Map([...sums].map(([team, sum]) => [team, sum.total / sum.count]))
+  // A battle not stored yet has no rows: asked again once ingest commits it.
+  if (rows.length === 0) return teams
+  battleTeamPsrCache.set(sessionId, teams)
+  if (battleTeamPsrCache.size > BATTLE_TEAM_PSR_CACHE_MAX) {
+    battleTeamPsrCache.delete(battleTeamPsrCache.keys().next().value!)
+  }
+  return teams
 }
 
 // ---------- Разобранные бои (ingest) ----------

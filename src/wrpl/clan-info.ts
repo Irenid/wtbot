@@ -291,13 +291,14 @@ function getStoredRatingsForTags(tags: string[]): Map<string, ClanRating> {
  * "nick → {rating, delta}" map. Unavailable clans are skipped (no name in
  * the dictionary, the site did not answer): their players get no PSR.
  * `force` ignores the cooldown (the forced refresh button), `cachedOnly`
- * returns stored snapshots without the network. An unknown tag is looked up
- * by lookupUnknownClanTags, which the caller awaits separately: it may take a
- * full leaderboard crawl.
+ * returns stored snapshots without the network, `freshAfter` (unix ms)
+ * re-reads a page last read before it, cooldown or not. An unknown tag is
+ * looked up by lookupUnknownClanTags, which the caller awaits separately: it
+ * may take a full leaderboard crawl.
  */
 export async function fetchRatingsForTags(
   tags: string[],
-  opts: { force?: boolean; cachedOnly?: boolean } = {},
+  opts: { force?: boolean; cachedOnly?: boolean; freshAfter?: number } = {},
 ): Promise<Map<string, ClanRating>> {
   if (opts.cachedOnly) return getStoredRatingsForTags(tags)
 
@@ -315,6 +316,7 @@ export async function fetchRatingsForTags(
         const now = Date.now()
         const last = lastFetch.get(tag)
         const due = opts.force || last?.seasonId !== seasonId || now - (last?.at ?? 0) > COOLDOWN_MS
+          || (opts.freshAfter !== undefined && (last?.at ?? 0) < opts.freshAfter)
         const allowed = opts.force
           || (now >= pagesDownUntil && now - (lastFailure.get(tag) ?? 0) > FAILURE_COOLDOWN_MS)
         if (due && allowed) {

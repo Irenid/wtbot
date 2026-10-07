@@ -1,13 +1,14 @@
 // PSR (personal squadron rating) rule, measured from public warthunder.com data
 // (method and accuracy: guide "method", numbers in guides/measurements.ts):
-// Elo against a fixed 1500 opponent, the change applied once per squadron battle.
-// Guide tables are computed from these functions, but the prose of
-// i18n/guide/*.ts quotes their results (780, 903, the ceilings, the examples):
-// a new constant means rewriting those sentences in all five locales.
+// Elo against the enemy team's average PSR, never below 1500 (OPPONENT), the
+// change applied once per squadron battle. Guide tables are computed from these
+// functions for an enemy team at or below PSR_REFERENCE (the default), but the
+// prose of i18n/guide/*.ts quotes their results (780, 903, the ceilings, the
+// examples): a new constant means rewriting those sentences in all five locales.
 
 /** Points at stake in one battle. */
 export const PSR_K = 32
-/** Fixed reference: a player at this PSR gains and loses the same. */
+/** The weakest opponent a battle is scored against: an enemy team averaging less counts as this. */
 export const PSR_REFERENCE = 1500
 /** Logistic scale: PSR points per tenfold change of the odds. */
 export const PSR_SCALE = 400
@@ -18,19 +19,22 @@ export const PSR_MIN_LOSS = 1
 export const SQUADRON_TOP = 20
 export const SQUADRON_REST_SHARE = 0.05
 
-/** E: the win share at which PSR stays put (above MIN_LOSS_BELOW). */
-export function holdWinRate(psr: number): number {
-  return 1 / (1 + 10 ** ((PSR_REFERENCE - psr) / PSR_SCALE))
+/**
+ * E: the win share at which PSR stays put (above MIN_LOSS_BELOW) against an
+ * enemy team whose average PSR before the battle is `enemyPsr`.
+ */
+export function holdWinRate(psr: number, enemyPsr = PSR_REFERENCE): number {
+  return 1 / (1 + 10 ** ((Math.max(PSR_REFERENCE, enemyPsr) - psr) / PSR_SCALE))
 }
 
 /** Points for a win, unrounded (the server keeps decimals, the site shows a rounded PSR). */
-export function winPoints(psr: number): number {
-  return PSR_K * (1 - holdWinRate(psr))
+export function winPoints(psr: number, enemyPsr = PSR_REFERENCE): number {
+  return PSR_K * (1 - holdWinRate(psr, enemyPsr))
 }
 
 /** Points lost for a defeat, as a positive number. */
-export function lossPoints(psr: number): number {
-  return Math.max(PSR_MIN_LOSS, PSR_K * holdWinRate(psr))
+export function lossPoints(psr: number, enemyPsr = PSR_REFERENCE): number {
+  return Math.max(PSR_MIN_LOSS, PSR_K * holdWinRate(psr, enemyPsr))
 }
 
 /** Below this PSR (≈903.5) a loss costs exactly PSR_MIN_LOSS. */

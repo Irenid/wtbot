@@ -21,19 +21,19 @@ export const en: GuideText = {
   quick: {
     points: {
       q: 'How much PSR does a battle give?',
-      a: () => 'Only your PSR decides: up to 780 a win gives +32 and a loss −1, at 1500 it is +16 and −16, at 2000 +2 and −30.',
+      a: () => 'Your PSR decides, and the enemy team too when its average PSR is above 1500. Against a team averaging 1500 or less: up to 780 a win gives +32 and a loss −1, at 1500 +16 and −16, at 2000 +2 and −30.',
     },
     grow: {
       q: 'How often do I need to win for PSR to grow?',
-      a: () => 'More than 24 battles in 100 at PSR 1300, more than half at 1500 and more than 85 in 100 at 1800.',
+      a: () => 'More than 24 battles in 100 at PSR 1300, more than half at 1500 and more than 85 in 100 at 1800, against teams averaging 1500 or less. Against stronger teams fewer wins are enough.',
     },
     ceiling: {
       q: 'How high will my PSR get?',
-      a: () => 'Your win rate decides: at 50% PSR stops around 1500, at 70% around 1650, at 90% around 1880.',
+      a: () => 'Your win rate decides: at 50% PSR stops around 1500, at 70% around 1650, at 90% around 1880. Regular battles against teams averaging above 1500 raise that level.',
     },
     factors: {
       q: 'Do the opponent and my play in battle matter?',
-      a: () => 'No. Opponent strength, score, kills, deaths and battle length do not count — only the win or loss and your PSR.',
+      a: () => 'Your play does not: score, kills, deaths and battle length do not count. The opponent counts only when the enemy team averages above 1500 PSR: then a win gives more and a loss takes less.',
     },
     leave: {
       q: 'Can I leave a lost battle without losing PSR?',
@@ -91,11 +91,12 @@ export const en: GuideText = {
     },
   },
   psr: {
-    lead: 'PSR is the personal squadron rating. After every squadron battle it grows for a win and drops for a loss. By how much depends only on your PSR: the higher it is, the less a win gives and the more a loss takes.',
+    lead: 'PSR is the personal squadron rating. After every squadron battle it grows for a win and drops for a loss. By how much depends on your PSR — the higher it is, the less a win gives and the more a loss takes — and on the enemy team if its average PSR is above 1500.',
     points: {
       title: 'Points per battle',
       head: ['PSR', 'Win', 'Loss', 'Win %'],
       notes: [
+        'The table is for an enemy team averaging 1500 PSR or less. A stronger team counts with its average instead of 1500: a win gives more and a loss takes less. At PSR 1800 against a team averaging 1800 a win gives +16 instead of +5, and a loss −16 instead of −27.',
         '**Win %** — how many battles out of 100 you need to win for PSR to grow. Win less often and PSR drops.',
         'Above 903 a win and a loss together are always worth 32 points: the less a win gives, the more a loss takes.',
         'Above 1500 a loss costs more than a win gives: at 1800 one loss wipes out 5–6 wins, at 2000 about 18. So the same record — 5 wins and 5 losses — gives +155 at PSR 0, 0 at 1500 and −143 at 2000.',
@@ -104,7 +105,7 @@ export const en: GuideText = {
     },
     calc: {
       title: 'Calculator',
-      intro: 'Enter your PSR and win rate: the calculator applies the formula to show what you get and how high you will climb.',
+      intro: 'Enter your PSR and win rate: the calculator applies the formula for an enemy team averaging 1500 or less to show what you get and how high you will climb.',
       psr: 'Your PSR',
       winRate: 'Win rate',
       win: 'For a win',
@@ -123,16 +124,16 @@ export const en: GuideText = {
     factors: {
       title: 'What affects PSR',
       items: [
-        '**Opponent strength — no effect.** The formula compares you not with the opponent but with a fixed level of 1500. A win over a top squadron is worth as much as a win over a weak one.',
+        '**Opponent strength — only above 1500.** The formula compares you with the enemy team\'s average PSR, but never with less than 1500. A win over any team averaging 1500 or less is worth the same; against a stronger team a win gives more and a loss takes less.',
         '**Play in battle — no effect.** Score, kills, deaths and battle length do not count. PSR changes for the whole team: the best player, those who disconnected and those who failed to load.',
         '**Leaving does not help.** If you leave a lost battle, you lose the same PSR as for an ordinary loss.',
         '**Squadron role — no effect.** The commander, an officer and a private get the same.',
-        '**Only your PSR matters.** For the same win a player at PSR 0 gets +32 and a player at 1800 gets +5.',
+        '**Your own PSR matters most.** For a win over a team averaging 1500 or less a player at PSR 0 gets +32 and a player at 1800 gets +5.',
       ],
     },
     ceiling: {
       title: 'How high PSR can grow',
-      intro: 'The higher PSR is, the less a win gives, so PSR stops at a level set only by your win rate. At 50% wins PSR reaches 1500 and then hovers around it. More battles do not raise that level — they only get you there sooner.',
+      intro: 'The higher PSR is, the less a win gives, so PSR stops at a level set by your win rate. At 50% wins PSR reaches 1500 and then hovers around it. More battles do not raise that level — they only get you there sooner. The table is for enemy teams averaging 1500 or less; stronger opponents raise the level: at 50% wins it is their average PSR.',
       head: ['Win rate', 'PSR stops around', 'Battles from zero'],
       notes: [
         '**Battles from zero** — how many battles from the season start it takes to get within 50 points of that level. A lucky streak can lift you higher, but PSR then comes back.',
@@ -154,11 +155,12 @@ export const en: GuideText = {
       loss: 'Loss',
       atLeast: (n) => `at least ${n}`,
       floor: 'PSR never goes below 0',
+      opponent: (n) => ["enemy team's average PSR,", `at least ${n}`],
       body: [
-        '**E** is the win share at which PSR stays put: the “Win %” column of the [table](/guides/psr#points). Below 903 the formula would charge less than 1 point for a loss, so there it is always −1 and 3% wins are enough to grow.',
-        'Example for PSR 1300: x = (1500 − 1300) / 400 = 0.5; 10^0.5 ≈ 3.16; E = 1 / 4.16 ≈ 0.24. Win: 32 × 0.76 ≈ +24. Loss: 32 × 0.24 ≈ −8.',
+        '**E** is the win share at which PSR stays put: the “Win %” column of the [table](/guides/psr#points), which uses R = 1500. Below 903 the formula would charge less than 1 point for a loss, so there it is always −1 and 3% wins are enough to grow.',
+        'Example for PSR 1300 against a team averaging 1500 or less: x = (1500 − 1300) / 400 = 0.5; 10^0.5 ≈ 3.16; E = 1 / 4.16 ≈ 0.24. Win: 32 × 0.76 ≈ +24. Loss: 32 × 0.24 ≈ −8.',
         'Above 903 the average result of one battle is simpler: 32 × (win share − E). At PSR 1300 and 60% wins that is 32 × (0.60 − 0.24) ≈ +11.5 per battle.',
-        'This is the Elo system, as in chess, except that the opponent is always the same: an imaginary player with PSR 1500.',
+        'This is the Elo system, as in chess, with the enemy team\'s average PSR as the opponent. A weaker team counts as 1500, so a win over it gives as much as over a team averaging 1500.',
       ],
     },
   },
@@ -359,9 +361,10 @@ export const en: GuideText = {
     },
     formula: {
       title: 'PSR formula',
-      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max }) => [
+      body: ({ single, k, reference, scale, withinOne, chainLow, chainHigh, liveMatched, liveTotal, max, strong, fixed, enemy, weaker }) => [
         `The formula was fitted on cases where exactly one battle separated two readings of a player's PSR (${single}). The Elo system fit best. The fitted numbers (${k}; ${reference}; ${scale}) are 32, 1500 and 400.`,
         `For a single battle the formula matches the game's site within 1 point in ${withinOne} of cases. It explains ${chainLow}–${chainHigh} of changes spanning several battles, depending on PSR. In a live check ${liveMatched} of ${liveTotal} changes matched.`,
+        `A larger check in October 2026 showed that a strong opponent counts. In ${strong} single-battle changes against an enemy team averaging above 1500, a fixed opponent of 1500 matched the game's site within 1 point in only ${fixed}, the enemy team's average PSR in ${enemy}. Against weaker teams both give ${weaker}: the opponent never counts as weaker than 1500.`,
         `Checked on PSR from 0 to ${max}, the highest PSR in the data; above it there is nothing to check the formula on.`,
       ],
     },
