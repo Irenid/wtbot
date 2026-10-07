@@ -130,6 +130,9 @@ The game's built-in browser map; it listens on `0.0.0.0:8111`. The map page
   (2026-10-07: 1.1 s after the local API stopped answering, 0.06 s before
   `map_info.valid`); the **first write (128 KiB) came 82.1 s after that, 36.5 s
   after the spawn**; then 128 KiB (once 132 KiB) every 4–50 s, median 22 s.
+  The writes lag the stream by ~20 s: the header `startTime` was 3 s before
+  the file appeared, and the first and second writes (85 and 113 s after it)
+  held the stream up to 64.7 and 98.7 s (the saved copy of the same battle).
   Deleted 7–12 s after the mission status turns `fail`/`success`; the saved
   file follows ~4 s later. The last size before deletion (4,210,688) trailed
   the saved stream's end (4,273,477) by under 64 KiB: the same stream.
