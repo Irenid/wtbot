@@ -8,6 +8,7 @@ import {
   escapeMarkdown,
   type ButtonInteraction,
 } from 'discord.js'
+import { setTimeout as sleep } from 'node:timers/promises'
 import type { Command } from '../types.js'
 import { heatmapQualityRow, heatmapScaleForUpload, type HeatmapScale } from '../battle-media-controls.js'
 import {
@@ -33,7 +34,13 @@ import {
 } from '../../wrpl/battle-media.js'
 import { isBattleHeatmapKind } from '../../wrpl/battle-media-kind.js'
 import { reconstructBattleSummary } from '../../wrpl/battle-data.js'
-import { battlePsr, notePsrFormulaChecks, PSR_RECHECK_AFTER_SEC, type BattlePsr } from '../../wrpl/battle-psr.js'
+import {
+  battlePsr,
+  notePsrFormulaChecks,
+  PSR_RECHECK_AFTER_SEC,
+  PSR_RECHECK_STORE_WAIT_SEC,
+  type BattlePsr,
+} from '../../wrpl/battle-psr.js'
 import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
@@ -118,11 +125,13 @@ export interface BattlePost {
    */
   buildLookupPayload: (() => Promise<BattlePostPayload | null>) | null
   /**
-   * Rereads the squadron pages once they have counted the battle and redraws
-   * the PSR column if its numbers change: the page's own PSR replaces the
-   * formula's (battle-psr.ts); null — no squadron tags. Due at `recheckAt`.
+   * Rereads the squadron pages once they have counted the battle, waits
+   * PSR_RECHECK_STORE_WAIT_SEC for the battles the read may count to be
+   * stored, and redraws the PSR column if its numbers change: the page's own
+   * PSR replaces the formula's (battle-psr.ts); null — no squadron tags. Due at
+   * `recheckAt`; `signal` cuts the wait short at shutdown.
    */
-  buildRecheckPayload: (() => Promise<BattlePostPayload | null>) | null
+  buildRecheckPayload: ((signal: AbortSignal) => Promise<BattlePostPayload | null>) | null
   /** The battle's end + PSR_RECHECK_AFTER_SEC, unix ms. */
   recheckAt: number
   /** A conservative estimate of the state the update closures retain, bytes. */
@@ -288,9 +297,11 @@ export async function renderBattlePost(
   const buildRatingsPayload = priority === 'background' && clanTags.length > 0 ? redrawPsr : null
   const recheckAt = (header.startTime + results.timePlayed + PSR_RECHECK_AFTER_SEC) * 1_000
   const buildRecheckPayload = clanTags.length > 0
-    ? async (): Promise<BattlePostPayload | null> => {
+    ? async (signal: AbortSignal): Promise<BattlePostPayload | null> => {
         await fetchRatingsForTags(clanTags, { freshAfter: recheckAt })
         pagesRead = true
+        // The read may count the players' next battles: the path places it once they are stored.
+        await sleep(PSR_RECHECK_STORE_WAIT_SEC * 1_000, undefined, { signal, ref: false })
         const psr = readPsr(currentWinnerTeam)
         notePsrFormulaChecks(psr)
         return redrawIfChanged(psr)
@@ -396,9 +407,12 @@ const WINNER_UPDATE_POLL_MS = 1_000
 const postUpdates = new Map<string, BattlePostUpdateEntry>()
 let postUpdatesBytes = 0
 let postUpdatesStopping = false
+/** Aborts the rechecks' wait for stored battles at shutdown. */
+const postUpdatesAbort = new AbortController()
 
 export async function stopBattlePostUpdates(): Promise<void> {
   postUpdatesStopping = true
+  postUpdatesAbort.abort()
   for (const { timer } of postRechecks.values()) clearTimeout(timer)
   postRechecks.clear()
   postRechecksBytes = 0
@@ -408,7 +422,8 @@ export async function stopBattlePostUpdates(): Promise<void> {
 
 /**
  * Posts waiting for their PSR recheck, by session. ~1,250 posts a day wait
- * 16 min each: ~15 at a time, a few times that at the evening peak.
+ * 16 min each, then 3 more in recheckTasks: ~20 at a time, a few times that at
+ * the evening peak. The bytes cover both.
  */
 const postRechecks = new Map<string, { timer: NodeJS.Timeout; bytes: number }>()
 let postRechecksBytes = 0
@@ -420,8 +435,8 @@ const MAX_POST_RECHECK_BYTES = 32 * 1024 * 1024
  * Runs the post's PSR recheck (BattlePost.buildRecheckPayload) when it is
  * due, after the post's other updates. Not queued when it is already due:
  * the post's first read of the pages came after the battle was counted; nor
- * when due after `deadline` (unix ms), when `apply` no longer works. A
- * restart drops the waiting ones.
+ * when it would redraw after `deadline` (unix ms), when `apply` no longer
+ * works. A restart drops the waiting ones.
  */
 export function queueBattlePostRecheck(
   post: BattlePost,
@@ -431,11 +446,13 @@ export function queueBattlePostRecheck(
   const build = post.buildRecheckPayload
   const sessionIdHex = post.sessionIdHex
   const delayMs = post.recheckAt - Date.now()
-  if (!build || postUpdatesStopping || delayMs <= 0 || post.recheckAt > deadline || postRechecks.has(sessionIdHex)) return
+  const redrawAt = post.recheckAt + PSR_RECHECK_STORE_WAIT_SEC * 1_000
+  if (!build || postUpdatesStopping || delayMs <= 0 || redrawAt > deadline || postRechecks.has(sessionIdHex)) return
   const bytes = Math.max(0, Math.floor(post.updateBytes))
-  if (postRechecks.size >= MAX_POST_RECHECKS || postRechecksBytes + bytes > MAX_POST_RECHECK_BYTES) {
+  const waiting = postRechecks.size + recheckTasks.size
+  if (waiting >= MAX_POST_RECHECKS || postRechecksBytes + bytes > MAX_POST_RECHECK_BYTES) {
     console.warn(
-      `[bot] PSR recheck of ${sessionIdHex} skipped: ${postRechecks.size} waiting, ` +
+      `[bot] PSR recheck of ${sessionIdHex} skipped: ${waiting} waiting, ` +
         `${(postRechecksBytes / 1024 / 1024).toFixed(1)} MiB`,
     )
     return
@@ -443,12 +460,11 @@ export function queueBattlePostRecheck(
   postRechecksBytes += bytes
   const timer = setTimeout(() => {
     postRechecks.delete(sessionIdHex)
-    postRechecksBytes = Math.max(0, postRechecksBytes - bytes)
     const task: Promise<void> = (async () => {
       // The last draw must keep the winner and flags the post's other updates drew.
       await postUpdates.get(sessionIdHex)?.task
       if (postUpdatesStopping) return
-      const payload = await build()
+      const payload = await build(postUpdatesAbort.signal)
       if (payload && !postUpdatesStopping) await apply(payload)
     })()
       .catch((err: unknown) => {
@@ -456,7 +472,10 @@ export function queueBattlePostRecheck(
           console.warn(`[bot] PSR recheck of ${sessionIdHex}: ${err instanceof Error ? err.message : String(err)}`)
         }
       })
-      .finally(() => recheckTasks.delete(task))
+      .finally(() => {
+        recheckTasks.delete(task)
+        postRechecksBytes = Math.max(0, postRechecksBytes - bytes)
+      })
     recheckTasks.add(task)
   }, delayMs)
   timer.unref()

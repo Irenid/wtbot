@@ -113,7 +113,7 @@ test('the PSR recheck waits until due and for the post\'s other updates, then re
   assert.deepEqual(applied, ['ratings', 'lookup', 'recheck'])
 })
 
-test('a PSR recheck already due or due past the deadline is not queued', async () => {
+test('a PSR recheck already due or redrawing past the deadline is not queued', async () => {
   let builds = 0
   const post = (sessionIdHex: string, recheckAt: number): BattlePost => ({
     payload: payload('initial'),
@@ -130,6 +130,8 @@ test('a PSR recheck already due or due past the deadline is not queued', async (
   })
   queueBattlePostRecheck(post('recheck-past', Date.now() - 1), async () => undefined)
   queueBattlePostRecheck(post('recheck-late', Date.now() + 10), async () => undefined, Date.now())
+  // Due before the deadline, but it redraws PSR_RECHECK_STORE_WAIT_SEC later.
+  queueBattlePostRecheck(post('recheck-wait', Date.now() + 10), async () => undefined, Date.now() + 60_000)
   await new Promise<void>((resolve) => setTimeout(resolve, 40))
   assert.equal(builds, 0)
 })

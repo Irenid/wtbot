@@ -17,8 +17,10 @@ import type { ReplayPlayerResult } from './replay.js'
  * enemy team's average PSR, and the squadron page (clan-info.ts) lags:
  * warthunder.com rebuilds it on request once its copy is 15 min old, so a
  * result shows 0.6–14.7 min after the battle (guides/measurements.ts TIMING),
- * and the bot reads it right after the battle. A read lacks this battle and
- * often the previous one or two. So the PSR before the battle is a reading
+ * and the bot reads it right after the battle. A player's battles end a median
+ * 7 min apart (86% within 16 min), so one refresh often counts two: at the
+ * announcement the latest read lacks the battle before this one for 36% of
+ * players, two for 11%, more for 2%. So the PSR before the battle is a reading
  * carried forward by the formula over the player's stored battles it does not
  * count yet. Which battles a reading counts follows from the read time (a
  * battle that ended d s before a read is counted with probability
@@ -29,14 +31,18 @@ import type { ReplayPlayerResult } from './replay.js'
  * began (getBattleTeamPsr). Once a reading counts exactly this battle, the
  * column shows the page's own PSR: the post is redrawn after the page has
  * certainly counted the battle (PSR_RECHECK_AFTER_SEC, bot/commands/battle.ts).
+ * The page shows that value only if it refreshed before the player's next
+ * battle ended: for about half of them (45% within the hour after, reads at
+ * the announcements only); the others keep the formula's.
  *
- * Measured on the 5,909 battles of 2026-10-03..07 drawn as at the
- * announcement, against the page's PSR once a reading of the next hour
- * counted exactly the battle (41,580 players): equal in 77%, within 1 point in
+ * Measured on the 6,333 battles of 2026-10-03..07 drawn as at the
+ * announcement, against the page's PSR where a reading of the next hour
+ * counted exactly the battle (44,599 players): equal in 77%, within 1 point in
  * 97.5% (a fixed 1500 opponent and no page value, as before 2026-10-07: 63%
- * and 90.5%); the recheck makes them all equal and redraws 65% of posts (13% of
- * players; 17% of posts by over a point). Against readings whose counts the
- * read times alone fix (1,177): within 1 point 98.0% (88.5%).
+ * and 90%), 96–99% whether the read before lacked 0, 1, 2 or more battles; the
+ * recheck shows that value and redraws 65% of posts (13% of players; 16% of
+ * posts by over a point). Against readings whose counts the read times alone
+ * fix (1,262): within 1 point 97.8% (87.6%), 100% after the recheck.
  */
 
 /** warthunder.com rebuilds a squadron page on request once its copy is this old, s. */
@@ -47,6 +53,14 @@ const PSR_PAGE_MAX_AGE_SEC = 15 * 60
  * (TIMING.delay.min), s.
  */
 export const PSR_RECHECK_AFTER_SEC = PSR_PAGE_MAX_AGE_SEC + 60
+/**
+ * How long the recheck waits after reading the pages before it computes, s.
+ * The read can count the player's next battle too (battles end a median 7 min
+ * apart), and while that battle is not stored the path has nothing else to
+ * give the read and pins it on this one. 99.6% of battles are stored within it
+ * of their end, all within 5.2 min (2026-10-03..07, outside downtime).
+ */
+export const PSR_RECHECK_STORE_WAIT_SEC = 3 * 60
 /** Readings before the battle the path starts from; with fewer, the season start (PSR 0) anchors it when it fits. */
 const READINGS_BEFORE = 10
 /** Readings after the battle still used: a battle drawn later (/battle <id>) is pinned down from both sides. */
@@ -303,12 +317,20 @@ export function battlePsr(input: BattlePsrInput): Map<string, BattlePsr> {
 }
 
 /**
+ * Farthest the page's change over an isolated battle sits from the formula's
+ * while still being this battle's points. Beyond it the page holds another
+ * change too: a battle the server applied late or the database lacks: 0.6% of
+ * isolated battles, 2026-10-03..07; 99.3% are within 2 points.
+ */
+const PAGE_MISS_MAX = 4
+
+/**
  * A player's column entry: the formula's points from the PSR before the
  * battle; the page's PSR after it once a reading counts exactly this battle;
  * the page's change when two readings isolate the battle and the formula
- * misses it beyond the page's rounding (1 point). Without the reading before
- * it the estimate before carries the formula over earlier battles, so the page
- * change could hold their misses.
+ * misses it beyond the page's rounding (1 point) but within PAGE_MISS_MAX.
+ * Without the reading before it the estimate before carries the formula over
+ * earlier battles, so the page change could hold their misses.
  */
 export function psrColumn(estimate: PsrEstimate, won: boolean | null, enemyPsr: number): BattlePsr {
   const { before, siteBefore, siteAfter } = estimate
@@ -317,8 +339,11 @@ export function psrColumn(estimate: PsrEstimate, won: boolean | null, enemyPsr: 
   if (siteAfter === null) return { psr: before + change, change, formulaMiss: null }
   if (siteBefore === null) return { psr: siteAfter, change, formulaMiss: null }
   // The reading before the battle is the estimate itself: the latest that does not count it.
-  const formulaMiss = siteAfter - siteBefore - change
-  return { psr: siteAfter, change: Math.abs(formulaMiss) <= 1 ? change : siteAfter - siteBefore, formulaMiss }
+  const pageChange = siteAfter - siteBefore
+  const formulaMiss = pageChange - change
+  // A win never lowers PSR and a loss never raises it: such a page change holds another battle.
+  const own = Math.abs(formulaMiss) > 1 && Math.abs(formulaMiss) <= PAGE_MISS_MAX && (won ? pageChange >= 0 : pageChange <= 0)
+  return { psr: siteAfter, change: own ? pageChange : change, formulaMiss }
 }
 
 /** Formula checks kept: the share is over the last this many. */

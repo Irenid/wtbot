@@ -473,9 +473,17 @@ Data:
   battle is the last readings (snapshot changes, the last roster read) carried
   over the player's stored battles; which battles a reading counts is a
   Viterbi path over read times and values. `PSR_RECHECK_AFTER_SEC` (16 min)
-  after the battle the post rereads the pages (`freshAfter`) and redraws when
-  a number changes: a reading that counts exactly the battle gives the page's
-  own PSR. The recheck queue is in memory: a restart drops the waiting ones.
+  after the battle the post rereads the pages (`freshAfter`), and
+  `PSR_RECHECK_STORE_WAIT_SEC` (3 min) later redraws when a number changes: a
+  reading that counts exactly the battle gives the page's own PSR. The wait
+  lets the battles the read counts be stored: a player's next battle often
+  ends before the recheck (median 7 min apart), and a read counting a battle
+  the path lacks is pinned on this one. The page shows the PSR after a battle
+  only if it refreshed before the next one ended (about half of players); the
+  others keep the formula's. The page's change replaces the formula's only
+  past the rounding, within 4 points and with the result's sign; otherwise it
+  holds another battle. The recheck queue is in memory: a restart drops the
+  waiting ones.
   Rechecked players whose battle two readings isolate feed
   `psrFormulaCheck()` (`/api/stats` → `psrFormula`, a warning under 90%): a
   drop means Gaijin changed the rule. Accuracy in the module header.

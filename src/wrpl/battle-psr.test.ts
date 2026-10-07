@@ -73,6 +73,20 @@ test('readings on both sides of the battle give the page\'s PSR before and after
   assert.deepEqual(estimate, { before: 1500, siteBefore: 1500, siteAfter: 1517 })
 })
 
+test('a read that also counts the next battle gives this one no page value once that battle is stored', () => {
+  // Wins ending at 0 and 7 min; the 16-min read counts both: 1500 + 16 + 15.3.
+  const readings = [{ at: at(-20), psr: 1500 }, { at: at(16), psr: 1531 }]
+  const first = { endAt: at(0), won: true, enemyPsr: null }
+  const stored = estimatePsr([first, { endAt: at(7), won: true, enemyPsr: null }], readings, 0, null)
+  assert.deepEqual(stored, { before: 1500, siteBefore: 1500, siteAfter: null })
+  assert.deepEqual(psrColumn(stored!, true, 1500), { psr: 1516, change: 16, formulaMiss: null })
+  // Not stored yet, the next battle cannot take the read: the path pins it on this one, so the
+  // recheck computes PSR_RECHECK_STORE_WAIT_SEC after its read. The points stay this battle's.
+  const unstored = estimatePsr([first], readings, 0, null)
+  assert.deepEqual(unstored, { before: 1500, siteBefore: 1500, siteAfter: 1531 })
+  assert.deepEqual(psrColumn(unstored!, true, 1500), { psr: 1531, change: 16, formulaMiss: 15 })
+})
+
 test('an earlier battle counts with its enemy team\'s average PSR', () => {
   const battles: PsrBattle[] = [
     { endAt: at(0), won: true, enemyPsr: 1800 },
@@ -90,10 +104,15 @@ test('the column takes the page\'s PSR after the battle, and its change only pas
   // The page rounds both readings: 1500 → 1517 is the formula's +16 within a point.
   assert.deepEqual(psrColumn(estimate(1500, 1500, 1517), true, 1500), { psr: 1517, change: 16, formulaMiss: 1 })
   // The formula misses the battle: the page's own change.
-  assert.deepEqual(psrColumn(estimate(1500, 1500, 1528), true, 1500), { psr: 1528, change: 28, formulaMiss: 12 })
+  assert.deepEqual(psrColumn(estimate(1500, 1500, 1519), true, 1500), { psr: 1519, change: 19, formulaMiss: 3 })
+  // Beyond PAGE_MISS_MAX the page holds another battle too: the formula's points, still counted as a miss.
+  assert.deepEqual(psrColumn(estimate(1500, 1500, 1528), true, 1500), { psr: 1528, change: 16, formulaMiss: 12 })
+  // So does a page that drops over a win: +1.7 by the formula, not the page's -1.
+  const win = psrColumn(estimate(2000, 2000, 1999), true, 1500)
+  assert.equal(win.psr, 1999)
+  assert.ok(Math.abs(win.change! - 1.7) < 0.05 && Math.abs(win.formulaMiss! + 2.7) < 0.05)
   // Without a reading isolating the battle the change stays the formula's.
-  const carried = psrColumn(estimate(1500, null, 1528), true, 1500)
-  assert.deepEqual({ ...carried, change: Math.round(carried.change!) }, { psr: 1528, change: 16, formulaMiss: null })
+  assert.deepEqual(psrColumn(estimate(1500, null, 1528), true, 1500), { psr: 1528, change: 16, formulaMiss: null })
   assert.deepEqual(psrColumn(estimate(1500, 1500, null), false, 1500), { psr: 1484, change: -16, formulaMiss: null })
   // A loss to a stronger team costs less.
   assert.equal(Math.round(psrColumn(estimate(1500, 1500, null), false, 1800).change!), -5)

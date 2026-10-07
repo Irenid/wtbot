@@ -3,6 +3,7 @@ import test, { beforeEach } from 'node:test'
 import {
   closeDb,
   getClanRosterRefreshedAt,
+  getPsrReadings,
   getSiteClanRosterDetails,
   initDb,
   saveClanRatingSnapshots,
@@ -300,6 +301,28 @@ test('fetchClanMembers читает активность, роль и дату �
       joinedAt: Date.UTC(2023, 10, 1) / 1_000,
       activity: 1440,
     })
+  } finally {
+    closeDb()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a nick the page lists twice keeps the PSR that plays, read now or stored before', async () => {
+  const originalFetch = globalThis.fetch
+  const row = (nick: string, rating: number) =>
+    `<div class="squadrons-members__grid-item"><a href="en/community/userinfo/?nick=${nick}">${nick}</a></div>` +
+    `<div class="squadrons-members__grid-item">${rating}</div>`
+  globalThis.fetch = async () => new Response(row('Twice', 0) + row('Other', 900) + row('Twice', 1434))
+  initDb(':memory:')
+
+  try {
+    assert.deepEqual((await fetchClanMembers('Clan')).map(({ nick, rating }) => ({ nick, rating })), [
+      { nick: 'Twice', rating: 1434 },
+      { nick: 'Other', rating: 900 },
+    ])
+    // Reads before the fix stored both rows within one second.
+    saveClanRatingSnapshots('[CLAN]', [{ nick: 'Twice', rating: 0 }, { nick: 'Twice', rating: 1434 }])
+    assert.deepEqual(getPsrReadings('[CLAN]', 'Twice', 0).map(({ psr }) => psr), [1434])
   } finally {
     closeDb()
     globalThis.fetch = originalFetch

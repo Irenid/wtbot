@@ -4861,7 +4861,13 @@ export function getPsrReadings(clanTag: string, nick: string, since: number): Ps
     'SELECT last_present_at FROM clan_roster WHERE clan_core = ? AND nick = ?',
   )
   const rows = selectPsrSnapshotsStatement.all(clanTag, nick, since) as unknown as { rating: number; seen_at: number }[]
-  const readings = rows.map((row) => ({ at: row.seen_at, psr: row.rating }))
+  const readings: PsrReading[] = []
+  for (const row of rows) {
+    const last = readings.at(-1)
+    // Rows of one second: a page listing the nick twice, once with 0 (fetchClanMembers keeps one since 2026-10-07).
+    if (last?.at === row.seen_at) last.psr = Math.max(last.psr, row.rating)
+    else readings.push({ at: row.seen_at, psr: row.rating })
+  }
   const latest = readings.at(-1)
   const roster = selectPsrRosterReadStatement.get(clanCoreOf(clanTag), nick) as { last_present_at: number } | undefined
   if (latest && roster && roster.last_present_at > latest.at) readings.push({ at: roster.last_present_at, psr: latest.psr })

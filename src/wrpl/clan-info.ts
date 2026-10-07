@@ -253,7 +253,14 @@ export async function fetchClanMembers(clanName: string): Promise<ClanPageMember
       `страница клана ${clanName}: распознано ${members.length} из ${anchorCount} участников — парс не полный`,
     )
   }
-  return members
+  // A page can list a nick twice, once with PSR 0 (one squadron, 2026-10-04..07): every read then
+  // stored both in turn. The one with PSR plays.
+  const byNick = new Map<string, ClanPageMember>()
+  for (const member of members) {
+    const listed = byNick.get(member.nick)
+    if (listed === undefined || member.rating > listed.rating) byNick.set(member.nick, member)
+  }
+  return [...byNick.values()]
 }
 
 /**
