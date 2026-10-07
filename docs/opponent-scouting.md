@@ -178,18 +178,21 @@ The game's built-in browser map; it listens on `0.0.0.0:8111`. The map page
 |---|---|---|---|
 | In-progress replay, slots only | first 128 KiB write: 82 s after the start (one battle) | exact roster | game rules unclear; ~20 s ahead of the kill feed |
 | Server replay on the CDN | at the end (+4 s) | exact roster and lineups | too late for the battle |
+| Screenshot of the Tab scoreboard + OCR (StatShark's way) | when the player opens Tab | names of both teams → squadron and group through the database | no process access, only what Tab shows; no official ruling |
 | `8111` kill feed | first line naming both sides p50 103 s (p10 61, p90 156) | exact tag; a nickname gives squadron and group through the database | the game's own read-only API |
 | `8111` all-chat | within 60 s in 9.7% (either team) | bonus | — |
 | Server data only | before the battle | top 1 13.0%, top 5 46.5% when visible (90.5%) | — |
 | A person after Tab (`/scout`) | ~10–20 s (estimate) | exact tag | needs a person |
 
-No automatic source names the enemy at the start. The in-progress replay gets
-the roster to disk with its first 128 KiB write, 82 s in — about as late as the
-kill feed (p50 103 s), so it does not justify the rules risk. The automatic,
-ban-safe source is the kill feed on `8111` (~1.5–2 min); the start itself needs
-a person (Tab → `/scout`); server data alone gives a 13% (top 1) / 46.5%
-(top 5) shortlist. Once the squadron is known, its last battle (or the last
-battle of the first enemy seen) predicts players and vehicles well.
+No fully automatic source names the enemy at the start. The in-progress replay
+gets the roster to disk with its first 128 KiB write, 82 s in — about as late
+as the kill feed (p50 103 s), so it does not justify the rules risk. The
+automatic, ban-safe source is the kill feed on `8111` (~1.5–2 min); the start
+needs Tab: a person typing the tag (`/scout`) or, as StatShark does, a
+screenshot of the scoreboard read by OCR; server data alone gives a 13%
+(top 1) / 46.5% (top 5) shortlist. Once the squadron is known, its last battle
+(or the last battle of the first enemy seen) predicts players and vehicles
+well.
 
 ## Ban-safe measurement
 
@@ -210,3 +213,41 @@ What the measurements touched, from no risk to the rules' grey zone:
 Never done: reading the in-progress replay during a battle, reading game memory
 or traffic, injecting code, automating input, editing game files, decoding the
 obfuscated logs.
+
+## Third-party tools and the rules
+
+Checked on 2026-10-07 on the War Thunder forum. statshark.net itself was not
+read: its `robots.txt` disallows AI agents (`Disallow: /`) and `/api/` for
+every client — the API the bot's optional StatShark provider
+(`STATSHARK_PLAYER_STATS_ENABLED=false`) calls.
+
+- **StatShark "Shark Client"** — a Windows app for Patreon supporters (from
+  $6.50 a month; 139 patrons on 2026-01-30) since 2026-01-02: Live Game
+  Viewer, Session Viewer, Streamer Overlay. It replaced a live viewer on the
+  website (seen from 2025-09) that was "permanently" gone on October 8. Its
+  announcement: "We use OCR (Optical Character Recognition) alongside available
+  localhost endpoints to find the player names and map them to each given
+  team", "which is why it needs to run locally". Its developer, paraphrased: the
+  app screenshots the display while the scoreboard (Tab) is open and sends it to
+  StatShark's servers for AI OCR, with "no interaction with in-game processes".
+  Stats come from scraped service records, not replays; users who use the
+  viewer and leave battles early are blocked. No Gaijin statement on it.
+  Threads: [298328](https://forum.warthunder.com/t/statsharks-live-game-viewer-is-really-bad-for-the-games-health/298328),
+  [256939](https://forum.warthunder.com/t/statshark-in-game-overlay/256939).
+- **Tools on `8111`** show no enemy roster (the API has none): WT-Plotter
+  (saved replays, live positions from `8111`, Windows/Linux), LockOn (Android,
+  own results over the LAN), WTRTI, WtHud2, Thunder Viewer (own telemetry),
+  Gaijin's WT Assistant (tactical map). No open-source roster OCR was found.
+- **Official answers** (forum, community manager Stona_WT and GM Schindibee):
+  "Generally speaking, using localhost data to display overlays is considered
+  fine and not a bannable offense"; enemy markers where the mode has none "can
+  be considered an ESP overlay"; "we won't permanently suspend any account
+  without a preceding temporary ban or a warning" (2024-05-13,
+  [106664/16](https://forum.warthunder.com/t/tools-using-data-provided-on-port-8111/106664/16));
+  "We do not provide such "seal of approval" for 3rd party apps" (2026-01-27,
+  [303251](https://forum.warthunder.com/t/any-contact-for-decision-is-my-in-development-overlay-app-ok/303251));
+  "WHAT you get is important here, not HOW you get it"; an app showing
+  distances to spotted enemies "had to remove that functionality" (2026-09-07,
+  [351718](https://forum.warthunder.com/t/question-ground-battle-map-tool-using-the-official-8111-localhost-api-within-the-rules/351718)).
+  Rules 6.1.3–6.1.4 (automation, third-party software):
+  legal.gaijin.net/en/gamerules-wt. Nothing official on OCR, replays or memory.
