@@ -126,9 +126,13 @@ The game's built-in browser map; it listens on `0.0.0.0:8111`. The map page
   folder, written in one go when the battle ends (creation and modification
   time within 1 ms).
 - **In progress:** `/tmp/wt_replay_XXXXXX` (Steam's container shares the
-  host's `/tmp`), held open by the game, grows in 128 KiB steps every 4–43 s
-  (air and ground battles), deleted 7 s after the mission status turns
-  `fail`.
+  host's `/tmp`), held open by the game. Created with 0 bytes as loading ends
+  (2026-10-07: 1.1 s after the local API stopped answering, 0.06 s before
+  `map_info.valid`); the **first write (128 KiB) came 82.1 s after that, 36.5 s
+  after the spawn**; then 128 KiB (once 132 KiB) every 4–50 s, median 22 s.
+  Deleted 7–12 s after the mission status turns `fail`/`success`; the saved
+  file follows ~4 s later. The last size before deletion (4,210,688) trailed
+  the saved stream's end (4,273,477) by under 64 KiB: the same stream.
 - **Format:** the saved file is a WRPL with `isServer` false (byte 742 is not
   `0x5a`), so `extractReplayEvents` skips it. Header `e5ac0010`, version
   101404, the session ID at offset 732 (e.g. `127b004900818a7a`), a 1,157-byte
@@ -136,13 +140,17 @@ The game's built-in browser map; it listens on `0.0.0.0:8111`. The map page
   results BLK at `resultsBlkOffset`.
 - **Player slots** (`02 58 2d f0` packets, `SlotParser` in
   `src/wrpl/replay-events.ts`): user ID (signed), nickname, squadron tag,
-  title, team, real nickname; a table of 64 slots. In two custom battles the
-  player's slot came at 7.5–8.3 s of stream time, inside the first compressed
-  block (it ends at file byte 51,572–54,530): it reaches the disk with the
-  temp file's first 128 KiB write.
-- **Not measured:** when that first write happens relative to loading and
-  spawn; both teams' slots in a battle with other players; whether the
-  in-progress header already holds the session ID; the path on Windows.
+  title, team, real nickname; a table of 64 slots. In a 32-vs-32 battle with
+  bots all 64 slots (1 player, 63 bots with negative IDs) came named, 32 per
+  team, in one batch at 4.5 s of stream time, complete at file byte 53,350;
+  in three custom battles at 7.0–8.3 s, by byte 51,572–54,530. Always inside
+  the first compressed block, so the roster reaches the disk with the first
+  128 KiB write. In 4 saved replays the first 128 KiB holds the stream up to
+  55–59 s of stream time, the first 256 KiB up to 82–102 s.
+- **Not measured:** the first write in a squadron battle (one bot battle so
+  far); human slots of both teams (the bot battle shows the table complete);
+  whether the in-progress header already holds the session ID; the path on
+  Windows.
 - **Limit:** the same stream records the movement of every unit the client
   receives. Reading it during a battle beyond the slots is a radar cheat. How
   Gaijin treats a tool that reads only the slots (what Tab shows) is unknown.
@@ -165,18 +173,20 @@ The game's built-in browser map; it listens on `0.0.0.0:8111`. The map page
 
 | Source | Enemy known | Result | Caveat |
 |---|---|---|---|
-| In-progress replay, slots only | with the first 128 KiB write (timing not measured) | exact roster | game rules unclear; never read past the slots |
+| In-progress replay, slots only | first 128 KiB write: 82 s after the start (one battle) | exact roster | game rules unclear; ~20 s ahead of the kill feed |
 | Server replay on the CDN | at the end (+4 s) | exact roster and lineups | too late for the battle |
 | `8111` kill feed | first line naming both sides p50 103 s (p10 61, p90 156) | exact tag; a nickname gives squadron and group through the database | the game's own read-only API |
 | `8111` all-chat | within 60 s in 9.7% (either team) | bonus | — |
 | Server data only | before the battle | top 1 13.0%, top 5 46.5% when visible (90.5%) | — |
 | A person after Tab (`/scout`) | ~10–20 s (estimate) | exact tag | needs a person |
 
-Only the in-progress replay can name the enemy before the first spawn without
-a person; its first-write timing is the open measurement. The kill feed is the
-verified, low-risk automatic source at ~1.7 min. Server data cannot pick the
-enemy before the battle ends; once the squadron is known, its last battle (or
-the last battle of the first enemy seen) predicts players and vehicles well.
+No automatic source names the enemy at the start. The in-progress replay gets
+the roster to disk with its first 128 KiB write, 82 s in — about as late as the
+kill feed (p50 103 s), so it does not justify the rules risk. The automatic,
+ban-safe source is the kill feed on `8111` (~1.5–2 min); the start itself needs
+a person (Tab → `/scout`); server data alone gives a 13% (top 1) / 46.5%
+(top 5) shortlist. Once the squadron is known, its last battle (or the last
+battle of the first enemy seen) predicts players and vehicles well.
 
 ## Ban-safe measurement
 
@@ -184,7 +194,8 @@ What the measurements touched, from no risk to the rules' grey zone:
 
 - **The local API on `8111`** — the game's own browser map, read-only GETs at
   ~1 Hz, as its page polls; no access to the game process.
-- **File metadata** of `/tmp/wt_replay_*` and `Replays/` (name, size, times).
+- **File metadata** of `/tmp/wt_replay_*` and `Replays/` (name, size, times),
+  polled every 0.5–1 s.
 - **Saved replays after the battle**, offline — the same data the game's replay
   viewer shows.
 - **The replay CDN for finished battles** — one-byte ranged GETs at 1/s, the
