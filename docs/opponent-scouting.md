@@ -122,29 +122,59 @@ on 2026-10-01 – 2026-10-08. 16.5 s on 26 threads.
 
 A Tab screenshot posted in `WT_SCOUT_CHANNEL` names the enemy players, so only
 their vehicles are predicted (`predictKnownTeam`: each player's own battles at
-the cap, any squadron; unread rows count with the class shares). Reading,
-2026-10-08, five screenshots (two full screens 2560×1440 and 1919×1199, three
-crops) in the production image:
+the cap, any squadron; unread rows count with the class shares). The test set
+is `data/scout-images/` with `truth.json` (`npm run scout:images` scores it):
+the three screenshots sent to the bot on 2026-10-08 (crops 649×265, 1623×623,
+2158×701) and five pasted that day (two full screens and three crops, kept
+downscaled to 2000 px), 51 enemies the bot has battles of. Reading, rewritten
+2026-10-08 after the first screenshots in the channel came back short (3 of 4,
+7 of 8, 6 of 8 enemies):
 
-- **Rows:** the text mask is the colour distance from a 12 px (then 24 px)
-  local mean, any hue; rows are the longest evenly spaced run of text bands
-  (±15% pitch, the highlighted own row up to 2.2× tall, two missing rows
-  filled in). 8 of 8 rows in all five, including a blurry upscaled crop.
-- **OCR:** one Tesseract call (eng+rus+chi_sim, `--psm 6`, TSV) on the rows
-  stacked and scaled to ~30 px text, each pixel's distance from its row's
-  median colour (a local box blur hollowed out CJK strokes and Chinese came
-  out as noise). 0.5–1.5 s per image.
-- **Matching:** nicks of players seen in 120 days (19,575), letters and
-  digits only, look-alikes folded (Cyrillic, `0`/`o`, `1`/`l`/`i`),
-  approximate substring search; allowed edits by weight (a CJK character
-  counts 2): 0 up to 6, 1 up to 10, 2 up to 15, then 3. A find counts when the
-  tag precedes it, or it is exact and weighs 8+, or its squadron holds that
-  side; without this, 4–6 letter nicks matched vehicle names and score
-  columns in every row. Digit-only words (score columns) are skipped.
-- **Result:** 21 of 24 enemies on the three screenshots with both teams, no
-  false find: =7WOLF= 7/8 (the eighth never played in a stored battle),
-  iZG0Y 8/8, CH68 6/8 (two Chinese nicks unreadable); the two crops of one
-  team answer "only one team". Allies are found as well (21).
+- **Rows:** per pixel row, the pixels whose colour differs from their
+  right-hand neighbour (horizontal edges, any hue); rows are the longest
+  evenly spaced run of text bands (±15% pitch, two missing rows filled in, end
+  rows more than 10% off the median pitch trimmed), the highest threshold
+  that keeps the run. The previous mask (colour distance from a local mean)
+  haloed dense red Chinese nicks and took in the own row's frame line, so
+  three rows merged into one band (5 of 8 rows); a short last row fell apart
+  into slivers (7 of 8). Now 8 of 8 on all eight images, 2–6 ms.
+- **OCR:** the rows stacked and scaled to 42 px text (30 px found 49 of 51
+  enemies and 46 of 47 allies, 36 px 50 and 46, 48 px the same as 42), each
+  pixel's distance from its row's median colour; one Tesseract call
+  (`--psm 6`, TSV) per model in parallel: eng, rus, chi_sim, HanS (script)
+  and jpn. A mixed eng+rus+chi_sim model chooses one per word:
+  it read Latin nicks in Cyrillic ("Azadx5x" → "Агадх5х"), Chinese ones as
+  Latin noise. 0.5–1.2 s an image (OCR 0.4–0.9 s, matching 0.1–0.2 s against
+  19,466 players). The best models (`tessdata_best`) found 47; the Latin and
+  Cyrillic script models no more than eng and rus, at 7–20 times the size.
+- **Matching:** nicks of players seen in 120 days, letters and digits only,
+  accents dropped (no pass reads "Loupák" with its á), look-alikes folded
+  (Cyrillic, `0`/`o`, `1`/`l`/`i`), approximate substring search in every
+  pass's reading; allowed edits by weight (a CJK character counts 2): 0 up to
+  6, 1 up to 10, 2 up to 15, then 3. A find counts when its stored tag stands
+  right before it (anywhere in a window, the plane icon read "ANA" before
+  "SIZGOY" made "nasi" one edit from NASHI), or it is exact and weighs 8+, or
+  it stands under its side's squadron and in its column (own nicks end at one
+  x, enemy nicks start at one: a Discord voice overlay over the table names
+  squadron mates). The squadron is the tag read before the nick when it is
+  one read before another nick (dennis7781 played for CH68 in his last stored
+  battle, the screenshot shows =FTNDS=), else the stored one. Among finds over
+  the same text the one explaining most text wins (weight minus twice the
+  edits; "ace" of "メAce" took the place of "ЯсельныйГенералヅ"), then the
+  spelling with case and underscores ("__MAVERiCK__" against
+  "__Maverick____"). A nick decorated with kana or CJK ("GRIMッ") also matches
+  by its letters when they outnumber the decoration 1.5 to 1. Score columns
+  are skipped: digit-only words and words of `о`/`o`/`i` alone (the Cyrillic
+  pass reads zeros as "о"), and nicks of under 3 distinct characters
+  ("ooooooox").
+- **Result:** 50 of 51 enemies, 47 of 47 allies, no false find; the one-team
+  crop answers "only one team". Before: 34 of 51 and 38 of 47 allies with one
+  false (the overlay). The three channel screenshots: 20 of 20 known enemies
+  (16 before); their other 4 (kexik1234, ley2211327 and two Chinese nicks)
+  have no stored battles and are listed as not recognised. The miss: one character
+  (點/点) of a 10 px Chinese nick on a downscaled crop. 48 kana-decorated
+  nicks drawn on synthetic tables (their squadrons mixed, so only tag-confirmed
+  finds count): 19 without the jpn pass, 35 with it and the letters rule.
 
 ## Guessing the enemy from server data
 

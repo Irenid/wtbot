@@ -224,12 +224,11 @@ export type ScoutImageOutcome =
   | { kind: 'no-table' | 'no-players'; read: ScoreboardReadResult }
   | { kind: 'one-side'; read: ScoreboardReadResult; squadron: ScoutSquadron | null }
 
-/** The tag most matches carry, as a squadron. */
+/** The squadron most matches stand under on the screenshot. */
 function majoritySquadron(matches: readonly NickMatch[]): ScoutSquadron | null {
   const counts = new Map<string, number>()
   for (const match of matches) {
-    const core = squadronCore(match.clanTag)
-    if (core !== '') counts.set(core, (counts.get(core) ?? 0) + 1)
+    if (match.squadron !== '') counts.set(match.squadron, (counts.get(match.squadron) ?? 0) + 1)
   }
   const core = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0]
   return core === undefined ? null : squadronIndex().get(core) ?? null

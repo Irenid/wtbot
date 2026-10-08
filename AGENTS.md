@@ -485,14 +485,15 @@ Data:
   update the accuracy in `docs/opponent-scouting.md`. The BR cap switches
   `STAGE_SWITCH_DELAY_SEC` after the schedule's 00:00 UTC.
 - `/scout` by picture: a Tab screenshot in `WT_SCOUT_CHANNEL` → worker task
-  `read-scoreboard-image` (`src/scout/scoreboard-read.ts`): rows by local
-  contrast and even spacing (team colours are never assumed), Tesseract
-  (`tesseract-ocr` eng+rus+chi_sim in the image) as a child process, nicks of
-  the last 120 days matched approximately; the right-hand nick of a row is the
-  enemy. Then `read-scout-players` and `predictKnownTeam` (roster known,
-  vehicles from each player's own battles at the cap). Every image and its
-  reading stay in `data/scout-images/<day>/` (the test set:
-  `npm run scout:images` re-reads them; Discord IDs inside, never publish).
+  `read-scoreboard-image` (`src/scout/scoreboard-read.ts`): rows by
+  horizontal colour edges and even spacing (team colours are never assumed),
+  one Tesseract child process per model of `OCR_PASSES` (the image installs
+  them), nicks of the last 120 days matched approximately in every reading;
+  the right-hand nick of a row is the enemy. Then `read-scout-players` and
+  `predictKnownTeam` (roster known, vehicles from each player's own battles at
+  the cap). Every image and its reading stay in `data/scout-images/<day>/`;
+  with `truth.json` there they are the test set (`npm run scout:images`
+  scores them; Discord IDs inside, never publish).
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,

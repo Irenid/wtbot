@@ -1,21 +1,19 @@
 /**
  * Reads a scoreboard screenshot end to end (worker side): table rows
- * (scoreboard-image.ts) → Tesseract (ocr.ts) → known players and teams
- * (nick-match.ts). Measured on 5 screenshots of 2026-10-08: 1.0–1.7 s, of it
- * OCR ~1.1 s; 6–8 of 8 enemies found where the bot has their battles, no
- * false finds.
+ * (scoreboard-image.ts) → Tesseract passes (ocr.ts) → known players and
+ * teams (nick-match.ts). The test set and its scores: `npm run scout:images`.
  */
 
 import { decodeImage, encodePgm, findScoreboardRows, scoreboardSheet } from './scoreboard-image.js'
-import { parseTesseractTsv, runTesseract, OCR_LANGUAGES } from './ocr.js'
+import { parseTesseractTsv, runTesseract, OCR_PASSES } from './ocr.js'
 import { indexPlayers, matchRows, splitTeams, unreadEnemyRows, type IndexedPlayer, type KnownPlayer, type NickMatch } from './nick-match.js'
 
 export interface ScoreboardReadResult {
   /** no-table — no evenly spaced rows; one-side — one team read, its side unknown; no-players — nobody known. */
   status: 'ok' | 'no-table' | 'one-side' | 'no-players'
   rows: number
-  /** Each row's OCR text, for the saved record. */
-  ocrRows: string[]
+  /** Each row's OCR text per pass (OCR_PASSES order), for the saved record. */
+  ocrRows: string[][]
   enemies: NickMatch[]
   allies: NickMatch[]
   oneSide: NickMatch[]
@@ -37,15 +35,16 @@ export async function readScoreboard(
   if (!layout) return { status: 'no-table', rows: 0, ...empty, ms }
   const sheet = scoreboardSheet(image, layout)
   const ocrStarted = performance.now()
-  const rows = parseTesseractTsv(await runTesseract(encodePgm(sheet), OCR_LANGUAGES, tesseract), sheet)
+  const pgm = encodePgm(sheet)
+  const readings = await Promise.all(OCR_PASSES.map(async (languages) => parseTesseractTsv(await runTesseract(pgm, languages, tesseract), sheet)))
   ms.ocr = performance.now() - ocrStarted
   const matchStarted = performance.now()
-  const split = splitTeams(matchRows(rows, players))
+  const split = splitTeams(matchRows(readings, players))
   ms.match = performance.now() - matchStarted
-  const ocrRows = rows.map((row) => row.words.map((word) => word.text).join(' '))
+  const ocrRows = layout.rows.map((_, index) => readings.map((reading) => reading[index]!.words.map((word) => word.text).join(' ')))
   const base = { rows: layout.rows.length, ocrRows, enemies: split.enemies, allies: split.allies, oneSide: split.oneSide, ms }
   if (split.splitX === null) return { status: split.oneSide.length > 0 ? 'one-side' : 'no-players', unread: [], ...base }
-  return { status: 'ok', unread: unreadEnemyRows(rows, split), ...base }
+  return { status: 'ok', unread: unreadEnemyRows(readings, split), ...base }
 }
 
 const CANDIDATE_TTL_MS = 10 * 60_000

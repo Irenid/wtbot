@@ -1,7 +1,7 @@
 /**
  * The scoreboard (Tab) screenshot for /scout: finds the table rows and builds
  * a grey "sheet" of them for OCR. Colours are never assumed (players change
- * team colours): text is whatever stands out from its local background, rows
+ * team colours): text is where colour changes sharply along a pixel row, rows
  * are the longest run of evenly spaced text bands. The layout is the only
  * given: allies on the left, enemies on the right (nick-match.ts).
  * Pure CPU work on untrusted bytes: runs in a worker, sizes are bounded.
@@ -39,52 +39,28 @@ export function decodeImage(bytes: Uint8Array): RgbaImage {
   throw new Error('Not a PNG or JPEG image')
 }
 
-/** Separable box blur of one channel plane (edges clamped), radius r. */
-function boxBlur(plane: Float32Array, width: number, height: number, r: number): Float32Array {
-  const tmp = new Float32Array(plane.length)
-  const out = new Float32Array(plane.length)
-  const span = 2 * r + 1
-  for (let y = 0; y < height; y += 1) {
-    const row = y * width
-    let sum = 0
-    for (let k = -r; k <= r; k += 1) sum += plane[row + Math.min(width - 1, Math.max(0, k))]!
-    for (let x = 0; x < width; x += 1) {
-      tmp[row + x] = sum / span
-      sum += plane[row + Math.min(width - 1, x + r + 1)]! - plane[row + Math.max(0, x - r)]!
-    }
-  }
-  for (let x = 0; x < width; x += 1) {
-    let sum = 0
-    for (let k = -r; k <= r; k += 1) sum += tmp[Math.min(height - 1, Math.max(0, k)) * width + x]!
-    for (let y = 0; y < height; y += 1) {
-      out[y * width + x] = sum / span
-      sum += tmp[Math.min(height - 1, y + r + 1) * width + x]! - tmp[Math.max(0, y - r) * width + x]!
-    }
-  }
-  return out
-}
-
-/** Text pixels: colour distance from the local mean (radius r) above the threshold, any hue. */
-export function textMask(image: RgbaImage, r: number, threshold = 50): Uint8Array {
+/**
+ * Per pixel row, the pixels whose colour differs from the pixel `step` px to
+ * the right by more than `threshold` (any hue). Text strokes give many; gaps
+ * between rows, the own row's frame line and smooth backgrounds give none. A
+ * local-mean mask haloed dense CJK text and merged three rows into one band.
+ */
+export function edgeProfile(image: RgbaImage, step: number, threshold = 40): number[] {
   const { width, height, data } = image
-  const n = width * height
-  const planes = [0, 1, 2].map((c) => {
-    const plane = new Float32Array(n)
-    for (let i = 0; i < n; i += 1) plane[i] = data[i * 4 + c]!
-    return plane
-  })
-  const blurred = planes.map((plane) => boxBlur(plane, width, height, r))
-  const mask = new Uint8Array(n)
   const t2 = threshold * threshold
-  for (let i = 0; i < n; i += 1) {
-    let d = 0
-    for (let c = 0; c < 3; c += 1) {
-      const v = planes[c]![i]! - blurred[c]![i]!
-      d += v * v
+  const profile = new Array<number>(height).fill(0)
+  for (let y = 0; y < height; y += 1) {
+    let count = 0
+    for (let i = y * width * 4, end = i + (width - step) * 4; i < end; i += 4) {
+      const j = i + step * 4
+      const dr = data[i]! - data[j]!
+      const dg = data[i + 1]! - data[j + 1]!
+      const db = data[i + 2]! - data[j + 2]!
+      if (dr * dr + dg * dg + db * db > t2) count += 1
     }
-    if (d > t2) mask[i] = 1
+    profile[y] = count
   }
-  return mask
+  return profile
 }
 
 export interface Band {
@@ -147,6 +123,7 @@ function regularRun(bands: readonly Band[]): Band[] {
         last = k
         lastMid = mids[k]!
       }
+      trimEnds(run)
       const real = run.length - filled
       if (real > bestReal) {
         best = run
@@ -157,26 +134,39 @@ function regularRun(bands: readonly Band[]): Band[] {
   return best
 }
 
+/**
+ * A run's first pitch is its first two bands' distance, and later bands only
+ * need to be near the previous one: a header line 1.2 pitches above the table
+ * (the column icons) could start it. End rows more than 10% off the median
+ * pitch go.
+ */
+function trimEnds(run: Band[]): void {
+  const mid = (band: Band) => (band.y0 + band.y1) / 2
+  while (run.length > 3) {
+    const gaps = run.slice(1).map((band, i) => mid(band) - mid(run[i]!)).sort((a, b) => a - b)
+    const pitch = gaps[Math.floor(gaps.length / 2)]!
+    const off = (gap: number) => Math.abs(gap - pitch) > pitch * 0.1
+    if (off(mid(run[1]!) - mid(run[0]!))) run.shift()
+    else if (off(mid(run.at(-1)!) - mid(run.at(-2)!))) run.pop()
+    else break
+  }
+}
+
 export interface ScoreboardRows {
   rows: Band[]
   /** Median band height, px. */
   textHeight: number
 }
 
-/** Table rows: the threshold and blur radius giving the longest evenly spaced run (3–16 rows). */
+/** Table rows: the edge step and threshold giving the longest evenly spaced run (3–16 rows). */
 export function findScoreboardRows(image: RgbaImage): ScoreboardRows | null {
   let best: Band[] = []
-  // A 1080p table has ~15 px text; an upscaled crop needs a wider background window.
-  for (const radius of [12, 24]) {
-    const mask = textMask(image, radius)
-    const profile = new Array<number>(image.height).fill(0)
-    for (let y = 0; y < image.height; y += 1) {
-      let count = 0
-      for (let x = 0; x < image.width; x += 1) count += mask[y * image.width + x]!
-      profile[y] = count
-    }
+  // Step 2 also catches the soft edges of an upscaled, blurred crop.
+  for (const step of [1, 2]) {
+    const profile = edgeProfile(image, step)
     const top = [...profile].sort((a, b) => a - b)[Math.floor(profile.length * 0.995)] ?? 0
-    for (const fraction of [0.2, 0.3, 0.4, 0.5, 0.6, 0.7]) {
+    // Highest first: on a tie its bands hug the letters (the sheet's scale) rather than the taller icons.
+    for (const fraction of [0.4, 0.3, 0.2, 0.1, 0.05]) {
       const run = regularRun(bandsAt(profile, top * fraction))
       if (run.length > best.length) best = run
     }
@@ -198,8 +188,8 @@ export interface ScoreboardSheet {
   rowSpans: { top: number; bottom: number }[]
 }
 
-/** Text height the sheet is scaled to: Tesseract reads 20–40 px text best. */
-const SHEET_TEXT_PX = 30
+/** Text height the sheet is scaled to: on the test set 30 px found 49 of 51 enemies and 46 of 47 allies, 36 px 50 and 46, 42 and 48 px 50 and 47. */
+const SHEET_TEXT_PX = 42
 const MAX_SHEET_PIXELS = 40_000_000
 
 function channelMedian(values: Uint32Array, count: number): number {

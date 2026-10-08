@@ -24,8 +24,8 @@ FROM node:26-bookworm-slim AS runtime
 # fonts-*  — шрифты, которые ищет src/workers/render-fonts.ts на Linux:
 #            Noto Sans (fonts-noto-core) — основной, в нём нет box-drawing,
 #            которыми записаны рамки клан-тегов; DejaVu — запас для символов.
-# tesseract-ocr-* — OCR of scoreboard screenshots for /scout (eng ships with
-#            the engine; rus and chi_sim cover the other nicks seen so far).
+# tesseract-ocr-* — OCR of scoreboard screenshots for /scout: one pass per
+#            model in src/scout/ocr.ts OCR_PASSES (eng ships with the engine).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -36,7 +36,9 @@ RUN apt-get update \
     fonts-noto-core \
     tesseract-ocr \
     tesseract-ocr-chi-sim \
+    tesseract-ocr-jpn \
     tesseract-ocr-rus \
+    tesseract-ocr-script-hans \
     tzdata \
     x11vnc \
     xvfb \
