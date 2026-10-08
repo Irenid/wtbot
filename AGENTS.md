@@ -625,8 +625,10 @@ Data:
   replay, identity and alias key for `NICK_INDEX_TTL_MS` (20,031 keys on
   2026-10-08: built in ~120 ms, a query 2–5 ms); a failed task leaves the
   prefix matches. Rank: an exact id, the match (`compareNickScores`),
-  identity before alias before replay, battles. `/scout`'s player
-  autocomplete ranks the squadron's recent nicks the same way (`rankNicks`).
+  identity before alias before replay, battles (a longer shared start as the
+  tiebreak lost: one-typo queries of 4–5 letters found their nick first in
+  68% instead of 82%, 2026-10-08). `/scout`'s player autocomplete ranks the
+  squadron's recent nicks the same way (`rankNicks`).
 - Player page (`/players/…`): `/api/players/:key` — profile, clan with
   the roster role, sources with `account` (level, dates, clan and nickname
   history, WT leaderboard places); `/api/players/:key/insights?days=` — a
