@@ -44,6 +44,7 @@ import {
 import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
+import { fillSquadronTags } from '../../wrpl/squadron-tags.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 import type { WorkerPriority } from '../../workers/pool.js'
 
@@ -168,6 +169,8 @@ export async function renderBattlePost(
     results = fetched.results
     // The anonymizer replaces nicknames in the replay: restore the site's ones
     applyRealNames(results, realNames)
+    // As ingest will store them
+    fillSquadronTags(results.players)
   }
   const dict = await ensureVehicleDict(priority)
   let teams = summarizeTeams(results, dict)

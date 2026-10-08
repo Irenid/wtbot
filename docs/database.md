@@ -474,6 +474,12 @@ the CDN while their parts are there (~2 weeks).
   on v20 the migration finds the table in place; the crawls in between are
   missing, so the 24 h change and places moved fall back as after the first
   deploy (`src/web/routes/site.ts`) until the log covers a day again.
+- **v21** does not change the schema: it fills `battle_players.clan_tag`
+  where the game left a squadron-battle player without one (6,159 rows,
+  `replay-data-quality.md`; reads ~0.1 s over `idx_bp_clan_session` and the
+  primary key). The v20 image runs on a v21 database after
+  `PRAGMA user_version = 20` with the bot stopped; back on v21 the migration
+  runs again and fills the battles ingested in between.
 
 ## Should we move to PostgreSQL
 

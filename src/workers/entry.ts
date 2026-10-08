@@ -696,8 +696,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const profile = startRenderProfile()
   const events = decodeProfiledEvents(input, profile)
 
-  // Для клан-тегов передаём только symbols_skyquake.ttf.
-  // map-icons.ttf здесь не нужен и не должен участвовать в выборе глифов.
+  // Squadron tags get only symbols_skyquake.ttf: map-icons.ttf must not take part in glyph selection.
   let started = performance.now()
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
@@ -782,7 +781,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const heatmapTeamAir = air?.teams ?? null
 
   started = performance.now()
-  const chat = formatBattleChat(events)
+  const chat = formatBattleChat(events, input.results.players)
   addPhase(profile, 'chat.format', performance.now() - started)
   const transfer = [log, heatmapGround, ...heatmapTeamGround]
   if (heatmapAir && heatmapTeamAir) {
@@ -839,7 +838,7 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
   let media: ArrayBuffer | string
   if (input.kind === 'chat') {
     started = performance.now()
-    media = formatBattleChat(events)
+    media = formatBattleChat(events, input.results.players)
     addPhase(profile, 'media.chat', performance.now() - started)
   } else if (input.kind === 'log') {
     started = performance.now()

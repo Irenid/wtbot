@@ -148,10 +148,10 @@ function isMissingReplayPart(err: unknown): boolean {
   return /HTTP (404|410)\b/.test(msg)
 }
 
-/** Разбор не нашёл results-BLK ни в одной части: реплей ещё не дописан. */
+/** The parse found a results-BLK in no part (parseBattleParts): the replay is not fully uploaded yet. */
 function isIncompleteReplayParse(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
-  return msg.includes('не содержит results-BLK')
+  return msg.includes('no replay part holds a results-BLK')
 }
 
 function battleEndMs(item: PendingBattleItem): number | null {

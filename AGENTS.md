@@ -373,6 +373,14 @@ Access:
   hide a paired bot row, credit its tracks, kills and damage to the player
   (`creditBotSlots`, scene `botSlots`) and draw no card for team ≤ 0. Audit —
   `docs/replay-data-quality.md`.
+- The game sometimes records no squadron tag for a player, in results-BLK and
+  the ECS slot alike, for a whole login session (0.8% of rows, 2026-10-08).
+  `fillSquadronTags` (`squadron-tags.ts`) gives such a player the team's tag
+  when every real player of the team carries its squadron-battle marker
+  (`squad_id` 4096/4097; never a random battle's platoons) and the team's tags
+  share one core: ingest after the event facts, the results-only render of
+  an unstored battle, migration v21 for stored rows. The chat text takes the
+  results tags over the slots'; the events blob keeps the slots as recorded.
 
 ### Untrusted binary input
 

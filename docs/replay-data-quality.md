@@ -73,6 +73,24 @@ and repair pass v2, migration v19 — `database.md`):
 
 Game-side, not errors:
 
+- **Squadron tag missing** (check of 2026-10-08: 49,666 battles, 795,063
+  rows). 6,207 rows of real players (0.8%, in 11% of battles, a steady
+  0.4–1.5% a day since July) have no tag in the replay itself: results-BLK
+  `clanTag` and the ECS slot's are both empty, while for 80,458 tagged
+  teammates the two always agree. 216 players: 72 never have a tag, the rest
+  lose it by session (between a player's battles more than 2 h apart it comes
+  or goes in 16.5% of cases, within 30 min in 0.55%: likely set at login). They
+  are members: 98.7% have PSR readings under the team's tag; the stored
+  rosters list them a median 80 days after joining. In 18 teams one player
+  carried the squadron's old decoration (`=5XC=` beside `┺5XC┻`). The site
+  showed them without a tag, the image's PSR column a dash (readings are
+  looked up by tag), and the enemy average, chat and squadron statistics
+  left them out. Every such team has all real players on the marker
+  4096/4097 (99,310 of 99,332 teams; the other 22 have no untagged player),
+  with one core among its tags: `src/wrpl/squadron-tags.ts` gives them the
+  team's most frequent tag at ingest, and migration v21 filled 6,159 rows in
+  5,416 battles. Rows with a tag: 99.2% → 99.9%; empty remain the bots and
+  48 rows of 6 teams without any tag.
 - score 0 — 2.6% of rows, all explained: idle, a team-kill penalty, never
   spawned, bot;
 - results freeze once the battle is decided: kills in the last ~5 s of the

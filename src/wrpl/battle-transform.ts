@@ -8,6 +8,7 @@ import type { BattleEventSummary } from '../workers/protocol.js'
 import { decodeEventsPayloadProfiled, encodeEventsJson, type EventsDecodeProfile } from './events-codec.js'
 import { canonicalizeReplayEvents } from './events-repair.js'
 import { applyPlayerEventFacts } from './player-events.js'
+import { fillSquadronTags } from './squadron-tags.js'
 import { parseComponentHashMaps } from './ecs.js'
 import {
   extractReplayEventsProfiled,
@@ -59,7 +60,7 @@ export async function parseBattleParts(
   meta: BattleItemMeta,
   ecsHashesJson: string,
 ): Promise<ParsedBattle> {
-  if (parts.length === 0) throw new Error('пустой список частей реплея')
+  if (parts.length === 0) throw new Error('empty replay part list')
   const totalStarted = performance.now()
   let phaseStarted = totalStarted
   const header = parseWrplHeader(parts[0]!)
@@ -73,7 +74,8 @@ export async function parseBattleParts(
       break
     }
   }
-  if (!results) throw new Error('ни одна часть реплея не содержит results-BLK')
+  // ingest.ts isIncompleteReplayParse matches this text: the replay is not fully uploaded yet.
+  if (!results) throw new Error('no replay part holds a results-BLK')
   applyRealNames(results, realNames)
   const headerResultsMs = performance.now() - phaseStarted
 
@@ -94,7 +96,10 @@ export async function parseBattleParts(
     player.title = slot.title
   }
   // The stored rows, as the repair pass sees them: its facts must come out the same.
-  applyPlayerEventFacts(battleParticipants(results.players, meta.listedUserIds), events)
+  const participants = battleParticipants(results.players, meta.listedUserIds)
+  applyPlayerEventFacts(participants, events)
+  // After the facts: they give a team-0 player the team its marker names.
+  fillSquadronTags(participants)
   const summary = summarizeEvents(events)
   const normalizeMs = performance.now() - phaseStarted
   phaseStarted = performance.now()

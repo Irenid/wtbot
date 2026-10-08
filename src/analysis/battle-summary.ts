@@ -8,6 +8,7 @@ import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../wrpl/replay.js'
 import { buildRosters, psrLabel, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
 import { configureReplayUrlPolicy } from '../wrpl/replay-url-policy.js'
+import { fillSquadronTags } from '../wrpl/squadron-tags.js'
 import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 
 // Результаты боя из файла реплея .wrpl. Запуск:
@@ -66,9 +67,11 @@ if (parts.length === 0) {
 }
 
 const { header, results } = await fetchReplayResults(parts, 'normal')
-// Анонимайзер подменяет ники в реплее — возвращаем настоящие с сайта
+// The anonymizer replaces nicknames in the replay: restore the site's ones
 const realNames = realNamesFromItem(data)
 applyRealNames(results, realNames)
+// As ingest stores them
+fillSquadronTags(results.players)
 const dict = await ensureVehicleDict('normal')
 
 if (flags.has('--json')) {

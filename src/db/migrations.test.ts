@@ -747,6 +747,57 @@ test('migration v19 adds the event fact columns of battle_players as unknown', (
   }
 })
 
+test('migration v21 gives stored squadron-battle players without a tag their team tag', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v21-'))
+  const dbPath = path.join(root, 'v21.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    const row = database.prepare(`
+      INSERT INTO battle_players (session_id, user_id, nick, nick_base, clan_tag, team, squad_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    // A squadron battle: team 1 is one squadron, team 2 has two (left as is).
+    row.run('1', '11', 'a', 'a', '╖TEHb╖', 1, 4096)
+    row.run('1', '12', 'b', 'b', '', 1, 4096)
+    row.run('1', '-13', 'coop/Bot', 'coop/Bot', '', 1, 4096)
+    row.run('1', '21', 'c', 'c', '=AAA=', 2, 4097)
+    row.run('1', '22', 'd', 'd', '=BBB=', 2, 4097)
+    row.run('1', '23', 'e', 'e', '', 2, 4097)
+    // Platoons and solo players: not a squadron battle's team.
+    row.run('2', '31', 'f', 'f', '=CCC=', 1, 12)
+    row.run('2', '32', 'g', 'g', '', 1, 12)
+    database.exec('PRAGMA user_version = 20')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      assert.deepEqual(
+        migrated.prepare('SELECT user_id, clan_tag FROM battle_players ORDER BY session_id, user_id').all().map((r) => ({ ...r })),
+        [
+          { user_id: '-13', clan_tag: '' },
+          { user_id: '11', clan_tag: '╖TEHb╖' },
+          { user_id: '12', clan_tag: '╖TEHb╖' },
+          { user_id: '21', clan_tag: '=AAA=' },
+          { user_id: '22', clan_tag: '=BBB=' },
+          { user_id: '23', clan_tag: '' },
+          { user_id: '31', clan_tag: '=CCC=' },
+          { user_id: '32', clan_tag: '' },
+        ],
+      )
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('повторный разбор записанного боя, ушедшего с CDN, оставляет статус ok и строки', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'wtbot-ingest-status-'))
   const dbPath = path.join(root, 'status.db')

@@ -147,7 +147,8 @@ export async function cachedBattleHeatmap2x(
 // 43: bot slot tracks, kills and damage credited to their players (player-events.ts).
 // 44: icons and missile seekers of mixed-case ids, wt-tools maps with "-", "()" or
 // diacritics in the key.
-const BATTLE_MEDIA_VERSION = 44
+// 45: chat senders get the squadron tags the game left out (squadron-tags.ts).
+const BATTLE_MEDIA_VERSION = 45
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)

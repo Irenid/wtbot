@@ -33,6 +33,7 @@ import {
 } from '../player-stats/account.js'
 import { CLAN_SEASON_SCHEDULES, stageAt, type ClanSeasonSchedule } from '../clan-season.js'
 import { FORUM_SEASON_ID_PREFIX } from '../clan-season-forum.js'
+import { fillSquadronTags, type SquadronTagPlayer } from '../wrpl/squadron-tags.js'
 
 // Общий слой хранения: им пользуются и бот, и сайт, и парсеры.
 // SQLite встроен в Node 22.5+ — отдельный сервер БД не нужен.
@@ -872,6 +873,29 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
           cores       TEXT    NOT NULL
         );
       `)
+    },
+  },
+  {
+    version: 21,
+    apply(database) {
+      // Squadron tags the game left out of the replay, by the ingest rule
+      // (src/wrpl/squadron-tags.ts): 6,159 rows in 5,416 battles, ~0.1 s of
+      // reads on the production database (2026-10-08). A legacy table without
+      // team or squad_id gives the rule nothing to read.
+      const columns = tableColumns(database, 'battle_players')
+      if (!columns.has('team') || !columns.has('squad_id')) return
+      const sessions = database
+        .prepare("SELECT DISTINCT session_id FROM battle_players WHERE clan_tag = '' AND team > 0")
+        .all() as { session_id: string }[]
+      const players = database.prepare('SELECT user_id, clan_tag, team, squad_id FROM battle_players WHERE session_id = ?')
+      const fill = database.prepare("UPDATE battle_players SET clan_tag = ? WHERE session_id = ? AND user_id = ? AND clan_tag = ''")
+      for (const { session_id: sessionId } of sessions) {
+        const rows = (players.all(sessionId) as { user_id: string; clan_tag: string; team: number; squad_id: number }[])
+          .map((row): SquadronTagPlayer => ({ userId: row.user_id, clanTag: row.clan_tag, team: row.team, squadId: row.squad_id }))
+        const untagged = new Set(rows.filter((row) => row.clanTag === '').map((row) => row.userId))
+        fillSquadronTags(rows)
+        for (const row of rows) if (untagged.has(row.userId) && row.clanTag !== '') fill.run(row.clanTag, sessionId, row.userId)
+      }
     },
   },
 ]
