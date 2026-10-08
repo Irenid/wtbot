@@ -140,9 +140,21 @@ Open: prove or disprove the RSS plateau for
   `wt-vehicles.json` is rebuilt in the background once it is 7 days old
   (`src/wrpl/vehicles.ts`); a new field also needs a format version so an old
   cache without it is rebuilt at once, and BR changes with patches, so rebuild
-  right after a game patch too. Then show BR on the site and
+  right after a game patch too. Aircraft in ground battles use
+  `economicRankTankHistorical` (matches every spawn under the caps after the
+  switch, 2026-10-08). Then show BR on the site and in `/scout`, and
   check the season stages' weekly limits against the vehicles in battles (in
-  the summary worker).
+  the summary worker). `/scout` predictions do not need it: older spawns
+  under a new cap give a player's first battle at it in 9–15%
+  (`docs/opponent-scouting.md`).
+- **Stage switch time.** The BR cap changes on a stage's first day between
+  07:00 and 14:00 UTC, while `clan_season_stages` (forum dates, built-in
+  schedule) starts stages at 00:00 UTC: during the 01:00–07:00 UTC window of
+  that day `/stats`, the site's season panel and anything reading the stage
+  show the new cap while the game plays the old one (measured 2026-10-08,
+  `docs/opponent-scouting.md`; `/scout` shifts by `STAGE_SWITCH_DELAY_SEC`).
+  Decide whether stage times move (reconciliation or a data migration) or
+  readers shift like `/scout`.
 - **StatShark: what is not shown.** The player page shows level, rank, dates,
   clan and nickname history and WT leaderboard places (`account_json`), but
   not `ratingsNeo` (StatShark's own scale, meaning undocumented) and

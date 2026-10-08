@@ -3,8 +3,9 @@
 A Discord bot, website and War Thunder squadron battle statistics collector in
 one Node.js process. The bot collects replays from warthunder.com, parses
 `.wrpl` files and stores battles, players, kills and chat in SQLite. Results
-appear in Discord (`/battle`, auto-announcements, a player board built from
-voice channels) and on the site (`/`; the bot dashboard is `/statistics`).
+appear in Discord (`/battle`, auto-announcements, `/scout` — an enemy
+squadron's likely players and vehicles, a player board built from voice
+channels) and on the site (`/`; the bot dashboard is `/statistics`).
 
 ## Documentation
 
@@ -15,6 +16,7 @@ voice channels) and on the site (`/`; the bot dashboard is `/statistics`).
 | [docs/database.md](docs/database.md) | database: measurements, blob format, data errors, migration rollback |
 | [docs/performance.md](docs/performance.md) | performance measurements, gates, rollback |
 | [docs/replay-data-quality.md](docs/replay-data-quality.md) | what replays can and cannot tell |
+| [docs/opponent-scouting.md](docs/opponent-scouting.md) | naming the enemy squadron; the `/scout` model and its accuracy |
 | [LICENSES/](LICENSES/README.md) | licenses of ported code |
 
 ## Where things run

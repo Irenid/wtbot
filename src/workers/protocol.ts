@@ -1,4 +1,4 @@
-import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights } from '../db/index.js'
+import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights, ScoutTeamRow } from '../db/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
@@ -188,6 +188,15 @@ export interface WorkerTaskMap {
   'read-player-insights': {
     input: { dbPath: string; userId: string; fromTs: number; toTs: number }
     output: PlayerReplayInsights & { elapsedMs: number }
+  }
+  /** /scout: a squadron's player rows and the season stages (src/scout/report.ts). */
+  'read-scout-history': {
+    input: { dbPath: string; tags: string[]; fromTs: number; toTs: number }
+    output: {
+      rows: ScoutTeamRow[]
+      stages: { startsAt: number; endsAt: number; maxBr: number }[]
+      elapsedMs: number
+    }
   }
   'repair-battle-events': {
     /**

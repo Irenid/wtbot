@@ -403,6 +403,29 @@ async function readPlayerInsights(
   }
 }
 
+/** /scout history (db/index.ts) on its own read-only connection. */
+async function readScoutHistory(
+  input: Extract<AnyWorkerTask, { kind: 'read-scout-history' }>['input'],
+): Promise<{ value: WorkerTaskResult<'read-scout-history'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
+  const [{ DatabaseSync }, { getScoutStages, getScoutTeamRows }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 1073741824;')
+    database.exec('PRAGMA cache_size = -16384;')
+    const rows = getScoutTeamRows(input.tags, input.fromTs, input.toTs, database)
+    const stages = getScoutStages(database)
+    return { value: { rows, stages, elapsedMs: performance.now() - started }, transfer: [] }
+  } finally {
+    database.close()
+  }
+}
+
 interface StoredPlayerFacts {
   user_id: string
   team: number
@@ -943,6 +966,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return runDatabaseMaintenance(task.input)
     case 'read-player-insights':
       return readPlayerInsights(task.input)
+    case 'read-scout-history':
+      return readScoutHistory(task.input)
     case 'render-scoreboard':
       return await renderScoreboard(task.input)
     case 'render-media':

@@ -5868,6 +5868,34 @@ export const SITE_SQL = {
     SELECT MIN(start_time) AS first_battle_at
     FROM battles
   `,
+  // /scout: a squadron's player rows with their battles, newest first (src/scout/).
+  scoutTeamRows: `
+    SELECT bp.session_id, bp.team, bp.user_id, bp.nick, bp.vehicle, bp.vehicles,
+           b.start_time, b.duration_sec, b.ingested_at
+    FROM battle_players bp
+    JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.clan_tag IN (${siteInSlots(SITE_IN_SLOTS)})
+      AND b.start_time >= ? AND b.start_time < ?
+      AND bp.team > 0 AND bp.user_id NOT LIKE '-%'
+    ORDER BY b.start_time DESC
+    LIMIT ?
+  `,
+  // Every distinct squadron tag in replays: one index seek per tag (~860 tags).
+  scoutBattleTags: `
+    WITH RECURSIVE tags(tag) AS (
+      SELECT MIN(clan_tag) FROM battle_players WHERE clan_tag > ''
+      UNION ALL
+      SELECT (SELECT MIN(clan_tag) FROM battle_players WHERE clan_tag > tags.tag)
+      FROM tags WHERE tags.tag IS NOT NULL
+    )
+    SELECT tag FROM tags WHERE tag IS NOT NULL
+  `,
+  scoutClanNames: `
+    SELECT tag, name, position FROM clans
+  `,
+  scoutStages: `
+    SELECT starts_at, ends_at, max_br FROM clan_season_stages ORDER BY starts_at
+  `,
   clanBattleTeams: `
     SELECT
       b.session_id, b.start_time, b.team_won, bp.team,
@@ -6834,6 +6862,72 @@ export function getSiteBattleTeamClansBatch(
     grouped.set(row.session_id, sessionRows)
   }
   return grouped
+}
+
+export interface ScoutTeamRow {
+  sessionId: string
+  team: number
+  userId: string
+  nick: string
+  vehicle: string | null
+  /** The lineup, JSON array of vehicle ids. */
+  vehicles: string
+  startTime: number
+  durationSec: number
+  ingestedAt: number
+}
+
+/** A squadron is ~400 battles in two weeks at most (2026-10-08); the cap keeps a heavy one bounded. */
+export const SCOUT_MAX_ROWS = 12_000
+
+/** A squadron's player rows in battles started in [fromTs, toTs), newest first; rawTags — its tag variants. */
+export function getScoutTeamRows(
+  rawTags: readonly string[],
+  fromTs: number,
+  toTs: number,
+  database?: DatabaseSync,
+): ScoutTeamRow[] {
+  const tags = [...new Set(rawTags.filter((tag) => tag !== ''))].slice(0, SITE_IN_SLOTS)
+  if (tags.length === 0) return []
+  if (!Number.isSafeInteger(fromTs) || !Number.isSafeInteger(toTs) || fromTs < 0 || toTs <= fromTs) {
+    throw new RangeError('Invalid /scout period')
+  }
+  const statement = database ? database.prepare(SITE_SQL.scoutTeamRows) : siteStatement('scoutTeamRows')
+  const rows = statement.all(...padSiteList(tags, SITE_IN_SLOTS), fromTs, toTs, SCOUT_MAX_ROWS) as unknown as {
+    session_id: string
+    team: number
+    user_id: string
+    nick: string
+    vehicle: string | null
+    vehicles: string
+    start_time: number
+    duration_sec: number
+    ingested_at: number
+  }[]
+  return rows.map((row) => ({
+    sessionId: row.session_id,
+    team: row.team,
+    userId: row.user_id,
+    nick: row.nick,
+    vehicle: row.vehicle,
+    vehicles: row.vehicles,
+    startTime: row.start_time,
+    durationSec: row.duration_sec,
+    ingestedAt: row.ingested_at,
+  }))
+}
+
+export function getScoutStages(database?: DatabaseSync): { startsAt: number; endsAt: number; maxBr: number }[] {
+  const statement = database ? database.prepare(SITE_SQL.scoutStages) : siteStatement('scoutStages')
+  return (statement.all() as { starts_at: number; ends_at: number; max_br: number }[])
+    .map((row) => ({ startsAt: row.starts_at, endsAt: row.ends_at, maxBr: row.max_br }))
+}
+
+/** Squadron tags for /scout lookups: every tag seen in replays and every leaderboard squadron. */
+export function getScoutSquadronTags(): { battleTags: string[]; clans: { tag: string; name: string; position: number | null }[] } {
+  const battleTags = (siteStatement('scoutBattleTags').all() as { tag: string }[]).map((row) => row.tag)
+  const clans = siteStatement('scoutClanNames').all() as { tag: string; name: string; position: number | null }[]
+  return { battleTags, clans: clans.map((row) => ({ tag: row.tag, name: row.name, position: row.position })) }
 }
 
 export interface SiteClanBattleTeamRow {

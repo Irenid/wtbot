@@ -472,6 +472,16 @@ Data:
   permission.
 - `/battle` and the announcer share `renderBattlePost()`; `battle:*` buttons
   are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral.
+- `/scout squadron [player]` (`src/scout/`): the enemy squadron's likely
+  players, each one's vehicle chances and the team's class counts, from its
+  stored battles (worker task `read-scout-history`, 30 s cache; squadron
+  and player autocomplete through `Command.autocomplete`). One spawn per
+  player in a squadron battle, so the eight vehicles are the setup.
+  `model.ts` holds logistic weights and calibrations that
+  `npm run scout:backtest -- <copy.db> --fit-all` fits (`--fit`: train
+  before `--split`, test after); refit after a rules or format change and
+  update the accuracy in `docs/opponent-scouting.md`. The BR cap switches
+  `STAGE_SWITCH_DELAY_SEC` after the schedule's 00:00 UTC.
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,

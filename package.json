@@ -17,6 +17,7 @@
     "db:backup": "tsx src/analysis/db-backup.ts",
     "db:backup:schedule": "tsx src/analysis/db-backup-schedule.ts",
     "battle": "tsx src/analysis/battle-summary.ts",
+    "scout:backtest": "tsx src/analysis/scout-backtest.ts",
     "capture:map": "tsx src/analysis/capture-map.ts",
     "backfill": "tsx src/parsers/backfill.ts",
     "site": "tsx src/analysis/site-real.ts",

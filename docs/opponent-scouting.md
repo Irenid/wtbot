@@ -1,8 +1,8 @@
 # Opponent scouting
 
 Whether the bot can name the enemy squadron of a squadron battle at or before
-its start, and predict the enemy's players and vehicles. Measured on
-2026-10-06 and 2026-10-07: read-only queries on the production database
+its start, and predict the enemy's players and vehicles (`/scout`, below).
+Measured on 2026-10-06 – 2026-10-08: read-only queries on the production database
 (21,071 battles since 2026-09-22; predictions evaluated from 2026-09-29, BR
 stage 9.0 and the first hours of 8.0), the replay CDN for finished battles,
 and the game's own interfaces on the Linux client (Steam) in custom and random
@@ -61,6 +61,62 @@ drops weekly) and to battles parsed by our start + 30 s.
   `getSiteClanBattleTeams` (a squadron's battles by tag variants),
   `getPlayerReplayInsights` (vehicles, maps, opponents; worker task
   `read-player-insights`).
+
+## The `/scout` model
+
+`/scout squadron [player]` (`src/scout/`) predicts the squadron's next team.
+Backtest of 2026-10-08 (`npm run scout:backtest -- <copy.db> --fit`): 99,326
+squadron team-battles of 2026-07-15 – 2026-10-08, each predicted as if typed
+20 s after its start from what the bot had stored by then (backfilled
+battles: stored 40 s after the end); weights fit before 2026-10-01, figures
+on 2026-10-01 – 2026-10-08. 16.5 s on 26 threads.
+
+- **One spawn per player:** deaths are 0 or 1 in 99.99% of 795,063 rows,
+  one spawned vehicle in 99.99%, so the eight vehicles are the setup.
+- **Roster** — logistic regression per regime over the squadron's last two
+  weeks (in the last battle, × minutes since it, in the one before, shares
+  of the current and previous session and of the week, hours since the
+  player's last battle, battles, active days, share of battles within 3 h of
+  this time of day). In a session (last battle under 30 min ago, 93% of
+  teams): top 8 right 95.8% (17,871 teams); after a break: 45.9% (1,347;
+  13% of the players had not played for the squadron in two weeks).
+  Calibrated within 1–2 points where 98% of candidates fall (under 10% or
+  over 80%); 30–80% happens 5–20 points more often than said.
+- **Vehicle** — conditional logit over the player's spawns and lineups at
+  the current cap (last spawn, also after a break, the two before, in the last
+  lineup, spawn share decayed with a half-life of 8 battles, never spawned)
+  and an option "a vehicle not seen at this cap". Top 1 right 79.9%, top 3
+  91.8% (147,014 players); in a session 81.2%, after a break 61.1%. Said
+  chances match what happened within 2 points in every band. Baselines:
+  the last spawn 81.1% in a session but uncalibrated (log loss 0.86 against
+  0.69); the period's most frequent spawn 67%.
+- **Setup** — exact convolution of the eight likeliest players' class
+  chances, then Platt-scaled: independent players overstated "at least one
+  aircraft" (said 38%, happened 23%) because teams choose together, so the
+  air chance also uses whether the last battle's team spawned air. After
+  scaling: within 0.4–3.4 points in the bands holding 84% of teams, 6.8 in
+  the 80–90% band (says 86%, happens 93%); the most likely class counts
+  within 1–4 points. Expected aircraft off by 0.43 per team, class
+  counts by 1.02 players.
+- **Hint:** one enemy nick moves the roster from 95.8% to 96.0% overall and
+  from 74.2% to 89.7% where another group of the squadron played within 30
+  minutes (1,026 teams); the reply lists such a group.
+- **Dead ends:** the map changes nothing (aircraft 22–28% of spawns on every
+  map with 100+ battles at caps 9.0 and 8.0; per-player entropy drop is
+  sampling noise). A player's first battle at a new cap (5% of player-battles)
+  has no usable history: half never played for us before, and the others'
+  older spawns at or under the cap (datamine BR) give the right vehicle in
+  9–15%, so vehicle BR is not used and the reply says "no battles at this BR
+  yet".
+- **Cap switch:** the cap changes on the stage's first day between 07:00 and
+  14:00 UTC, not at the schedule's 00:00: in four stage changes 70–96% of the
+  01:00–07:00 UTC spawns are above the new cap, 0% from 14:00 UTC (datamine
+  BR: `economicRankTankHistorical` for aircraft in ground battles, else
+  `economicRankHistorical`; BR = rank / 3 + 1). The model shifts stages by
+  `STAGE_SWITCH_DELAY_SEC` (10 h).
+- **Cost:** a squadron's two weeks are ≤ 12,000 rows (the busiest: 4,752 rows
+  in 26 ms with the model on a copy), read in worker task
+  `read-scout-history`.
 
 ## Guessing the enemy from server data
 

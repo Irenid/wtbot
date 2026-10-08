@@ -69,6 +69,15 @@ export async function startBot(): Promise<Client> {
       }
       return
     }
+    if (interaction.isAutocomplete()) {
+      try {
+        await commands.get(interaction.commandName)?.autocomplete?.(interaction)
+      } catch (err) {
+        // An expired autocomplete only loses the suggestions; Discord shows none.
+        if (!isExpiredInteraction(err)) console.error(`[bot] Autocomplete error in /${interaction.commandName}:`, err)
+      }
+      return
+    }
     if (!interaction.isChatInputCommand()) return
 
     const command = commands.get(interaction.commandName)
