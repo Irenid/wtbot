@@ -1,13 +1,13 @@
 import { EmbedBuilder, SlashCommandBuilder, type AutocompleteInteraction } from 'discord.js'
 import type { Command } from '../types.js'
-import { formatScoutReport } from '../../scout/format.js'
+import { formatScoutReport, squadronLabel } from '../../scout/format.js'
 import { buildScoutReport, findSquadrons, loadScoutHistory, nickKey, recentNicks, type ScoutSquadron } from '../../scout/report.js'
 
 const MAX_CHOICE = 100
 
 function squadronChoice(squadron: ScoutSquadron): { name: string; value: string } {
   const place = squadron.position !== null ? ` · place ${squadron.position}` : ''
-  const label = `${squadron.displayTag}${squadron.name ? ` ${squadron.name}` : ''}${place}${squadron.inReplays ? '' : ' · no battles stored'}`
+  const label = `${squadronLabel(squadron.displayTag, squadron.name)}${place}${squadron.inReplays ? '' : ' · no battles stored'}`
   return { name: label.slice(0, MAX_CHOICE), value: squadron.core.slice(0, MAX_CHOICE) }
 }
 
@@ -57,7 +57,7 @@ export const scout: Command = {
     }
     const report = await buildScoutReport(squadron, interaction.options.getString('player'))
     const text = formatScoutReport(report)
-    const embed = new EmbedBuilder().setTitle(text.title).setDescription(text.description).setColor(0xc0392b)
+    const embed = new EmbedBuilder().setTitle(text.title).setDescription(text.description).setColor(text.color)
     if (text.fields.length > 0) embed.addFields(text.fields)
     await interaction.editReply({ embeds: [embed] })
   },

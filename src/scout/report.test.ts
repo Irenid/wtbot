@@ -11,7 +11,7 @@ import {
   type ScoutTeamRow,
 } from '../db/index.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
-import { compositionText, formatScoutReport, percent } from './format.js'
+import { SCOUT_COLOR_GUESS, SCOUT_COLOR_SESSION, compositionText, formatScoutReport, percent, plainVehicleName, squadronLabel } from './format.js'
 import { predictScout, type ScoutBattle } from './model.js'
 import { findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutReport } from './report.js'
 
@@ -85,9 +85,15 @@ test('the reply names the setup, chances and every likely player; percents never
   assert.equal(percent(0.004), '<1%')
   assert.equal(percent(0.996), '>99%')
   assert.equal(percent(0.5), '50%')
-  assert.equal(compositionText({ F: 1, H: 2, T: 0, L: 1, AA: 3 }), '1 aircraft, 2 helicopters, 1 light tank, 3 anti-air')
+  assert.equal(compositionText({ F: 1, H: 2, T: 0, L: 1, AA: 3 }), '1 aircraft · 2 helicopters · 1 light tank · 3 anti-air')
+  assert.equal(squadronLabel('╍Nrst╎', 'North_Steel'), 'Nrst North_Steel')
+  assert.equal(squadronLabel('[QUEUE]', 'Queue'), 'QUEUE')
+  assert.equal(squadronLabel('=ABC=', null), 'ABC')
+  assert.equal(plainVehicleName('▄M163'), 'M163')
+  assert.equal(plainVehicleName('␗T-26'), 'T-26')
+  assert.equal(plainVehicleName('AMX-30 (1972)'), 'AMX-30 (1972)')
   const vehicles: VehicleDict = {
-    plane: { name: 'Vautour IIN', cls: 'F', country: 'france' },
+    plane: { name: '▄Vautour IIN', cls: 'F', country: 'france' },
     tank: { name: 'Leopard 1', cls: 'T', country: 'germany' },
   }
   const start = 1_791_300_000
@@ -111,14 +117,17 @@ test('the reply names the setup, chances and every likely player; percents never
     now,
   }
   const text = formatScoutReport(report)
-  assert.equal(text.title, '=ABC= Alpha: next team')
+  assert.equal(text.title, 'ABC Alpha')
+  assert.equal(text.color, SCOUT_COLOR_SESSION)
   assert.match(text.description, /mid-session/)
-  assert.match(text.description, /\*\*Most likely setup:\*\* 3 aircraft, 5 tanks \(\d+%\)/)
-  assert.match(text.description, /Likely vehicles:\*\* Leopard 1 ×5, Vautour IIN ×3/)
-  assert.match(text.description, /ghost is not in their battles/)
-  assert.equal(text.fields.length, 8)
-  assert.ok(text.fields.some((field) => field.name.startsWith('\\_under\\_score\\_: plays')))
-  assert.match(text.fields[0]!.value, /^(Vautour IIN|Leopard 1) \d+%/)
+  assert.match(text.description, /\*\*Most likely setup\*\*\n3 aircraft · 5 tanks — \d+%/)
+  assert.match(text.description, /\*\*Air:\*\* \d\.\d expected, at least one \S+%/)
+  assert.match(text.description, /\*\*ghost\*\* is not in their recent battles/)
+  assert.deepEqual(text.fields.map((field) => field.name), ['Aircraft · 3', 'Tanks · 5'])
+  assert.match(text.fields[0]!.value, /^\*\*\\_under\\_score\\_\*\*: Vautour IIN \d+%/m)
+  assert.match(text.fields[1]!.value, /^\*\*p3\*\*: Leopard 1 \d+%/m)
+  assert.equal(text.fields[1]!.value.split('\n').length, 5)
   const empty = formatScoutReport({ ...report, prediction: predictScout({ battles: [], now, stages: [], classOf: () => '?' }) })
-  assert.match(empty.description, /No battles of =ABC= stored/)
+  assert.match(empty.description, /No battles stored/)
+  assert.equal(empty.color, SCOUT_COLOR_GUESS)
 })
