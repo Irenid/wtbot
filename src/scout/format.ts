@@ -85,16 +85,17 @@ export interface ScoutEmbedText {
   fields: { name: string; value: string }[]
 }
 
+/** "nick (plays 84%) — **T-54 (1949) 93%** · ZSU-37-2 16%": the most likely vehicle is the bold part. */
 function playerLine(player: ScoutPlayerPrediction, report: ScoutReport): string {
-  const name = (id: string) => plainVehicleName(vehicleInfo(report.vehicles, id).name)
-  const nick = `**${escapeMarkdown(player.nick)}**`
+  const name = (id: string) => escapeMarkdown(plainVehicleName(vehicleInfo(report.vehicles, id).name))
   const plays = player.playChance < SHOW_PLAY_CHANCE_BELOW ? ` (plays ${percent(player.playChance)})` : ''
+  const who = `${escapeMarkdown(player.nick)}${plays}`
   const [best, ...rest] = player.vehicles
-  if (player.battlesAtCap === 0 || !best) return `${nick}${plays}: no battles at this BR yet`
-  const parts = [`${name(best.vehicleId)} ${percent(best.chance)}`]
+  if (player.battlesAtCap === 0 || !best) return `${who} — no battles at this BR yet`
+  const parts = [`**${name(best.vehicleId)} ${percent(best.chance)}**`]
   for (const vehicle of rest.slice(0, 2)) if (vehicle.chance >= MIN_ALTERNATIVE_CHANCE) parts.push(`${name(vehicle.vehicleId)} ${percent(vehicle.chance)}`)
   if (player.unseenChance >= MIN_UNSEEN_CHANCE) parts.push(`new vehicle ${percent(player.unseenChance)}`)
-  return `${nick}${plays}: ${parts.join(', ')}`
+  return `${who} — ${parts.join(' · ')}`
 }
 
 function likelyClass(player: ScoutPlayerPrediction, report: ScoutReport): ScoutClass | 'unknown' {
