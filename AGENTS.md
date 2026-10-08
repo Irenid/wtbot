@@ -19,9 +19,10 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
 - Documents: `README.md` — running; this file — contracts; `ROADMAP.md` — the
   only list of open tasks (closed items are deleted); `docs/` — measurements
   and notes (`performance.md`, `database.md`, `replay-data-quality.md`,
-  `opponent-scouting.md`); `LICENSES/` — licenses of ported code; skills —
-  `.claude/skills/verify/` (checks, live bot), `.agents/skills/monorepo-debug/`
-  (diagnostics). Do not add new plans or audits to the repository root.
+  `opponent-scouting.md`, `nick-search.md`); `LICENSES/` — licenses of ported
+  code; skills — `.claude/skills/verify/` (checks, live bot),
+  `.agents/skills/monorepo-debug/` (diagnostics). Do not add new plans or
+  audits to the repository root.
 - Do not read or print `.env` values without a direct need; for diagnostics
   print the key name and `set/empty`.
 
@@ -615,20 +616,19 @@ Data:
   never serves them without the token.
 - Player search (`GET /api/players`, the home page): nick prefixes and an
   exact WT user id from SQL, live, plus typo-tolerant matches
-  (`src/nick-search.ts`). Both sides are folded: accents, separators and
-  `@psn` dropped, Cyrillic and Greek look-alikes made Latin (the most active
-  nick of 2026-10-08, `Zоroaster`, holds a Cyrillic о). A nick matches whole,
-  by its start or inside it with edits by query length (`maxEdits`,
-  `maxInfixEdits`; OSA: an adjacent swap is one edit; a query of digits gets
-  none); a query typed in the other layout (ЙЦУКЕН, QWERTY) matches whole or
-  by the start. Worker task `search-player-nicks` keeps an index of every
-  replay, identity and alias key for `NICK_INDEX_TTL_MS` (20,031 keys on
-  2026-10-08: built in ~120 ms, a query 2–5 ms); a failed task leaves the
+  (`src/nick-search.ts`): each nick in three views — how it looks in Latin
+  letters (look-alikes, leet), how a Russian reads it (volapuk: `AKYJIA` is
+  акула), how it sounds (transliteration both ways) — and the query's other
+  keyboard layout; edits weighted in quarters, edits allowed by query length
+  (`maxEdits`). Worker task `search-player-nicks` keeps an index of every
+  replay, identity and alias key for `NICK_INDEX_TTL_MS` (20,086 keys on
+  2026-10-08: built in 240 ms, a query 8–10 ms); a failed task leaves the
   prefix matches. Rank: an exact id, the match (`compareNickScores`),
-  identity before alias before replay, battles (a longer shared start as the
-  tiebreak lost: one-typo queries of 4–5 letters found their nick first in
-  68% instead of 82%, 2026-10-08). `/scout`'s player autocomplete ranks the
-  squadron's recent nicks the same way (`rankNicks`).
+  identity before alias before replay, battles. `/scout`'s player
+  autocomplete ranks the squadron's recent nicks the same way (`rankNicks`).
+  The weights are fitted with `npm run bench:nick-search -- <copy.db>` on
+  simulated queries; rerun it after changing a rule, and plain typos must not
+  drop (`docs/nick-search.md`: method, results, rejected ideas).
 - Player page (`/players/…`): `/api/players/:key` — profile, clan with
   the roster role, sources with `account` (level, dates, clan and nickname
   history, WT leaderboard places); `/api/players/:key/insights?days=` — a
@@ -743,7 +743,7 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-08**: all
-gates pass, **425 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **429 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

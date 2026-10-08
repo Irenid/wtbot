@@ -1,21 +1,49 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { cachedNickIndex, foldNick, NickIndex, prepareNickQuery, rankNicks, scoreNick, switchLayout } from './nick-search.js'
+import {
+  cachedNickIndex,
+  foldNick,
+  foldRead,
+  foldSound,
+  NickIndex,
+  prepareNickQuery,
+  rankNicks,
+  scoreNick,
+  switchLayout,
+} from './nick-search.js'
 
-/** [edits, kind, literal, layout] or null. */
+/** [cost in quarter edits, kind, literal] or null. */
 const score = (query: string, nick: string) => {
   const result = scoreNick(prepareNickQuery(query), nick)
-  return result && [result.edits, result.kind, result.literal, result.layout]
+  return result && [result.cost, result.kind, result.literal]
 }
 
-test('a nick folds to Latin look-alikes, letters and digits', () => {
+test('the look view folds look-alikes to Latin, letters and digits only', () => {
   assert.equal(foldNick('Zоroaster'), 'zoroaster') // Cyrillic о
   assert.equal(foldNick('__Blеssеd__'), 'blessed') // Cyrillic е
   assert.equal(foldNick('ВеТеРоК'), 'betepok')
+  assert.equal(foldNick('ΛNDERS'), 'anders')
   assert.equal(foldNick('Zefix_7@psn'), 'zefix7')
   assert.equal(foldNick('Loupák'), 'loupak')
   assert.equal(foldNick('ёлка'), foldNick('Елка'))
   assert.equal(foldNick('山田 妖精'), '山田妖精')
+})
+
+test('the read view reads Latin look-alikes and volapuk as Russian', () => {
+  assert.equal(foldRead('AKYJIA'), 'акула')
+  assert.equal(foldRead('4ert_Ha_CB9I3u'), 'чертнасвязи')
+  assert.equal(foldRead('AIIOSTOJI'), 'апостол')
+  assert.equal(foldRead('BblMblCEJI'), 'вымысел')
+  assert.equal(foldRead('Ветерок'), 'ветерок')
+})
+
+test('the sound view merges spellings of one sound', () => {
+  assert.equal(foldSound('Ветерок'), foldSound('veterok'))
+  assert.equal(foldSound('Хулиган'), foldSound('khuligan'))
+  assert.equal(foldSound('Хулиган'), foldSound('huligan'))
+  assert.equal(foldSound('Цапля'), foldSound('tsaplya'))
+  assert.equal(foldSound('Цапля'), foldSound('caplja'))
+  assert.equal(foldSound('Щука'), foldSound('shchuka'))
 })
 
 test('a query switches to the other keyboard layout', () => {
@@ -25,27 +53,39 @@ test('a query switches to the other keyboard layout', () => {
   assert.equal(switchLayout('1488'), null)
 })
 
-test('a nick matches whole, by its start or inside, with edits by query length', () => {
-  assert.deepEqual(score('Pilot', 'pilot'), [0, 0, true, false])
-  assert.deepEqual(score('zoroaster', 'Zоroaster'), [0, 0, false, false])
-  assert.deepEqual(score('pilo', 'Pilot42'), [0, 1, true, false])
-  assert.deepEqual(score('pilot', 'xX_Pilot_Xx'), [0, 2, true, false])
-  assert.deepEqual(score('pilto', 'Pilot'), [1, 0, false, false]) // an adjacent swap is one edit
-  assert.deepEqual(score('pilto', 'Pilot_2008'), [1, 1, false, false])
-  assert.deepEqual(score('leclerk', 'Char1es_Leclerc'), [1, 2, false, false])
-  assert.deepEqual(score('vovnazmje', 'Vovanzmej'), [2, 0, false, false])
-  assert.deepEqual(score('vovanzmeq', 'Vovanzmejx'), [1, 1, false, false]) // its start in 1 edit beats the whole in 2
-  assert.equal(score('vovnazmjee', 'Vovanzmej'), null) // 3 edits
-  assert.equal(score('pil', 'pol'), null) // under 4 characters: exact only
+test('a nick matches whole, by its start or inside, at a cost in quarter edits', () => {
+  assert.deepEqual(score('Pilot', 'pilot'), [0, 0, true])
+  assert.deepEqual(score('zoroaster', 'Zоroaster'), [0, 0, false])
+  assert.deepEqual(score('pilo', 'Pilot42'), [0, 1, true])
+  assert.deepEqual(score('pilot', 'xX_Pilot_Xx'), [0, 2, true])
+  assert.deepEqual(score('pilto', 'Pilot'), [4, 0, false]) // an adjacent swap is one edit
+  assert.deepEqual(score('pilto', 'Pilot_2008'), [4, 1, false])
+  assert.deepEqual(score('vovnazmje', 'Vovanzmej'), [8, 0, false])
+  assert.equal(score('vovanzmej', 'Vxvxnzmxj'), null) // 3 edits
+  assert.equal(score('pil', 'pol'), null) // under 4 characters: no edits
   assert.equal(score('1488', '1489'), null) // digits: another number, not a typo
-  assert.equal(score('pilto', 'xx_pilot_xx'), null) // inside a nick: edits from 6 characters
-  assert.deepEqual(score('ящкщфыеук', 'Zоroaster'), [0, 0, false, true])
+})
+
+test('a letter typed for a lone digit is cheap; a digit for a letter, or within a number, is an edit', () => {
+  assert.deepEqual(score('vadim', 'Vad1m'), [1, 0, false])
+  assert.deepEqual(score('blockmonster', 'Bl0ckm0nst3rLP'), [3, 1, false])
+  assert.deepEqual(score('vad1m', 'Vadim'), [4, 0, false])
+  assert.deepEqual(score('pilot2009', 'pilot2008'), [4, 0, false])
+})
+
+test('another view or layout ranks an edit lower', () => {
+  assert.deepEqual(score('акула', 'AKYJIA_N3_NKEN'), [4, 1, false])
+  assert.deepEqual(score('veterok', 'Ветерок'), [4, 0, false])
+  assert.deepEqual(score('зороастр', 'Zоroaster'), [8, 0, false])
+  assert.deepEqual(score('ящкщфыеук', 'Zоroaster'), [4, 0, false])
+  // A wrong layout and a typo at once.
+  assert.deepEqual(score('ящкщфыук', 'Zоroaster'), [8, 0, false])
 })
 
 test('nicks rank by match; equal matches keep their order', () => {
   assert.deepEqual(
-    rankNicks('pilot', ['Tank', 'Plot', 'Pilto', 'xX_Pilot_Xx', 'Pilot_2008', 'Pi_lot', 'Pilot']),
-    ['Pilot', 'Pi_lot', 'Pilot_2008', 'xX_Pilot_Xx', 'Plot', 'Pilto'],
+    rankNicks('pilot', ['Tank', 'Plot', 'Pilto', 'xX_Pilot_Xx', 'Pilot_B', 'Pilot_A', 'Pi_lot', 'Pilot']),
+    ['Pilot', 'Pi_lot', 'Pilot_B', 'Pilot_A', 'xX_Pilot_Xx', 'Plot', 'Pilto'],
   )
   assert.deepEqual(rankNicks(' ', ['b', 'a']), ['b', 'a'])
 })

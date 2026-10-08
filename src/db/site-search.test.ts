@@ -128,7 +128,7 @@ test('поиск игроков использует Unicode casefold для ide
   }
 })
 
-test('player search forgives typos, look-alike letters and the keyboard layout', () => {
+test('player search forgives typos, look-alikes, leet, transliteration and the keyboard layout', () => {
   initDb(':memory:')
   try {
     const slot = (userId: string, nick: string) => ({ ...replayPlayer(nick), userId })
@@ -155,6 +155,7 @@ test('player search forgives typos, look-alike letters and the keyboard layout',
     // Zоroaster holds a Cyrillic о.
     saveBattle(battle('1', [slot('901', 'Zоroaster'), slot('902', 'Pilot_2008'), slot('903', 'PilotOne'), slot('904', 'Pilot_Ace')]))
     saveBattle(battle('2', [slot('904', 'Pilot_Ace')]))
+    saveBattle(battle('3', [slot('906', 'Ветерок'), slot('907', 'AKYJIA_N3_NKEN'), slot('908', 'Vad1m')]))
     savePlayerIdentity({ wtUserId: '905', canonicalNick: 'Vovanzmej', platform: null })
 
     const search = (query: string) => searchSitePlayers(query, 20, findSimilarSitePlayers(query, 20))
@@ -169,6 +170,10 @@ test('player search forgives typos, look-alike letters and the keyboard layout',
     assert.deepEqual(search('pilotone'), ['PilotOne/replay', 'Pilot_Ace/replay'])
     assert.deepEqual(search('pilot'), ['Pilot_Ace/replay', 'Pilot_2008/replay', 'PilotOne/replay'])
     assert.deepEqual(search('vovanzmje'), ['Vovanzmej/identity'])
+    // By sound, as a Russian reads it, a letter for a digit.
+    assert.deepEqual(search('veterok'), ['Ветерок/replay'])
+    assert.deepEqual(search('акула'), ['AKYJIA_N3_NKEN/replay'])
+    assert.deepEqual(search('vadim'), ['Vad1m/replay'])
     assert.equal(searchSitePlayers('905', 20, findSimilarSitePlayers('905', 20))[0]?.wtUserId, '905')
   } finally {
     closeDb()

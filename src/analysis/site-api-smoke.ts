@@ -335,10 +335,17 @@ async function main(): Promise<void> {
     assert.equal(searchBody.players[0]?.nick, 'PilotOne')
     assert.equal(searchBody.players[0]?.origin, 'identity')
 
-    // A typo (two letters swapped) still finds the player.
-    const typo = await app.inject({ method: 'GET', url: '/api/players?query=PilotOen' })
-    assert.equal(typo.statusCode, 200)
-    assert.equal((typo.json() as { players: { nick: string }[] }).players[0]?.nick, 'PilotOne')
+    // A typo (two letters swapped) and the nick spelt by ear in Cyrillic still find the player;
+    // from their own address: the requests below use up the per-IP limit.
+    for (const query of ['PilotOen', 'пилотоне']) {
+      const similar = await app.inject({
+        method: 'GET',
+        url: `/api/players?query=${encodeURIComponent(query)}`,
+        remoteAddress: '198.51.100.20',
+      })
+      assert.equal(similar.statusCode, 200)
+      assert.equal((similar.json() as { players: { nick: string }[] }).players[0]?.nick, 'PilotOne', query)
+    }
 
     const searchById = await app.inject({ method: 'GET', url: '/api/players?query=501' })
     assert.equal((searchById.json() as { players: { wtUserId: string | null }[] }).players[0]?.wtUserId, '501')
