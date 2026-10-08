@@ -8,6 +8,7 @@ import type { BattleItemMeta, BattleParseProfile } from '../wrpl/battle-transfor
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
 import type { EventsRepairCounts } from '../wrpl/events-repair.js'
+import type { ScoreboardReadResult } from '../scout/scoreboard-read.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -188,6 +189,16 @@ export interface WorkerTaskMap {
   'read-player-insights': {
     input: { dbPath: string; userId: string; fromTs: number; toTs: number }
     output: PlayerReplayInsights & { elapsedMs: number }
+  }
+  /** /scout by picture: the screenshot read (src/scout/scoreboard-read.ts), players matched against fromTs on. */
+  'read-scoreboard-image': {
+    input: { dbPath: string; image: ArrayBuffer; fromTs: number }
+    output: ScoreboardReadResult
+  }
+  /** /scout by picture: the recognised players' rows and the season stages. */
+  'read-scout-players': {
+    input: { dbPath: string; userIds: string[]; fromTs: number; toTs: number }
+    output: { rows: ScoutTeamRow[]; stages: { startsAt: number; endsAt: number; maxBr: number }[] }
   }
   /** /scout: a squadron's player rows and the season stages (src/scout/report.ts). */
   'read-scout-history': {

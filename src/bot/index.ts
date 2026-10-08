@@ -1,10 +1,11 @@
-import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, RESTJSONErrorCodes, type Interaction } from 'discord.js'
+import { ApplicationFlagsBitField, Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, REST, RESTJSONErrorCodes, Routes, type Interaction } from 'discord.js'
 import { config } from '../config.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
+import { handleScoutImageMessage, scoutImagesIdle } from './scout-images.js'
 
 let acceptingInteractions = true
 const activeInteractions = new Set<Promise<void>>()
@@ -19,15 +20,37 @@ function isExpiredInteraction(err: unknown): boolean {
   return err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownInteraction
 }
 
+/**
+ * Whether the application may receive message content (Developer Portal →
+ * Bot → Message Content Intent). Asking for the intent without it makes the
+ * gateway refuse the login (4014), so it is checked first.
+ */
+async function messageContentAllowed(): Promise<boolean> {
+  try {
+    const application = await new REST().setToken(config.token).get(Routes.currentApplication()) as { flags?: number }
+    const flags = new ApplicationFlagsBitField(application.flags ?? 0)
+    return flags.has('GatewayMessageContent') || flags.has('GatewayMessageContentLimited')
+  } catch (error) {
+    console.warn('[bot] Could not read the application flags; message content stays off:', error)
+    return false
+  }
+}
+
 export async function startBot(): Promise<Client> {
   acceptingInteractions = true
-  const client = new Client({
-    // Guilds — slash-команды, GuildVoiceStates — кто сидит в голосовых
-    // каналах (не privileged, в Developer Portal включать ничего не надо).
-    // Если понадобится читать сообщения — добавь GuildMessages +
-    // MessageContent и включи Message Content Intent в Developer Portal.
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
-  })
+  // Guilds — slash commands, GuildVoiceStates — who sits in voice channels
+  // (neither is privileged). GuildMessages (+ MessageContent when the portal
+  // allows it) — scoreboard screenshots in WT_SCOUT_CHANNEL.
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
+  if (config.scoutChannelIds.length > 0) {
+    intents.push(GatewayIntentBits.GuildMessages)
+    if (await messageContentAllowed()) {
+      intents.push(GatewayIntentBits.MessageContent)
+    } else {
+      console.warn('[bot] Message Content Intent is off in the Developer Portal: /scout screenshots are read only when the message mentions the bot')
+    }
+  }
+  const client = new Client({ intents })
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`[bot] Готов! Вошёл как ${readyClient.user.tag}`)
@@ -38,6 +61,12 @@ export async function startBot(): Promise<Client> {
       console.log('[announce] Автоанонс боёв отключён')
     }
   })
+  if (config.scoutChannelIds.length > 0) {
+    client.on(Events.MessageCreate, (message) => {
+      if (!acceptingInteractions) return
+      handleScoutImageMessage(message)
+    })
+  }
   client.on(Events.Error, (error) => {
     console.error('[bot] Gateway client error:', error)
   })
@@ -135,6 +164,7 @@ export async function stopBotWork(graceMs = 10_000): Promise<void> {
     stopBattleAnnouncer(),
     stopPlayerBoardPublisher(),
     stopBattlePostUpdates(),
+    scoutImagesIdle(),
     Promise.allSettled([...activeInteractions]),
   ])
   if (graceMs <= 0) {

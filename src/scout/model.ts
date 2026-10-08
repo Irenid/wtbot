@@ -473,6 +473,23 @@ export function calibrateSetup(setup: ScoutSetup, lastHadAir: boolean): ScoutSet
   }
 }
 
+/** A player's chance of each class: their vehicles', the unseen and unknown-class rest spread by the shares. */
+function classChancesOf(
+  player: ScoutPlayerPrediction,
+  classOf: (id: string) => VehicleClass,
+  shares: Record<ScoutClass, number>,
+): Record<ScoutClass, number> {
+  const classChances: Record<ScoutClass, number> = { F: 0, H: 0, T: 0, L: 0, AA: 0 }
+  let unknown = player.unseenChance
+  for (const vehicle of player.vehicles) {
+    const cls = classOf(vehicle.vehicleId)
+    if (cls === '?') unknown += vehicle.chance
+    else classChances[cls] += vehicle.chance
+  }
+  for (const cls of SCOUT_CLASSES) classChances[cls] += unknown * shares[cls]
+  return classChances
+}
+
 function predictGroup(
   history: readonly ScoutBattle[],
   input: ScoutPredictionInput,
@@ -496,17 +513,7 @@ function predictGroup(
     }
   })
   players.sort((a, b) => b.playChance - a.playChance || a.nick.localeCompare(b.nick))
-  const team = players.slice(0, TEAM_SIZE).map((player) => {
-    const classChances: Record<ScoutClass, number> = { F: 0, H: 0, T: 0, L: 0, AA: 0 }
-    let unknown = player.unseenChance
-    for (const vehicle of player.vehicles) {
-      const cls = input.classOf(vehicle.vehicleId)
-      if (cls === '?') unknown += vehicle.chance
-      else classChances[cls] += vehicle.chance
-    }
-    for (const cls of SCOUT_CLASSES) classChances[cls] += unknown * shares[cls]
-    return { classChances }
-  })
+  const team = players.slice(0, TEAM_SIZE).map((player) => ({ classChances: classChancesOf(player, input.classOf, shares) }))
   const lastHadAir = anchor.players.some((player) => {
     const cls = player.vehicle ? input.classOf(player.vehicle) : '?'
     return cls === 'F' || cls === 'H'
@@ -556,4 +563,79 @@ export function predictScout(input: ScoutPredictionInput): ScoutPrediction {
     })
   }
   return result
+}
+
+export interface KnownTeamInput {
+  /** The players read from a scoreboard. */
+  players: readonly { userId: string; nick: string }[]
+  /** Enemy rows nobody was recognised in: they count with the class shares. */
+  unknownPlayers: number
+  /** The players' battles (any squadron, any teammates). */
+  battles: readonly ScoutBattle[]
+  now: number
+  stages: readonly ScoutStage[]
+  classOf: (vehicleId: string) => VehicleClass
+}
+
+export interface KnownTeamPrediction {
+  maxBr: number | null
+  /** The latest battle with the most of these players together; null — none. */
+  lastTogether: { endTime: number; players: number } | null
+  /** Recognised players (play chance 1), most battles at the cap first. */
+  players: ScoutPlayerPrediction[]
+  setup: ScoutSetup
+}
+
+/**
+ * The enemy team is known (a scoreboard screenshot): only the vehicles are
+ * predicted, each player's from their own battles at the current cap with any
+ * squadron. The air calibration uses the latest battle most of them played
+ * together.
+ */
+export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
+  const known = input.battles
+    .filter((battle) => battle.availableAt <= input.now && battle.endTime <= input.now)
+    .sort((a, b) => a.endTime - b.endTime || a.startTime - b.startTime)
+  const stage = stageAt(input.stages, input.now)
+  const capFrom = stage ? periodBounds(stage).from : input.now - 7 * 86_400
+  const vehicleHistory = vehicleHistories(known, stage, input.now)
+  const shares = classShares(known, capFrom, input.classOf)
+  const ids = new Set(input.players.map((player) => player.userId))
+  let anchor: ScoutBattle | null = null
+  let anchorCount = 0
+  for (const battle of known) {
+    const count = battle.players.filter((player) => ids.has(player.userId)).length
+    if (count >= 2 && count >= anchorCount) {
+      anchor = battle
+      anchorCount = count
+    }
+  }
+  const players: ScoutPlayerPrediction[] = input.players.map((player) => {
+    const own = vehicleHistory.get(player.userId) ?? []
+    const features = vehicleChoiceFeatures(own, input.now)
+    const chances = features ? vehicleChances(features) : { vehicles: [], unseen: 1 }
+    return {
+      userId: player.userId,
+      nick: player.nick,
+      playChance: 1,
+      battlesAtCap: own.length,
+      vehicles: chances.vehicles,
+      unseenChance: chances.unseen,
+      lineup: own[own.length - 1]?.lineup ?? [],
+    }
+  })
+  players.sort((a, b) => b.battlesAtCap - a.battlesAtCap || a.nick.localeCompare(b.nick))
+  const team = players.map((player) => ({ classChances: classChancesOf(player, input.classOf, shares) }))
+  for (let i = 0; i < input.unknownPlayers; i += 1) team.push({ classChances: { ...shares } })
+  const lastHadAir = anchor?.players.some((player) => {
+    if (!ids.has(player.userId) || !player.vehicle) return false
+    const cls = input.classOf(player.vehicle)
+    return cls === 'F' || cls === 'H'
+  }) ?? false
+  return {
+    maxBr: stage?.maxBr ?? null,
+    lastTogether: anchor ? { endTime: anchor.endTime, players: anchorCount } : null,
+    players,
+    setup: calibrateSetup(setupFromPlayers(team), lastHadAir),
+  }
 }

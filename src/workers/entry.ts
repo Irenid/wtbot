@@ -426,6 +426,50 @@ async function readScoutHistory(
   }
 }
 
+/** /scout by picture: OCR in a child process, the players to match from a read-only connection. */
+async function readScoreboardImage(
+  input: Extract<AnyWorkerTask, { kind: 'read-scoreboard-image' }>['input'],
+): Promise<{ value: WorkerTaskResult<'read-scoreboard-image'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
+  const [{ DatabaseSync }, { getScoutRecentPlayers }, { candidateIndex, readScoreboard }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+    import('../scout/scoreboard-read.js'),
+  ])
+  const players = candidateIndex(`${input.dbPath}:${input.fromTs - (input.fromTs % 600)}`, () => {
+    const database = new DatabaseSync(input.dbPath, { readOnly: true })
+    try {
+      database.exec('PRAGMA busy_timeout = 5000;')
+      return getScoutRecentPlayers(input.fromTs, database)
+    } finally {
+      database.close()
+    }
+  })
+  return { value: await readScoreboard(new Uint8Array(input.image), players), transfer: [] }
+}
+
+/** /scout by picture: the recognised players' rows. */
+async function readScoutPlayers(
+  input: Extract<AnyWorkerTask, { kind: 'read-scout-players' }>['input'],
+): Promise<{ value: WorkerTaskResult<'read-scout-players'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
+  const [{ DatabaseSync }, { getScoutPlayerRows, getScoutStages }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 1073741824;')
+    return {
+      value: { rows: getScoutPlayerRows(input.userIds, input.fromTs, input.toTs, database), stages: getScoutStages(database) },
+      transfer: [],
+    }
+  } finally {
+    database.close()
+  }
+}
+
 interface StoredPlayerFacts {
   user_id: string
   team: number
@@ -968,6 +1012,10 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return readPlayerInsights(task.input)
     case 'read-scout-history':
       return readScoutHistory(task.input)
+    case 'read-scoreboard-image':
+      return readScoreboardImage(task.input)
+    case 'read-scout-players':
+      return readScoutPlayers(task.input)
     case 'render-scoreboard':
       return await renderScoreboard(task.input)
     case 'render-media':

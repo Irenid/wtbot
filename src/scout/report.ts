@@ -8,7 +8,9 @@ import { getDbWorkerPath, getScoutSquadronTags, getScoutStages, getScoutTeamRows
 import { normalizePlayerSearchKey } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { ensureVehicleDict, vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
-import { ROSTER_WINDOW_SEC, predictScout, type ScoutBattle, type ScoutPrediction } from './model.js'
+import { ROSTER_WINDOW_SEC, predictKnownTeam, predictScout, type KnownTeamPrediction, type ScoutBattle, type ScoutPrediction } from './model.js'
+import { displayedNick, type NickMatch } from './nick-match.js'
+import type { ScoreboardReadResult } from './scoreboard-read.js'
 
 /** A team with fewer of the squadron's players is another squadron's team with guests. */
 const MIN_SQUADRON_PLAYERS = 4
@@ -88,8 +90,8 @@ export function findSquadrons(query: string, limit = 25): ScoutSquadron[] {
   return ranked.slice(0, limit).map((item) => item.squadron)
 }
 
-/** The squadron's battles, one per team with at least MIN_SQUADRON_PLAYERS of its players. */
-export function scoutBattlesFromRows(rows: readonly ScoutTeamRow[]): ScoutBattle[] {
+/** Battles from rows, one per team with at least `minPlayers` of the rows' players (a squadron: MIN_SQUADRON_PLAYERS). */
+export function scoutBattlesFromRows(rows: readonly ScoutTeamRow[], minPlayers = MIN_SQUADRON_PLAYERS): ScoutBattle[] {
   const teams = new Map<string, ScoutBattle & { players: ScoutBattle['players'][number][] }>()
   for (const row of rows) {
     const key = `${row.sessionId}:${row.team}`
@@ -114,7 +116,7 @@ export function scoutBattlesFromRows(rows: readonly ScoutTeamRow[]): ScoutBattle
     battle.players.push({ userId: row.userId, nick: row.nick, vehicle: row.vehicle, lineup })
   }
   return [...teams.values()]
-    .filter((battle) => battle.players.length >= MIN_SQUADRON_PLAYERS)
+    .filter((battle) => battle.players.length >= minPlayers)
     .sort((a, b) => a.endTime - b.endTime)
 }
 
@@ -197,5 +199,83 @@ export async function buildScoutReport(squadron: ScoutSquadron, hintNick: string
     hint: hintNick !== null && hintNick.trim() !== '' ? { nick: hintNick.trim(), matched: hintUserId !== undefined } : null,
     vehicles,
     now: nowSec,
+  }
+}
+
+/** Players matched against a screenshot: everyone seen in the last 120 days (a squadron player can pause for months). */
+const IMAGE_CANDIDATE_WINDOW_SEC = 120 * 86_400
+/** Vehicle history of the recognised players: the current BR period at most (a week plus the switch delay). */
+const IMAGE_HISTORY_WINDOW_SEC = 9 * 86_400
+
+export interface ScoutImageReport {
+  /** The enemy squadron (most recognised players' tag); null — not in the index. */
+  squadron: ScoutSquadron | null
+  /** The own team's squadron as read (left side). */
+  allySquadron: ScoutSquadron | null
+  prediction: KnownTeamPrediction
+  recognised: number
+  unread: string[]
+  vehicles: VehicleDict
+  now: number
+}
+
+export type ScoutImageOutcome =
+  | { kind: 'report'; report: ScoutImageReport; read: ScoreboardReadResult }
+  | { kind: 'no-table' | 'no-players'; read: ScoreboardReadResult }
+  | { kind: 'one-side'; read: ScoreboardReadResult; squadron: ScoutSquadron | null }
+
+/** The tag most matches carry, as a squadron. */
+function majoritySquadron(matches: readonly NickMatch[]): ScoutSquadron | null {
+  const counts = new Map<string, number>()
+  for (const match of matches) {
+    const core = squadronCore(match.clanTag)
+    if (core !== '') counts.set(core, (counts.get(core) ?? 0) + 1)
+  }
+  const core = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0]
+  return core === undefined ? null : squadronIndex().get(core) ?? null
+}
+
+/** A scoreboard screenshot to the enemy's likely vehicles; OCR and reads run in workers. */
+export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date.now() / 1000)): Promise<ScoutImageOutcome> {
+  const dbPath = getDbWorkerPath()
+  if (dbPath === null) throw new Error('/scout pictures need a file database')
+  const buffer = image.slice().buffer
+  const read = await runWorkerTask(
+    { kind: 'read-scoreboard-image', input: { dbPath, image: buffer, fromTs: nowSec - IMAGE_CANDIDATE_WINDOW_SEC } },
+    { priority: 'interactive', timeoutMs: 60_000, transferList: [buffer] },
+  )
+  if (read.status === 'no-table' || read.status === 'no-players') return { kind: read.status, read }
+  if (read.status === 'one-side') return { kind: 'one-side', read, squadron: majoritySquadron(read.oneSide) }
+  if (read.enemies.length === 0) return { kind: 'no-players', read }
+  const [{ rows, stages }, vehicles] = await Promise.all([
+    runWorkerTask(
+      {
+        kind: 'read-scout-players',
+        input: { dbPath, userIds: read.enemies.map((m) => m.userId), fromTs: nowSec - IMAGE_HISTORY_WINDOW_SEC, toTs: nowSec + 1 },
+      },
+      { priority: 'interactive', timeoutMs: 20_000 },
+    ),
+    ensureVehicleDict('interactive'),
+  ])
+  const prediction = predictKnownTeam({
+    players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
+    unknownPlayers: read.unread.length,
+    battles: scoutBattlesFromRows(rows, 1),
+    now: nowSec,
+    stages,
+    classOf: (id) => vehicleInfo(vehicles, id).cls,
+  })
+  return {
+    kind: 'report',
+    read,
+    report: {
+      squadron: majoritySquadron(read.enemies),
+      allySquadron: majoritySquadron(read.allies),
+      prediction,
+      recognised: read.enemies.length,
+      unread: read.unread,
+      vehicles,
+      now: nowSec,
+    },
   }
 }

@@ -153,6 +153,13 @@ export const config = {
   /** ID текстового канала для автоанонса новых боёв; пусто — выключено */
   battlesChannelId: process.env['WT_BATTLES_CHANNEL'] ?? '',
   /**
+   * Text channels where a scoreboard (Tab) screenshot gets the enemy's likely
+   * setup (src/bot/scout-images.ts); comma-separated, empty — off. Reading
+   * attachments needs the Message Content intent (Developer Portal → Bot);
+   * without it only messages that mention the bot are read.
+   */
+  scoutChannelIds: envCsvUnique('WT_SCOUT_CHANNEL'),
+  /**
    * Клан-тег, бои которого анонсировать (например, WLILY); пусто — анонсим
    * все клановые бои. Сравнивается по «ядру» тега без украшений/регистра.
    */

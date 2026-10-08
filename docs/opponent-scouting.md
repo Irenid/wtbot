@@ -118,6 +118,34 @@ on 2026-10-01 – 2026-10-08. 16.5 s on 26 threads.
   in 26 ms with the model on a copy), read in worker task
   `read-scout-history`.
 
+### By picture
+
+A Tab screenshot posted in `WT_SCOUT_CHANNEL` names the enemy players, so only
+their vehicles are predicted (`predictKnownTeam`: each player's own battles at
+the cap, any squadron; unread rows count with the class shares). Reading,
+2026-10-08, five screenshots (two full screens 2560×1440 and 1919×1199, three
+crops) in the production image:
+
+- **Rows:** the text mask is the colour distance from a 12 px (then 24 px)
+  local mean, any hue; rows are the longest evenly spaced run of text bands
+  (±15% pitch, the highlighted own row up to 2.2× tall, two missing rows
+  filled in). 8 of 8 rows in all five, including a blurry upscaled crop.
+- **OCR:** one Tesseract call (eng+rus+chi_sim, `--psm 6`, TSV) on the rows
+  stacked and scaled to ~30 px text, each pixel's distance from its row's
+  median colour (a local box blur hollowed out CJK strokes and Chinese came
+  out as noise). 0.5–1.5 s per image.
+- **Matching:** nicks of players seen in 120 days (19,575), letters and
+  digits only, look-alikes folded (Cyrillic, `0`/`o`, `1`/`l`/`i`),
+  approximate substring search; allowed edits by weight (a CJK character
+  counts 2): 0 up to 6, 1 up to 10, 2 up to 15, then 3. A find counts when the
+  tag precedes it, or it is exact and weighs 8+, or its squadron holds that
+  side; without this, 4–6 letter nicks matched vehicle names and score
+  columns in every row. Digit-only words (score columns) are skipped.
+- **Result:** 21 of 24 enemies on the three screenshots with both teams, no
+  false find: =7WOLF= 7/8 (the eighth never played in a stored battle),
+  iZG0Y 8/8, CH68 6/8 (two Chinese nicks unreadable); the two crops of one
+  team answer "only one team". Allies are found as well (21).
+
 ## Guessing the enemy from server data
 
 - **Candidates** — squadrons whose battle ended at most 20 min before our
@@ -225,7 +253,8 @@ The game's built-in browser map; it listens on `0.0.0.0:8111`. The map page
     BattlEye);
   - guessing running sessions on the CDN — a scan, and parts appear only at
     the end;
-  - OCR of the scoreboard — needs someone to press Tab;
+  - automatic OCR of the scoreboard — needs someone to press Tab (a person
+    posting the screenshot is `/scout` by picture, above);
   - voice transcription — privacy.
 
 ## Comparison

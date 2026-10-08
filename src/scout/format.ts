@@ -7,9 +7,9 @@
  */
 
 import { escapeMarkdown } from 'discord.js'
-import { vehicleInfo } from '../wrpl/vehicles.js'
-import { SESSION_GAP_SEC, TEAM_SIZE, type ScoutClass, type ScoutPlayerPrediction } from './model.js'
-import type { ScoutReport } from './report.js'
+import { vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
+import { SESSION_GAP_SEC, TEAM_SIZE, type ScoutClass, type ScoutPlayerPrediction, type ScoutSetup } from './model.js'
+import type { ScoutImageReport, ScoutReport } from './report.js'
 
 const CLASS_NAMES: Record<ScoutClass, [string, string]> = {
   F: ['aircraft', 'aircraft'],
@@ -33,9 +33,6 @@ const MIN_ALTERNATIVE_CHANCE = 0.1
 const MIN_UNSEEN_CHANCE = 0.1
 /** A play chance is shown below this; mid-session nearly everyone is above it. */
 const SHOW_PLAY_CHANCE_BELOW = 0.9
-/** Players below this chance are not listed. */
-const MIN_PLAYER_CHANCE = 0.05
-const MAX_BENCH = 10
 const MAX_FIELD = 1024
 const MAX_DESCRIPTION = 4096
 const MAX_EMBED = 6000
@@ -86,8 +83,8 @@ export interface ScoutEmbedText {
 }
 
 /** "nick (plays 84%) — **T-54 (1949) 93%** · ZSU-37-2 16%": the most likely vehicle is the bold part. */
-function playerLine(player: ScoutPlayerPrediction, report: ScoutReport): string {
-  const name = (id: string) => escapeMarkdown(plainVehicleName(vehicleInfo(report.vehicles, id).name))
+function playerLine(player: ScoutPlayerPrediction, vehicles: VehicleDict): string {
+  const name = (id: string) => escapeMarkdown(plainVehicleName(vehicleInfo(vehicles, id).name))
   const plays = player.playChance < SHOW_PLAY_CHANCE_BELOW ? ` (plays ${percent(player.playChance)})` : ''
   const who = `${escapeMarkdown(player.nick)}${plays}`
   const [best, ...rest] = player.vehicles
@@ -98,10 +95,10 @@ function playerLine(player: ScoutPlayerPrediction, report: ScoutReport): string 
   return `${who} — ${parts.join(' · ')}`
 }
 
-function likelyClass(player: ScoutPlayerPrediction, report: ScoutReport): ScoutClass | 'unknown' {
+function likelyClass(player: ScoutPlayerPrediction, vehicles: VehicleDict): ScoutClass | 'unknown' {
   const best = player.vehicles[0]
   if (player.battlesAtCap === 0 || !best) return 'unknown'
-  const cls = vehicleInfo(report.vehicles, best.vehicleId).cls
+  const cls = vehicleInfo(vehicles, best.vehicleId).cls
   return cls === '?' ? 'unknown' : cls
 }
 
@@ -128,38 +125,9 @@ export function formatScoutReport(report: ScoutReport): ScoutEmbedText {
   }
   const brText = prediction.maxBr === null ? '' : ` at BR ${prediction.maxBr.toFixed(1)}`
   lines.push(`Based on ${prediction.battlesAtCap} of their battles${brText}.`, '')
-  const [top, ...others] = group.setup.compositions
-  if (top) {
-    lines.push('**Most likely setup**', `${compositionText(top.counts)} — ${percent(top.chance)}`)
-    for (const other of others) lines.push(`${compositionText(other.counts)} — ${percent(other.chance)}`)
-    lines.push('')
-  }
-  const air = group.setup.expected.F + group.setup.expected.H
-  lines.push(`**Air:** ${air.toFixed(1)} expected, at least one ${percent(group.setup.airChance)}`)
+  lines.push(...setupLines(group.setup))
   const description = clip(lines.join('\n'), MAX_DESCRIPTION)
-
-  // The likely eight, grouped by the class of their most likely vehicle.
-  const team = group.players.slice(0, TEAM_SIZE)
-  const fields: { name: string; value: string }[] = []
-  for (const cls of [...CLASS_ORDER, 'unknown'] as const) {
-    const members = team.filter((player) => likelyClass(player, report) === cls)
-    if (members.length === 0) continue
-    fields.push({
-      name: `${GROUP_TITLES[cls]} · ${members.length}`,
-      value: clip(members.map((player) => playerLine(player, report)).join('\n'), MAX_FIELD),
-    })
-  }
-  const bench = group.players.slice(TEAM_SIZE).filter((player) => player.playChance >= MIN_PLAYER_CHANCE)
-  if (bench.length > 0) {
-    fields.push({
-      name: 'Could also play',
-      value: clip(
-        bench.slice(0, MAX_BENCH).map((player) => `${escapeMarkdown(player.nick)} ${percent(player.playChance)}`).join(', ')
-        + (bench.length > MAX_BENCH ? ` and ${bench.length - MAX_BENCH} more` : ''),
-        MAX_FIELD,
-      ),
-    })
-  }
+  const fields = classFields(group.players.slice(0, TEAM_SIZE), report.vehicles)
   for (const other of prediction.otherGroups.slice(0, 2)) {
     fields.push({
       name: 'Another group is playing at the same time',
@@ -170,8 +138,60 @@ export function formatScoutReport(report: ScoutReport): ScoutEmbedText {
       ),
     })
   }
-  // An embed holds 6,000 characters in all: the last fields go first.
-  const size = () => title.length + description.length + fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0)
+  return fitEmbed({ color: group.regime === 'session' ? SCOUT_COLOR_SESSION : SCOUT_COLOR_GUESS, title, description, fields })
+}
+
+/** An embed holds 6,000 characters and 25 fields in all: the last fields go first. */
+function fitEmbed(text: ScoutEmbedText): ScoutEmbedText {
+  const fields = text.fields.slice(0, 25)
+  const size = () => text.title.length + text.description.length + fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0)
   while (fields.length > 0 && size() > MAX_EMBED) fields.pop()
-  return { color: group.regime === 'session' ? SCOUT_COLOR_SESSION : SCOUT_COLOR_GUESS, title, description, fields: fields.slice(0, 25) }
+  return { ...text, fields }
+}
+
+function setupLines(setup: ScoutSetup): string[] {
+  const lines: string[] = []
+  const [top, ...others] = setup.compositions
+  if (top) {
+    lines.push('**Most likely setup**', `${compositionText(top.counts)} — ${percent(top.chance)}`)
+    for (const other of others) lines.push(`${compositionText(other.counts)} — ${percent(other.chance)}`)
+    lines.push('')
+  }
+  const air = setup.expected.F + setup.expected.H
+  lines.push(`**Air:** ${air.toFixed(1)} expected, at least one ${percent(setup.airChance)}`)
+  return lines
+}
+
+/** Players grouped by the class of their most likely vehicle, one line each. */
+function classFields(players: readonly ScoutPlayerPrediction[], vehicles: VehicleDict): { name: string; value: string }[] {
+  const fields: { name: string; value: string }[] = []
+  for (const cls of [...CLASS_ORDER, 'unknown'] as const) {
+    const members = players.filter((player) => likelyClass(player, vehicles) === cls)
+    if (members.length === 0) continue
+    fields.push({
+      name: `${GROUP_TITLES[cls]} · ${members.length}`,
+      value: clip(members.map((player) => playerLine(player, vehicles)).join('\n'), MAX_FIELD),
+    })
+  }
+  return fields
+}
+
+/** The reply to a scoreboard screenshot: the enemy team as read, its likely vehicles and setup. */
+export function formatScoutImageReport(report: ScoutImageReport): ScoutEmbedText {
+  const title = clip(report.squadron ? squadronLabel(report.squadron.displayTag, report.squadron.name) : 'Enemy team', 256)
+  const { prediction } = report
+  const lines = [`Read from the screenshot: ${report.recognised} of ${report.recognised + report.unread.length} enemy players.`]
+  if (prediction.lastTogether) {
+    lines.push(`Last played together <t:${prediction.lastTogether.endTime}:R>.`)
+  }
+  const brText = prediction.maxBr === null ? '' : ` at BR ${prediction.maxBr.toFixed(1)}`
+  lines.push(`Vehicle chances come from each player's own battles${brText}.`, '', ...setupLines(prediction.setup))
+  const fields = classFields(prediction.players, report.vehicles)
+  if (report.unread.length > 0) {
+    fields.push({
+      name: `Not recognised · ${report.unread.length}`,
+      value: clip(report.unread.map((text) => `"${escapeMarkdown(text)}"`).join('\n'), MAX_FIELD),
+    })
+  }
+  return fitEmbed({ color: SCOUT_COLOR_SESSION, title, description: clip(lines.join('\n'), MAX_DESCRIPTION), fields })
 }

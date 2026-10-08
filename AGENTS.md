@@ -100,6 +100,7 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WEB_TRUST_PROXY` | `false`/`true`/IP-CIDR list for `X-Forwarded-For`; Fastify 5.12 has no hop count |
 | `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer; the bot does not read them, the token never reaches the bundle |
 | `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — all channels; a battles channel without a clan tag announces every clan (~1,800 battles a day); the tag filters publishing, not collection |
+| `WT_SCOUT_CHANNEL` | channels where a scoreboard screenshot is read and answered (`src/bot/scout-images.ts`); adds the `GuildMessages` intent, and `MessageContent` only when the application has it (asking without it fails the login, 4014) |
 | `WT_ANNOUNCE_MAX_AGE_HOURS=2` | older battles are marked done instead of posted: downtime does not flood the channel with history |
 | `WT_COOKIE` | warthunder.com session for `wt-replays` and `wt-players` |
 | `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
@@ -458,6 +459,7 @@ Data:
   whole session set; `WT_BATTLE_CACHE_ENABLED=false` disables reuse, not
   saving;
 - `benchmarks/fixtures/replays/` — the only permanent WRPL corpus;
+- `data/scout-images/` — screenshots sent to `/scout` and their readings;
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
 - `data/wt-game/ui/` — copies of the game's `fonts.vromfs.bin` and
@@ -482,6 +484,15 @@ Data:
   before `--split`, test after); refit after a rules or format change and
   update the accuracy in `docs/opponent-scouting.md`. The BR cap switches
   `STAGE_SWITCH_DELAY_SEC` after the schedule's 00:00 UTC.
+- `/scout` by picture: a Tab screenshot in `WT_SCOUT_CHANNEL` → worker task
+  `read-scoreboard-image` (`src/scout/scoreboard-read.ts`): rows by local
+  contrast and even spacing (team colours are never assumed), Tesseract
+  (`tesseract-ocr` eng+rus+chi_sim in the image) as a child process, nicks of
+  the last 120 days matched approximately; the right-hand nick of a row is the
+  enemy. Then `read-scout-players` and `predictKnownTeam` (roster known,
+  vehicles from each player's own battles at the cap). Every image and its
+  reading stay in `data/scout-images/<day>/` (the test set:
+  `npm run scout:images` re-reads them; Discord IDs inside, never publish).
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,

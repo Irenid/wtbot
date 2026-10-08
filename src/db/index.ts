@@ -5880,6 +5880,26 @@ export const SITE_SQL = {
     ORDER BY b.start_time DESC
     LIMIT ?
   `,
+  // /scout by picture: players to match OCR'd nicks against, their latest nick and tag (one row per player).
+  // CROSS JOIN keeps battles (time index) outside: an empty database's plan scans every player first.
+  scoutRecentPlayers: `
+    SELECT bp.user_id, bp.nick, bp.clan_tag, MAX(b.start_time) AS last_seen
+    FROM battles b
+    CROSS JOIN battle_players bp ON bp.session_id = b.session_id
+    WHERE b.start_time >= ? AND bp.user_id NOT LIKE '-%'
+    GROUP BY bp.user_id
+  `,
+  // /scout by picture: the recognised players' own rows, newest first.
+  scoutPlayerRows: `
+    SELECT bp.session_id, bp.team, bp.user_id, bp.nick, bp.vehicle, bp.vehicles,
+           b.start_time, b.duration_sec, b.ingested_at
+    FROM battle_players bp
+    JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.user_id IN (${siteInSlots(SITE_ALIAS_IN_SLOTS)})
+      AND b.start_time >= ? AND b.start_time < ?
+    ORDER BY b.start_time DESC
+    LIMIT ?
+  `,
   // Every distinct squadron tag in replays: one index seek per tag (~860 tags).
   scoutBattleTags: `
     WITH RECURSIVE tags(tag) AS (
@@ -6903,6 +6923,43 @@ export function getScoutTeamRows(
     start_time: number
     duration_sec: number
     ingested_at: number
+  }[]
+  return rows.map((row) => ({
+    sessionId: row.session_id,
+    team: row.team,
+    userId: row.user_id,
+    nick: row.nick,
+    vehicle: row.vehicle,
+    vehicles: row.vehicles,
+    startTime: row.start_time,
+    durationSec: row.duration_sec,
+    ingestedAt: row.ingested_at,
+  }))
+}
+
+/** Players seen in battles since fromTs, each with the nick and tag of their latest battle. */
+export function getScoutRecentPlayers(fromTs: number, database?: DatabaseSync): { userId: string; nick: string; clanTag: string }[] {
+  const statement = database ? database.prepare(SITE_SQL.scoutRecentPlayers) : siteStatement('scoutRecentPlayers')
+  return (statement.all(fromTs) as { user_id: string; nick: string; clan_tag: string }[])
+    .map((row) => ({ userId: row.user_id, nick: row.nick, clanTag: row.clan_tag }))
+}
+
+/** Rows of up to 16 players in battles started in [fromTs, toTs), newest first. */
+export function getScoutPlayerRows(
+  userIds: readonly string[],
+  fromTs: number,
+  toTs: number,
+  database?: DatabaseSync,
+): ScoutTeamRow[] {
+  const ids = [...new Set(userIds.filter((id) => /^-?\d{1,20}$/.test(id)))].slice(0, SITE_ALIAS_IN_SLOTS)
+  if (ids.length === 0) return []
+  if (!Number.isSafeInteger(fromTs) || !Number.isSafeInteger(toTs) || fromTs < 0 || toTs <= fromTs) {
+    throw new RangeError('Invalid /scout period')
+  }
+  const statement = database ? database.prepare(SITE_SQL.scoutPlayerRows) : siteStatement('scoutPlayerRows')
+  const rows = statement.all(...padSiteList(ids, SITE_ALIAS_IN_SLOTS), fromTs, toTs, SCOUT_MAX_ROWS) as unknown as {
+    session_id: string; team: number; user_id: string; nick: string; vehicle: string | null; vehicles: string
+    start_time: number; duration_sec: number; ingested_at: number
   }[]
   return rows.map((row) => ({
     sessionId: row.session_id,
