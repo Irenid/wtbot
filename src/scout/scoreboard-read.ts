@@ -1,9 +1,11 @@
 /**
  * Reads a scoreboard screenshot end to end (worker side): table rows
  * (scoreboard-image.ts) → Tesseract passes (ocr.ts) → known players and
- * teams (nick-match.ts). The test set and its scores: `npm run scout:images`.
+ * teams (nick-match.ts) → the flags above the table (flags.ts). The test set
+ * and its scores: `npm run scout:images`.
  */
 
+import { readScoreboardFlags, tableMiddle, type FlagTemplatePack, type ScoreboardFlags } from './flags.js'
 import { decodeImage, encodePgm, findScoreboardRows, scoreboardSheet } from './scoreboard-image.js'
 import { parseTesseractTsv, runTesseract, OCR_PASSES } from './ocr.js'
 import { indexPlayers, matchRows, splitTeams, unreadEnemyRows, type IndexedPlayer, type KnownPlayer, type NickMatch } from './nick-match.js'
@@ -19,19 +21,23 @@ export interface ScoreboardReadResult {
   oneSide: NickMatch[]
   /** OCR text of enemy rows nobody was recognised in. */
   unread: string[]
-  ms: { layout: number; ocr: number; match: number }
+  /** The teams' flags above the table; null — not read (no templates, no line, or one team). */
+  flags: ScoreboardFlags | null
+  ms: { layout: number; ocr: number; match: number; flags: number }
 }
 
+/** `flags.icons` — the flags vehicles show (the vehicle dictionary's trees and operators); null — every template. */
 export async function readScoreboard(
   bytes: Uint8Array,
   players: readonly IndexedPlayer[],
   tesseract: readonly string[] = ['tesseract'],
+  flags: { pack: FlagTemplatePack; icons: ReadonlySet<string> | null } | null = null,
 ): Promise<ScoreboardReadResult> {
   const started = performance.now()
   const image = decodeImage(bytes)
   const layout = findScoreboardRows(image)
-  const ms = { layout: performance.now() - started, ocr: 0, match: 0 }
-  const empty = { ocrRows: [], enemies: [], allies: [], oneSide: [], unread: [] }
+  const ms = { layout: performance.now() - started, ocr: 0, match: 0, flags: 0 }
+  const empty = { ocrRows: [], enemies: [], allies: [], oneSide: [], unread: [], flags: null }
   if (!layout) return { status: 'no-table', rows: 0, ...empty, ms }
   const sheet = scoreboardSheet(image, layout)
   const ocrStarted = performance.now()
@@ -43,8 +49,11 @@ export async function readScoreboard(
   ms.match = performance.now() - matchStarted
   const ocrRows = layout.rows.map((_, index) => readings.map((reading) => reading[index]!.words.map((word) => word.text).join(' ')))
   const base = { rows: layout.rows.length, ocrRows, enemies: split.enemies, allies: split.allies, oneSide: split.oneSide, ms }
-  if (split.splitX === null) return { status: split.oneSide.length > 0 ? 'one-side' : 'no-players', unread: [], ...base }
-  return { status: 'ok', unread: unreadEnemyRows(readings, split), ...base }
+  if (split.splitX === null) return { status: split.oneSide.length > 0 ? 'one-side' : 'no-players', unread: [], flags: null, ...base }
+  const flagsStarted = performance.now()
+  const read = flags ? readScoreboardFlags(image, layout, flags.pack, tableMiddle(split.allyEdge, layout), flags.icons) : null
+  ms.flags = performance.now() - flagsStarted
+  return { status: 'ok', unread: unreadEnemyRows(readings, split), flags: read, ...base }
 }
 
 const CANDIDATE_TTL_MS = 10 * 60_000

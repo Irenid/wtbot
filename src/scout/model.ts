@@ -11,6 +11,7 @@
  */
 
 import type { VehicleClass } from '../wrpl/vehicles.js'
+import { conditionOnFlags, type FlagEvidence } from './flag-evidence.js'
 
 export interface ScoutPlayerRow {
   userId: string
@@ -575,6 +576,8 @@ export interface KnownTeamInput {
   now: number
   stages: readonly ScoutStage[]
   classOf: (vehicleId: string) => VehicleClass
+  /** The flags above the enemy team (flag-evidence.ts); omitted — none read. */
+  flags?: FlagEvidence | undefined
 }
 
 export interface KnownTeamPrediction {
@@ -584,13 +587,16 @@ export interface KnownTeamPrediction {
   /** Recognised players (play chance 1), most battles at the cap first. */
   players: ScoutPlayerPrediction[]
   setup: ScoutSetup
+  /** The enemy flags the chances are conditioned on: each one's likeliest flag; null — none read, or they fit nobody. */
+  flags: { icons: string[]; operatorChance: number } | null
 }
 
 /**
  * The enemy team is known (a scoreboard screenshot): only the vehicles are
  * predicted, each player's from their own battles at the current cap with any
- * squadron. The air calibration uses the latest battle most of them played
- * together.
+ * squadron, then given the flags above the enemy team when they were read
+ * (flag-evidence.ts). The air calibration uses the latest battle most of them
+ * played together.
  */
 export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
   const known = input.battles
@@ -624,6 +630,16 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
       lineup: own[own.length - 1]?.lineup ?? [],
     }
   })
+  const posterior = input.flags
+    ? conditionOnFlags(players.map((player) => ({ vehicles: player.vehicles, unseen: player.unseenChance })), input.flags)
+    : null
+  if (posterior) {
+    posterior.players.forEach((conditioned, index) => {
+      const player = players[index]!
+      player.vehicles = conditioned.vehicles.sort((a, b) => b.chance - a.chance || a.vehicleId.localeCompare(b.vehicleId))
+      player.unseenChance = conditioned.unseen
+    })
+  }
   players.sort((a, b) => b.battlesAtCap - a.battlesAtCap || a.nick.localeCompare(b.nick))
   const team = players.map((player) => ({ classChances: classChancesOf(player, input.classOf, shares) }))
   for (let i = 0; i < input.unknownPlayers; i += 1) team.push({ classChances: { ...shares } })
@@ -637,5 +653,8 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
     lastTogether: anchor ? { endTime: anchor.endTime, players: anchorCount } : null,
     players,
     setup: calibrateSetup(setupFromPlayers(team), lastHadAir),
+    flags: posterior && input.flags
+      ? { icons: input.flags.flags.map((reading) => reading[0]?.icon ?? '?'), operatorChance: posterior.operatorChance }
+      : null,
   }
 }

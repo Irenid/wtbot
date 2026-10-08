@@ -8,6 +8,9 @@ import type { BattleItemMeta, BattleParseProfile } from '../wrpl/battle-transfor
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
 import type { EventsRepairCounts } from '../wrpl/events-repair.js'
+
+/** FlagTemplatePack (src/scout/flags.ts) with its pixels as a transferable buffer. */
+export interface WireFlagTemplates { icons: string[]; width: number; height: number; rgb: ArrayBuffer }
 import type { ScoreboardReadResult } from '../scout/scoreboard-read.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
@@ -195,10 +198,18 @@ export interface WorkerTaskMap {
     input: { dbPath: string; query: string; limit: number }
     output: { players: SitePlayerSearchHit[]; elapsedMs: number }
   }
-  /** /scout by picture: the screenshot read (src/scout/scoreboard-read.ts), players matched against fromTs on. */
+  /**
+   * /scout by picture: the screenshot read (src/scout/scoreboard-read.ts), players matched against fromTs on;
+   * flags — the game's flags as templates (null: no game files, no flags read), flagIcons — the ones vehicles show.
+   */
   'read-scoreboard-image': {
-    input: { dbPath: string; image: ArrayBuffer; fromTs: number }
+    input: { dbPath: string; image: ArrayBuffer; fromTs: number; flags: WireFlagTemplates | null; flagIcons: string[] | null }
     output: ScoreboardReadResult
+  }
+  /** The game's flag SVGs (game-flags.ts) drawn as templates for /scout pictures (src/scout/flag-templates.ts). */
+  'render-flag-templates': {
+    input: { svgs: [string, string][] }
+    output: WireFlagTemplates
   }
   /** /scout by picture: the recognised players' rows and the season stages. */
   'read-scout-players': {

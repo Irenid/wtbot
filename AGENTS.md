@@ -465,9 +465,10 @@ Data:
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
 - `data/wt-game/ui/` — copies of the game's `fonts.vromfs.bin` and
-  `atlases.vromfs.bin` for Docker (`WT_GAME_DIR`): nation flags are read from
-  the atlas at every start; on failure the built-in flags remain and the image
-  still renders.
+  `atlases.vromfs.bin` for Docker (`WT_GAME_DIR`): flags are read from the
+  atlas at every start (the battle image's nations; every flag as `/scout`
+  picture templates); on failure the built-in flags remain and the image still
+  renders, and pictures are read without flags.
 
 ## 8. Discord, site and player statistics
 
@@ -491,11 +492,18 @@ Data:
   horizontal colour edges and even spacing (team colours are never assumed),
   one Tesseract child process per model of `OCR_PASSES` (the image installs
   them), nicks of the last 120 days matched approximately in every reading;
-  the right-hand nick of a row is the enemy. Then `read-scout-players` and
-  `predictKnownTeam` (roster known, vehicles from each player's own battles at
-  the cap). Every image and its reading stay in `data/scout-images/<day>/`;
-  with `truth.json` there they are the test set (`npm run scout:images`
-  scores them; Discord IDs inside, never publish).
+  the right-hand nick of a row is the enemy. The flags above the table
+  (`src/scout/flags.ts`: the game's own flags as templates, drawn once by
+  worker task `render-flag-templates`) are the countries each team has
+  spawned: a vehicle's operator (`wt-vehicles.json` `operator`, unittags
+  `operatorCountry`) or its nation, by the viewer's game setting. Then
+  `read-scout-players` and `predictKnownTeam` (roster known, vehicles from
+  each player's own battles at the cap, conditioned on the enemy's flags by
+  `flag-evidence.ts`, both settings mixed; `npm run scout:backtest --
+  <copy.db> --known-team` scores it). Every image and its reading stay in
+  `data/scout-images/<day>/`; with `truth.json` there (nicks and flags) they
+  are the test set (`npm run scout:images` scores them; Discord IDs inside,
+  never publish).
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,
@@ -625,7 +633,8 @@ Data:
   2026-10-08: built in 240 ms, a query 8–10 ms); a failed task leaves the
   prefix matches. Rank: an exact id, the match (`compareNickScores`),
   identity before alias before replay, battles. `/scout`'s player
-  autocomplete ranks the squadron's recent nicks the same way (`rankNicks`).
+  autocomplete ranks the squadron's recent nicks the same way (`rankNicks`);
+  its screenshot matcher folds nicks with the look view (`lookAlike`).
   The weights are fitted with `npm run bench:nick-search -- <copy.db>` on
   simulated queries; rerun it after changing a rule, and plain typos must not
   drop (`docs/nick-search.md`: method, results, rejected ideas).
@@ -743,7 +752,7 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-08**: all
-gates pass, **429 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **443 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

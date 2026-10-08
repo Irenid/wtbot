@@ -68,6 +68,9 @@ const LOOK: Record<string, string> = {
   ø: 'o', ł: 'l', đ: 'd', ħ: 'h', ŧ: 't', ı: 'i', ŀ: 'l', ð: 'd', þ: 'p', ƒ: 'f', ɑ: 'a', ɡ: 'g',
 }
 
+/** A letter's Latin look-alike, else the letter: /scout's screenshot matcher folds nicks with it too (OCR never reads Greek). */
+export const lookAlike = (char: string): string => LOOK[char] ?? char
+
 function lookOf(text: string): string {
   let out = ''
   for (const char of text) {

@@ -48,6 +48,21 @@ export function plainVehicleName(name: string): string {
   return plain === '' ? name : plain
 }
 
+const FLAG_NAMES: Record<string, string> = {
+  usa: 'USA',
+  ussr: 'USSR',
+  britain: 'Great Britain',
+  gdr: 'East Germany',
+  republic_china: 'Republic of China',
+  uae: 'UAE',
+}
+
+/** A flag's country in plain English: `usa_modern` → "USA", `south_africa` → "South Africa". */
+export function flagName(icon: string): string {
+  const base = icon.replace(/_(modern|early|kingdom|empire|weimar_republic|1963_1991)$/u, '')
+  return FLAG_NAMES[base] ?? base.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
+}
+
 /** "Nrst North_Steel", or the tag alone when the name repeats it. */
 export function squadronLabel(displayTag: string, name: string | null): string {
   const tag = plainTag(displayTag) || displayTag
@@ -185,7 +200,15 @@ export function formatScoutImageReport(report: ScoutImageReport): ScoutEmbedText
     lines.push(`Last played together <t:${prediction.lastTogether.endTime}:R>.`)
   }
   const brText = prediction.maxBr === null ? '' : ` at BR ${prediction.maxBr.toFixed(1)}`
-  lines.push(`Vehicle chances come from each player's own battles${brText}.`, '', ...setupLines(prediction.setup))
+  if (prediction.flags) {
+    const names = [...new Set(prediction.flags.icons.map(flagName))].join(', ')
+    lines.push(`Vehicle chances come from each player's own battles${brText} and the flags above their team: ${names}.`)
+  } else if (!report.enemyFlagsSeen) {
+    lines.push(`Vehicle chances come from each player's own battles${brText}. A screenshot after they spawn shows their flags and sharpens the guess.`)
+  } else {
+    lines.push(`Vehicle chances come from each player's own battles${brText}.`)
+  }
+  lines.push('', ...setupLines(prediction.setup))
   const fields = classFields(prediction.players, report.vehicles)
   if (report.unread.length > 0) {
     fields.push({

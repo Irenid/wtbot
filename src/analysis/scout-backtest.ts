@@ -6,7 +6,11 @@
 // everything, the weights to ship) and evaluates with them.
 // Squadrons are split over worker threads (all cores but two, --threads N):
 // each keeps its samples, and every Newton step of a fit is a map-reduce.
-// Run: npm run scout:backtest -- <copy.db> [--fit | --fit-all] [--split YYYY-MM-DD] [--threads N]
+// --known-team instead scores the picture path (predictKnownTeam): each team of
+// 8 from --split on, its players known, with and without the flags its spawns
+// show above the scoreboard (simulated).
+// Run: npm run scout:backtest -- <copy.db> [--fit | --fit-all | --known-team] [--split YYYY-MM-DD] [--threads N]
+//      [--vehicles data/wt-vehicles.json]
 // Read-only; never point it at the live data/wtbot.db while the bot writes it.
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -26,6 +30,7 @@ import {
   compositionCalibrationFeatures,
   knownBattles,
   periodBounds,
+  predictKnownTeam,
   predictScout,
   rosterCandidates,
   stageAt,
@@ -35,6 +40,7 @@ import {
   type ScoutClass,
   type ScoutStage,
 } from '../scout/model.js'
+import { dictionaryFlags, type FlagEvidence } from '../scout/flag-evidence.js'
 import type { VehicleClass, VehicleDict } from '../wrpl/vehicles.js'
 
 const QUERY_DELAY_SEC = 20
@@ -513,12 +519,151 @@ class WorkerHandle {
   }
 }
 
+// --- known team (--known-team): the picture path ---------------------------------
+
+/** The players' battles a screenshot reads (src/scout/report.ts IMAGE_HISTORY_WINDOW_SEC). */
+const IMAGE_HISTORY_SEC = 9 * 86_400
+
+interface PlayerRow {
+  key: string
+  userId: string
+  nick: string
+  vehicle: string | null
+  lineup: string[]
+  startTime: number
+  endTime: number
+  availableAt: number
+}
+
+/** A seeded generator: the same players stay unspawned between runs. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+async function knownTeamBacktest(dbPath: string, dict: VehicleDict, split: number): Promise<void> {
+  const started = performance.now()
+  const db = new DatabaseSync(dbPath, { readOnly: true })
+  const stages = (db.prepare('SELECT starts_at, ends_at, max_br FROM clan_season_stages ORDER BY starts_at').all() as {
+    starts_at: number; ends_at: number; max_br: number
+  }[]).map((row) => ({ startsAt: row.starts_at, endsAt: row.ends_at, maxBr: row.max_br }))
+  const rows = db.prepare(`
+    SELECT bp.session_id, bp.team, bp.user_id, bp.nick, bp.vehicle, bp.vehicles, b.start_time, b.duration_sec, b.ingested_at
+    FROM battle_players bp JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.team > 0 AND bp.user_id NOT LIKE '-%' AND b.start_time >= ?
+  `).all(split - IMAGE_HISTORY_SEC - 86_400) as {
+    session_id: string; team: number; user_id: string; nick: string; vehicle: string | null; vehicles: string
+    start_time: number; duration_sec: number; ingested_at: number
+  }[]
+  db.close()
+  const byPlayer = new Map<string, PlayerRow[]>()
+  const teams = new Map<string, PlayerRow[]>()
+  for (const row of rows) {
+    const endTime = row.start_time + row.duration_sec
+    const lag = row.ingested_at - endTime
+    const entry: PlayerRow = {
+      key: `${row.session_id}:${row.team}`,
+      userId: row.user_id,
+      nick: row.nick,
+      vehicle: row.vehicle,
+      lineup: JSON.parse(row.vehicles) as string[],
+      startTime: row.start_time,
+      endTime,
+      availableAt: lag >= 0 && lag <= LIVE_INGEST_MAX_SEC ? row.ingested_at : endTime + SIMULATED_INGEST_SEC,
+    }
+    for (const [map, key] of [[byPlayer, row.user_id], [teams, entry.key]] as const) {
+      const list = map.get(key)
+      if (list) list.push(entry)
+      else map.set(key, [entry])
+    }
+  }
+  for (const list of byPlayer.values()) list.sort((a, b) => a.startTime - b.startTime)
+  const classOf = (id: string): VehicleClass => dict[id]?.cls ?? '?'
+  const flagsOf = dictionaryFlags(dict)
+  const random = mulberry32(1)
+  type Variant = 'none' | 'operator' | 'nation' | 'operator, 2 not spawned'
+  const variants: Variant[] = ['none', 'operator', 'nation', 'operator, 2 not spawned']
+  const scores = Object.fromEntries(variants.map((v) => [v, { n: 0, top1: 0, top3: 0, loss: 0, bins: emptyBins(PROB_EDGES), operator: 0, teams: 0 }]))
+  let conditionMs: number[] = []
+  let teamsScored = 0
+  for (const team of teams.values()) {
+    const start = team[0]!.startTime
+    if (start < split || team.length !== 8 || team.some((player) => !player.vehicle)) continue
+    const now = start + QUERY_DELAY_SEC
+    const battles = new Map<string, ScoutBattle & { players: ScoutBattle['players'][number][] }>()
+    for (const player of team) {
+      for (const row of byPlayer.get(player.userId) ?? []) {
+        if (row.startTime < now - IMAGE_HISTORY_SEC) continue
+        if (row.startTime >= now) break
+        let battle = battles.get(row.key)
+        if (!battle) {
+          battle = { sessionId: row.key, startTime: row.startTime, endTime: row.endTime, availableAt: row.availableAt, players: [] }
+          battles.set(row.key, battle)
+        }
+        battle.players.push({ userId: row.userId, nick: row.nick, vehicle: row.vehicle, lineup: row.lineup })
+      }
+    }
+    const players = team.map((player) => ({ userId: player.userId, nick: player.nick }))
+    const truth = new Map(team.map((player) => [player.userId, player.vehicle!]))
+    const icons = (pick: (vehicleId: string) => string, spawned: (player: PlayerRow) => boolean) => [...new Set(team.filter(spawned).map((player) => pick(player.vehicle!)))]
+    const operatorFlag = (id: string) => flagsOf(id)?.operator ?? dict[id]?.country ?? '?'
+    const nationFlag = (id: string) => dict[id]?.country ?? '?'
+    const unspawned = new Set<string>()
+    while (unspawned.size < 2) unspawned.add(team[Math.floor(random() * team.length)]!.userId)
+    const flags: Record<Variant, string[] | null> = {
+      none: null,
+      operator: icons(operatorFlag, () => true),
+      nation: icons(nationFlag, () => true),
+      'operator, 2 not spawned': icons(operatorFlag, (player) => !unspawned.has(player.userId)),
+    }
+    teamsScored += 1
+    for (const variant of variants) {
+      const list = flags[variant]
+      const evidence: FlagEvidence | undefined = list
+        ? { flags: list.map((icon) => [{ icon, likelihood: 1 }]), rows: 8, flagsOf }
+        : undefined
+      const t = performance.now()
+      const prediction = predictKnownTeam({ players, unknownPlayers: 0, battles: [...battles.values()], now, stages, classOf, flags: evidence })
+      if (evidence) conditionMs.push(performance.now() - t)
+      const score = scores[variant]!
+      score.teams += 1
+      score.operator += prediction.flags?.operatorChance ?? 0
+      for (const player of prediction.players) {
+        const actual = truth.get(player.userId)!
+        score.n += 1
+        if (player.vehicles[0]?.vehicleId === actual) score.top1 += 1
+        if (player.vehicles.slice(0, 3).some((vehicle) => vehicle.vehicleId === actual)) score.top3 += 1
+        const chance = player.vehicles.find((vehicle) => vehicle.vehicleId === actual)?.chance ?? player.unseenChance
+        score.loss -= Math.log(Math.max(1e-9, chance))
+        const best = player.vehicles[0]
+        if (best) addToBins(score.bins, PROB_EDGES, best.chance, best.vehicleId === actual ? 1 : 0)
+      }
+    }
+  }
+  conditionMs = conditionMs.sort((a, b) => a - b)
+  const at = (q: number) => conditionMs[Math.min(conditionMs.length - 1, Math.floor(conditionMs.length * q))]!.toFixed(1)
+  console.log(`known team: ${teamsScored} teams of 8 from ${new Date(split * 1000).toISOString().slice(0, 10)}, history ${IMAGE_HISTORY_SEC / 86_400} days, asked ${QUERY_DELAY_SEC} s after the start; prediction with flags p50 ${at(0.5)} ms, p99 ${at(0.99)} ms`)
+  for (const variant of variants) {
+    const score = scores[variant]!
+    const operator = variant === 'none' ? '' : `; operator flags said ${pct(score.operator / score.teams)}`
+    console.log(`  flags ${variant}: top-1 ${pct(score.top1 / score.n)}, top-3 ${pct(score.top3 / score.n)}, log loss ${(score.loss / score.n).toFixed(4)} (${score.n} players)${operator}`)
+    printBins(score.bins, PROB_EDGES)
+  }
+  console.log(`done in ${((performance.now() - started) / 1000).toFixed(1)} s`)
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const value = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined)
-  const dbPath = args.find((arg, i) => !arg.startsWith('--') && !args[i - 1]?.startsWith('--split') && !args[i - 1]?.startsWith('--threads'))
+  const dbPath = args.find((arg, i) => !arg.startsWith('--') && !['--split', '--threads', '--vehicles'].includes(args[i - 1] ?? ''))
   if (!dbPath || !existsSync(dbPath)) {
-    console.error('Usage: npm run scout:backtest -- <copy.db> [--fit | --fit-all] [--split YYYY-MM-DD] [--threads N]')
+    console.error('Usage: npm run scout:backtest -- <copy.db> [--fit | --fit-all | --known-team] [--split YYYY-MM-DD] [--threads N] [--vehicles data/wt-vehicles.json]')
     process.exit(1)
   }
   const fitMode = args.includes('--fit-all') ? 'all' : args.includes('--fit') ? 'train' : null
@@ -526,9 +671,13 @@ async function main(): Promise<void> {
   const threads = Math.max(1, Number(value('--threads') ?? Math.max(1, availableParallelism() - 2)))
   const started = performance.now()
   const elapsed = () => `${((performance.now() - started) / 1000).toFixed(1)} s`
+  const dict = JSON.parse(await readFile(value('--vehicles') ?? 'data/wt-vehicles.json', 'utf8')) as VehicleDict
+  if (args.includes('--known-team')) {
+    await knownTeamBacktest(dbPath, dict, split)
+    return
+  }
 
   const { teams, stages } = load(dbPath)
-  const dict = JSON.parse(await readFile('data/wt-vehicles.json', 'utf8')) as VehicleDict
   const classes = Object.fromEntries(Object.entries(dict).map(([id, info]) => [id, info.cls]))
   console.log(`${teams.length} squadron team-battles, split at ${new Date(split * 1000).toISOString().slice(0, 10)}, ${threads} threads (${elapsed()})`)
 

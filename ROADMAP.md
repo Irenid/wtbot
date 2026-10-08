@@ -150,7 +150,13 @@ Open: prove or disprove the RSS plateau for
 - **`/scout` pictures.** Screenshots pile up in `data/scout-images/` (kept
   for now): decide retention. Improve the reading on them with
   `npm run scout:images` (two of eight Chinese nicks unread on 2026-10-08:
-  try `chi_tra`, per-row OCR or a higher scale for CJK rows).
+  try `chi_tra`, per-row OCR or a higher scale for CJK rows). Two more
+  sources for the enemy's vehicles (`docs/opponent-scouting.md`, "Flags above
+  the table"): the line's order (each player's own flag would give 81.3%
+  against 79.3% from the set; the order is the team's, the rows' only while
+  scores tie, so the score column must be read), and the parachute icon of a
+  player not yet spawned (two such players cost 1.2 points: their rows show
+  no flag). Add each new channel screenshot's flags to `truth.json`.
 - **Stage switch time.** The BR cap changes on a stage's first day between
   07:00 and 14:00 UTC, while `clan_season_stages` (forum dates, built-in
   schedule) starts stages at 00:00 UTC: during the 01:00–07:00 UTC window of

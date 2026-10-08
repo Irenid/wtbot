@@ -11,6 +11,7 @@
  * the left).
  */
 
+import { lookAlike } from '../nick-search.js'
 import type { OcrRow } from './ocr.js'
 
 export interface KnownPlayer {
@@ -31,19 +32,20 @@ export interface NickMatch extends KnownPlayer {
   squadron: string
 }
 
-/** Look-alikes OCR swaps freely: Cyrillic, Greek, digits and letters without a separable accent to one Latin letter. */
-const FOLD: Record<string, string> = {
-  а: 'a', в: 'b', е: 'e', з: '3', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x',
-  і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ԛ: 'q', ԝ: 'w', 'ο': 'o', 'ν': 'v', 'ρ': 'p', 'α': 'a', 'ι': 'i',
-  '0': 'o', '1': 'i', l: 'i', '|': 'i', '!': 'i', ł: 'i', ı: 'i', đ: 'd', ø: 'o',
-}
+/** What OCR swaps beyond the Latin look-alikes (nick-search.ts lookAlike): digits, strokes and the Cyrillic з. */
+const FOLD: Record<string, string> = { з: '3', '0': 'o', '1': 'i', l: 'i', '|': 'i', '!': 'i' }
 
-/** Letters and digits only, lower case, accents dropped, look-alikes folded. */
+/**
+ * Letters and digits only, lower case, accents dropped, look-alikes folded:
+ * the player search's Latin look-alikes first (Greek "MΛRS" reads "MARS"),
+ * then OCR's own swaps.
+ */
 export function foldForMatch(text: string): string {
   let out = ''
   // NFKD splits accents off (no pass reads "Loupák" with its á); NFC joins Hangul jamo back into syllables.
   for (const char of text.normalize('NFKD').replace(/\p{M}/gu, '').normalize('NFC').toLowerCase()) {
-    const folded = FOLD[char] ?? char
+    const look = lookAlike(char)
+    const folded = FOLD[look] ?? look
     if (/[\p{L}\p{N}]/u.test(folded)) out += folded
   }
   return out
@@ -319,6 +321,8 @@ export interface TeamSplit {
   enemies: NickMatch[]
   /** The x between the teams; null — one team only, its side unknown. */
   splitX: number | null
+  /** The own nicks' right edge (they are right-aligned); null — under two strong own finds. */
+  allyEdge: number | null
   /** Per row: whether an enemy was found. */
   enemyRows: boolean[]
   /** Without a split: the strong finds (one team, side unknown). */
@@ -383,7 +387,7 @@ export function splitTeams(rows: readonly Candidate[][]): TeamSplit {
     }
   }
   if (splitX === null) {
-    return { allies: [], enemies: [], splitX: null, enemyRows: rows.map(() => false), oneSide: strong.flat().map((m) => strip(m, squadronOf(m))), enemyTag: null }
+    return { allies: [], enemies: [], splitX: null, allyEdge: null, enemyRows: rows.map(() => false), oneSide: strong.flat().map((m) => strip(m, squadronOf(m))), enemyTag: null }
   }
   const cut = splitX
   const strongSide = (right: boolean) => strong.flat().filter((m) => (m.x >= cut) === right)
@@ -427,7 +431,7 @@ export function splitTeams(rows: readonly Candidate[][]): TeamSplit {
       }
     }
   })
-  return { allies, enemies, splitX, enemyRows, oneSide: [], enemyTag: enemyCore === null ? null : shownTags.get(enemyCore) ?? null }
+  return { allies, enemies, splitX, allyEdge: allyColumn?.at ?? null, enemyRows, oneSide: [], enemyTag: enemyCore === null ? null : shownTags.get(enemyCore) ?? null }
 }
 
 const WIDE_GAP = /(?<=[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}]) (?=[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}])/gu

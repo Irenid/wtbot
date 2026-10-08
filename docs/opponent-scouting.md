@@ -176,6 +176,74 @@ downscaled to 2000 px), 51 enemies the bot has battles of. Reading, rewritten
   nicks drawn on synthetic tables (their squadrons mixed, so only tag-confirmed
   finds count): 19 without the jpn pass, 35 with it and the letters rule.
 
+### Flags above the table
+
+The line above the scoreboard holds one flag per country a team has spawned
+(not for players still loading or choosing: a loading screen has none). Which
+flag a vehicle gets is the viewer's game setting (the Spearhead update's
+operator flags): its operator's (Norway for the Swedish tree's K9 Vidar,
+Germany's modern flag for the Leopard 2K) with it on, its nation's with it
+off, where the viewer may have picked another flag for a nation (Russia for
+the USSR). Of four screenshots with flags, three viewers had operator flags
+on; two of them show the same battle (CH68 against WLILY, 2026-09-26) each
+way. The order is the team's own (the rows' order while scores tie: a player
+who scored moves up the rows, not along the line) — not used yet (ROADMAP).
+`data/wt-vehicles.json` keeps `operator` (unittags `operatorCountry`, 942 of
+3,416 vehicles differ from their nation).
+
+- **Reading** (`src/scout/flags.ts`): the line's middle stood 2.33–2.49 row
+  pitches above the first row's, 0.6–0.7 pitch tall, on four screenshots
+  1,919–2,158 px wide; it is the band of solid runs 0.5–2.6 pitches wide (text
+  strokes are shorter, separators longer), each flag 100:66. Templates are the
+  game's own 86 flags (`ui/atlases.vromfs.bin`, `country_*.svg` and
+  `flag_republic_china.svg`) drawn 60×40 by Resvg (14 ms without system fonts;
+  6 s with them), restricted to the dictionary's nations and operators; a
+  10×6 colour grid shortlists six, a per-pixel comparison with half-pixel
+  shifts ranks them (the grid alone took Israel for Argentina on a 17 px
+  flag). Teams part at the widest gap within a flag width of the table's
+  middle, which is 1.40–1.53 pitches right of the own nicks' right edge
+  (halfway to the enemy nicks was 30–60 px off: tags differ in length). On
+  the four screenshots 40 of 42 flags right, 3–57 ms; the two misses are
+  Israel read as Argentina on a 12 px high downscaled crop, kept as a
+  candidate at likelihood 0.12–0.15. Only `italy`/`italy_modern` draw alike.
+- **Using them** (`src/scout/flag-evidence.ts`): every spawned player shows
+  one flag and the line holds each flag once, so the posterior of each
+  player's vehicle is an exact sum over the flag sets the players can show
+  (bitmask over the flags read, each reading's candidates weighted by their
+  likelihood), once per setting, the two mixed by how well each explains the
+  line. A player may not have spawned (`DEFAULT_SILENT_CHANCE` 0.1: their
+  chances stay); a vehicle not seen from them leans to their own vehicles'
+  flags; unread rows show any flag. 1.1 ms per team (p99 1.5).
+- **Backtest** (`npm run scout:backtest -- <copy.db> --known-team`, 19,677
+  teams of 8 of 2026-10-01 – 2026-10-08, players known, their battles of 9
+  days stored by 20 s after the start; the flags simulated from the team's
+  spawns): the right vehicle first / log loss — no flags 76.3% / 0.658 (4.6%
+  of players have no battle at the cap); operator flags 79.3% / 0.489;
+  operator flags with two players not yet spawned 78.1% / 0.556; nation flags
+  76.7% / 0.600; nation flags with the USSR shown as Russia 76.4% / 0.626. The
+  setting is told apart: the operator setting got 98.0% under operator flags,
+  17.6% under nation flags. Each player's own flag known would give 81.3%
+  (the line's order points there). The stated chance of the first vehicle
+  matches what happened within 0.3–1.7 points in every band from 30%
+  (10–30%: says 22%, happens 17%). Priors: log loss moved under 0.01 over
+  silent 0.05–0.25, operator prior 0.5–0.9, nation-flag share 0.6–0.9.
+- **On the screenshots**: BLOB1's first battle at the new cap had no history to
+  condition (all eight "no battles at this BR yet"); with its flags on their
+  next battle (18:44, the same seven flags) the vehicle each player took went
+  from 78–87% to 84–93% for seven of eight; the eighth switched within the
+  USSR (T-54 to Object 906).
+- **Dead ends** (same backtest, fitted before 2026-10-01): for a known team,
+  the vehicle the player took last time with four of these teammates, its
+  share with them, whether the last battle was lost, scored low or had no
+  kill, and minutes since it moved the first vehicle from 79.93% to 80.01%;
+  reweighting the team's class counts (players choose together) from 76.29%
+  to 76.35%. Squadron teams spawned 0/1/2/3/4 aircraft or helicopters in
+  24.8/10.3/12.1/17.6/35.2% of 26,541 teams of September, 5 or more in 5. The
+  player search (`src/nick-search.ts`) named none of the six unread enemy rows
+  of the test set: five have no stored battle, one Chinese nick is misread in
+  4 of 10 characters; its look-alike table now folds the matcher's Greek and
+  stroked letters (32 of 19,659 nicks, `MΛRS` to `mars`).
+
 ## Guessing the enemy from server data
 
 - **Candidates** — squadrons whose battle ended at most 20 min before our

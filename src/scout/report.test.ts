@@ -11,9 +11,19 @@ import {
   type ScoutTeamRow,
 } from '../db/index.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
-import { SCOUT_COLOR_GUESS, SCOUT_COLOR_SESSION, compositionText, formatScoutReport, percent, plainVehicleName, squadronLabel } from './format.js'
-import { predictScout, type ScoutBattle } from './model.js'
-import { findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutReport } from './report.js'
+import {
+  SCOUT_COLOR_GUESS,
+  SCOUT_COLOR_SESSION,
+  compositionText,
+  flagName,
+  formatScoutImageReport,
+  formatScoutReport,
+  percent,
+  plainVehicleName,
+  squadronLabel,
+} from './format.js'
+import { predictScout, setupFromPlayers, type KnownTeamPrediction, type ScoutBattle } from './model.js'
+import { findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutImageReport, type ScoutReport } from './report.js'
 
 function player(userId: string, nick: string, team: number, clanTag: string, vehicles: string[]): BattlePlayerInput {
   return {
@@ -130,4 +140,22 @@ test('the reply names the setup, chances and every likely player; percents never
   const empty = formatScoutReport({ ...report, prediction: predictScout({ battles: [], now, stages: [], classOf: () => '?' }) })
   assert.match(empty.description, /No battles stored/)
   assert.equal(empty.color, SCOUT_COLOR_GUESS)
+})
+
+test('a screenshot reply names the flags it used, or asks for one taken after the spawn', () => {
+  const vehicles: VehicleDict = { de_tank: { name: 'Leopard 2K', cls: 'T', country: 'germany', operator: 'germany_modern' } }
+  const prediction: KnownTeamPrediction = {
+    maxBr: 8,
+    lastTogether: null,
+    players: [{ userId: 'a', nick: 'A', playChance: 1, battlesAtCap: 3, vehicles: [{ vehicleId: 'de_tank', chance: 0.9 }], unseenChance: 0.1, lineup: ['de_tank'] }],
+    setup: setupFromPlayers([{ classChances: { F: 0, H: 0, T: 1, L: 0, AA: 0 } }]),
+    flags: { icons: ['germany_modern', 'usa', 'usa_modern', 'south_africa'], operatorChance: 1 },
+  }
+  const report: ScoutImageReport = { squadron: null, allySquadron: null, prediction, recognised: 1, unread: [], enemyFlagsSeen: true, vehicles, now: 0 }
+  assert.match(formatScoutImageReport(report).description, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
+  const before = formatScoutImageReport({ ...report, prediction: { ...prediction, flags: null }, enemyFlagsSeen: false }).description
+  assert.match(before, /A screenshot after they spawn shows their flags and sharpens the guess\./)
+  assert.equal(flagName('republic_china'), 'Republic of China')
+  assert.equal(flagName('italy_kingdom'), 'Italy')
+  assert.equal(flagName('new_zealand'), 'New Zealand')
 })

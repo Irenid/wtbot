@@ -20,6 +20,7 @@ import {
 import { summarizeMissionDocument } from '../wrpl/mission-info.js'
 import { prepareSceneFromBlob } from '../wrpl/battle-scene-core.js'
 import { unpackVromfs } from '../wrpl/vromfs.js'
+import { atlasFlags } from '../wrpl/game-flags-atlas.js'
 import { buildVehicleDict } from '../wrpl/vehicles.js'
 import type {
   AnyWorkerTask,
@@ -457,6 +458,7 @@ async function readScoreboardImage(
     import('../db/index.js'),
     import('../scout/scoreboard-read.js'),
   ])
+  const flags = input.flags ? { ...input.flags, rgb: new Uint8Array(input.flags.rgb) } : null
   const players = candidateIndex(`${input.dbPath}:${input.fromTs - (input.fromTs % 600)}`, () => {
     const database = new DatabaseSync(input.dbPath, { readOnly: true })
     try {
@@ -466,7 +468,18 @@ async function readScoreboardImage(
       database.close()
     }
   })
-  return { value: await readScoreboard(new Uint8Array(input.image), players), transfer: [] }
+  const flagIcons = input.flagIcons ? new Set(input.flagIcons) : null
+  return { value: await readScoreboard(new Uint8Array(input.image), players, undefined, flags ? { pack: flags, icons: flagIcons } : null), transfer: [] }
+}
+
+/** /scout by picture: the flag templates, drawn once per process (the main thread keeps them). */
+async function renderFlagTemplatesTask(
+  input: Extract<AnyWorkerTask, { kind: 'render-flag-templates' }>['input'],
+): Promise<{ value: WorkerTaskResult<'render-flag-templates'>; transfer: ArrayBuffer[] }> {
+  const { renderFlagTemplates } = await import('../scout/flag-templates.js')
+  const pack = renderFlagTemplates(input.svgs)
+  const rgb = exactArrayBuffer(pack.rgb)
+  return { value: { icons: pack.icons, width: pack.width, height: pack.height, rgb }, transfer: [rgb] }
 }
 
 /** /scout by picture: the recognised players' rows. */
@@ -975,13 +988,7 @@ function extractGameFont(input: Extract<AnyWorkerTask, { kind: 'extract-game-fon
 }
 
 function extractGameFlags(input: Extract<AnyWorkerTask, { kind: 'extract-game-flags' }>['input']) {
-  const files = unpackVromfs(Buffer.from(input.vromfs))
-  const flags: [string, string][] = []
-  for (const file of files) {
-    const match = /^gameuiskin\/country_([^/]+)\.svg$/i.exec(file.name)
-    if (match) flags.push([match[1]!.toLowerCase(), file.data.toString('utf8')])
-  }
-  return { value: flags, transfer: [] }
+  return { value: atlasFlags(unpackVromfs(Buffer.from(input.vromfs))), transfer: [] }
 }
 
 function buildVehicles(input: Extract<AnyWorkerTask, { kind: 'build-vehicle-dict' }>['input']) {
@@ -1037,6 +1044,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return readScoutHistory(task.input)
     case 'read-scoreboard-image':
       return readScoreboardImage(task.input)
+    case 'render-flag-templates':
+      return renderFlagTemplatesTask(task.input)
     case 'read-scout-players':
       return readScoutPlayers(task.input)
     case 'render-scoreboard':

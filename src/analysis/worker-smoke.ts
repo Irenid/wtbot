@@ -179,6 +179,12 @@ try {
   )
   assert.equal(dict['test_tank']?.name, 'Test Tank')
 
+  // /scout flag templates: Resvg is imported in the worker only for this task.
+  const flagSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="66" viewBox="0 0 100 66"><rect width="100" height="66" fill="#0000ff"/></svg>'
+  const flagTemplates = await runWorkerTask({ kind: 'render-flag-templates', input: { svgs: [['test', flagSvg], ['test_round', flagSvg]] } })
+  assert.deepEqual(flagTemplates.icons, ['test'], 'round badges are no flags')
+  assert.deepEqual([...new Uint8Array(flagTemplates.rgb).subarray(0, 3)], [0, 0, 255])
+
   const missionDocument = transferableBuffer(Buffer.from(JSON.stringify({
     imports: { import_record: { file: 'gamedata/missions/template.blk', importAreas: true } },
     areas: {

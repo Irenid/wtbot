@@ -8,21 +8,31 @@
 // players found on the right side, misses, false finds.
 // Players are matched from DB_PATH (default data/wtbot.db), opened read-only.
 // SCOUT_TESSERACT="docker run -i --rm --entrypoint tesseract wtbot:latest"
-// runs OCR in the image (a host without its language data).
+// runs OCR in the image (a host without its language data). Flags are read
+// with the templates of WT_GAME_DIR (default data/wt-game) and scored against
+// the truth's "flags" ({"allies": [...], "enemies": [...]}, left to right).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { getScoutRecentPlayers } from '../db/index.js'
+import { dictionaryFlagIcons } from '../scout/flag-evidence.js'
+import { renderFlagTemplates } from '../scout/flag-templates.js'
+import type { ReadFlag } from '../scout/flags.js'
 import { displayedNick, foldForMatch, indexPlayers, type NickMatch } from '../scout/nick-match.js'
 import { OCR_PASSES } from '../scout/ocr.js'
 import { readScoreboard, type ScoreboardReadResult } from '../scout/scoreboard-read.js'
+import { atlasFlags } from '../wrpl/game-flags-atlas.js'
+import type { VehicleDict } from '../wrpl/vehicles.js'
+import { unpackVromfs } from '../wrpl/vromfs.js'
 
 interface Truth {
   enemies: string[]
   allies: string[]
   /** A crop of one team: the reading must not claim a side. */
   oneSide?: boolean
+  /** The flags above each team, left to right (the stored battle's vehicles, or as seen). */
+  flags?: { allies: string[]; enemies: string[] }
 }
 
 interface Target {
@@ -67,6 +77,25 @@ function score(nicks: readonly string[], finds: readonly NickMatch[]): { known: 
   return { known, found: known - missed.length, missed, wrong: finds.filter((match) => !ids.has(match.userId)) }
 }
 
+const atlas = path.join(process.env['WT_GAME_DIR'] ?? 'data/wt-game', 'ui', 'atlases.vromfs.bin')
+const pack = existsSync(atlas) ? renderFlagTemplates(atlasFlags(unpackVromfs(readFileSync(atlas)))) : null
+const vehicles = existsSync('data/wt-vehicles.json') ? JSON.parse(readFileSync('data/wt-vehicles.json', 'utf8')) as VehicleDict : {}
+const flagIcons = Object.values(vehicles).some((info) => info.operator !== undefined) ? new Set(dictionaryFlagIcons(vehicles)) : null
+if (!pack) console.log(`no ${atlas}: flags are not read`)
+if (pack && !flagIcons) console.log('data/wt-vehicles.json has no operator flags yet: every template is a candidate')
+
+/** A flag as read: the best icon, near-ties after a slash. */
+const flagText = (flag: ReadFlag): string => flag.candidates.filter((c, i) => i === 0 || c.likelihood >= 0.3).map((c) => c.icon).join('/')
+/** Right when the truth is the best icon or ties it (likelihood ≥ 0.5: e.g. italy and italy_modern draw alike). */
+function scoreFlags(read: readonly ReadFlag[], truth: readonly string[]): { right: number; total: number } {
+  let right = 0
+  truth.forEach((icon, index) => {
+    const flag = read[index]
+    if (flag && (flag.candidates[0]?.icon === icon || flag.candidates.some((c) => c.icon === icon && c.likelihood >= 0.5))) right += 1
+  })
+  return { right: read.length === truth.length ? right : Math.min(right, read.length), total: Math.max(truth.length, read.length) }
+}
+
 const tesseract = (process.env['SCOUT_TESSERACT'] ?? 'tesseract').split(' ').filter(Boolean)
 const list = (process.argv.length > 2 ? process.argv.slice(2) : ['data/scout-images']).flatMap(targets)
 // Each image runs one Tesseract process per pass (2 threads each).
@@ -77,13 +106,14 @@ await Promise.all(Array.from({ length: parallel }, async () => {
   while (next < list.length) {
     const target = list[next]!
     next += 1
-    const read = await readScoreboard(new Uint8Array(readFileSync(target.file)), players, tesseract).catch((error: unknown) => error instanceof Error ? error : new Error(String(error)))
+    const read = await readScoreboard(new Uint8Array(readFileSync(target.file)), players, tesseract, pack ? { pack, icons: flagIcons } : null)
+      .catch((error: unknown) => error instanceof Error ? error : new Error(String(error)))
     results.push({ target, read })
   }
 }))
 results.sort((a, b) => a.target.file.localeCompare(b.target.file))
 
-const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0 }
+const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0, flagsRight: 0, flags: 0 }
 for (const { target, read } of results) {
   if (read instanceof Error) {
     console.log(`${target.file}: error ${read.message}`)
@@ -92,12 +122,20 @@ for (const { target, read } of results) {
   totals.enemies += read.enemies.length
   totals.unread += read.unread.length
   console.log(`${target.file}: ${read.status}, rows ${read.rows}, enemies ${read.enemies.length}, unread ${read.unread.length}, allies ${read.allies.length}`
-    + ` (layout ${read.ms.layout.toFixed(0)} ms, OCR ${read.ms.ocr.toFixed(0)} ms, match ${read.ms.match.toFixed(0)} ms)`)
+    + ` (layout ${read.ms.layout.toFixed(0)} ms, OCR ${read.ms.ocr.toFixed(0)} ms, match ${read.ms.match.toFixed(0)} ms, flags ${read.ms.flags.toFixed(0)} ms)`)
+  if (read.flags) console.log(`  flags: allies [${read.flags.allies.map(flagText).join(' ')}] | enemies [${read.flags.enemies.map(flagText).join(' ')}]`)
   if (read.enemies.length > 0) console.log(`  enemies: ${read.enemies.map((m) => `${m.nick} [${m.clanTag}]${m.distance > 0 ? ` ±${m.distance}` : ''}`).join(', ')}`)
   if (read.unread.length > 0) console.log(`  unread: ${read.unread.map((text) => JSON.stringify(text)).join(', ')}`)
   if (read.oneSide.length > 0) console.log(`  one side only: ${read.oneSide.map((m) => m.nick).join(', ')}`)
   const truth = target.truth
   if (!truth) continue
+  if (truth.flags) {
+    const allies = scoreFlags(read.flags?.allies ?? [], truth.flags.allies)
+    const enemies = scoreFlags(read.flags?.enemies ?? [], truth.flags.enemies)
+    totals.flagsRight += allies.right + enemies.right
+    totals.flags += allies.total + enemies.total
+    console.log(`  truth: flags allies ${allies.right}/${allies.total}, enemies ${enemies.right}/${enemies.total}`)
+  }
   if (truth.oneSide) {
     totals.wrong += read.enemies.length
     console.log(`  truth: one side wanted, ${read.status === 'one-side' ? 'ok' : 'WRONG'}`)
@@ -119,3 +157,4 @@ console.log(`${results.length} images: ${totals.enemies} enemies recognised, ${t
 if (totals.known > 0) {
   console.log(`truth: enemies ${totals.found}/${totals.known} known found, allies ${totals.allyFound}/${totals.allyKnown}, false finds ${totals.wrong + totals.allyWrong}`)
 }
+if (totals.flags > 0) console.log(`truth: flags ${totals.flagsRight}/${totals.flags} right`)

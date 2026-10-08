@@ -237,3 +237,40 @@ test('a known team gets every player at 100% and the unread rows by the class sh
   const total = Object.values(prediction.setup.expected).reduce((sum, value) => sum + value, 0)
   assert.ok(Math.abs(total - 4) < 1e-9)
 })
+
+test('Greek and stroked letters fold to their Latin look-alikes, as OCR reads them', () => {
+  assert.equal(foldForMatch('MΛRS'), 'mars')
+  assert.equal(foldForMatch('ZΞROX'), 'zerox')
+  assert.equal(foldForMatch('Λthena_0ł'), 'athenaoi')
+})
+
+test('a known team with flags read: a player between two nations takes the flagged one', () => {
+  const stages = [{ startsAt: 1_791_244_800, endsAt: 1_791_849_600, maxBr: 8 }]
+  const t0 = 1_791_244_800 + 15 * 3600
+  const battle = (id: string, start: number, vehicle: string): ScoutBattle => ({
+    sessionId: id, startTime: start, endTime: start + 300, availableAt: start + 330,
+    players: [{ userId: 'a', nick: 'A', vehicle, lineup: ['us_tank', 'de_tank'] }],
+  })
+  const input = {
+    players: [{ userId: 'a', nick: 'A' }],
+    unknownPlayers: 0,
+    battles: [battle('1', t0, 'de_tank'), battle('2', t0 + 400, 'us_tank'), battle('3', t0 + 800, 'us_tank')],
+    now: t0 + 1500,
+    stages,
+    classOf: (): VehicleClass => 'T',
+  }
+  const plain = predictKnownTeam(input)
+  assert.equal(plain.players[0]!.vehicles[0]!.vehicleId, 'us_tank')
+  assert.equal(plain.flags, null)
+  const flagsOf = (id: string) => ({ us_tank: 'usa', de_tank: 'germany' } as Record<string, string>)[id]
+  const flagged = predictKnownTeam({
+    ...input,
+    flags: {
+      flags: [[{ icon: 'germany', likelihood: 1 }]],
+      rows: 1,
+      flagsOf: (id: string) => { const icon = flagsOf(id); return icon ? { operator: icon, tree: [{ icon, share: 1 }] } : null },
+    },
+  })
+  assert.equal(flagged.players[0]!.vehicles[0]!.vehicleId, 'de_tank')
+  assert.deepEqual(flagged.flags?.icons, ['germany'])
+})

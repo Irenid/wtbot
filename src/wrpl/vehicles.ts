@@ -16,7 +16,8 @@ import {
  *
  *   lang/units.csv        — localized names ("us_m1a1_hc_abrams" → "M1A1 HC")
  *   config/wpcost.blkx    — unitClass and country of every vehicle (~30 MB)
- *   config/unittags.blkx  — refinement: light tanks (type_light_tank)
+ *   config/unittags.blkx  — light tanks (type_light_tank) and the operator
+ *                           country (operatorCountry: the flag the game shows)
  *
  * Cached in data/wt-vehicles.json (~200 KB), the sources are deleted. Patches
  * add vehicles, and a missing one shows its raw id with class "?": a
@@ -30,7 +31,10 @@ export type VehicleClass = 'F' | 'H' | 'T' | 'L' | 'AA' | '?'
 export interface VehicleInfo {
   name: string
   cls: VehicleClass
+  /** The research tree's nation. */
   country: string
+  /** The operator's flag when it is not the tree's (`norway` for the Swedish tree's K9 Vidar; unittags operatorCountry). */
+  operator?: string
 }
 
 export type VehicleDict = Record<string, VehicleInfo>
@@ -79,8 +83,10 @@ export function promoteVehicleDictLoad(priority: WorkerPriority): void {
 async function loadVehicleDict(): Promise<VehicleDict> {
   try {
     const [text, info] = await Promise.all([readFile(CACHE_FILE, 'utf8'), stat(CACHE_FILE)])
-    refreshDueAt = info.mtimeMs + REFRESH_AFTER_MS
-    return JSON.parse(text) as VehicleDict
+    const dict = JSON.parse(text) as VehicleDict
+    // Built before operator flags were kept (2026-10-08): rebuilt in the background at the next call.
+    refreshDueAt = Object.values(dict).some((info) => info.operator !== undefined) ? info.mtimeMs + REFRESH_AFTER_MS : 0
+    return dict
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
@@ -188,10 +194,13 @@ export function buildVehicleDict(csv: string, wpcostRaw: string, tagsRaw: string
     if (typeof unit.unitClass !== 'string') continue
     let cls = classFromUnitClass(unit.unitClass)
     if (cls === 'T' && isLightTank(unittags[id])) cls = 'L'
+    const country = typeof unit.country === 'string' ? unit.country.replace(/^country_/, '') : '?'
+    const operator = operatorOf(unittags[id])
     dict[id] = {
       name: names.get(id) ?? id,
       cls,
-      country: typeof unit.country === 'string' ? unit.country.replace(/^country_/, '') : '?',
+      country,
+      ...(operator !== null && operator !== country ? { operator } : {}),
     }
   }
   return dict
@@ -214,6 +223,12 @@ function classFromUnitClass(unitClass: string): VehicleClass {
     default:
       return '?' // корабли и прочее — в наземных боях не встречаются
   }
+}
+
+function operatorOf(tagsEntry: unknown): string | null {
+  if (tagsEntry === null || typeof tagsEntry !== 'object') return null
+  const operator = (tagsEntry as { operatorCountry?: unknown }).operatorCountry
+  return typeof operator === 'string' && operator.startsWith('country_') ? operator.slice('country_'.length) : null
 }
 
 function isLightTank(tagsEntry: unknown): boolean {

@@ -21,7 +21,18 @@ let cachedFlags: Map<string, string> | null = null
 let flagsPromise: Promise<Map<string, string>> | null = null
 let retryAfter = 0
 
-export function ensureGameFlags(priority: WorkerPriority = 'normal'): Promise<Map<string, string>> {
+/** The ten nations' flags (the battle image's teams), SVG by country. */
+export async function ensureGameFlags(priority: WorkerPriority = 'normal'): Promise<Map<string, string>> {
+  const supported = new Set<string>(GAME_FLAG_COUNTRIES)
+  return new Map([...await ensureAllGameFlags(priority)].filter(([country]) => supported.has(country)))
+}
+
+/**
+ * Every flag of the game's atlas, SVG by country: the nations, the operators
+ * (`norway`, `south_africa`, `republic_china`) and the variants a player may
+ * pick for a nation (`usa_modern`, `russia`).
+ */
+export function ensureAllGameFlags(priority: WorkerPriority = 'normal'): Promise<Map<string, string>> {
   if (cachedFlags) return Promise.resolve(cachedFlags)
   if (retryAfter > Date.now()) return Promise.resolve(new Map())
   if (flagsPromise) return flagsPromise
@@ -31,8 +42,8 @@ export function ensureGameFlags(priority: WorkerPriority = 'normal'): Promise<Ma
       return flags
     })
     .catch((error: unknown) => {
-      // Флаги — украшение: без них таблица боя рисуется своими флагами, а не падает.
-      console.warn(`[flags] Не удалось достать флаги из клиента игры: ${error instanceof Error ? error.message : String(error)}`)
+      // Without them the battle image draws its own flags and /scout reads none; neither fails.
+      console.warn(`[flags] Could not extract the flags from the game client: ${error instanceof Error ? error.message : String(error)}`)
       retryAfter = Date.now() + 60_000
       return new Map<string, string>()
     })
@@ -51,6 +62,5 @@ async function loadGameFlags(priority: WorkerPriority): Promise<Map<string, stri
     { kind: 'extract-game-flags', input: { vromfs } },
     { priority, transferList: [vromfs], timeoutMs: 90_000 },
   )
-  const supported = new Set<string>(GAME_FLAG_COUNTRIES)
-  return new Map(files.filter(([country]) => supported.has(country)))
+  return new Map(files)
 }

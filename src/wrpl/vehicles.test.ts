@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { closeWorkerPool } from '../workers/pool.js'
-import { ensureVehicleDict } from './vehicles.js'
+import { buildVehicleDict, ensureVehicleDict } from './vehicles.js'
 
 test('a stale vehicle dictionary keeps serving while a background rebuild adds new vehicles', async () => {
   const previousCwd = process.cwd()
@@ -55,4 +55,23 @@ test('a stale vehicle dictionary keeps serving while a background rebuild adds n
     rmSync(root, { recursive: true, force: true })
     await closeWorkerPool()
   }
+})
+
+test('the operator flag is kept where it is not the tree nation', () => {
+  const dict = buildVehicleDict(
+    '"sw_k9_vidar_shop";"VIDAR";\n"sw_strv_103a_shop";"Strv 103A";\n"us_m247_shop";"M247";\n',
+    JSON.stringify({
+      sw_k9_vidar: { unitClass: 'exp_tank', country: 'country_sweden' },
+      sw_strv_103a: { unitClass: 'exp_tank', country: 'country_sweden' },
+      us_m247: { unitClass: 'exp_SPAA', country: 'country_usa' },
+    }),
+    JSON.stringify({
+      sw_k9_vidar: { operatorCountry: 'country_norway' },
+      sw_strv_103a: { operatorCountry: 'country_sweden' },
+      us_m247: { operatorCountry: 'country_usa_modern' },
+    }),
+  )
+  assert.deepEqual(dict['sw_k9_vidar'], { name: 'VIDAR', cls: 'T', country: 'sweden', operator: 'norway' })
+  assert.deepEqual(dict['sw_strv_103a'], { name: 'Strv 103A', cls: 'T', country: 'sweden' })
+  assert.equal(dict['us_m247']?.operator, 'usa_modern')
 })

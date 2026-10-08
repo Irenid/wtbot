@@ -8,6 +8,8 @@ import { getDbWorkerPath, getScoutSquadronTags, getScoutStages, getScoutTeamRows
 import { normalizePlayerSearchKey } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { ensureVehicleDict, vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
+import { dictionaryFlagIcons, dictionaryFlags, type FlagEvidence, type VehicleFlags } from './flag-evidence.js'
+import { ensureFlagTemplates } from './flag-pack.js'
 import { ROSTER_WINDOW_SEC, predictKnownTeam, predictScout, type KnownTeamPrediction, type ScoutBattle, type ScoutPrediction } from './model.js'
 import { displayedNick, type NickMatch } from './nick-match.js'
 import type { ScoreboardReadResult } from './scoreboard-read.js'
@@ -215,6 +217,8 @@ export interface ScoutImageReport {
   prediction: KnownTeamPrediction
   recognised: number
   unread: string[]
+  /** Flags were read above the enemy team (the chances use them when they fit: prediction.flags). */
+  enemyFlagsSeen: boolean
   vehicles: VehicleDict
   now: number
 }
@@ -234,28 +238,48 @@ function majoritySquadron(matches: readonly NickMatch[]): ScoutSquadron | null {
   return core === undefined ? null : squadronIndex().get(core) ?? null
 }
 
+const vehicleFlags = new WeakMap<VehicleDict, (vehicleId: string) => VehicleFlags | null>()
+
+/** The flags the reader may see: the dictionary's nations and operators; null — every template (a dictionary built before operators were kept). */
+function flagIconsOf(vehicles: VehicleDict): string[] | null {
+  return Object.values(vehicles).some((info) => info.operator !== undefined) ? dictionaryFlagIcons(vehicles) : null
+}
+
 /** A scoreboard screenshot to the enemy's likely vehicles; OCR and reads run in workers. */
 export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date.now() / 1000)): Promise<ScoutImageOutcome> {
   const dbPath = getDbWorkerPath()
   if (dbPath === null) throw new Error('/scout pictures need a file database')
   const buffer = image.slice().buffer
+  const [templates, vehicles] = await Promise.all([ensureFlagTemplates('interactive'), ensureVehicleDict('interactive')])
   const read = await runWorkerTask(
-    { kind: 'read-scoreboard-image', input: { dbPath, image: buffer, fromTs: nowSec - IMAGE_CANDIDATE_WINDOW_SEC } },
+    {
+      kind: 'read-scoreboard-image',
+      input: {
+        dbPath,
+        image: buffer,
+        fromTs: nowSec - IMAGE_CANDIDATE_WINDOW_SEC,
+        flags: templates,
+        flagIcons: templates ? flagIconsOf(vehicles) : null,
+      },
+    },
     { priority: 'interactive', timeoutMs: 60_000, transferList: [buffer] },
   )
   if (read.status === 'no-table' || read.status === 'no-players') return { kind: read.status, read }
   if (read.status === 'one-side') return { kind: 'one-side', read, squadron: majoritySquadron(read.oneSide) }
   if (read.enemies.length === 0) return { kind: 'no-players', read }
-  const [{ rows, stages }, vehicles] = await Promise.all([
-    runWorkerTask(
-      {
-        kind: 'read-scout-players',
-        input: { dbPath, userIds: read.enemies.map((m) => m.userId), fromTs: nowSec - IMAGE_HISTORY_WINDOW_SEC, toTs: nowSec + 1 },
-      },
-      { priority: 'interactive', timeoutMs: 20_000 },
-    ),
-    ensureVehicleDict('interactive'),
-  ])
+  const { rows, stages } = await runWorkerTask(
+    {
+      kind: 'read-scout-players',
+      input: { dbPath, userIds: read.enemies.map((m) => m.userId), fromTs: nowSec - IMAGE_HISTORY_WINDOW_SEC, toTs: nowSec + 1 },
+    },
+    { priority: 'interactive', timeoutMs: 20_000 },
+  )
+  let flagsOf = vehicleFlags.get(vehicles)
+  if (!flagsOf) vehicleFlags.set(vehicles, (flagsOf = dictionaryFlags(vehicles)))
+  const enemyFlags = read.flags?.enemies ?? []
+  const flags: FlagEvidence | undefined = enemyFlags.length > 0
+    ? { flags: enemyFlags.map((flag) => flag.candidates.map(({ icon, likelihood }) => ({ icon, likelihood }))), rows: read.rows, flagsOf }
+    : undefined
   const prediction = predictKnownTeam({
     players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
     unknownPlayers: read.unread.length,
@@ -263,6 +287,7 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
     now: nowSec,
     stages,
     classOf: (id) => vehicleInfo(vehicles, id).cls,
+    flags,
   })
   return {
     kind: 'report',
@@ -273,6 +298,7 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
       prediction,
       recognised: read.enemies.length,
       unread: read.unread,
+      enemyFlagsSeen: enemyFlags.length > 0,
       vehicles,
       now: nowSec,
     },
