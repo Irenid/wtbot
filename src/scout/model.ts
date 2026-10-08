@@ -587,7 +587,7 @@ export interface KnownTeamPrediction {
   /** Recognised players (play chance 1), most battles at the cap first. */
   players: ScoutPlayerPrediction[]
   setup: ScoutSetup
-  /** The enemy flags the chances are conditioned on: each one's likeliest flag; null — none read, or they fit nobody. */
+  /** The enemy flags the chances are conditioned on, as their likeliest reading; null — none read, or they fit nobody. */
   flags: { icons: string[]; operatorChance: number } | null
 }
 
@@ -653,8 +653,6 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
     lastTogether: anchor ? { endTime: anchor.endTime, players: anchorCount } : null,
     players,
     setup: calibrateSetup(setupFromPlayers(team), lastHadAir),
-    flags: posterior && input.flags
-      ? { icons: input.flags.flags.map((reading) => reading[0]?.icon ?? '?'), operatorChance: posterior.operatorChance }
-      : null,
+    flags: posterior ? { icons: posterior.line, operatorChance: posterior.operatorChance } : null,
   }
 }

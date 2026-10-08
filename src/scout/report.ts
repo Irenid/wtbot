@@ -8,10 +8,11 @@ import { getDbWorkerPath, getScoutSquadronTags, getScoutStages, getScoutTeamRows
 import { normalizePlayerSearchKey } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { ensureVehicleDict, vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
-import { dictionaryFlagIcons, dictionaryFlags, type FlagEvidence, type VehicleFlags } from './flag-evidence.js'
+import { dictionaryFlagIcons, dictionaryFlags, IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON, type FlagEvidence, type FlagSeat, type VehicleFlags } from './flag-evidence.js'
 import { ensureFlagTemplates } from './flag-pack.js'
 import { ROSTER_WINDOW_SEC, predictKnownTeam, predictScout, type KnownTeamPrediction, type ScoutBattle, type ScoutPrediction } from './model.js'
 import { displayedNick, type NickMatch } from './nick-match.js'
+import type { RowIcon } from './row-icons.js'
 import type { ScoreboardReadResult } from './scoreboard-read.js'
 
 /** A team with fewer of the squadron's players is another squadron's team with guests. */
@@ -217,8 +218,13 @@ export interface ScoutImageReport {
   prediction: KnownTeamPrediction
   recognised: number
   unread: string[]
-  /** Flags were read above the enemy team (the chances use them when they fit: prediction.flags). */
-  enemyFlagsSeen: boolean
+  /**
+   * Flags read above the enemy team (the chances use them when they fit:
+   * prediction.flags), and the enemy rows with an icon, whose players show
+   * none: not spawned yet or destroyed (row-icons.ts); null — the icon column
+   * is not in the picture.
+   */
+  enemyFlags: { read: number; rowsWithout: number | null }
   vehicles: VehicleDict
   now: number
 }
@@ -243,6 +249,28 @@ const vehicleFlags = new WeakMap<VehicleDict, (vehicleId: string) => VehicleFlag
 /** The flags the reader may see: the dictionary's nations and operators; null — every template (a dictionary built before operators were kept). */
 function flagIconsOf(vehicles: VehicleDict): string[] | null {
   return Object.values(vehicles).some((info) => info.operator !== undefined) ? dictionaryFlagIcons(vehicles) : null
+}
+
+/**
+ * The enemy rows as flag seats (flag-evidence.ts): the recognised players
+ * (`enemies` order), then the rows nobody was recognised in. The game lists
+ * flags in the order of user ids compared as text, which the rows follow while
+ * scores tie: when the recognised rows stand in that order every row keeps its
+ * place on screen, otherwise the unrecognised rows may stand anywhere.
+ */
+export function enemySeats(
+  enemies: readonly { userId: string; row: number }[],
+  unreadRows: readonly number[],
+  icons: readonly (RowIcon | null)[] | null,
+): FlagSeat[] {
+  const byId = [...enemies].sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0))
+  const tied = byId.every((enemy, i) => i === 0 || byId[i - 1]!.row < enemy.row)
+  const rank = new Map(byId.map((enemy, i) => [enemy, i]))
+  const inVehicle = (row: number): number | null => (icons === null ? null : icons[row] ? IN_VEHICLE_WITH_ICON : IN_VEHICLE_WITHOUT_ICON)
+  return [
+    ...enemies.map((enemy) => ({ place: tied ? enemy.row : rank.get(enemy)!, inVehicle: inVehicle(enemy.row) })),
+    ...unreadRows.map((row) => ({ place: tied ? row : null, inVehicle: inVehicle(row) })),
+  ]
 }
 
 /** A scoreboard screenshot to the enemy's likely vehicles; OCR and reads run in workers. */
@@ -278,8 +306,13 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
   if (!flagsOf) vehicleFlags.set(vehicles, (flagsOf = dictionaryFlags(vehicles)))
   const enemyFlags = read.flags?.enemies ?? []
   const flags: FlagEvidence | undefined = enemyFlags.length > 0
-    ? { flags: enemyFlags.map((flag) => flag.candidates.map(({ icon, likelihood }) => ({ icon, likelihood }))), rows: read.rows, flagsOf }
+    ? {
+        flags: enemyFlags.map((flag) => flag.candidates.map(({ icon, likelihood }) => ({ icon, likelihood }))),
+        seats: enemySeats(read.enemies, read.unreadRows, read.enemyIcons),
+        flagsOf,
+      }
     : undefined
+  const enemyRows = [...read.enemies.map((match) => match.row), ...read.unreadRows]
   const prediction = predictKnownTeam({
     players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
     unknownPlayers: read.unread.length,
@@ -298,7 +331,10 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
       prediction,
       recognised: read.enemies.length,
       unread: read.unread,
-      enemyFlagsSeen: enemyFlags.length > 0,
+      enemyFlags: {
+        read: enemyFlags.length,
+        rowsWithout: read.enemyIcons && enemyRows.filter((row) => read.enemyIcons![row]).length,
+      },
       vehicles,
       now: nowSec,
     },

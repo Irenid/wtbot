@@ -137,7 +137,7 @@ test('known nicks are found in rows; the right-hand one is the enemy; short look
   assert.deepEqual(split.enemies.map((m) => m.nick).sort(), ['Azadx5x', 'GAZ9177@live', 'GivenMoment_'])
   assert.deepEqual(split.allies.map((m) => m.nick).sort(), ['Romzesi_1', 'gervewe55675'])
   assert.ok(split.splitX! > 400 && split.splitX! < 600)
-  assert.deepEqual(unreadEnemyRows([rows], split), ['DrORoger'])
+  assert.deepEqual(unreadEnemyRows([rows], split), [{ row: 3, text: 'DrORoger' }])
 })
 
 test('every pass is searched: a nick read in one counts, the best find wins', () => {
@@ -181,7 +181,7 @@ test('a moved player goes with the tag shown before him; a squadron mate off the
   const split = splitTeams(matchRows([rows], indexed))
   assert.deepEqual(split.enemies.map((m) => [m.userId, m.squadron]), [['3', 'ftnds'], ['4', 'ftnds']])
   assert.deepEqual(split.allies.map((m) => m.userId), ['5', '1', '2'])
-  assert.deepEqual(unreadEnemyRows([rows], split), ['天生我', 'MHS', 'kexik1234'])
+  assert.deepEqual(unreadEnemyRows([rows], split).map((unread) => unread.text), ['天生我', 'MHS', 'kexik1234'])
 })
 
 test('a tag counts right before the nick only; nicks folding alike are told apart by the tag, then the spelling', () => {
@@ -267,7 +267,7 @@ test('a known team with flags read: a player between two nations takes the flagg
     ...input,
     flags: {
       flags: [[{ icon: 'germany', likelihood: 1 }]],
-      rows: 1,
+      seats: [{ place: 0, inVehicle: null }],
       flagsOf: (id: string) => { const icon = flagsOf(id); return icon ? { operator: icon, tree: [{ icon, share: 1 }] } : null },
     },
   })

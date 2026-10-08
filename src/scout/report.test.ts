@@ -23,7 +23,8 @@ import {
   squadronLabel,
 } from './format.js'
 import { predictScout, setupFromPlayers, type KnownTeamPrediction, type ScoutBattle } from './model.js'
-import { findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutImageReport, type ScoutReport } from './report.js'
+import { IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON } from './flag-evidence.js'
+import { enemySeats, findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutImageReport, type ScoutReport } from './report.js'
 
 function player(userId: string, nick: string, team: number, clanTag: string, vehicles: string[]): BattlePlayerInput {
   return {
@@ -142,7 +143,7 @@ test('the reply names the setup, chances and every likely player; percents never
   assert.equal(empty.color, SCOUT_COLOR_GUESS)
 })
 
-test('a screenshot reply names the flags it used, or asks for one taken after the spawn', () => {
+test('a screenshot reply names the flags it used and who shows none, or asks for one taken after the spawn', () => {
   const vehicles: VehicleDict = { de_tank: { name: 'Leopard 2K', cls: 'T', country: 'germany', operator: 'germany_modern' } }
   const prediction: KnownTeamPrediction = {
     maxBr: 8,
@@ -151,11 +152,35 @@ test('a screenshot reply names the flags it used, or asks for one taken after th
     setup: setupFromPlayers([{ classChances: { F: 0, H: 0, T: 1, L: 0, AA: 0 } }]),
     flags: { icons: ['germany_modern', 'usa', 'usa_modern', 'south_africa'], operatorChance: 1 },
   }
-  const report: ScoutImageReport = { squadron: null, allySquadron: null, prediction, recognised: 1, unread: [], enemyFlagsSeen: true, vehicles, now: 0 }
-  assert.match(formatScoutImageReport(report).description, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
-  const before = formatScoutImageReport({ ...report, prediction: { ...prediction, flags: null }, enemyFlagsSeen: false }).description
+  const report: ScoutImageReport = {
+    squadron: null, allySquadron: null, prediction, recognised: 1, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, vehicles, now: 0,
+  }
+  const used = formatScoutImageReport(report).description
+  assert.match(used, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
+  assert.doesNotMatch(used, /no flag/)
+  const someOut = formatScoutImageReport({ ...report, enemyFlags: { read: 4, rowsWithout: 1 } }).description
+  assert.match(someOut, /1 enemy shows no flag \(not spawned yet or destroyed\): their chances rest on their battles alone\./)
+  const none = { ...report, prediction: { ...prediction, flags: null } }
+  const nobodyIn = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: 2 } }).description
+  assert.match(nobodyIn, /No enemy is in a vehicle yet: a screenshot after they spawn shows their flags and sharpens the guess\./)
+  const lineMissed = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: 1 } }).description
+  assert.match(lineMissed, /The flags above their team were not read/)
+  const before = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: null } }).description
   assert.match(before, /A screenshot after they spawn shows their flags and sharpens the guess\./)
   assert.equal(flagName('republic_china'), 'Republic of China')
   assert.equal(flagName('italy_kingdom'), 'Italy')
   assert.equal(flagName('new_zealand'), 'New Zealand')
+})
+
+test('enemy rows as flag seats: the game\'s order is the user ids as text, the screen\'s while scores tie', () => {
+  // On screen in id order (scores tie): every row keeps its place, the unrecognised one too.
+  const tied = enemySeats([{ userId: '120', row: 0 }, { userId: '87', row: 2 }], [1], ['parachute', null, null])
+  assert.deepEqual(tied, [
+    { place: 0, inVehicle: IN_VEHICLE_WITH_ICON },
+    { place: 2, inVehicle: IN_VEHICLE_WITHOUT_ICON },
+    { place: 1, inVehicle: IN_VEHICLE_WITHOUT_ICON },
+  ])
+  // A score moved '87' up: the ids give the order, the unrecognised row stands anywhere; no icon column, nothing known.
+  const scored = enemySeats([{ userId: '87', row: 0 }, { userId: '120', row: 1 }], [2], null)
+  assert.deepEqual(scored, [{ place: 1, inVehicle: null }, { place: 0, inVehicle: null }, { place: null, inVehicle: null }])
 })

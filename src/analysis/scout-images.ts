@@ -10,7 +10,9 @@
 // SCOUT_TESSERACT="docker run -i --rm --entrypoint tesseract wtbot:latest"
 // runs OCR in the image (a host without its language data). Flags are read
 // with the templates of WT_GAME_DIR (default data/wt-game) and scored against
-// the truth's "flags" ({"allies": [...], "enemies": [...]}, left to right).
+// the truth's "flags" ({"allies": [...], "enemies": [...]}, left to right);
+// the enemy rows' icons (row-icons.ts) against "enemyIcons" (per row
+// "parachute", "figure" or null; null for the whole: no icon column).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
@@ -19,6 +21,7 @@ import { getScoutRecentPlayers } from '../db/index.js'
 import { dictionaryFlagIcons } from '../scout/flag-evidence.js'
 import { renderFlagTemplates } from '../scout/flag-templates.js'
 import type { ReadFlag } from '../scout/flags.js'
+import type { RowIcon } from '../scout/row-icons.js'
 import { displayedNick, foldForMatch, indexPlayers, type NickMatch } from '../scout/nick-match.js'
 import { OCR_PASSES } from '../scout/ocr.js'
 import { readScoreboard, type ScoreboardReadResult } from '../scout/scoreboard-read.js'
@@ -33,6 +36,8 @@ interface Truth {
   oneSide?: boolean
   /** The flags above each team, left to right (the stored battle's vehicles, or as seen). */
   flags?: { allies: string[]; enemies: string[] }
+  /** Per row, the icon in the enemy's row (a player not in a vehicle); null — the icon column is not in the picture. */
+  enemyIcons?: (RowIcon | null)[] | null
 }
 
 interface Target {
@@ -113,7 +118,7 @@ await Promise.all(Array.from({ length: parallel }, async () => {
 }))
 results.sort((a, b) => a.target.file.localeCompare(b.target.file))
 
-const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0, flagsRight: 0, flags: 0 }
+const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0, flagsRight: 0, flags: 0, iconsRight: 0, icons: 0 }
 for (const { target, read } of results) {
   if (read instanceof Error) {
     console.log(`${target.file}: error ${read.message}`)
@@ -124,6 +129,8 @@ for (const { target, read } of results) {
   console.log(`${target.file}: ${read.status}, rows ${read.rows}, enemies ${read.enemies.length}, unread ${read.unread.length}, allies ${read.allies.length}`
     + ` (layout ${read.ms.layout.toFixed(0)} ms, OCR ${read.ms.ocr.toFixed(0)} ms, match ${read.ms.match.toFixed(0)} ms, flags ${read.ms.flags.toFixed(0)} ms)`)
   if (read.flags) console.log(`  flags: allies [${read.flags.allies.map(flagText).join(' ')}] | enemies [${read.flags.enemies.map(flagText).join(' ')}]`)
+  const iconText = (icons: readonly (RowIcon | null)[] | null | undefined) => (icons ? icons.map((icon) => icon ?? '-').join(' ') : 'no icon column')
+  if (read.status === 'ok') console.log(`  enemy icons: ${iconText(read.enemyIcons)}`)
   if (read.enemies.length > 0) console.log(`  enemies: ${read.enemies.map((m) => `${m.nick} [${m.clanTag}]${m.distance > 0 ? ` ±${m.distance}` : ''}`).join(', ')}`)
   if (read.unread.length > 0) console.log(`  unread: ${read.unread.map((text) => JSON.stringify(text)).join(', ')}`)
   if (read.oneSide.length > 0) console.log(`  one side only: ${read.oneSide.map((m) => m.nick).join(', ')}`)
@@ -135,6 +142,14 @@ for (const { target, read } of results) {
     totals.flagsRight += allies.right + enemies.right
     totals.flags += allies.total + enemies.total
     console.log(`  truth: flags allies ${allies.right}/${allies.total}, enemies ${enemies.right}/${enemies.total}`)
+  }
+  if (truth.enemyIcons !== undefined) {
+    const want = truth.enemyIcons
+    const right = want === null ? (read.enemyIcons === null ? 1 : 0) : want.filter((icon, row) => read.enemyIcons !== null && (read.enemyIcons[row] ?? null) === icon).length
+    const total = want === null ? 1 : want.length
+    totals.iconsRight += right
+    totals.icons += total
+    console.log(`  truth: enemy icons ${right}/${total}${right < total ? ` (want ${iconText(want)})` : ''}`)
   }
   if (truth.oneSide) {
     totals.wrong += read.enemies.length
@@ -158,3 +173,4 @@ if (totals.known > 0) {
   console.log(`truth: enemies ${totals.found}/${totals.known} known found, allies ${totals.allyFound}/${totals.allyKnown}, false finds ${totals.wrong + totals.allyWrong}`)
 }
 if (totals.flags > 0) console.log(`truth: flags ${totals.flagsRight}/${totals.flags} right`)
+if (totals.icons > 0) console.log(`truth: enemy icons ${totals.iconsRight}/${totals.icons} right (a whole picture without the column counts once)`)

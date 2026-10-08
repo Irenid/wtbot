@@ -494,16 +494,21 @@ Data:
   them), nicks of the last 120 days matched approximately in every reading;
   the right-hand nick of a row is the enemy. The flags above the table
   (`src/scout/flags.ts`: the game's own flags as templates, drawn once by
-  worker task `render-flag-templates`) are the countries each team has
-  spawned: a vehicle's operator (`wt-vehicles.json` `operator`, unittags
-  `operatorCountry`) or its nation, by the viewer's game setting. Then
-  `read-scout-players` and `predictKnownTeam` (roster known, vehicles from
-  each player's own battles at the cap, conditioned on the enemy's flags by
-  `flag-evidence.ts`, both settings mixed; `npm run scout:backtest --
-  <copy.db> --known-team` scores it). Every image and its reading stay in
-  `data/scout-images/<day>/`; with `truth.json` there (nicks and flags) they
-  are the test set (`npm run scout:images` scores them; Discord IDs inside,
-  never publish).
+  worker task `render-flag-templates`) are built like the game's
+  `getCountriesByTeam` (datamine `mpstatistics.nut`): the team's players in
+  the order of their user ids as text (the rows' order while scores tie),
+  only those in a vehicle, each flag once — a vehicle's operator
+  (`wt-vehicles.json` `operator`, unittags `operatorCountry`) or its nation,
+  by the viewer's game setting. A player not spawned yet or destroyed shows
+  no flag and an icon in the row (`row-icons.ts`: a parachute or a figure;
+  RB leaves an enemy in a vehicle without one). Then `read-scout-players` and
+  `predictKnownTeam` (roster known, vehicles from each player's own battles
+  at the cap, conditioned on the enemy's flags in that order and on the row
+  icons by `flag-evidence.ts`, both settings mixed; `npm run scout:backtest --
+  <copy.db> --known-team` scores it at moments of real battles). Every image
+  and its reading stay in `data/scout-images/<day>/`; with `truth.json` there
+  (nicks, flags, enemy row icons) they are the test set (`npm run
+  scout:images` scores them; Discord IDs inside, never publish).
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,
@@ -752,7 +757,7 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-08**: all
-gates pass, **443 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **449 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

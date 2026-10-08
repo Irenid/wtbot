@@ -442,8 +442,8 @@ const WIDE_GAP = /(?<=[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Scri
  * tag goes (the split may fall before or after it), and so do the spaces the
  * Chinese passes put between characters.
  */
-export function unreadEnemyRows(readings: readonly (readonly OcrRow[])[], split: TeamSplit): string[] {
-  const out: string[] = []
+export function unreadEnemyRows(readings: readonly (readonly OcrRow[])[], split: TeamSplit): { row: number; text: string }[] {
+  const out: { row: number; text: string }[] = []
   if (split.splitX === null) return out
   const cut = split.splitX
   const tag = split.enemyTag
@@ -461,7 +461,7 @@ export function unreadEnemyRows(readings: readonly (readonly OcrRow[])[], split:
       const confidence = words.reduce((sum, word) => sum + word.confidence, 0) / words.length
       if (!best || confidence > best.confidence) best = { text: words.map((word) => word.text).join(' ').replace(WIDE_GAP, '').slice(0, 60), confidence }
     }
-    if (best) out.push(best.text)
+    if (best) out.push({ row: index, text: best.text })
   })
   return out
 }

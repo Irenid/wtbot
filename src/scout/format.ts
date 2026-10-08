@@ -200,13 +200,21 @@ export function formatScoutImageReport(report: ScoutImageReport): ScoutEmbedText
     lines.push(`Last played together <t:${prediction.lastTogether.endTime}:R>.`)
   }
   const brText = prediction.maxBr === null ? '' : ` at BR ${prediction.maxBr.toFixed(1)}`
+  const { read, rowsWithout } = report.enemyFlags
   if (prediction.flags) {
     const names = [...new Set(prediction.flags.icons.map(flagName))].join(', ')
     lines.push(`Vehicle chances come from each player's own battles${brText} and the flags above their team: ${names}.`)
-  } else if (!report.enemyFlagsSeen) {
-    lines.push(`Vehicle chances come from each player's own battles${brText}. A screenshot after they spawn shows their flags and sharpens the guess.`)
-  } else {
+    if (rowsWithout) {
+      lines.push(`${rowsWithout === 1 ? '1 enemy shows' : `${rowsWithout} enemies show`} no flag (not spawned yet or destroyed): their chances rest on their battles alone.`)
+    }
+  } else if (read > 0) {
     lines.push(`Vehicle chances come from each player's own battles${brText}.`)
+  } else if (rowsWithout !== null && rowsWithout >= report.recognised + report.unread.length) {
+    lines.push(`Vehicle chances come from each player's own battles${brText}. No enemy is in a vehicle yet: a screenshot after they spawn shows their flags and sharpens the guess.`)
+  } else if (rowsWithout !== null) {
+    lines.push(`Vehicle chances come from each player's own battles${brText}. The flags above their team were not read: a screenshot showing them sharpens the guess.`)
+  } else {
+    lines.push(`Vehicle chances come from each player's own battles${brText}. A screenshot after they spawn shows their flags and sharpens the guess.`)
   }
   lines.push('', ...setupLines(prediction.setup))
   const fields = classFields(prediction.players, report.vehicles)
