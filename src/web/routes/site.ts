@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
 import {
   findKnownPlayerMatches,
+  findSimilarSitePlayers,
   getClanSeasonContext,
   getClanRatingsWithDelta,
   getOfficialClanSeason,
@@ -45,9 +46,11 @@ import {
   normalizeWtNick,
   resolveSiteSessionId,
   searchSitePlayers,
+  siteSearchQueryText,
   type PlayerReplayStats,
   type SiteBattleListRow,
   type SiteClanMemberLatest,
+  type SitePlayerSearchHit,
 } from '../../db/index.js'
 import type { ClanSeasonRewards, PlayerReplayInsights, SiteClanRosterDetails } from '../../db/index.js'
 import type { PlayerAccount, PlayerAccountSquadron } from '../../player-stats/account.js'
@@ -977,6 +980,24 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     return true
   }
 
+  // Typo-tolerant matches scan every known nick (src/nick-search.ts): in a
+  // worker that keeps its index NICK_INDEX_TTL_MS. Without them the search
+  // still answers with the prefix matches.
+  async function similarPlayers(query: string, limit: number): Promise<SitePlayerSearchHit[]> {
+    const dbPath = getDbWorkerPath()
+    try {
+      if (dbPath === null) return findSimilarSitePlayers(query, limit)
+      const { players } = await runWorkerTask(
+        { kind: 'search-player-nicks', input: { dbPath, query, limit } },
+        { priority: 'interactive', timeoutMs: 10_000 },
+      )
+      return players
+    } catch (error) {
+      console.warn(`[site] Typo-tolerant player search failed: ${error instanceof Error ? error.message : String(error)}`)
+      return []
+    }
+  }
+
   app.get<{ Querystring: { query: string; limit?: number } }>('/api/players', {
     schema: {
       querystring: {
@@ -992,7 +1013,9 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
   }, async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
     try {
-      const players = searchSitePlayers(request.query.query, request.query.limit ?? 20)
+      const query = siteSearchQueryText(request.query.query)
+      const limit = request.query.limit ?? 20
+      const players = searchSitePlayers(query, limit, await similarPlayers(query, limit))
       return { ok: true, players }
     } catch (error) {
       if (error instanceof RangeError) {

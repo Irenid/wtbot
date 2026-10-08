@@ -34,6 +34,15 @@ import {
 import { CLAN_SEASON_SCHEDULES, stageAt, type ClanSeasonSchedule } from '../clan-season.js'
 import { FORUM_SEASON_ID_PREFIX } from '../clan-season-forum.js'
 import { fillSquadronTags, type SquadronTagPlayer } from '../wrpl/squadron-tags.js'
+import {
+  cachedNickIndex,
+  compareNickScores,
+  NickIndex,
+  normalizePlayerSearchKey,
+  prepareNickQuery,
+  scoreNick,
+  type NickScore,
+} from '../nick-search.js'
 
 // Общий слой хранения: им пользуются и бот, и сайт, и парсеры.
 // SQLite встроен в Node 22.5+ — отдельный сервер БД не нужен.
@@ -3099,10 +3108,7 @@ export function normalizeWtNick(nick: string): string {
   return nick.replace(/@(psn|live|epic)$/i, '')
 }
 
-/** Unicode-стабильный ключ поиска, не меняющий отображаемый ник. */
-export function normalizePlayerSearchKey(nick: string): string {
-  return nick.normalize('NFKC').toLocaleLowerCase('und')
-}
+export { normalizePlayerSearchKey }
 
 /**
  * Ядро клан-тега: зеркало plainClanTag из wrpl/render-battle (дублируется
@@ -5812,6 +5818,40 @@ export const SITE_SQL = {
     GROUP BY user_id, nick_search, nick
     LIMIT ?
   `,
+  // The typo-tolerant search's index (src/nick-search.ts): every replay key
+  // with its battle count. A covering scan, 50 ms over 20,031 keys
+  // (2026-10-08): only the worker task search-player-nicks runs it.
+  playerSearchKeys: `
+    SELECT nick_search AS key, COUNT(*) AS battles
+    FROM battle_players
+    WHERE user_id <> '' AND nick_search NOT GLOB 'coop/bot*'
+    GROUP BY nick_search
+  `,
+  namedPlayerSearchKeys: `
+    SELECT canonical_nick_search AS key FROM player_identities WHERE canonical_nick_search <> ''
+    UNION
+    SELECT nick_search FROM player_identity_aliases WHERE nick_search <> ''
+  `,
+  searchIdentitiesByNickKey: `
+    SELECT id, wt_user_id, canonical_nick, platform, updated_at
+    FROM player_identities
+    WHERE canonical_nick_search = ?
+  `,
+  searchAliasesByNickKey: `
+    SELECT a.identity_id, a.nick, a.last_seen_at, i.wt_user_id, i.platform
+    FROM player_identity_aliases a
+    JOIN player_identities i ON i.id = a.identity_id
+    WHERE a.nick_search = ?
+    ORDER BY a.last_seen_at DESC
+    LIMIT ?
+  `,
+  searchReplayNicksByKey: `
+    SELECT nick, user_id
+    FROM battle_players
+    WHERE nick_search = ? AND user_id <> '' AND nick NOT GLOB 'coop/Bot*'
+    GROUP BY user_id, nick
+    LIMIT ?
+  `,
   ratingHistoryByNicks: `
     SELECT nick, clan_tag, rating, seen_at
     FROM clan_rating_snapshots
@@ -6203,13 +6243,14 @@ function sitePrefixUpperBound(prefix: string): string {
   return codePoints.join('') + String.fromCodePoint(next)
 }
 
-function siteSearchQueryText(query: string): string {
+/** A player search query, trimmed: 2 to 64 characters, no control characters. */
+export function siteSearchQueryText(query: string): string {
   const normalized = query.trim()
   if (normalized.length < 2 || normalized.length > 64) {
-    throw new RangeError('Поисковый запрос должен быть длиной от 2 до 64 символов')
+    throw new RangeError('A search query takes 2 to 64 characters')
   }
   if (/[\u0000-\u001f\u007f]/.test(normalized)) {
-    throw new RangeError('Поисковый запрос не может содержать управляющие символы')
+    throw new RangeError('A search query cannot hold control characters')
   }
   return normalized
 }
@@ -6232,107 +6273,176 @@ export interface SitePlayerSearchResult {
   lastSeenAt: number | null
 }
 
+/** A row of a typo-tolerant match (findSimilarSitePlayers): its nick's replay battles rank equal matches. */
+export interface SitePlayerSearchHit extends SitePlayerSearchResult {
+  battles: number
+}
+
+interface IdentitySearchRow {
+  id: number
+  wt_user_id: string | null
+  canonical_nick: string
+  platform: string | null
+  updated_at: number
+}
+
+interface AliasSearchRow {
+  identity_id: number
+  nick: string
+  last_seen_at: number
+  wt_user_id: string | null
+  platform: string | null
+}
+
+interface ReplaySearchRow {
+  nick: string
+  user_id: string
+}
+
+const identitySearchResult = (row: IdentitySearchRow): SitePlayerSearchResult => ({
+  identityId: row.id,
+  wtUserId: row.wt_user_id,
+  nick: row.canonical_nick,
+  platform: row.platform,
+  origin: 'identity',
+  lastSeenAt: row.updated_at,
+})
+
+const aliasSearchResult = (row: AliasSearchRow): SitePlayerSearchResult => ({
+  identityId: row.identity_id,
+  wtUserId: row.wt_user_id,
+  nick: row.nick,
+  platform: row.platform,
+  origin: 'alias',
+  lastSeenAt: row.last_seen_at,
+})
+
+const replaySearchResult = (row: ReplaySearchRow): SitePlayerSearchResult => ({
+  identityId: null,
+  wtUserId: row.user_id,
+  nick: row.nick,
+  platform: null,
+  origin: 'replay',
+  lastSeenAt: null,
+})
+
+/** Nick matches first; no match is only the identity an exact WT user id found (ranked by byId). */
+const compareSearchScores = (a: NickScore | null, b: NickScore | null): number =>
+  a && b ? compareNickScores(a, b) : Number(a === null) - Number(b === null)
+
 /**
- * Префиксный поиск игроков для страницы поиска сайта. Только чтение:
- * identity не создаются и внешние источники не опрашиваются.
+ * The site's player search: nick prefixes and an exact WT user id from SQL,
+ * live, plus `similar`, the typo-tolerant matches of findSimilarSitePlayers.
+ * An exact id first, then by match (src/nick-search.ts: fewer edits, whole
+ * nick before its start before inside it, as typed before folded), then
+ * identity, alias, replay, then battles. Read only: no identity is created
+ * and no external source asked.
  */
-export function searchSitePlayers(query: string, limit = 20): SitePlayerSearchResult[] {
+export function searchSitePlayers(
+  query: string,
+  limit = 20,
+  similar: readonly SitePlayerSearchHit[] = [],
+): SitePlayerSearchResult[] {
   const normalized = siteSearchQueryText(query)
   const normalizedLimit = siteLimit(limit, 50, 'Лимит поиска игроков')
   const lower = normalizePlayerSearchKey(normalized)
   const upper = sitePrefixUpperBound(lower)
 
+  const byId = /^[0-9]{1,20}$/.test(normalized)
+    ? siteStatement('searchIdentityByWtUserId').get(normalized) as IdentitySearchRow | undefined
+    : undefined
+  const identities = (siteStatement('searchIdentitiesByNick')
+    .all(lower, upper, normalizedLimit) as unknown as IdentitySearchRow[]).map(identitySearchResult)
+  if (byId) identities.unshift(identitySearchResult(byId))
+  const aliases = (siteStatement('searchAliasesByNick')
+    .all(lower, upper, normalizedLimit) as unknown as AliasSearchRow[]).map(aliasSearchResult)
+  const replays = (siteStatement('searchReplayNicks')
+    .all(lower, upper, normalizedLimit) as unknown as ReplaySearchRow[]).map(replaySearchResult)
+  for (const hit of similar) {
+    if (hit.origin === 'identity') identities.push(hit)
+    else if (hit.origin === 'alias') aliases.push(hit)
+    else replays.push(hit)
+  }
+
+  // One row per identity (its canonical nick before an alias), then per replay account and nick no identity holds.
   const results: SitePlayerSearchResult[] = []
   const seenIdentityIds = new Set<number>()
-  const seenReplayKeys = new Set<string>()
-
-  if (/^[0-9]{1,20}$/.test(normalized)) {
-    const row = siteStatement('searchIdentityByWtUserId').get(normalized) as
-      | { id: number; wt_user_id: string | null; canonical_nick: string; platform: string | null; updated_at: number }
-      | undefined
-    if (row) {
-      seenIdentityIds.add(row.id)
-      results.push({
-        identityId: row.id,
-        wtUserId: row.wt_user_id,
-        nick: row.canonical_nick,
-        platform: row.platform,
-        origin: 'identity',
-        lastSeenAt: row.updated_at,
-      })
-    }
+  for (const entry of [...identities, ...aliases]) {
+    if (entry.identityId === null || seenIdentityIds.has(entry.identityId)) continue
+    seenIdentityIds.add(entry.identityId)
+    results.push(entry)
   }
-
-  const identityRows = siteStatement('searchIdentitiesByNick')
-    .all(lower, upper, normalizedLimit) as unknown as {
-      id: number
-      wt_user_id: string | null
-      canonical_nick: string
-      platform: string | null
-      updated_at: number
-    }[]
-  for (const row of identityRows) {
-    if (seenIdentityIds.has(row.id)) continue
-    seenIdentityIds.add(row.id)
-    results.push({
-      identityId: row.id,
-      wtUserId: row.wt_user_id,
-      nick: row.canonical_nick,
-      platform: row.platform,
-      origin: 'identity',
-      lastSeenAt: row.updated_at,
-    })
-  }
-
-  const aliasRows = siteStatement('searchAliasesByNick')
-    .all(lower, upper, normalizedLimit) as unknown as {
-      identity_id: number
-      nick: string
-      last_seen_at: number
-      wt_user_id: string | null
-      platform: string | null
-    }[]
-  for (const row of aliasRows) {
-    if (seenIdentityIds.has(row.identity_id)) continue
-    seenIdentityIds.add(row.identity_id)
-    results.push({
-      identityId: row.identity_id,
-      wtUserId: row.wt_user_id,
-      nick: row.nick,
-      platform: row.platform,
-      origin: 'alias',
-      lastSeenAt: row.last_seen_at,
-    })
-  }
-
-  const replayRows = siteStatement('searchReplayNicks')
-    .all(lower, upper, normalizedLimit) as unknown as { nick: string; user_id: string }[]
   const knownWtUserIds = new Set(results.map((entry) => entry.wtUserId).filter(Boolean))
-  for (const row of replayRows) {
-    if (knownWtUserIds.has(row.user_id)) continue
-    const key = `${row.user_id}:${normalizePlayerSearchKey(row.nick)}`
+  const seenReplayKeys = new Set<string>()
+  for (const entry of replays) {
+    if (knownWtUserIds.has(entry.wtUserId)) continue
+    const key = `${entry.wtUserId}:${normalizePlayerSearchKey(entry.nick)}`
     if (seenReplayKeys.has(key)) continue
     seenReplayKeys.add(key)
-    results.push({
-      identityId: null,
-      wtUserId: row.user_id,
-      nick: row.nick,
-      platform: null,
-      origin: 'replay',
-      lastSeenAt: null,
-    })
+    results.push(entry)
   }
 
-  const queryLower = normalizePlayerSearchKey(normalized)
+  const prepared = prepareNickQuery(normalized)
+  const battles = new Map(similar.map((hit) => [normalizePlayerSearchKey(hit.nick), hit.battles]))
   const originRank: Record<SitePlayerSearchOrigin, number> = { identity: 0, alias: 1, replay: 2 }
-  results.sort((a, b) => {
-    const exactA = normalizePlayerSearchKey(a.nick) === queryLower ? 0 : 1
-    const exactB = normalizePlayerSearchKey(b.nick) === queryLower ? 0 : 1
-    if (exactA !== exactB) return exactA - exactB
-    if (originRank[a.origin] !== originRank[b.origin]) return originRank[a.origin] - originRank[b.origin]
-    return (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0)
-  })
-  return results.slice(0, normalizedLimit)
+  return results
+    .map((entry) => ({
+      entry,
+      byId: byId !== undefined && entry.identityId === byId.id,
+      score: scoreNick(prepared, entry.nick),
+      battles: battles.get(normalizePlayerSearchKey(entry.nick)) ?? 0,
+    }))
+    .sort((a, b) =>
+      Number(b.byId) - Number(a.byId)
+      || compareSearchScores(a.score, b.score)
+      || originRank[a.entry.origin] - originRank[b.entry.origin]
+      || b.battles - a.battles
+      || (b.entry.lastSeenAt ?? 0) - (a.entry.lastSeenAt ?? 0))
+    .slice(0, normalizedLimit)
+    .map(({ entry: { identityId, wtUserId, nick, platform, origin, lastSeenAt } }) =>
+      ({ identityId, wtUserId, nick, platform, origin, lastSeenAt }))
+}
+
+/** Keys of the typo-tolerant index: replay nicks with their battles, then identity and alias nicks missing from replays. */
+export function getPlayerSearchKeys(database?: DatabaseSync): { key: string; battles: number }[] {
+  const statement = (key: 'playerSearchKeys' | 'namedPlayerSearchKeys') =>
+    database ? database.prepare(SITE_SQL[key]) : siteStatement(key)
+  const keys = statement('playerSearchKeys').all() as unknown as { key: string; battles: number }[]
+  const known = new Set(keys.map((row) => row.key))
+  for (const { key } of statement('namedPlayerSearchKeys').all() as unknown as { key: string }[]) {
+    if (!known.has(key)) keys.push({ key, battles: 0 })
+  }
+  return keys
+}
+
+/**
+ * Typo-tolerant matches for searchSitePlayers: the rows of the `limit` best
+ * nick keys (src/nick-search.ts). With `indexKey` (the worker task
+ * search-player-nicks) the index is reused for NICK_INDEX_TTL_MS, so a new
+ * nick waits up to that long; without it the index is built for this call
+ * (the :memory: database of tests). `limit` comes validated (1 to 50).
+ */
+export function findSimilarSitePlayers(
+  query: string,
+  limit = 20,
+  database?: DatabaseSync,
+  indexKey: string | null = null,
+): SitePlayerSearchHit[] {
+  const prepared = prepareNickQuery(siteSearchQueryText(query))
+  const load = () => getPlayerSearchKeys(database)
+  const index = indexKey === null ? new NickIndex(load()) : cachedNickIndex(indexKey, load)
+  const statement = (key: 'searchIdentitiesByNickKey' | 'searchAliasesByNickKey' | 'searchReplayNicksByKey') =>
+    database ? database.prepare(SITE_SQL[key]) : siteStatement(key)
+  const identities = statement('searchIdentitiesByNickKey')
+  const aliases = statement('searchAliasesByNickKey')
+  const replays = statement('searchReplayNicksByKey')
+  const hits: SitePlayerSearchHit[] = []
+  for (const { key, battles } of index.find(prepared, limit)) {
+    for (const row of identities.all(key) as unknown as IdentitySearchRow[]) hits.push({ ...identitySearchResult(row), battles })
+    for (const row of aliases.all(key, limit) as unknown as AliasSearchRow[]) hits.push({ ...aliasSearchResult(row), battles })
+    for (const row of replays.all(key, limit) as unknown as ReplaySearchRow[]) hits.push({ ...replaySearchResult(row), battles })
+  }
+  return hits
 }
 
 export interface SiteRatingHistoryPoint {

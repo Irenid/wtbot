@@ -204,8 +204,9 @@ parameterized. Measurements, decisions and migration rollback —
   unique index before the parsers start: a hit skips SQLite, a miss queries
   (keeps parallel backfill correct).
 - Player search uses the indexed `canonical_nick_search`, `nick_search`,
-  `battle_players.nick_search`: JS `NFKC` + locale-neutral lowercase, never
-  `COLLATE NOCASE`.
+  `battle_players.nick_search`: JS `NFKC` + locale-neutral lowercase
+  (`normalizePlayerSearchKey`), never `COLLATE NOCASE`; typo-tolerant matches
+  scan these keys in a worker (section 8, "Player search").
 - `items`: transactional writes, `UNIQUE(source, external_id)`, changes
   detected by `content_hash` of title + JSON; new sources and backfill keep it.
 - `db:backup`: `VACUUM INTO`, lock, free-space check, rotation, read-only
@@ -612,6 +613,20 @@ Data:
   headers (not a browser) it passes. With a token, the `onSend` hook turns
   `public` into `private` on protected responses, so a shared proxy cache
   never serves them without the token.
+- Player search (`GET /api/players`, the home page): nick prefixes and an
+  exact WT user id from SQL, live, plus typo-tolerant matches
+  (`src/nick-search.ts`). Both sides are folded: accents, separators and
+  `@psn` dropped, Cyrillic and Greek look-alikes made Latin (the most active
+  nick of 2026-10-08, `Zоroaster`, holds a Cyrillic о). A nick matches whole,
+  by its start or inside it with edits by query length (`maxEdits`,
+  `maxInfixEdits`; OSA: an adjacent swap is one edit; a query of digits gets
+  none); a query typed in the other layout (ЙЦУКЕН, QWERTY) matches whole or
+  by the start. Worker task `search-player-nicks` keeps an index of every
+  replay, identity and alias key for `NICK_INDEX_TTL_MS` (20,031 keys on
+  2026-10-08: built in ~120 ms, a query 2–5 ms); a failed task leaves the
+  prefix matches. Rank: an exact id, the match (`compareNickScores`),
+  identity before alias before replay, battles. `/scout`'s player
+  autocomplete ranks the squadron's recent nicks the same way (`rankNicks`).
 - Player page (`/players/…`): `/api/players/:key` — profile, clan with
   the roster role, sources with `account` (level, dates, clan and nickname
   history, WT leaderboard places); `/api/players/:key/insights?days=` — a
@@ -725,8 +740,8 @@ npm run build:web
 `verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-04**: all
-gates pass, **338 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+each can run alone for the affected subsystem. Baseline on **2026-10-08**: all
+gates pass, **425 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

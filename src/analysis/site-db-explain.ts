@@ -22,6 +22,12 @@ const ALLOWED_BIG_SCANS: Readonly<Record<string, readonly string[]>> = {
   battlesRecent: ['SCAN battles USING INDEX idx_battles_start'],
   siteReplayPlayerCount: ['SCAN battle_players USING COVERING INDEX idx_bp_user_id'],
   clanBaselineSumsAll: ['SCAN clan_rating_snapshots USING COVERING INDEX idx_snapshots_clan_latest'],
+  // The typo-tolerant search's index: the worker task search-player-nicks only, once per NICK_INDEX_TTL_MS.
+  playerSearchKeys: ['SCAN battle_players USING COVERING INDEX idx_bp_nick_search'],
+  namedPlayerSearchKeys: [
+    'SCAN player_identities USING COVERING INDEX idx_player_identities_nick_search',
+    'SCAN player_identity_aliases USING COVERING INDEX idx_player_aliases_nick_search',
+  ],
 }
 
 function allowedScan(key: string, detail: string): boolean {

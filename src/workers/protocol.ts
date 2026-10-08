@@ -1,4 +1,4 @@
-import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights, ScoutTeamRow } from '../db/index.js'
+import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights, ScoutTeamRow, SitePlayerSearchHit } from '../db/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
@@ -189,6 +189,11 @@ export interface WorkerTaskMap {
   'read-player-insights': {
     input: { dbPath: string; userId: string; fromTs: number; toTs: number }
     output: PlayerReplayInsights & { elapsedMs: number }
+  }
+  /** The site's typo-tolerant player search (findSimilarSitePlayers): the worker keeps its nick index NICK_INDEX_TTL_MS. */
+  'search-player-nicks': {
+    input: { dbPath: string; query: string; limit: number }
+    output: { players: SitePlayerSearchHit[]; elapsedMs: number }
   }
   /** /scout by picture: the screenshot read (src/scout/scoreboard-read.ts), players matched against fromTs on. */
   'read-scoreboard-image': {

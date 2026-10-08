@@ -335,6 +335,11 @@ async function main(): Promise<void> {
     assert.equal(searchBody.players[0]?.nick, 'PilotOne')
     assert.equal(searchBody.players[0]?.origin, 'identity')
 
+    // A typo (two letters swapped) still finds the player.
+    const typo = await app.inject({ method: 'GET', url: '/api/players?query=PilotOen' })
+    assert.equal(typo.statusCode, 200)
+    assert.equal((typo.json() as { players: { nick: string }[] }).players[0]?.nick, 'PilotOne')
+
     const searchById = await app.inject({ method: 'GET', url: '/api/players?query=501' })
     assert.equal((searchById.json() as { players: { wtUserId: string | null }[] }).players[0]?.wtUserId, '501')
 

@@ -1,7 +1,8 @@
 import { EmbedBuilder, SlashCommandBuilder, type AutocompleteInteraction } from 'discord.js'
 import type { Command } from '../types.js'
 import { formatScoutReport, squadronLabel } from '../../scout/format.js'
-import { buildScoutReport, findSquadrons, loadScoutHistory, nickKey, recentNicks, type ScoutSquadron } from '../../scout/report.js'
+import { buildScoutReport, findSquadrons, loadScoutHistory, recentNicks, type ScoutSquadron } from '../../scout/report.js'
+import { rankNicks } from '../../nick-search.js'
 
 const MAX_CHOICE = 100
 
@@ -27,8 +28,8 @@ async function autocomplete(interaction: AutocompleteInteraction): Promise<void>
     return
   }
   const history = await loadScoutHistory(squadron, Math.floor(Date.now() / 1000))
-  const key = nickKey(focused.value)
-  const nicks = recentNicks(history.battles).filter((nick) => key === '' || nickKey(nick).includes(key))
+  // Typos and the other keyboard layout forgiven; equal matches stay most recent first.
+  const nicks = rankNicks(focused.value, recentNicks(history.battles))
   await interaction.respond(nicks.slice(0, 25).map((nick) => ({ name: nick.slice(0, MAX_CHOICE), value: nick.slice(0, MAX_CHOICE) })))
 }
 

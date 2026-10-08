@@ -8,6 +8,7 @@ import {
   DB_SCHEMA_VERSION,
   closeDb,
   findKnownPlayerMatches,
+  findSimilarSitePlayers,
   getPlayerReplayStats,
   getSiteReplayUserIdsByNick,
   initDb,
@@ -127,6 +128,53 @@ test('поиск игроков использует Unicode casefold для ide
   }
 })
 
+test('player search forgives typos, look-alike letters and the keyboard layout', () => {
+  initDb(':memory:')
+  try {
+    const slot = (userId: string, nick: string) => ({ ...replayPlayer(nick), userId })
+    const battle = (sessionId: string, players: ReturnType<typeof slot>[]) => ({
+      sessionId,
+      sessionHex: sessionId.padStart(16, '0'),
+      missionName: 'fixture',
+      level: 'fixture',
+      gameMode: null,
+      battleType: null,
+      environment: null,
+      status: null,
+      startTime: 1,
+      durationSec: 600,
+      endTimeMs: 600_000,
+      teamWon: 1,
+      gameVersion: null,
+      missionSettings: null,
+      players,
+      kills: [],
+      chat: [],
+      eventsBlob: Buffer.from('{}'),
+    })
+    // Zоroaster holds a Cyrillic о.
+    saveBattle(battle('1', [slot('901', 'Zоroaster'), slot('902', 'Pilot_2008'), slot('903', 'PilotOne'), slot('904', 'Pilot_Ace')]))
+    saveBattle(battle('2', [slot('904', 'Pilot_Ace')]))
+    savePlayerIdentity({ wtUserId: '905', canonicalNick: 'Vovanzmej', platform: null })
+
+    const search = (query: string) => searchSitePlayers(query, 20, findSimilarSitePlayers(query, 20))
+      .map((entry) => `${entry.nick}/${entry.origin}`)
+    assert.deepEqual(searchSitePlayers('zoroaster'), [])
+    assert.deepEqual(search('zoroaster'), ['Zоroaster/replay'])
+    assert.deepEqual(search('zoroastr'), ['Zоroaster/replay'])
+    assert.deepEqual(search('ящкщфыеук'), ['Zоroaster/replay'])
+    // Equal matches: the most battles first.
+    assert.deepEqual(search('pilto'), ['Pilot_Ace/replay', 'Pilot_2008/replay', 'PilotOne/replay'])
+    // Exact before a prefix before two edits.
+    assert.deepEqual(search('pilotone'), ['PilotOne/replay', 'Pilot_Ace/replay'])
+    assert.deepEqual(search('pilot'), ['Pilot_Ace/replay', 'Pilot_2008/replay', 'PilotOne/replay'])
+    assert.deepEqual(search('vovanzmje'), ['Vovanzmej/identity'])
+    assert.equal(searchSitePlayers('905', 20, findSimilarSitePlayers('905', 20))[0]?.wtUserId, '905')
+  } finally {
+    closeDb()
+  }
+})
+
 test('initDb дозаполняет search keys в legacy SQLite schema', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'wtbot-search-migration-'))
   const dbPath = path.join(root, 'legacy.db')
@@ -221,6 +269,7 @@ test('слот coop/Bot с настоящим userId не входит в ста
     assert.equal(getPlayerReplayStats({ userId: '555' }).battles, 1)
     assert.deepEqual(findKnownPlayerMatches('555').map((match) => match.nick), ['RealNick'])
     assert.deepEqual(searchSitePlayers('coop'), [])
+    assert.deepEqual(findSimilarSitePlayers('coop'), [])
   } finally {
     closeDb()
   }

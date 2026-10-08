@@ -403,6 +403,27 @@ async function readPlayerInsights(
   }
 }
 
+/** Typo-tolerant player search (db/index.ts) on its own read-only connection; the nick index outlives the task. */
+async function searchPlayerNicks(
+  input: Extract<AnyWorkerTask, { kind: 'search-player-nicks' }>['input'],
+): Promise<{ value: WorkerTaskResult<'search-player-nicks'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
+  const [{ DatabaseSync }, { findSimilarSitePlayers }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 268435456;')
+    const players = findSimilarSitePlayers(input.query, input.limit, database, input.dbPath)
+    return { value: { players, elapsedMs: performance.now() - started }, transfer: [] }
+  } finally {
+    database.close()
+  }
+}
+
 /** /scout history (db/index.ts) on its own read-only connection. */
 async function readScoutHistory(
   input: Extract<AnyWorkerTask, { kind: 'read-scout-history' }>['input'],
@@ -1010,6 +1031,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return runDatabaseMaintenance(task.input)
     case 'read-player-insights':
       return readPlayerInsights(task.input)
+    case 'search-player-nicks':
+      return searchPlayerNicks(task.input)
     case 'read-scout-history':
       return readScoutHistory(task.input)
     case 'read-scoreboard-image':
