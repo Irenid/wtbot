@@ -24,7 +24,7 @@ import {
 } from './format.js'
 import { predictScout, setupFromPlayers, type KnownTeamPrediction, type ScoutBattle } from './model.js'
 import { IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON } from './flag-evidence.js'
-import { allyAir, enemySeats, findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutImageReport, type ScoutReport } from './report.js'
+import { allyAir, enemySeats, findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, scoutPredictionRecord, type ScoutImageReport, type ScoutReport } from './report.js'
 
 function player(userId: string, nick: string, team: number, clanTag: string, vehicles: string[]): BattlePlayerInput {
   return {
@@ -219,6 +219,13 @@ test('a screenshot reply names a new player\'s likely vehicle, marks new ones an
   const updated = formatScoutImageReport({ ...report, statShark: { players: 2, pending: false } }).description
   assert.match(updated, /and their battles on StatShark \(2 players\)\./)
   assert.doesNotMatch(updated, /Checking/)
+  // The record keeps each player's three likeliest, new ones marked, for scoring against the battle later.
+  const record = scoutPredictionRecord(report) as { model: string; players: { userId: string; options: { vehicleId: string; chance: number; new: boolean }[] }[] }
+  assert.match(record.model, /^[0-9a-f]{12}$/)
+  assert.deepEqual(record.players.find((player) => player.userId === 'b')!.options, [
+    { vehicleId: 'fr_jet', chance: 0.5, new: true },
+    { vehicleId: 'de_tank', chance: 0.35, new: false },
+  ])
 })
 
 test('the own squadron\'s air habit: aircraft and helicopters a battle over its teams of six or more', () => {

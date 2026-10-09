@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { VehicleClass } from '../wrpl/vehicles.js'
 import { dictionaryFlags, IN_VEHICLE_WITHOUT_ICON } from './flag-evidence.js'
 import {
+  NEW_VEHICLE_FEATURES,
   OPPONENT_AIR_MEAN,
   SESSION_GAP_SEC,
   STAGE_SWITCH_DELAY_SEC,
@@ -161,6 +162,15 @@ test('a new vehicle is guessed from the cap\'s spawns, the player\'s nations and
   // StatShark: hundreds of battles in the SPAA, none in the tanks, outweigh the cap's popularity.
   const shark = playerBackground([], info, new Map([['spaa', 400]]))
   assert.equal(newVehicleChances(newVehicleFeatures(capSpawns, shark, new Set(), info)).vehicles[0]!.vehicleId, 'spaa')
+  // A stale snapshot keeps its battle counts, but a vehicle missing from it no longer counts as never played.
+  const column = (name: string) => NEW_VEHICLE_FEATURES.indexOf(name as (typeof NEW_VEHICLE_FEATURES)[number])
+  const fresh = newVehicleFeatures(capSpawns, shark, new Set(), info)
+  const stale = newVehicleFeatures(capSpawns, playerBackground([], info, new Map([['spaa', 400]]), false), new Set(), info)
+  const mbt = fresh.vehicles.indexOf('mbt')
+  const spaa = fresh.vehicles.indexOf('spaa')
+  assert.equal(fresh.rows[mbt]![column('notPlayed')], 1)
+  assert.equal(stale.rows[mbt]![column('notPlayed')], 0)
+  assert.equal(stale.rows[spaa]![column('logBattles')], Math.log1p(400))
 })
 
 test('a player without battles at this BR gets the cap\'s vehicles; the flags pick the one their flag shows', () => {

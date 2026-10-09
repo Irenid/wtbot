@@ -1,8 +1,10 @@
 /**
  * /scout by picture: a scoreboard (Tab) screenshot posted in a WT_SCOUT_CHANNEL
  * channel is read (src/scout/scoreboard-read.ts) and answered with the enemy's
- * likely setup. Every image and its reading are kept in data/scout-images/
- * (day folders) to improve the reading later; nothing there is published.
+ * likely setup. Every image, its reading and the prediction (also after the
+ * StatShark update) are kept in data/scout-images/ (day folders) to improve the
+ * reading and score the replies later (`npm run scout:outcomes`); nothing there
+ * is published.
  * One image is read at a time: OCR takes ~1–2 s of CPU.
  */
 
@@ -14,7 +16,7 @@ import { config } from '../config.js'
 import { readResponseBuffer } from '../http-response.js'
 import { formatScoutImageReport, squadronLabel } from '../scout/format.js'
 import { OcrUnavailableError } from '../scout/ocr.js'
-import { scoutFromImage, type ScoutImageOutcome, type ScoutImageReport, type ScoutStatSharkSource } from '../scout/report.js'
+import { scoutFromImage, scoutPredictionRecord, type ScoutImageOutcome, type ScoutImageReport, type ScoutStatSharkSource } from '../scout/report.js'
 import { MAX_IMAGE_BYTES } from '../scout/scoreboard-image.js'
 
 export const SCOUT_IMAGE_DIR = './data/scout-images'
@@ -72,7 +74,13 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
   await mkdir(dir, { recursive: true })
   for (const [index, attachment] of images.entries()) {
     const base = path.join(dir, `${message.id}-${index}`)
-    const record: Record<string, unknown> = { messageId: message.id, channelId: message.channelId, receivedAt: new Date().toISOString(), name: attachment.name }
+    const record: Record<string, unknown> = {
+      messageId: message.id,
+      channelId: message.channelId,
+      postedAt: new Date(message.createdTimestamp).toISOString(),
+      receivedAt: new Date().toISOString(),
+      name: attachment.name,
+    }
     let reply: string | EmbedBuilder
     let update: Promise<ScoutImageReport> | null = null
     try {
@@ -89,6 +97,7 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
       if (outcome.kind === 'report') {
         record['enemySquadron'] = outcome.report.squadron?.core ?? null
         record['allySquadron'] = outcome.report.allySquadron?.core ?? null
+        record['prediction'] = scoutPredictionRecord(outcome.report)
         update = outcome.update
       }
     } catch (error) {
@@ -111,6 +120,10 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
       // The reply said StatShark is being checked: it is edited when the refreshes end (or their wait runs out).
       const task: Promise<void> = update
         .then(async (next) => {
+          record['predictionUpdated'] = scoutPredictionRecord(next)
+          await writeFileAtomic(`${base}.json`, JSON.stringify(record, null, 2)).catch((error: unknown) => {
+            console.warn('[scout-images] could not save the updated prediction:', error)
+          })
           if (!stopping) await sent.edit({ embeds: [reportEmbed(next)] })
         })
         .catch((error: unknown) => console.warn('[scout-images] StatShark update failed:', error))

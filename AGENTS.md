@@ -517,12 +517,16 @@ Data:
   in a setup calibration of its own (`KNOWN_TEAM_SETUP_CALIBRATION`). With
   StatShark on, the reply queues a refresh for each enemy (players without
   battles at the cap first, through the lazy StatShark service) and is edited
-  once they end, within `STATSHARK_WAIT_MS`. `npm run scout:backtest --
+  once they end, within `STATSHARK_WAIT_MS`; a snapshot older than
+  `STATSHARK_FRESH_SEC` (2 days) gives battle counts, but a vehicle missing
+  from it no longer counts as never played. `npm run scout:backtest --
   <copy.db> --known-team [--fit | --fit-all] [--statshark]` scores it at
-  moments of real battles and fits these (`scout-known-backtest.ts`). Every image
-  and its reading stay in `data/scout-images/<day>/`; with `truth.json` there
-  (nicks, flags, enemy row icons) they are the test set (`npm run
-  scout:images` scores them; Discord IDs inside, never publish).
+  moments of real battles and fits these (`scout-known-backtest.ts`). Every
+  image, its reading and the prediction (`scoutPredictionRecord`, again after
+  the StatShark update, with a hash of the model's constants) stay in
+  `data/scout-images/<day>/`; with `truth.json` there (nicks, flags, enemy row
+  icons) they are the test set (`npm run scout:images` scores them; Discord
+  IDs inside, never publish).
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,

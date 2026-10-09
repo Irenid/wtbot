@@ -413,7 +413,11 @@ Measured 2026-10-09 on the known-team backtest (20,338 teams of 8 of
   81.9%. StatShark answered 429 after ~60 profiles in a row and still did 15
   minutes later: a 429 now pauses the whole source (`PlayerStatsService`),
   doubling from 5 minutes to 6 hours, and a screenshot's update then comes
-  without it.
+  without it. Live, the first reply and every reply during such a pause read
+  each enemy's latest snapshot however old (19 of the 84 were over 2 days old
+  on 2026-10-09, the oldest 10 days), so since 2026-10-09 a snapshot older
+  than `STATSHARK_FRESH_SEC` (2 days) gives battle counts only: a vehicle
+  bought or played since would otherwise count as never played (×0.02).
 - **Constants**: `npm run scout:backtest -- <copy.db> --known-team --fit-all
   --statshark` on the backup of 2026-10-08 22:04 UTC (99,664 teams, 72,282
   new-vehicle events); the table above is `--fit` (before 2026-10-01).

@@ -4,14 +4,35 @@
  * read in a worker task on its own read-only connection.
  */
 
+import { createHash } from 'node:crypto'
 import { getDbWorkerPath, getScoutSquadronTags, getScoutStages, getScoutTeamRows, type ScoutTeamRow } from '../db/index.js'
 import { normalizePlayerSearchKey } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { ensureVehicleDict, vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
-import { dictionaryFlagIcons, dictionaryFlags, IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON, type FlagEvidence, type FlagSeat, type VehicleFlags } from './flag-evidence.js'
+import {
+  DEFAULT_OPERATOR_FLAGS_PRIOR,
+  dictionaryFlagIcons,
+  dictionaryFlags,
+  IN_VEHICLE_WITH_ICON,
+  IN_VEHICLE_WITHOUT_ICON,
+  NATION_FLAG_SHARE,
+  type FlagEvidence,
+  type FlagSeat,
+  type VehicleFlags,
+} from './flag-evidence.js'
 import { ensureFlagTemplates } from './flag-pack.js'
 import {
+  DEFAULT_CLASS_SHARES,
+  KNOWN_TEAM_SETUP_CALIBRATION,
+  NEW_VEHICLE_CANDIDATES,
+  NEW_VEHICLE_WEIGHTS,
+  NEW_VEHICLES_KEPT,
+  OPPONENT_AIR_BATTLES,
+  OPPONENT_AIR_MEAN,
+  OPPONENT_AIR_WEIGHTS,
   ROSTER_WINDOW_SEC,
+  STATSHARK_FRESH_SEC,
+  VEHICLE_WEIGHTS,
   opponentAir,
   playerBackground,
   predictKnownTeam,
@@ -377,7 +398,7 @@ export async function scoutFromImage(
       list.push({ vehicle: row.vehicle, lineup: JSON.parse(row.vehicles) as string[] })
       rowsOf.set(row.userId, list)
     }
-    const sharkOf = new Map(shark.map((entry) => [entry.userId, new Map(entry.vehicles)]))
+    const sharkOf = new Map(shark.map((entry) => [entry.userId, { battles: new Map(entry.vehicles), fresh: nowSec - entry.fetchedAt <= STATSHARK_FRESH_SEC }]))
     const prediction = predictKnownTeam({
       players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
       unknownPlayers: read.unread.length,
@@ -387,7 +408,10 @@ export async function scoutFromImage(
       classOf: (id) => vehicleInfo(vehicles, id).cls,
       flags,
       capSpawns: new Map(capSpawns),
-      backgrounds: new Map(read.enemies.map((m) => [m.userId, playerBackground(rowsOf.get(m.userId) ?? [], info, sharkOf.get(m.userId) ?? null)])),
+      backgrounds: new Map(read.enemies.map((m) => {
+        const snapshot = sharkOf.get(m.userId)
+        return [m.userId, playerBackground(rowsOf.get(m.userId) ?? [], info, snapshot?.battles ?? null, snapshot?.fresh ?? false)]
+      })),
       nationOf: (id) => vehicleInfo(vehicles, id).country,
       opponentAir: allyAir(allyRows, vehicles),
     })
@@ -441,4 +465,50 @@ export async function scoutFromImage(
     }
   }
   return { kind: 'report', read, report: first, update }
+}
+
+let modelHash: string | null = null
+
+/** A short hash of the model's constants: a saved record tells which fit answered it. */
+export function scoutModelHash(): string {
+  modelHash ??= createHash('sha256').update(JSON.stringify([
+    VEHICLE_WEIGHTS, NEW_VEHICLE_WEIGHTS, NEW_VEHICLE_CANDIDATES, NEW_VEHICLES_KEPT, OPPONENT_AIR_WEIGHTS, OPPONENT_AIR_MEAN,
+    OPPONENT_AIR_BATTLES, KNOWN_TEAM_SETUP_CALIBRATION, DEFAULT_CLASS_SHARES, STATSHARK_FRESH_SEC, IN_VEHICLE_WITH_ICON,
+    IN_VEHICLE_WITHOUT_ICON, DEFAULT_OPERATOR_FLAGS_PRIOR, NATION_FLAG_SHARE,
+  ])).digest('hex').slice(0, 12)
+  return modelHash
+}
+
+const round4 = (value: number): number => Math.round(value * 10_000) / 10_000
+
+/**
+ * What a screenshot's reply predicted, kept in its record so `npm run
+ * scout:outcomes` can score it against the battle once stored: per enemy the
+ * three likeliest vehicles (new — not seen from them at this cap), the setup
+ * and the flags reading the chances used.
+ */
+export function scoutPredictionRecord(report: ScoutImageReport): Record<string, unknown> {
+  const { prediction } = report
+  return {
+    model: scoutModelHash(),
+    maxBr: prediction.maxBr,
+    lastTogether: prediction.lastTogether,
+    flags: prediction.flags && { icons: prediction.flags.icons, operatorChance: round4(prediction.flags.operatorChance) },
+    players: prediction.players.map((player) => ({
+      userId: player.userId,
+      battlesAtCap: player.battlesAtCap,
+      options: [...player.vehicles, ...player.newVehicles]
+        .sort((a, b) => b.chance - a.chance || a.vehicleId.localeCompare(b.vehicleId))
+        .slice(0, 3)
+        .map((vehicle) => ({ vehicleId: vehicle.vehicleId, chance: round4(vehicle.chance), new: player.newVehicles.includes(vehicle) })),
+      unseenChance: round4(player.unseenChance),
+    })),
+    unread: report.unread.length,
+    setup: {
+      expected: Object.fromEntries(Object.entries(prediction.setup.expected).map(([cls, value]) => [cls, round4(value)])),
+      compositions: prediction.setup.compositions.map((composition) => ({ counts: composition.counts, chance: round4(composition.chance) })),
+      airChance: round4(prediction.setup.airChance),
+    },
+    statShark: report.statShark,
+  }
 }

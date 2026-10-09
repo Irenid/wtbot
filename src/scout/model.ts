@@ -303,6 +303,8 @@ export interface PlayerBackground {
   seen: ReadonlySet<string>
   /** StatShark battles per vehicle (squadron battles are not in them); null — no snapshot. */
   battles: ReadonlyMap<string, number> | null
+  /** The snapshot is under STATSHARK_FRESH_SEC old: a vehicle missing from it counts as never played. */
+  battlesFresh: boolean
 }
 
 /** Spawns per vehicle at the current cap so far, every squadron's: the BR's popularity. */
@@ -320,6 +322,13 @@ export const NEW_VEHICLE_FEATURES = ['logShare', 'nationShare', 'classShare', 's
 export const NEW_VEHICLE_WEIGHTS: readonly number[] = [0.834, 1.275, 0.89, 2.31, 0.298, -3.82, -1.2]
 /** Candidates: the cap's most spawned vehicles (the top 150 held 96–97% of the spawns at 10.0 and 9.0). */
 export const NEW_VEHICLE_CANDIDATES = 150
+/**
+ * A StatShark snapshot older than this still gives battle counts (they only
+ * grow), but a vehicle missing from it may have been bought or played since:
+ * `notPlayed` (×0.02) then does not apply. 19 of the 84 snapshots were over
+ * 2 days old on 2026-10-09, the oldest 10 days.
+ */
+export const STATSHARK_FRESH_SEC = 2 * 86_400
 
 export interface NewVehicleFeatures {
   vehicles: string[]
@@ -327,11 +336,12 @@ export interface NewVehicleFeatures {
   rows: number[][]
 }
 
-/** A background from the player's stored rows (any cap; the caller keeps those known at query time) and StatShark's battles. */
+/** A background from the player's stored rows (any cap; the caller keeps those known at query time) and StatShark's battles (`fresh`: STATSHARK_FRESH_SEC). */
 export function playerBackground(
   rows: Iterable<{ vehicle: string | null; lineup: readonly string[] }>,
   info: (vehicleId: string) => { nation: string; cls: VehicleClass },
   battles: ReadonlyMap<string, number> | null = null,
+  fresh = battles !== null,
 ): PlayerBackground {
   const nations = new Map<string, number>()
   const classes = new Map<string, number>()
@@ -346,7 +356,7 @@ export function playerBackground(
     classes.set(cls, (classes.get(cls) ?? 0) + 1)
     spawns += 1
   }
-  return { nations, classes, spawns, seen, battles }
+  return { nations, classes, spawns, seen, battles, battlesFresh: battles !== null && fresh }
 }
 
 /** The cap's popular vehicles as a player's "new vehicle" options (`exclude`: theirs at this cap). */
@@ -370,7 +380,7 @@ export function newVehicleFeatures(
       spawns > 0 ? (background!.classes.get(cls) ?? 0) / spawns : 0,
       background?.seen.has(id) ? 1 : 0,
       battles ? Math.log1p(played) : 0,
-      battles && played === 0 ? 1 : 0,
+      battles && background!.battlesFresh && played === 0 ? 1 : 0,
       0,
     ]
   })
