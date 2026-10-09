@@ -77,3 +77,7 @@ $RECYCLE.BIN/
 
 # Внутренний отчёт аудита безопасности — не публиковать в открытый репозиторий
 REPOSITORY_AUDIT_2026-09-28.md
+
+# tools/oodle-wasm build output (the committed result is src/tactical-map/oodle.wasm)
+tools/oodle-wasm/target/
+tools/oodle-wasm/.cargo/

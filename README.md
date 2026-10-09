@@ -44,9 +44,12 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    copy `wtbot.db`, `wt-cookies.json`, `fonts/`, `wt-vehicles.json`,
    `ecshashes.json`, `maps/`, `missions/`. Do not move the browser profile
    (`wt-browser-profile/`): it is tied to the OS, the container creates a new
-   one. Nation flags come from the game client: copy `ui/fonts.vromfs.bin`
-   and `ui/atlases.vromfs.bin` into `data/wt-game/ui/` and restart the bot;
-   without them flags are drawn simplified.
+   one. Flags, the clan-tag font and the tactical maps come from the game
+   client: set `WT_GAME_HOST_DIR` in `.env` to the game folder on the host
+   (Steam on Linux: `~/.local/share/Steam/steamapps/common/War Thunder`); compose
+   mounts it read-only. Without it compose mounts `data/wt-game/` (copy
+   `ui/fonts.vromfs.bin` and `ui/atlases.vromfs.bin` into `data/wt-game/ui/`
+   for flags); maps then fall back to wt-tools snapshots.
 3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`.
 4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
    `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links

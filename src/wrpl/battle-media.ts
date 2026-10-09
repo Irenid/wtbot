@@ -4,14 +4,16 @@ import path from 'node:path'
 import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { mapConcurrent } from '../concurrency.js'
-import { getBattleWeaponIds, markBattleIngest, saveBattle } from '../db/index.js'
+import { getBattleWeaponIds, getScoutStages, markBattleIngest, saveBattle } from '../db/index.js'
+import { balanceLevelOfBr, ensureGameTacticalMaps, type GameTacticalMaps } from '../tactical-map/index.js'
 import {
   runWorkerTask,
   transferableBuffer,
+  transferableCopy,
   type WorkerPriority,
   type WorkerTaskControl,
 } from '../workers/pool.js'
-import type { BattleEventSummary } from '../workers/protocol.js'
+import type { BattleEventSummary, WireGameMaps } from '../workers/protocol.js'
 import { loadBattleData, reconstructBattle, type BattleItemMeta } from './battle-data.js'
 import {
   ensureTacticalMap,
@@ -21,7 +23,7 @@ import {
   loadMapIconFontPath,
   type MissileSeeker,
 } from './battle-assets.js'
-import { fetchMissionInfo } from './mission-info.js'
+import { fetchMissionInfo, type MissionInfo } from './mission-info.js'
 import { dropReplayCache } from './replay-cache.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
 import { ensureVehicleDict, promoteVehicleDictLoad } from './vehicles.js'
@@ -243,22 +245,26 @@ async function doBuildBattleHeatmap2x(
   const missionName = meta.missionName ?? stored.header.locName ?? ''
   const weaponIds = getBattleWeaponIds(stored.header.sessionId)
   const trackMission = workerControlTracker(state)
+  const gameMaps = await battleGameMaps(stored.missionSettings, stored.header, 2, state)
   const [dict, mission, gameFontFiles, seekers, mapIconFont] = await Promise.all([
     ensureVehicleDict(state.priority),
-    stored.missionSettings
-      ? fetchMissionInfo(stored.missionSettings, () => state.priority, trackMission)
-      : Promise.resolve(null),
+    gameMaps
+      ? Promise.resolve(gameMapMission(gameMaps))
+      : stored.missionSettings
+        ? fetchMissionInfo(stored.missionSettings, () => state.priority, trackMission)
+        : Promise.resolve(null),
     ensureGameFonts(state.priority),
     ensureWeaponSeekers(weaponIds),
     loadMapIconFontPath(),
   ])
   const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
-  const tacticalMap = mission?.area
+  const tacticalMap = !gameMaps && mission?.area
     ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(stored.header.level))
     : null
   const fallbackMap = await loadMapBackground(stored.header.level)
   const wireBlob = transferableBuffer(stored.eventsBlob)
   const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
+  const wireMaps = wireGameMaps(gameMaps)
   const wireFallbackMap = fallbackMap
     ? {
         mime: fallbackMap.mime,
@@ -268,6 +274,7 @@ async function doBuildBattleHeatmap2x(
     : null
   const transferList = [wireBlob]
   if (wireTacticalMap) transferList.push(wireTacticalMap)
+  if (wireMaps) transferList.push(wireMaps.A.data, wireMaps.B.data)
   if (wireFallbackMap) transferList.push(wireFallbackMap.data)
   const selection = heatmapSelection(kind)
   const trackRender = workerControlTracker(state)
@@ -290,6 +297,7 @@ async function doBuildBattleHeatmap2x(
           gameFont: gameFontFiles.length > 0,
           mapIconFont: mapIconFont !== null,
           tacticalMap: wireTacticalMap,
+          gameMaps: wireMaps,
           fallbackMap: wireFallbackMap,
           seekers: [...seekers],
         },
@@ -374,6 +382,49 @@ async function loadBattleRenderSource(
   }
 }
 
+let stagesCache: { at: number; stages: { startsAt: number; endsAt: number; maxBr: number }[] } | null = null
+
+/**
+ * The battle's balance level (the air spawns of the mission depend on it): its
+ * season stage's BR cap; outside the known stages the top tier.
+ */
+export function battleBalanceLevel(startTimeSec: number): number {
+  if (!stagesCache || Date.now() - stagesCache.at > 10 * 60_000) {
+    try {
+      stagesCache = { at: Date.now(), stages: getScoutStages() }
+    } catch {
+      stagesCache = { at: Date.now(), stages: [] }
+    }
+  }
+  const stage = stagesCache.stages.find((s) => startTimeSec >= s.startsAt && startTimeSec < s.endsAt)
+  return stage ? balanceLevelOfBr(stage.maxBr) : 32
+}
+
+/** The game-file maps of a battle (both perspectives) and the mission area they cover. */
+async function battleGameMaps(missionSettings: string | null, header: WrplHeader, scale: 1 | 2, state: MediaBuildState): Promise<GameTacticalMaps | null> {
+  if (!missionSettings) return null
+  return ensureGameTacticalMaps(missionSettings, {
+    balanceLevel: battleBalanceLevel(header.startTime),
+    size: 1400 * scale,
+    priority: state.priority,
+  }).catch(() => null)
+}
+
+function gameMapMission(maps: GameTacticalMaps): MissionInfo {
+  const view = maps.A.meta.view
+  return { area: { ...view }, zones: maps.A.meta.zones.map((zone) => ({ letter: zone.letter, x: zone.x, z: zone.z })) }
+}
+
+/** Copies: parallel builds share one map object, and a transfer would detach it for the others. */
+function wireGameMaps(maps: GameTacticalMaps | null): WireGameMaps | null {
+  if (!maps) return null
+  return {
+    A: { mime: maps.A.mime, data: transferableCopy(maps.A.image) },
+    B: { mime: maps.B.mime, data: transferableCopy(maps.B.image) },
+    spawns: maps.A.meta.spawns,
+  }
+}
+
 async function loadBattleRenderAssets(
   source: BattleRenderSource,
   missionName: string,
@@ -382,9 +433,13 @@ async function loadBattleRenderAssets(
   needsFonts: boolean,
 ) {
   const trackMission = workerControlTracker(state)
-  const missionPromise = needsHeatmap && source.missionSettings
-    ? fetchMissionInfo(source.missionSettings, () => state.priority, trackMission)
-    : Promise.resolve(null)
+  // Maps drawn from the game client replace the datamine's mission area and the wt-tools snapshot.
+  const gameMaps = needsHeatmap ? await battleGameMaps(source.missionSettings, source.header, 1, state) : null
+  const missionPromise = gameMaps
+    ? Promise.resolve(gameMapMission(gameMaps))
+    : needsHeatmap && source.missionSettings
+      ? fetchMissionInfo(source.missionSettings, () => state.priority, trackMission)
+      : Promise.resolve(null)
   const gameFontsPromise = needsFonts ? ensureGameFonts(state.priority) : Promise.resolve([] as string[])
   const seekersPromise = needsHeatmap
     ? ensureWeaponSeekers(source.weaponIds)
@@ -398,11 +453,11 @@ async function loadBattleRenderAssets(
     mapIconFontPromise,
   ])
   const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
-  const tacticalMap = needsHeatmap && mission?.area
+  const tacticalMap = needsHeatmap && !gameMaps && mission?.area
     ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(source.header.level))
     : null
   const fallbackMap = needsHeatmap ? await loadMapBackground(source.header.level) : null
-  return { dict, mission, gameFontFiles, fontFiles, seekers, mapIconFont, tacticalMap, fallbackMap }
+  return { dict, mission, gameFontFiles, fontFiles, seekers, mapIconFont, tacticalMap, gameMaps, fallbackMap }
 }
 
 function mediaWorkerPayload(
@@ -412,6 +467,7 @@ function mediaWorkerPayload(
 ) {
   const wireBlob = transferableBuffer(source.eventsBlob)
   const wireTacticalMap = assets.tacticalMap ? transferableBuffer(assets.tacticalMap) : null
+  const wireMaps = wireGameMaps(assets.gameMaps)
   const wireFallbackMap = assets.fallbackMap
     ? {
         mime: assets.fallbackMap.mime,
@@ -421,6 +477,7 @@ function mediaWorkerPayload(
     : null
   const transferList = [wireBlob]
   if (wireTacticalMap) transferList.push(wireTacticalMap)
+  if (wireMaps) transferList.push(wireMaps.A.data, wireMaps.B.data)
   if (wireFallbackMap) transferList.push(wireFallbackMap.data)
   return {
     input: {
@@ -436,6 +493,7 @@ function mediaWorkerPayload(
         gameFont: assets.gameFontFiles.length > 0,
         mapIconFont: assets.mapIconFont !== null,
         tacticalMap: wireTacticalMap,
+        gameMaps: wireMaps,
         fallbackMap: wireFallbackMap,
         seekers: [...assets.seekers],
       },

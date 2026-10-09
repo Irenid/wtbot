@@ -709,7 +709,8 @@ export interface BattleScene {
   teamWon: number
   endTimeMs: number
   worldBounds: [number, number, number, number]
-  map: { available: boolean; level: string }
+  /** team: the perspective of the map drawn from the game files in which team 1's bases are blue. */
+  map: { available: boolean; level: string; team?: 'A' | 'B' }
   zones: { name: string; x: number; z: number }[]
   players: { userId: string; nick: string; team: number; clanTag: string | null }[]
   units: SceneUnit[]
@@ -721,8 +722,8 @@ export function fetchBattleScene(key: string): Promise<BattleScene> {
   return getJson(`/api/battles/${encodeURIComponent(key)}/scene`)
 }
 
-export function battleMapUrl(key: string): string {
-  return `/api/battles/${encodeURIComponent(key)}/map.png`
+export function battleMapUrl(key: string, team?: 'A' | 'B'): string {
+  return `/api/battles/${encodeURIComponent(key)}/map.png${team ? `?team=${team}` : ''}`
 }
 
 export interface VehicleInfo { name: string; cls: 'F' | 'H' | 'T' | 'L' | 'AA' | '?'; country: string }

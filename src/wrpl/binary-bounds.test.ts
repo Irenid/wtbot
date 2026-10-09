@@ -42,41 +42,42 @@ test('LZ4 отвергает обрезанную длину и смещение
   assert.throws(() => lz4DecompressBlock(Buffer.alloc(0), -1), /maxOut/)
 })
 
-test('VROMFS проверяет заголовок, размер и таблицы', () => {
-  assert.throws(() => unpackVromfs(Buffer.alloc(15)), /обрезанный заголовок/)
+test('VROMFS checks the header, the size and the tables', () => {
+  assert.throws(() => unpackVromfs(Buffer.alloc(15)), /truncated header/)
 
   const oversized = Buffer.alloc(16)
   oversized.write('VRFs', 0, 'latin1')
   oversized.writeUInt32LE(MAX_VROMFS_IMAGE_BYTES + 1, 8)
   oversized[15] = 0x80
-  assert.throws(() => unpackVromfs(oversized), /недопустимый размер образа/)
+  assert.throws(() => unpackVromfs(oversized), /invalid image size/)
 
   const truncated = Buffer.alloc(16)
   truncated.write('VRFs', 0, 'latin1')
   truncated.writeUInt32LE(20, 8)
   truncated[15] = 0x80
-  assert.throws(() => unpackVromfs(truncated), /несжатый образ/)
+  assert.throws(() => unpackVromfs(truncated), /plain image/)
 
   const invalidTable = Buffer.alloc(36)
   invalidTable.write('VRFs', 0, 'latin1')
   invalidTable.writeUInt32LE(20, 8)
   invalidTable[15] = 0x80
   invalidTable.writeUInt32LE(19, 16)
-  assert.throws(() => unpackVromfs(invalidTable), /таблица имён/)
+  assert.throws(() => unpackVromfs(invalidTable), /name table/)
 })
 
-test('BLK ограничивает varint, описания и циклы дерева', () => {
+test('BLK bounds varints, descriptions and tree cycles', () => {
   assert.throws(
     () => parseBlk(Buffer.concat([Buffer.from([0x01]), Buffer.alloc(10, 0xff)])),
-    /uleb128: переполнение/,
+    /uleb128: overflow/,
   )
   assert.throws(
-    () => parseBlk(Buffer.from([0x01, 0x00, 0x00, 0x64, 0x00, 0x00])),
-    /описания блоков обрезаны/,
+    // No names, so no names size (Dagor's read_names_base), then 100 blocks.
+    () => parseBlk(Buffer.from([0x01, 0x00, 0x64, 0x00, 0x00])),
+    /block descriptions truncated/,
   )
   assert.throws(
-    () => parseBlk(Buffer.from([0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00])),
-    /цикл в дереве BLK/,
+    () => parseBlk(Buffer.from([0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00])),
+    /cycle in the BLK tree/,
   )
 })
 
@@ -92,7 +93,7 @@ function uleb128(value: number): number[] {
   return out
 }
 
-/** Минимальный FAT BLK без параметров: children — [первый ребёнок, число детей]. */
+/** A minimal FAT BLK without params: children are [first child, child count]. */
 function fatBlk(names: string[], blocks: { nameId: number; children?: [number, number] }[]): Buffer {
   const nameBytes = Buffer.from(names.map((name) => `${name}\0`).join(''), 'utf8')
   const bytes = [
@@ -112,7 +113,7 @@ function fatBlk(names: string[], blocks: { nameId: number; children?: [number, n
   return Buffer.from(bytes)
 }
 
-test('BLK собирает корректное дерево и склеивает повторяющиеся ключи', () => {
+test('BLK builds a valid tree and merges repeated keys', () => {
   const blk = fatBlk(['a', 'b'], [
     { nameId: 0, children: [1, 3] },
     { nameId: 1, children: [4, 1] },
@@ -123,19 +124,19 @@ test('BLK собирает корректное дерево и склеивае
   assert.deepEqual(parseBlk(blk), { a: { b: {} }, b: [{}, {}] })
 })
 
-test('BLK отвергает общих потомков вместо экспоненциального разворачивания', () => {
-  // i → i+1, i+2: раньше 20 блоков разворачивались в 17 710 объектов.
+test('BLK rejects shared children instead of unfolding them exponentially', () => {
+  // i → i+1, i+2: 20 blocks used to unfold into 17,710 objects.
   const blocks: { nameId: number; children?: [number, number] }[] = []
   for (let i = 0; i < 20; i++) {
     blocks.push(i < 18 ? { nameId: 1, children: [i + 1, 2] } : { nameId: 1 })
   }
-  assert.throws(() => parseBlk(fatBlk(['x'], blocks)), /повторно встречается/)
+  assert.throws(() => parseBlk(fatBlk(['x'], blocks)), /occurs twice/)
 })
 
-test('BLK ограничивает глубину вложенности', () => {
+test('BLK bounds the nesting depth', () => {
   const blocks: { nameId: number; children?: [number, number] }[] = []
   for (let i = 0; i < 300; i++) {
     blocks.push(i < 299 ? { nameId: 1, children: [i + 1, 1] } : { nameId: 1 })
   }
-  assert.throws(() => parseBlk(fatBlk(['x'], blocks)), /глубже 256/)
+  assert.throws(() => parseBlk(fatBlk(['x'], blocks)), /deeper than 256/)
 })

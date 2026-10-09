@@ -1,5 +1,6 @@
 import { gzipSync } from 'node:zlib'
 import { decodeEventsPayload } from './events-codec.js'
+import { pickPerspective } from '../tactical-map/perspective.js'
 import type { ReplayEvents, SpaceTime } from './replay-events.js'
 
 // The pure core of the battle scene for the interactive player: no database
@@ -9,7 +10,8 @@ import type { ReplayEvents, SpaceTime } from './replay-events.js'
 
 // 3: bot slot tracks and kills credited to their players (player-events.ts).
 // 4: wt-tools maps with "-", "()" or diacritics in the key (battle-assets.ts).
-export const BATTLE_SCENE_VERSION = 4
+// 5: maps drawn from the game client (src/tactical-map): their view and the perspective of team 1.
+export const BATTLE_SCENE_VERSION = 5
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000
@@ -34,6 +36,8 @@ export interface ScenePrepareInput {
   missionArea: { x0: number; z0: number; x1: number; z1: number } | null
   /** Whether a tactical map matching missionArea is available. */
   mapAvailable: boolean
+  /** The game-file map's tank bases (src/tactical-map): pick the side where team 1 starts. */
+  mapSpawns?: { team: 'A' | 'B'; kind: string; x: number; z: number }[] | null
   /** Level key for the map.png route (levels/… from the header). */
   level: string
   players: ScenePlayerRef[]
@@ -70,7 +74,8 @@ export interface BattleScene {
   endTimeMs: number
   /** Видимая область мира [x0, z0, x1, z1]. */
   worldBounds: [number, number, number, number]
-  map: { available: boolean; level: string }
+  /** team: the game-file map's perspective whose blue bases are team 1's (map.png?team=). */
+  map: { available: boolean; level: string; team?: 'A' | 'B' }
   zones: { name: string; x: number; z: number }[]
   players: ScenePlayerRef[]
   units: BattleSceneUnit[]
@@ -207,6 +212,16 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
     worldBounds = [-2_000, -2_000, 2_000, 2_000]
   }
 
+  // Team 1's first ground positions decide which perspective of the game-file map shows it blue.
+  let mapTeam: 'A' | 'B' | null = null
+  if (input.mapSpawns) {
+    const teamOne = new Set(input.players.filter((p) => p.team === 1).map((p) => p.userId))
+    const starts = events.units
+      .filter((unit) => unit.source === 'ground' && unit.path.length > 0 && teamOne.has(player(unit.userId) ?? ''))
+      .map((unit) => unit.path[0]!)
+    mapTeam = pickPerspective({ spawns: input.mapSpawns }, starts)
+  }
+
   return {
     v: BATTLE_SCENE_VERSION,
     sessionId: input.sessionId,
@@ -217,7 +232,11 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
     teamWon: input.teamWon,
     endTimeMs,
     worldBounds,
-    map: { available: input.mapAvailable && input.missionArea !== null, level: input.level },
+    map: {
+      available: input.mapAvailable && input.missionArea !== null,
+      level: input.level,
+      ...(input.mapSpawns ? { team: mapTeam ?? 'A' } : {}),
+    },
     zones: events.zones.map((zone) => ({ name: zone.name, x: round(zone.x), z: round(zone.z) })),
     players: input.players,
     units,

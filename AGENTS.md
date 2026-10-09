@@ -24,8 +24,9 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
 - Documents: `README.md` — running; this file — contracts; `ROADMAP.md` — the
   only list of open tasks (closed items are deleted); `docs/` — measurements
   and notes (`performance.md`, `database.md`, `replay-data-quality.md`,
-  `opponent-scouting.md`, `nick-search.md`); `LICENSES/` — licenses of ported
-  code; skills — `.claude/skills/verify/` (checks, live bot),
+  `opponent-scouting.md`, `nick-search.md`, `tactical-maps.md`); `LICENSES/` —
+  licenses of ported code; `tools/oodle-wasm/` — the source of
+  `src/tactical-map/oodle.wasm`; skills — `.claude/skills/verify/` (checks, live bot),
   `.agents/skills/monorepo-debug/` (diagnostics). Do not add new plans or
   audits to the repository root.
 - Do not read or print `.env` values without a direct need; for diagnostics
@@ -59,8 +60,8 @@ warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
 (commands, announcer, voice tracker, player board), `web/` (API, dashboard
 `/statistics`, SPA `/`), `parsers/` (scheduler, sources, cookies, browser, backfill),
 `wrpl/` (replays, ingest, assets, media), `workers/` (pool, protocol),
-`player-stats/` (external providers), `analysis/` (manual CLIs, smoke checks,
-paid AI analysis). `frontend/` — React/Vite SPA; `data/` — database, cookies,
+`player-stats/` (external providers), `tactical-map/` (tactical maps drawn from
+the game client), `analysis/` (manual CLIs, smoke checks, paid AI analysis). `frontend/` — React/Vite SPA; `data/` — database, cookies,
 caches, assets.
 
 Startup: Discord token check → process lock → signal and fatal-error handlers
@@ -123,7 +124,8 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WT_INGEST_PIPELINE_ENABLED=true` | staged pipeline; `false` — the previous runner (rollback) |
 | `WT_REPLAY_PROCESS_BUDGET_MB` | shared limit for replay buffers, 128–8192 MiB; auto reserves it before sizing the pool |
 | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` | reserve by cached size or 1× `Content-Length` instead of the 96 MiB worst case; off until an RSS plateau is proven (`docs/performance.md`) |
-| `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_GAME_DIR`, `WT_HEATMAP_AIR_*` | media cache, game files, air heatmap parameters |
+| `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_HEATMAP_AIR_*` | media cache, air heatmap parameters |
+| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` (default `./data/wt-game`, a copy of `ui/`: no maps) |
 | `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ` | daily `db-backup-schedule` (`backup` service) |
 | `ANTHROPIC_API_KEY` | manual `npm run analyze` only |
 
@@ -443,11 +445,21 @@ media hands the compressed blob to a worker.
   chat or heatmap; `buildBattleMedia()` + `render-media` build the full set for
   warmup and CLI; the 2× heatmap is separate. Ground/air/team heatmaps reuse
   `PreparedHeatmapScene`; SVG builders are pure functions.
-- The site's scene background matches the ground heatmap: a snapshot of the
-  mission mode's tactical map (wt-tools, exactly battleArea; downloaded while
-  building the scene, only when battleArea is known), otherwise the local
-  level map; never substitute another mode's map. `/api/battles/:key/map.png`
-  reads maps only from disk.
+- Heatmaps and the site's battle player draw on the mission's tactical map
+  as the game's respawn screen shows it, built from the game client
+  (`src/tactical-map/`, `docs/tactical-maps.md`: frame, grid and drawing
+  reverse-engineered and checked on 160 snapshots): texture, out-of-bounds
+  hatch, grid, labels, zones, tank bases, cell size (no arrows to bases
+  outside the view yet: ROADMAP). A
+  worker task `build-tactical-map` builds each perspective once per game
+  version into `data/maps/game/`; which replay team stands at which mission
+  team's spawn varies, so both are built and the renderer picks by the
+  team's first positions (the scene's `map.team` → `map.png?team=`). Air
+  spawns follow the battle's season-stage BR cap. Without the client: the
+  wt-tools snapshot of the mission's mode (exactly battleArea), else the
+  local level map; never substitute another mode's map.
+  `/api/battles/:key/map.png` builds a game-client map on a miss, a snapshot
+  only from disk.
 - The winner comes from events and the database, never from results-BLK;
   anonymized names are restored by `userId`, not only by nickname.
 - Resvg font order (`src/workers/render-fonts.ts`) is the fallback order: a UI
@@ -469,8 +481,10 @@ Data:
 - `data/scout-images/` — screenshots sent to `/scout` and their readings;
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
+  `data/maps/game/` — tactical maps from the game client (JPEG + meta,
+  rebuilt after a game patch);
 - `data/wt-game/ui/` — copies of the game's `fonts.vromfs.bin` and
-  `atlases.vromfs.bin` for Docker (`WT_GAME_DIR`): flags are read from the
+  `atlases.vromfs.bin` for Docker without `WT_GAME_HOST_DIR`: flags are read from the
   atlas at every start (the battle image's nations; every flag as `/scout`
   picture templates); on failure the built-in flags remain and the image still
   renders, and pictures are read without flags.
@@ -788,8 +802,13 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-09**: all
-gates pass, **461 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **470 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
+
+`npm run maps:build -- --db <copy.db> --compare` (offline, needs the game
+client) builds every squadron mission's tactical map into
+`data/maps/game/export/` and scores it against the wt-tools snapshots; rerun it
+after a game patch or a drawing change (`docs/tactical-maps.md`, results).
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the
 image) and Windows (Node 24), `npm audit`, a Docker image build. When changing
@@ -825,9 +844,11 @@ it.
 
 AGPL-3.0-or-later (`LICENSE`, `package.json`). Part of `src/wrpl/*` is a port
 of AGPL-3.0 `wrpl-inspector`; GMSync (`gm-sync.ts`) is based on BSD-3-Clause
-`WrplReplayParser` and Dagor Engine; origins are in the SPDX headers. The
-BSD-3-Clause texts live in `LICENSES/` and are copied into the Docker image (a
-license condition). `/` and the SPA link to the source code (AGPL §13).
+`WrplReplayParser` and Dagor Engine; the slim BLK, DxP2 and DDSx readers follow
+Dagor's formats; `src/tactical-map/oodle.wasm` is GPL-3.0-or-later (oozextract,
+a port of ooz), rebuilt by `tools/oodle-wasm/build.sh`; origins are in the SPDX
+headers and `LICENSES/README.md`. The BSD-3-Clause and GPL-3.0 texts live in
+`LICENSES/` and are copied into the Docker image (a license condition). `/` and the SPA link to the source code (AGPL §13).
 Licenses of runtime packages and the SPA font —
 `frontend/public/THIRD_PARTY_NOTICES.txt`: extend it for a new frontend
 dependency.

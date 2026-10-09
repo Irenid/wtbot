@@ -20,6 +20,8 @@ import {
 import { summarizeMissionDocument } from '../wrpl/mission-info.js'
 import { prepareSceneFromBlob } from '../wrpl/battle-scene-core.js'
 import { unpackVromfs } from '../wrpl/vromfs.js'
+import { buildTacticalMap } from '../tactical-map/build.js'
+import { pickPerspective } from '../tactical-map/perspective.js'
 import { atlasFlags } from '../wrpl/game-flags-atlas.js'
 import { buildVehicleDict } from '../wrpl/vehicles.js'
 import type {
@@ -53,6 +55,31 @@ const ingestDatabases = new Map<string, IngestDatabaseState>()
 
 function epochNow(): number {
   return performance.timeOrigin + performance.now()
+}
+
+/**
+ * The heatmap background: the game-file maps (both perspectives, src/tactical-map), each team's
+ * heatmap from its own side, the combined one from the first roster's; else the wt-tools snapshot.
+ */
+function heatmapMaps(assets: MediaRenderInput['assets']): {
+  any: string | null
+  forRoster(scene: PreparedHeatmapScene, rosterIndex: number): string | null
+} {
+  const game = assets.gameMaps
+  if (!game) {
+    const snapshot = assets.tacticalMap ? dataUri('image/png', assets.tacticalMap) : null
+    return { any: snapshot, forRoster: () => snapshot }
+  }
+  const uris = new Map<'A' | 'B', string>()
+  const uri = (team: 'A' | 'B'): string => {
+    let value = uris.get(team)
+    if (!value) uris.set(team, (value = dataUri(game[team].mime, game[team].data)))
+    return value
+  }
+  return {
+    any: uri('A'),
+    forRoster: (scene, rosterIndex) => uri(pickPerspective(game, scene.teamSpawnClustersByTeam[rosterIndex] ?? []) ?? 'A'),
+  }
 }
 
 function exactArrayBuffer(data: Uint8Array): ArrayBuffer {
@@ -186,7 +213,7 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
   creditBotSlots(events, botSlotOwners(input.results.players))
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
-  const tacticalMap = input.assets.tacticalMap ? dataUri('image/png', input.assets.tacticalMap) : null
+  const maps = heatmapMaps(input.assets)
   const fallbackMap = input.assets.fallbackMap
     ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
     : null
@@ -203,11 +230,11 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
     seekers: new Map(input.assets.seekers),
     renderScale: input.scale,
   }
-  const scene = prepareHeatmapScene(heatmapInput, tacticalMap, input.assets.fallbackMap?.viewport)
+  const scene = prepareHeatmapScene(heatmapInput, maps.any, input.assets.fallbackMap?.viewport)
   const svg = buildHeatmapSvg(
     heatmapInput,
     gameFont,
-    tacticalMap,
+    maps.forRoster(scene, input.teamIndex ?? 0),
     fallbackMap,
     input.assets.fallbackMap?.viewport,
     input.assets.mapIconFont,
@@ -812,7 +839,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
   const seekers = new Map(input.assets.seekers)
-  const tacticalMap = input.assets.tacticalMap ? dataUri('image/png', input.assets.tacticalMap) : null
+  const maps = heatmapMaps(input.assets)
   const fallbackMap = input.assets.fallbackMap
     ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
     : null
@@ -848,7 +875,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
         ...(teamIndex === undefined ? {} : { teamIndex }),
       },
       gameFont,
-      tacticalMap,
+      maps.forRoster(scene, teamIndex ?? 0),
       fallbackMap,
       input.assets.fallbackMap?.viewport,
       input.assets.mapIconFont,
@@ -870,7 +897,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
       seekers,
     }
     started = performance.now()
-    const scene = prepareHeatmapScene(heatmapInput, tacticalMap, input.assets.fallbackMap?.viewport)
+    const scene = prepareHeatmapScene(heatmapInput, maps.any, input.assets.fallbackMap?.viewport)
     addPhase(profile, `heatmap-${mode}.prepare`, performance.now() - started)
     const teamPhase = mode === 'ground' ? 'heatmap-team' : 'heatmap-team-air'
     return {
@@ -925,9 +952,7 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
   const fonts = input.kind === 'chat' ? [] : clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
   const seekers = heatmap ? new Map(input.assets.seekers) : new Map()
-  const tacticalMap = heatmap && input.assets.tacticalMap
-    ? dataUri('image/png', input.assets.tacticalMap)
-    : null
+  const maps = heatmap ? heatmapMaps(input.assets) : null
   const fallbackMap = heatmap && input.assets.fallbackMap
     ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
     : null
@@ -966,13 +991,13 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
       seekers,
       ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
     }
-    const scene = prepareHeatmapScene(heatmapInput, tacticalMap, input.assets.fallbackMap?.viewport)
+    const scene = prepareHeatmapScene(heatmapInput, maps?.any ?? null, input.assets.fallbackMap?.viewport)
     addPhase(profile, 'media.prepare', performance.now() - started)
     started = performance.now()
     const svg = buildHeatmapSvg(
       heatmapInput,
       gameFont,
-      tacticalMap,
+      maps?.forRoster(scene, selection.teamIndex ?? 0) ?? null,
       fallbackMap,
       input.assets.fallbackMap?.viewport,
       input.assets.mapIconFont,
@@ -1017,6 +1042,12 @@ function parseMission(input: Extract<AnyWorkerTask, { kind: 'parse-mission' }>['
     value: summarizeMissionDocument(Buffer.from(input.document).toString('utf8')),
     transfer: [],
   }
+}
+
+function buildTacticalMapTask(input: Extract<AnyWorkerTask, { kind: 'build-tactical-map' }>['input']) {
+  const built = buildTacticalMap(input)
+  const image = exactArrayBuffer(built.image)
+  return { value: { image, mime: built.mime, meta: built.meta }, transfer: [image] }
 }
 
 function prepareScene(input: Extract<AnyWorkerTask, { kind: 'prepare-scene' }>['input']) {
@@ -1076,6 +1107,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return parseMission(task.input)
     case 'prepare-scene':
       return prepareScene(task.input)
+    case 'build-tactical-map':
+      return buildTacticalMapTask(task.input)
   }
 }
 

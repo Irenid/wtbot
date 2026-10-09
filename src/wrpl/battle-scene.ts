@@ -7,8 +7,10 @@ import {
 } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { writeFileAtomic } from '../atomic-file.js'
+import { ensureGameTacticalMap, ensureGameTacticalMaps } from '../tactical-map/index.js'
+import type { Team } from '../tactical-map/model.js'
 import { ensureTacticalMap, loadCachedTacticalMap, loadLocalTacticalMap } from './battle-assets.js'
-import { enforceBattleCacheCap } from './battle-media.js'
+import { battleBalanceLevel, enforceBattleCacheCap } from './battle-media.js'
 import { fetchMissionInfo } from './mission-info.js'
 import { BATTLE_SCENE_VERSION, type ScenePrepareInput } from './battle-scene-core.js'
 
@@ -73,12 +75,22 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
     if (!blob || blob.byteLength === 0) return { status: 'no_events' }
 
     const battle = summary.battle
-    const mission = battle.mission_settings
-      ? await fetchMissionInfo(battle.mission_settings, 'interactive').catch(() => null)
+    // Maps drawn from the game client first: their view is the scene's world rect.
+    const gameMaps = battle.mission_settings
+      ? await ensureGameTacticalMaps(battle.mission_settings, {
+          balanceLevel: battleBalanceLevel(battle.start_time),
+          size: SCENE_MAP_SIZE,
+          priority: 'interactive',
+        }).catch(() => null)
       : null
+    const mission = gameMaps
+      ? { area: { ...gameMaps.A.meta.view } }
+      : battle.mission_settings
+        ? await fetchMissionInfo(battle.mission_settings, 'interactive').catch(() => null)
+        : null
     // The map covers the mission's battleArea: without it no map is needed,
     // and the player draws a grid and zones.
-    const mapBuffer = mission?.area ? await sceneMapImage(battle.mission_name, battle.level) : null
+    const mapAvailable = gameMaps !== null || (mission?.area ? (await sceneMapImage(battle.mission_name, battle.level)) !== null : false)
     const botSlots = new Map(
       summary.players.flatMap((player) => (player.bot_user_id ? [[player.bot_user_id, player.user_id] as const] : [])),
     )
@@ -91,7 +103,8 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
       durationSec: battle.duration_sec,
       teamWon: battle.team_won,
       missionArea: mission?.area ?? null,
-      mapAvailable: mapBuffer !== null,
+      mapAvailable,
+      mapSpawns: gameMaps?.A.meta.spawns ?? null,
       level: battle.level,
       // Team ≤ 0 is unknown; a paired bot slot's tracks belong to its player.
       players: summary.players
@@ -139,13 +152,30 @@ async function sceneMapImage(missionName: string, level: string): Promise<Buffer
     ?? (await loadLocalTacticalMap(level).catch(() => null))
 }
 
+/** The scene's map size: the player's canvas scales it. */
+const SCENE_MAP_SIZE = 1400
+
 /**
- * Карта боя для плеера; null — карты нет. Только с диска: снимок скачивает
- * сборка сцены, и плеер просит карту, лишь когда сцена её объявила.
+ * The battle's map for the player; null when there is none. With `team` (the
+ * scene's map.team) the game-file map of that perspective, built on a miss
+ * (a worker task, single-flight); otherwise only from disk: the wt-tools
+ * snapshot is downloaded by the scene build, and the player asks for the map
+ * only when the scene announced it.
  */
-export async function loadBattleSceneMap(sessionId: string): Promise<Buffer | null> {
+export async function loadBattleSceneMap(sessionId: string, team: Team | null = null): Promise<{ data: Buffer; mime: 'image/png' | 'image/jpeg' } | null> {
   const summary = getSiteBattleSummary(sessionId)
   if (!summary) return null
-  return (await loadCachedTacticalMap(summary.battle.mission_name).catch(() => null))
-    ?? (await loadLocalTacticalMap(summary.battle.level).catch(() => null))
+  const battle = summary.battle
+  if (team && battle.mission_settings) {
+    const map = await ensureGameTacticalMap(battle.mission_settings, {
+      team,
+      balanceLevel: battleBalanceLevel(battle.start_time),
+      size: SCENE_MAP_SIZE,
+      priority: 'interactive',
+    }).catch(() => null)
+    if (map) return { data: map.image, mime: map.mime }
+  }
+  const snapshot = (await loadCachedTacticalMap(battle.mission_name).catch(() => null))
+    ?? (await loadLocalTacticalMap(battle.level).catch(() => null))
+  return snapshot ? { data: snapshot, mime: 'image/png' } : null
 }

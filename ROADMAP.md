@@ -51,6 +51,17 @@ full texts are in Git (commit `46b6950` and earlier).
   skill) change together with the code. Slash-command descriptions reach
   Discord only after `npm run deploy:commands`. Also remove `.cbmignore`
   (codebase-memory-mcp is not configured).
+- **Tactical map: arrows to bases outside the view.** The game draws
+  `arrow_mark.svg` (hud.blk `outOfMapArrow`, 15×18 UI px) at the frame's edge
+  for every base outside it; `src/tactical-map/render.ts` draws none yet. The
+  snapshots show two arrows per team where the model has one position: the
+  rest are helicopter, UCAV and airfield spawns (air_spawn_template's
+  categories `heli_spawn_logic`, `ucav_spawn_logic`, `enable_airfields_part`;
+  their targets are `units.objectGroups`, which `mission.ts` does not load).
+  Placement measured so far: the base's position clamped 7.3 UI px inside the
+  frame, pointing away from the view centre (corner arrows diagonal); the
+  ardennes and sun_city snapshots also have one on an edge (x 256 and 508 of
+  1153) that this does not explain (`docs/tactical-maps.md`).
 - **Squadron page in de/fr/es.** The redesigns of 2026-10-05 added 71
   `clan.*` keys (hero, standing track, season tiles, daily bars, rewards
   chart, roster filters, requirement chips) to `ru.ts` and `en.ts` only:

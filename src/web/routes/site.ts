@@ -1856,22 +1856,26 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     }
   })
 
-  app.get<{ Params: { key: string } }>('/api/battles/:key/map.png', {
-    schema: { params: battleKeyParams },
+  // ?team= is the scene's map.team: the game-file map in which team 1's bases are blue.
+  app.get<{ Params: { key: string }; Querystring: { team?: 'A' | 'B' } }>('/api/battles/:key/map.png', {
+    schema: {
+      params: battleKeyParams,
+      querystring: { type: 'object', additionalProperties: false, properties: { team: { type: 'string', enum: ['A', 'B'] } } },
+    },
   }, async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
     const sessionId = resolveSiteSessionId(request.params.key)
     if (!sessionId) {
       return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Battle key: a decimal session id or a 16-character hex' })
     }
-    const map = await loadBattleSceneMap(sessionId)
+    const map = await loadBattleSceneMap(sessionId, request.query.team ?? null)
     if (!map) {
-      return reply.code(404).send({ ok: false, code: 'MAP_UNAVAILABLE', error: 'Локальной тактической карты для этого боя нет' })
+      return reply.code(404).send({ ok: false, code: 'MAP_UNAVAILABLE', error: 'No tactical map for this battle' })
     }
     return reply
-      .header('Content-Type', 'image/png')
+      .header('Content-Type', map.mime)
       .header('Cache-Control', 'public, max-age=604800')
-      .send(map)
+      .send(map.data)
   })
 
   app.get('/api/vehicles', async (request, reply) => {

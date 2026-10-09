@@ -88,12 +88,22 @@ function promoteFont(priority: WorkerPriority): void {
   fontControl?.promote(priority)
 }
 
+/**
+ * The game client: WT_GAME_DIR, else the Steam libraries of Windows and Linux
+ * (steamapps/libraryfolders.vdf), else the usual install folders.
+ */
 export async function findWarThunderGameDir(): Promise<string | null> {
   const fromEnv = process.env['WT_GAME_DIR']
   if (fromEnv && await exists(path.join(fromEnv, 'ui', 'fonts.vromfs.bin'))) return fromEnv
 
   const candidates: string[] = []
-  const steamRoots = ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']
+  const home = process.env['HOME']
+  const steamRoots = process.platform === 'win32'
+    ? ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']
+    : home
+      ? ['.local/share/Steam', '.steam/steam', '.steam/root', '.var/app/com.valvesoftware.Steam/.local/share/Steam']
+          .map((root) => path.join(home, root))
+      : []
   const steamLibraries = await Promise.all(
     steamRoots.map(async (steam): Promise<string | null> => {
       const vdf = path.join(steam, 'steamapps', 'libraryfolders.vdf')
@@ -111,12 +121,18 @@ export async function findWarThunderGameDir(): Promise<string | null> {
       }
     }
   }
-  candidates.push(
-    'C:\\Games\\WarThunder',
-    'C:\\Games\\War Thunder',
-    'D:\\Games\\WarThunder',
-    'D:\\WarThunder',
-  )
+  for (const steam of steamRoots) candidates.push(path.join(steam, 'steamapps', 'common', 'War Thunder'))
+  if (process.platform === 'win32') {
+    candidates.push(
+      'C:\\Games\\WarThunder',
+      'C:\\Games\\War Thunder',
+      'D:\\Games\\WarThunder',
+      'D:\\WarThunder',
+    )
+  } else if (home) {
+    // The Gaijin launcher's default on Linux.
+    candidates.push(path.join(home, 'WarThunder'))
+  }
   const uniqueCandidates = [...new Set(candidates)]
   const available = await mapConcurrent(
     uniqueCandidates,

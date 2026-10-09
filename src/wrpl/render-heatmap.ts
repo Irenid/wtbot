@@ -27,10 +27,11 @@ import { vehicleInfo, type VehicleDict } from './vehicles.js'
  * черепа → причины смерти → подписи техники. Разные типы элементов не делят слой;
  * экземпляры одного типа сортируются по времени, поздние рисуются выше ранних.
  *
- * Фон — снимок игровой тактической карты нужного режима (см.
- * ensureTacticalMap: качается по missionName, покрывает ровно battleArea);
- * если его нет — ручной скриншот data/maps/<level>.jpg, растянутый на
- * battleArea; иначе тёмная подложка с сеткой.
+ * Background: the mission's tactical map as the game draws it, built from the
+ * game client (src/tactical-map; mission.area is then its view), else the
+ * wt-tools snapshot of the mission's mode (ensureTacticalMap, exactly
+ * battleArea), else a hand-placed screenshot data/maps/<level>.jpg stretched
+ * over battleArea, else a dark grid.
  */
 
 const MAP_W = 1400

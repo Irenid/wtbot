@@ -116,7 +116,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
     if (!scene.map.available) return
     const image = new Image()
     image.onload = () => setMapImage(image)
-    image.src = battleMapUrl(battleKey)
+    image.src = battleMapUrl(battleKey, scene.map.team)
     return () => { image.onload = null }
   }, [scene, battleKey])
 

@@ -12,10 +12,11 @@ import { readResponseBuffer, readResponseJson, readResponseText } from '../http-
  * raw.githubusercontent.com is case-sensitive: the file name is the lowercased
  * id. Downloaded on demand and cached in data/unit-icons/.
  *
- * Heatmap tactical maps are snapshots of the game map from wt-tools.app
- * (public bucket wt-map-files: 62 maps × all modes). A mode's image covers
- * exactly the mission's battleArea (checked against zone coordinates), so the
- * world alignment is exact. Cached in data/maps/.
+ * Heatmap tactical maps are drawn from the game client (src/tactical-map);
+ * without it they are snapshots of the game map from wt-tools.app (public
+ * bucket wt-map-files: 62 maps × all modes). A mode's snapshot covers exactly
+ * the mission's battleArea (checked against zone coordinates), so the world
+ * alignment is exact. Cached in data/maps/.
  *
  * A missing icon or map leaves an empty *.miss marker for MISS_TTL_MS: the
  * datamine and wt-tools add new vehicles and maps days after a patch.

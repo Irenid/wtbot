@@ -8,6 +8,7 @@ import type { BattleItemMeta, BattleParseProfile } from '../wrpl/battle-transfor
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
 import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
 import type { EventsRepairCounts } from '../wrpl/events-repair.js'
+import type { TacticalMapBuildInput, TacticalMapMeta } from '../tactical-map/build.js'
 
 /** FlagTemplatePack (src/scout/flags.ts) with its pixels as a transferable buffer. */
 export interface WireFlagTemplates { icons: string[]; width: number; height: number; rgb: ArrayBuffer }
@@ -62,6 +63,17 @@ export interface HeatmapRenderOptions {
   airPaddingPercent: number
 }
 
+/**
+ * Both perspectives of a mission's tactical map drawn from the game files
+ * (src/tactical-map): the renderer shows each team its own bases in blue.
+ */
+export interface WireGameMaps {
+  A: { mime: 'image/png' | 'image/jpeg'; data: ArrayBuffer }
+  B: { mime: 'image/png' | 'image/jpeg'; data: ArrayBuffer }
+  /** Tank bases as drawn, for matching a team's first positions to its perspective. */
+  spawns: { team: 'A' | 'B'; kind: string; x: number; z: number }[]
+}
+
 export interface MediaRenderInput {
   missionName: string
   header: WrplHeader
@@ -75,6 +87,8 @@ export interface MediaRenderInput {
     gameFont: boolean
     mapIconFont: boolean
     tacticalMap: ArrayBuffer | null
+    /** Takes the place of tacticalMap; mission.area is then the maps' view. */
+    gameMaps?: WireGameMaps | null
     fallbackMap: WireImage | null
     seekers: [string, MissileSeeker][]
   }
@@ -316,6 +330,11 @@ export interface WorkerTaskMap {
   'prepare-scene': {
     input: { eventsBlob: ArrayBuffer; scene: ScenePrepareInput }
     output: ArrayBuffer
+  }
+  /** A mission's tactical map drawn from the game files (src/tactical-map/build.ts). */
+  'build-tactical-map': {
+    input: TacticalMapBuildInput
+    output: { image: ArrayBuffer; mime: 'image/png' | 'image/jpeg'; meta: TacticalMapMeta }
   }
 }
 
