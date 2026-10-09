@@ -35,10 +35,11 @@ services:
       # - "127.0.0.1:5900:5900"
     volumes:
       - ./data:/app/data
-      # WT_GAME_HOST_DIR in .env: the game folder on the host (Steam:
-      # ~/.local/share/Steam/steamapps/common/War Thunder). Without it the copy
-      # of ui/fonts.vromfs.bin and ui/atlases.vromfs.bin in ./data/wt-game is
-      # used: flags and fonts work, maps fall back to wt-tools snapshots.
+      # ./data/wt-game: copies of the game files the bot reads, at the game's
+      # paths (TACTICAL_MAP_SOURCES in src/tactical-map/game-files.ts; ui/ alone
+      # gives flags and fonts, maps then fall back to wt-tools snapshots).
+      # Or WT_GAME_HOST_DIR in .env: the game folder itself (Steam:
+      # ~/.local/share/Steam/steamapps/common/War Thunder), following patches.
       - ${WT_GAME_HOST_DIR:-./data/wt-game}:/opt/war-thunder:ro
     # Shutdown: до 10 с на producers, затем Edge, Discord, worker pool и SQLite.
     stop_grace_period: 45s

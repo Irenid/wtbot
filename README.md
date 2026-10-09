@@ -45,11 +45,20 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    `ecshashes.json`, `maps/`, `missions/`. Do not move the browser profile
    (`wt-browser-profile/`): it is tied to the OS, the container creates a new
    one. Flags, the clan-tag font and the tactical maps come from the game
-   client: set `WT_GAME_HOST_DIR` in `.env` to the game folder on the host
-   (Steam on Linux: `~/.local/share/Steam/steamapps/common/War Thunder`); compose
-   mounts it read-only. Without it compose mounts `data/wt-game/` (copy
-   `ui/fonts.vromfs.bin` and `ui/atlases.vromfs.bin` into `data/wt-game/ui/`
-   for flags); maps then fall back to wt-tools snapshots.
+   client; compose mounts `data/wt-game/` read-only. Copy the files into it at
+   the game's paths (again after a game patch; `ui/` alone gives flags, and
+   maps fall back to wt-tools snapshots):
+
+   ```bash
+   GAME=~/.local/share/Steam/steamapps/common/"War Thunder"
+   for f in mis.vromfs.bin aces.vromfs.bin content/base/res/locations_maps.dxp.bin \
+       ui/tex.vromfs.bin ui/atlases.vromfs.bin ui/fonts.vromfs.bin; do
+     install -D -p -m 644 "$GAME/$f" "data/wt-game/$f"
+   done
+   ```
+
+   Or set `WT_GAME_HOST_DIR` in `.env` to the game folder itself: compose
+   mounts it instead, and maps follow game patches.
 3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`.
 4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
    `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links

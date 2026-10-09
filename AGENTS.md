@@ -125,7 +125,7 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WT_REPLAY_PROCESS_BUDGET_MB` | shared limit for replay buffers, 128–8192 MiB; auto reserves it before sizing the pool |
 | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` | reserve by cached size or 1× `Content-Length` instead of the 96 MiB worst case; off until an RSS plateau is proven (`docs/performance.md`) |
 | `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_HEATMAP_AIR_*` | media cache, air heatmap parameters |
-| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` (default `./data/wt-game`, a copy of `ui/`: no maps) |
+| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `./data/wt-game` (copies of `TACTICAL_MAP_SOURCES` at the game's paths; `ui/` alone: no maps) or `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` |
 | `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ` | daily `db-backup-schedule` (`backup` service) |
 | `ANTHROPIC_API_KEY` | manual `npm run analyze` only |
 
@@ -483,9 +483,9 @@ Data:
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
   `data/maps/game/` — tactical maps from the game client (JPEG + meta,
   rebuilt after a game patch);
-- `data/wt-game/ui/` — copies of the game's `fonts.vromfs.bin` and
-  `atlases.vromfs.bin` for Docker without `WT_GAME_HOST_DIR`: flags are read from the
-  atlas at every start (the battle image's nations; every flag as `/scout`
+- `data/wt-game/` — copies of the game files (`TACTICAL_MAP_SOURCES`, at the
+  game's paths; recopy after a patch) for Docker without `WT_GAME_HOST_DIR`:
+  flags are read from the atlas at every start (the battle image's nations; every flag as `/scout`
   picture templates); on failure the built-in flags remain and the image still
   renders, and pictures are read without flags.
 
