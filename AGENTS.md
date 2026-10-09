@@ -7,12 +7,16 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
 ## 1. Working rules
 
 - Use every available resource — the machine's full capacity, all available
-  information, every tool, model tokens and agents included — and search
-  everywhere; do not hold back. Size parallel agent work to finish within the
+  information, every tool and agent — and search everywhere; never hold back
+  what the result needs. Save model tokens wherever it costs no quality
+  (scripts extract exactly the text a model needs, small batches, a fresh
+  session for a big job), and size parallel agent work to finish within the
   usage limit (a whole-repo sweep by eight agents hit it and returned
-  nothing, 2026-10-02).
-- Find code with targeted tools (`rg`, `git grep`, LSP), then read what is
-  relevant in full; no MCP server or shell wrapper is required.
+  nothing, 2026-10-02). Before doing a task by hand, look for a tool that
+  makes it easier or cheaper.
+- Search with targeted tools (`rg`, `git grep`, LSP) instead of reading the
+  whole repository, then read what is relevant in full; no MCP server or
+  shell wrapper is required.
 - Before an edit, find the affected functions and their callers; after it,
   check the impact on neighbouring subsystems. No unrelated refactoring.
 - Other people's changes and untracked files are the owner's work: do not
