@@ -19,6 +19,7 @@
     "battle": "tsx src/analysis/battle-summary.ts",
     "scout:backtest": "tsx src/analysis/scout-backtest.ts",
     "scout:images": "tsx src/analysis/scout-images.ts",
+    "scout:outcomes": "tsx src/analysis/scout-outcomes.ts",
     "bench:nick-search": "tsx src/analysis/nick-search-bench.ts",
     "capture:map": "tsx src/analysis/capture-map.ts",
     "backfill": "tsx src/parsers/backfill.ts",

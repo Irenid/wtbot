@@ -519,14 +519,24 @@ Data:
   battles at the cap first, through the lazy StatShark service) and is edited
   once they end, within `STATSHARK_WAIT_MS`; a snapshot older than
   `STATSHARK_FRESH_SEC` (2 days) gives battle counts, but a vehicle missing
-  from it no longer counts as never played. `npm run scout:backtest --
-  <copy.db> --known-team [--fit | --fit-all] [--statshark]` scores it at
-  moments of real battles and fits these (`scout-known-backtest.ts`). Every
-  image, its reading and the prediction (`scoutPredictionRecord`, again after
-  the StatShark update, with a hash of the model's constants) stay in
+  from it no longer counts as never played. The enemy rows' numbers
+  (`scoreboard-columns.ts`: the six columns found from their header icons,
+  one Tesseract call with a digit whitelist, the picture's own zero
+  overruling a number read off a zero) weigh each recognised enemy's classes
+  by their kills and captures (`killLikelihood`, `KILL_LIKELIHOODS`; the timer
+  is not read, so a kill shown counts and none says nothing), and "at least
+  one aircraft" goes through `KNOWN_TEAM_AIR_KNOTS`. `npm run scout:backtest
+  -- <copy.db> --known-team [--fit | --fit-all] [--statshark] [--unread-live]
+  [--variants REGEX]` scores it at moments of real battles (kill columns from
+  the events; `--statshark` counts the snapshot the reply's update would read;
+  `--unread-live` makes players without a stored battle unread rows) and fits
+  these (`scout-known-backtest.ts`: all cores but two, ~7 GB). Every image, its
+  reading and the prediction (`scoutPredictionRecord`, again after the
+  StatShark update, with a hash of the model's constants) stay in
   `data/scout-images/<day>/`; with `truth.json` there (nicks, flags, enemy row
-  icons) they are the test set (`npm run scout:images` scores them; Discord
-  IDs inside, never publish).
+  icons and columns) they are the test set (`npm run scout:images` scores
+  them), and `npm run scout:outcomes -- <copy.db>` scores the replies against
+  their battles once stored (Discord IDs inside, never publish).
 - The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
   the guides' formula above, PSR after the battle below (before it while the
   winner is unknown). The formula's opponent is the enemy team's average PSR,
@@ -778,7 +788,7 @@ npm run build:web
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
 each can run alone for the affected subsystem. Baseline on **2026-10-09**: all
-gates pass, **454 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+gates pass, **461 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

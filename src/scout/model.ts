@@ -12,7 +12,7 @@
  */
 
 import type { VehicleClass } from '../wrpl/vehicles.js'
-import { conditionOnFlags, type FlagEvidence } from './flag-evidence.js'
+import { conditionOnFlags, IN_VEHICLE_WITHOUT_ICON, type FlagEvidence } from './flag-evidence.js'
 
 export interface ScoutPlayerRow {
   userId: string
@@ -314,12 +314,13 @@ export type CapSpawns = ReadonlyMap<string, number>
 export const NEW_VEHICLE_FEATURES = ['logShare', 'nationShare', 'classShare', 'seenBefore', 'logBattles', 'notPlayed', 'other'] as const
 /**
  * Conditional logit fitted by `npm run scout:backtest -- <copy.db> --known-team
- * --fit-all --statshark` on the 72,282 new-vehicle events of 2026-07-15 –
- * 10-08 (a player taking a vehicle never seen from them at the cap); the two
- * StatShark weights on the events of the 84 players with a snapshot read up to
- * 3 days after the battle (docs/opponent-scouting.md).
+ * --fit-all --statshark` on the 72,485 new-vehicle events of 2026-07-15 –
+ * 10-09 (a player taking a vehicle never seen from them at the cap); the two
+ * StatShark weights on the 11 events with a snapshot the reply would have read
+ * (before: snapshots read up to 3 days after the battle leaked later games,
+ * `notPlayed` −3.82), shrunk by the backtest's SHARK_L2 (docs/opponent-scouting.md).
  */
-export const NEW_VEHICLE_WEIGHTS: readonly number[] = [0.834, 1.275, 0.89, 2.31, 0.298, -3.82, -1.2]
+export const NEW_VEHICLE_WEIGHTS: readonly number[] = [0.834, 1.279, 0.892, 2.314, 0.786, -0.3, -1.197]
 /** Candidates: the cap's most spawned vehicles (the top 150 held 96–97% of the spawns at 10.0 and 9.0). */
 export const NEW_VEHICLE_CANDIDATES = 150
 /**
@@ -715,12 +716,103 @@ export interface KnownTeamInput {
   nationOf?: ((vehicleId: string) => string) | undefined
   /** Aircraft and helicopters the screenshot's own squadron spawns per battle (opponentAir); null — unknown. */
   opponentAir?: number | null | undefined
+  /** The players' kill columns (`players` order; null — not read) and the screenshot's moment, seconds after the first spawn (null — unknown). */
+  kills?: readonly (KillColumns | null)[] | undefined
+  killMoment?: number | null | undefined
   /** The backtest's fits; omitted — the shipped constants. */
   weights?: {
     newVehicle?: readonly number[]
     opponentAir?: Readonly<Partial<Record<ScoutClass, number>>>
     setup?: Readonly<Record<'flags' | 'noFlags', SetupCalibration>>
+    kills?: KillTable
+    airKnots?: Readonly<Record<AirKnotMode, ChanceKnots>>
   } | undefined
+}
+
+/** A row's numbers on the scoreboard: air and ground targets destroyed, zones captured; null — the cell was not read. */
+export interface KillColumns {
+  air: number | null
+  ground: number | null
+  captures: number | null
+}
+
+/** Seconds after the battle's first spawn of KILL_LIKELIHOODS' rows. */
+export const KILL_MOMENTS = [60, 120, 180, 300] as const
+/** The row used without the moment (the timer is not read): kills shown count, none shown says nothing. */
+export const KILL_MOMENT_UNKNOWN = 180
+
+/** Per class, per KILL_MOMENTS row: P(no kill, air kills only, ground kills only, both). */
+export type KillTable = Readonly<Record<ScoutClass, readonly (readonly number[])[]>>
+
+/**
+ * How often each class shows each kill pattern by each moment: the stored
+ * squadron battles' kill feed by the time since the first spawn (scout drones
+ * count as air kills, as on the board; team kills do not count). Fitted by
+ * `npm run scout:backtest -- <copy.db> --known-team --fit-all` on the 99,865
+ * teams of 2026-07-15 – 10-09.
+ */
+export const KILL_LIKELIHOODS: KillTable = {
+  F: [[0.9734, 0.007, 0.0192, 0.0004], [0.8529, 0.0577, 0.0848, 0.0046], [0.5974, 0.1314, 0.2479, 0.0232], [0.4755, 0.1511, 0.3152, 0.0581]],
+  H: [[0.9557, 0.0027, 0.0414, 0.0003], [0.7749, 0.0474, 0.1712, 0.0065], [0.6309, 0.1011, 0.2484, 0.0196], [0.5317, 0.1181, 0.3084, 0.0418]],
+  T: [[0.9778, 0.0032, 0.0189, 0.0001], [0.8338, 0.0078, 0.1567, 0.0017], [0.6936, 0.0121, 0.2888, 0.0055], [0.5851, 0.0175, 0.3834, 0.014]],
+  L: [[0.9698, 0.0193, 0.0108, 0.0001], [0.8538, 0.0456, 0.0971, 0.0036], [0.7287, 0.0626, 0.1958, 0.0129], [0.6166, 0.0759, 0.2784, 0.0291]],
+  AA: [[0.8716, 0.1264, 0.0019, 0.0001], [0.687, 0.2925, 0.0163, 0.0042], [0.5277, 0.4206, 0.0341, 0.0176], [0.4345, 0.4626, 0.0542, 0.0487]],
+}
+/** Zones captured need a ground vehicle (end-of-battle shares: aircraft 0.0%, helicopters 1.0%, tanks 27.8%). */
+export const CAPTURE_LIKELIHOOD: Readonly<Record<ScoutClass, number>> = { F: 0.01, H: 0.1, T: 1, L: 1, AA: 1 }
+
+/** How likely a row's columns are for each class `moment` seconds after the first spawn (null — the timer was not read). */
+export function killLikelihood(columns: KillColumns, moment: number | null, table: KillTable = KILL_LIKELIHOODS): Record<ScoutClass, number> {
+  const out: Record<ScoutClass, number> = { F: 1, H: 1, T: 1, L: 1, AA: 1 }
+  const known = columns.air !== null && columns.ground !== null
+  const shown = (columns.air ?? 0) > 0 || (columns.ground ?? 0) > 0
+  // Without the moment, "no kill yet" is no evidence: early on every class shows none.
+  if (known && (moment !== null || shown)) {
+    const at = moment ?? KILL_MOMENT_UNKNOWN
+    const row = KILL_MOMENTS.reduce((best, m, i) => (Math.abs(m - at) < Math.abs(KILL_MOMENTS[best]! - at) ? i : best), 0)
+    const pattern = (columns.air! > 0 ? 1 : 0) + (columns.ground! > 0 ? 2 : 0)
+    for (const cls of SCOUT_CLASSES) out[cls] = table[cls][row]![pattern]!
+  }
+  if ((columns.captures ?? 0) > 0) for (const cls of SCOUT_CLASSES) out[cls] *= CAPTURE_LIKELIHOOD[cls]
+  return out
+}
+
+/** Whether a row's columns move any class (a kill shown with both kill cells read, or a capture): what the reply may say was used. */
+export function killEvidenceShown(columns: KillColumns): boolean {
+  return Object.values(killLikelihood(columns, null)).some((value) => value !== 1)
+}
+
+/** Class shares weighed by a kill likelihood: the class mix of a player's unnamed share once their row's columns are known. */
+function weighShares(shares: Readonly<Record<ScoutClass, number>>, likelihood: Readonly<Record<ScoutClass, number>>): Record<ScoutClass, number> {
+  const out: Record<ScoutClass, number> = { F: 0, H: 0, T: 0, L: 0, AA: 0 }
+  let total = 0
+  for (const cls of SCOUT_CLASSES) total += (out[cls] = shares[cls] * likelihood[cls])
+  if (!(total > 0)) return { ...shares }
+  for (const cls of SCOUT_CLASSES) out[cls] /= total
+  return out
+}
+
+/** Scales a player's options by their class's likelihood of the row's columns; vehicles of no known class and the unnamed share by the class shares' mix. */
+export function weighKills(
+  player: ScoutPlayerPrediction,
+  likelihood: Readonly<Record<ScoutClass, number>>,
+  classOf: (vehicleId: string) => VehicleClass,
+  shares: Readonly<Record<ScoutClass, number>>,
+): void {
+  const mixed = SCOUT_CLASSES.reduce((sum, cls) => sum + shares[cls] * likelihood[cls], 0)
+  const scaled = (vehicles: readonly VehicleChance[]) => vehicles.map((vehicle) => {
+    const cls = classOf(vehicle.vehicleId)
+    return { vehicleId: vehicle.vehicleId, chance: vehicle.chance * (cls === '?' ? mixed : likelihood[cls]) }
+  })
+  const unnamed = Math.max(0, player.unseenChance - chanceSum(player.newVehicles)) * mixed
+  const vehicles = scaled(player.vehicles)
+  const newVehicles = scaled(player.newVehicles)
+  const total = chanceSum(vehicles) + chanceSum(newVehicles) + unnamed
+  if (!(total > 0)) return
+  const normal = (list: VehicleChance[]) => list.map((vehicle) => ({ vehicleId: vehicle.vehicleId, chance: vehicle.chance / total })).sort(byChance)
+  player.vehicles = normal(vehicles)
+  player.newVehicles = normal(newVehicles)
+  player.unseenChance = unnamed / total + chanceSum(player.newVehicles)
 }
 
 /** New vehicles kept per player; the rest joins the unnamed share (each is an option of the flag chain). */
@@ -732,7 +824,7 @@ export const NEW_VEHICLES_KEPT = 30
  * aircraft a battle, 88% against 3 or more (2026-10-01 – 10-08). Per aircraft
  * a battle above OPPONENT_AIR_MEAN, a class's chances scale by exp(weight).
  */
-export const OPPONENT_AIR_WEIGHTS: Readonly<Partial<Record<ScoutClass, number>>> = { F: 0.059, H: 0.022, T: -0.079, L: -0.046, AA: 0.347 }
+export const OPPONENT_AIR_WEIGHTS: Readonly<Partial<Record<ScoutClass, number>>> = { F: 0.059, H: 0.022, T: -0.079, L: -0.046, AA: 0.348 }
 export const OPPONENT_AIR_MEAN = 2
 /** The own squadron's battles the habit is read from (the latest). */
 export const OPPONENT_AIR_BATTLES = 20
@@ -744,8 +836,55 @@ export const OPPONENT_AIR_BATTLES = 20
  * and missed the air chance by 24–28 points in 4% of teams. Same fit.
  */
 export const KNOWN_TEAM_SETUP_CALIBRATION: Readonly<Record<'flags' | 'noFlags', SetupCalibration>> = {
-  noFlags: { air: [-1.179, 0.637, 1.238], composition: [0.458, 1.137] },
-  flags: { air: [-0.992, 0.901, 0.269], composition: [0.177, 1.126] },
+  noFlags: { air: [-1.169, 0.64, 1.219], composition: [0.457, 1.136] },
+  flags: { air: [-0.985, 0.904, 0.253], composition: [0.177, 1.125] },
+}
+
+/** A monotone map of a chance: (said, happened) knots, linear between them; empty — unchanged. */
+export type ChanceKnots = readonly (readonly [number, number])[]
+
+/** The air knots' cases: no flags read; flags with every enemy row showing no icon (all in a vehicle); flags otherwise. */
+export type AirKnotMode = 'noFlags' | 'flags' | 'flagsAllIn'
+
+/**
+ * "At least one aircraft" after KNOWN_TEAM_SETUP_CALIBRATION, mapped to what
+ * happened: the logistic calibration said 55–90% where 65–93% happened (16
+ * points off at 65% with flags), and how far depends on how much the flags
+ * show. Isotonic over the fitting teams at every screenshot moment, kill
+ * columns read; fitted by `npm run scout:backtest -- <copy.db> --known-team
+ * --fit-all` on the teams of 2026-07-15 – 10-09.
+ */
+export const KNOWN_TEAM_AIR_KNOTS: Readonly<Record<AirKnotMode, ChanceKnots>> = {
+  noFlags: [
+    [0.061, 0.0323], [0.087, 0.0523], [0.1117, 0.0783], [0.1416, 0.128], [0.1873, 0.1786], [0.3064, 0.3087],
+    [0.5808, 0.6231], [0.7646, 0.7893], [0.856, 0.8891], [0.9114, 0.9338], [0.9452, 0.9545], [0.9686, 0.9561],
+    [0.9818, 0.9687], [0.9896, 0.9766], [0.9943, 0.9814], [0.9968, 0.9841], [0.9983, 0.9889], [0.9992, 0.992],
+    [0.9996, 0.9974], [0.9998, 0.9989],
+  ],
+  flags: [
+    [0.0179, 0.0093], [0.0369, 0.0237], [0.0581, 0.0504], [0.0911, 0.0916], [0.1545, 0.1533], [0.3154, 0.3119],
+    [0.5986, 0.6182], [0.8102, 0.8386], [0.9237, 0.9226], [0.9722, 0.9543], [0.9916, 0.9722], [0.9974, 0.9848],
+    [0.9992, 0.9944], [0.9998, 0.9973], [0.9999, 0.998], [1, 0.9998], [1, 1], [1, 1],
+  ],
+  flagsAllIn: [
+    [0.0114, 0.0044], [0.0268, 0.0157], [0.0467, 0.0341], [0.0845, 0.0753], [0.182, 0.1761], [0.4453, 0.4545],
+    [0.75, 0.7992], [0.9108, 0.9208], [0.9706, 0.963], [0.9916, 0.9844], [0.9975, 0.9953], [0.9992, 0.9968],
+    [0.9998, 0.9989], [0.9999, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1], [1, 1],
+  ],
+}
+
+/** A chance through monotone knots (linear between them, flat past the ends). */
+export function mapChance(chance: number, knots: ChanceKnots): number {
+  if (knots.length === 0) return chance
+  if (chance <= knots[0]![0]) return knots[0]![1]
+  for (let i = 1; i < knots.length; i += 1) {
+    const [x1, y1] = knots[i]!
+    if (chance <= x1) {
+      const [x0, y0] = knots[i - 1]!
+      return x1 === x0 ? y1 : y0 + ((chance - x0) / (x1 - x0)) * (y1 - y0)
+    }
+  }
+  return knots[knots.length - 1]![1]
 }
 
 /** Scales a player's options by class for the opponent's air habit (`excess`: its aircraft a battle over the mean); the unnamed share stays. */
@@ -781,7 +920,7 @@ const byChance = (a: VehicleChance, b: VehicleChance): number => b.chance - a.ch
 
 export interface KnownTeamPrediction {
   maxBr: number | null
-  /** The latest battle with the most of these players together; null — none. */
+  /** The latest battle GROUP_MIN_SHARED of these players played together, else the latest with the most of them; null — none. */
   lastTogether: { endTime: number; players: number } | null
   /** Recognised players (play chance 1), most battles at the cap first. */
   players: ScoutPlayerPrediction[]
@@ -799,8 +938,8 @@ export interface KnownTeamPrediction {
  * cap's popular vehicles (newVehicleChances, with capSpawns), the classes are
  * weighed by the opponent's air habit (with opponentAir), then everything is
  * given the flags above the enemy team when they were read (flag-evidence.ts).
- * The setup uses the picture path's calibration and the latest battle most of
- * them played together.
+ * The setup uses the picture path's calibration and the latest battle a group
+ * of them played together.
  */
 export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
   const known = input.battles
@@ -811,19 +950,32 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
   const vehicleHistory = vehicleHistories(known, stage, input.now)
   const shares = classShares(known, capFrom, input.classOf)
   const ids = new Set(input.players.map((player) => player.userId))
+  // The latest battle a group of them played (GROUP_MIN_SHARED), else the one with the most of them: the
+  // most-players rule alone picked a battle 69 h old (median) in 2.9% of teams where a group's was 22 h old.
   let anchor: ScoutBattle | null = null
   let anchorCount = 0
+  let group: ScoutBattle | null = null
+  let groupCount = 0
   for (const battle of known) {
     const count = battle.players.filter((player) => ids.has(player.userId)).length
     if (count >= 2 && count >= anchorCount) {
       anchor = battle
       anchorCount = count
     }
+    if (count >= GROUP_MIN_SHARED) {
+      group = battle
+      groupCount = count
+    }
+  }
+  if (group) {
+    anchor = group
+    anchorCount = groupCount
   }
   const nationOf = input.nationOf
   const guessing = input.capSpawns !== undefined && input.capSpawns.size > 0 && nationOf !== undefined
   const info = (id: string) => ({ nation: nationOf?.(id) ?? '?', cls: input.classOf(id) })
-  const players: ScoutPlayerPrediction[] = input.players.map((player) => {
+  const killShares = new Map<string, Record<ScoutClass, number>>()
+  const players: ScoutPlayerPrediction[] = input.players.map((player, index) => {
     const own = vehicleHistory.get(player.userId) ?? []
     const features = vehicleChoiceFeatures(own, input.now)
     const chances = features ? vehicleChances(features) : { vehicles: [], unseen: 1 }
@@ -846,6 +998,12 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
     if (input.opponentAir !== undefined && input.opponentAir !== null) {
       weighOpponentAir(prediction, input.opponentAir - OPPONENT_AIR_MEAN, input.weights?.opponentAir ?? OPPONENT_AIR_WEIGHTS, input.classOf)
     }
+    const columns = input.kills?.[index]
+    if (columns) {
+      const likelihood = killLikelihood(columns, input.killMoment ?? null, input.weights?.kills)
+      weighKills(prediction, likelihood, input.classOf, shares)
+      killShares.set(player.userId, weighShares(shares, likelihood))
+    }
     return prediction
   })
   // The guessed new vehicles are options with their own flags; the unguessed rest stays unseen.
@@ -865,18 +1023,22 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
     })
   }
   players.sort((a, b) => b.battlesAtCap - a.battlesAtCap || a.nick.localeCompare(b.nick))
-  const team = players.map((player) => ({ classChances: classChancesOf(player, input.classOf, shares) }))
+  const team = players.map((player) => ({ classChances: classChancesOf(player, input.classOf, killShares.get(player.userId) ?? shares) }))
   for (let i = 0; i < input.unknownPlayers; i += 1) team.push({ classChances: { ...shares } })
   const lastHadAir = anchor?.players.some((player) => {
     if (!ids.has(player.userId) || !player.vehicle) return false
     const cls = input.classOf(player.vehicle)
     return cls === 'F' || cls === 'H'
   }) ?? false
+  const mode = posterior ? 'flags' : 'noFlags'
+  const setup = calibrateSetup(setupFromPlayers(team), lastHadAir, (input.weights?.setup ?? KNOWN_TEAM_SETUP_CALIBRATION)[mode])
+  const allIn = input.flags !== undefined && input.flags.seats.length > 0 && input.flags.seats.every((seat) => seat.inVehicle === IN_VEHICLE_WITHOUT_ICON)
+  setup.airChance = mapChance(setup.airChance, (input.weights?.airKnots ?? KNOWN_TEAM_AIR_KNOTS)[posterior ? (allIn ? 'flagsAllIn' : 'flags') : 'noFlags'])
   return {
     maxBr: stage?.maxBr ?? null,
     lastTogether: anchor ? { endTime: anchor.endTime, players: anchorCount } : null,
     players,
-    setup: calibrateSetup(setupFromPlayers(team), lastHadAir, (input.weights?.setup ?? KNOWN_TEAM_SETUP_CALIBRATION)[posterior ? 'flags' : 'noFlags']),
+    setup,
     flags: posterior ? { icons: posterior.line, operatorChance: posterior.operatorChance } : null,
     lastHadAir,
   }

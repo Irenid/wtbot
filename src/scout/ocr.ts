@@ -38,10 +38,15 @@ export interface OcrRow {
 export class OcrUnavailableError extends Error {}
 
 /** `command` — the binary and leading arguments (tests and tools run it in a container). */
-export function runTesseract(input: Uint8Array, languages: string, command: readonly string[] = ['tesseract']): Promise<string> {
+export function runTesseract(
+  input: Uint8Array,
+  languages: string,
+  command: readonly string[] = ['tesseract'],
+  options: readonly string[] = ['--psm', '6'],
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const [binary, ...prefix] = command
-    const child = spawn(binary!, [...prefix, 'stdin', 'stdout', '-l', languages, '--psm', '6', 'tsv'], {
+    const child = spawn(binary!, [...prefix, 'stdin', 'stdout', '-l', languages, ...options, 'tsv'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, OMP_THREAD_LIMIT: '2' },
     })

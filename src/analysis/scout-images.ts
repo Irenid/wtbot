@@ -12,7 +12,9 @@
 // with the templates of WT_GAME_DIR (default data/wt-game) and scored against
 // the truth's "flags" ({"allies": [...], "enemies": [...]}, left to right);
 // the enemy rows' icons (row-icons.ts) against "enemyIcons" (per row
-// "parachute", "figure" or null; null for the whole: no icon column).
+// "parachute", "figure" or null; null for the whole: no icon column), their
+// numbers (scoreboard-columns.ts) against "enemyColumns" (per row: score, air
+// and ground kills, assists, captures, deaths).
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
@@ -25,6 +27,7 @@ import type { RowIcon } from '../scout/row-icons.js'
 import { displayedNick, foldForMatch, indexPlayers, type NickMatch } from '../scout/nick-match.js'
 import { OCR_PASSES } from '../scout/ocr.js'
 import { readScoreboard, type ScoreboardReadResult } from '../scout/scoreboard-read.js'
+import { COLUMN_NAMES, type RowColumns } from '../scout/scoreboard-columns.js'
 import { atlasFlags } from '../wrpl/game-flags-atlas.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
 import { unpackVromfs } from '../wrpl/vromfs.js'
@@ -38,6 +41,8 @@ interface Truth {
   flags?: { allies: string[]; enemies: string[] }
   /** Per row, the icon in the enemy's row (a player not in a vehicle); null — the icon column is not in the picture. */
   enemyIcons?: (RowIcon | null)[] | null
+  /** Per enemy row, its numbers: score, air and ground kills, assists, captures, deaths (scoreboard-columns.ts). */
+  enemyColumns?: number[][]
 }
 
 interface Target {
@@ -118,7 +123,7 @@ await Promise.all(Array.from({ length: parallel }, async () => {
 }))
 results.sort((a, b) => a.target.file.localeCompare(b.target.file))
 
-const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0, flagsRight: 0, flags: 0, iconsRight: 0, icons: 0 }
+const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0, flagsRight: 0, flags: 0, iconsRight: 0, icons: 0, cellsRight: 0, cells: 0 }
 for (const { target, read } of results) {
   if (read instanceof Error) {
     console.log(`${target.file}: error ${read.message}`)
@@ -127,10 +132,13 @@ for (const { target, read } of results) {
   totals.enemies += read.enemies.length
   totals.unread += read.unread.length
   console.log(`${target.file}: ${read.status}, rows ${read.rows}, enemies ${read.enemies.length}, unread ${read.unread.length}, allies ${read.allies.length}`
-    + ` (layout ${read.ms.layout.toFixed(0)} ms, OCR ${read.ms.ocr.toFixed(0)} ms, match ${read.ms.match.toFixed(0)} ms, flags ${read.ms.flags.toFixed(0)} ms)`)
+    + ` (layout ${read.ms.layout.toFixed(0)} ms, OCR ${read.ms.ocr.toFixed(0)} ms, match ${read.ms.match.toFixed(0)} ms, flags ${read.ms.flags.toFixed(0)} ms, columns ${read.ms.columns.toFixed(0)} ms)`)
   if (read.flags) console.log(`  flags: allies [${read.flags.allies.map(flagText).join(' ')}] | enemies [${read.flags.enemies.map(flagText).join(' ')}]`)
   const iconText = (icons: readonly (RowIcon | null)[] | null | undefined) => (icons ? icons.map((icon) => icon ?? '-').join(' ') : 'no icon column')
   if (read.status === 'ok') console.log(`  enemy icons: ${iconText(read.enemyIcons)}`)
+  const cellText = (columns: readonly (RowColumns | null)[] | null) =>
+    (columns ? columns.map((row) => (row ? COLUMN_NAMES.map((name) => row[name] ?? '?').join('/') : '-')).join(' ') : 'no columns')
+  if (read.status === 'ok') console.log(`  enemy columns: ${cellText(read.enemyColumns)}`)
   if (read.enemies.length > 0) console.log(`  enemies: ${read.enemies.map((m) => `${m.nick} [${m.clanTag}]${m.distance > 0 ? ` ±${m.distance}` : ''}`).join(', ')}`)
   if (read.unread.length > 0) console.log(`  unread: ${read.unread.map((text) => JSON.stringify(text)).join(', ')}`)
   if (read.oneSide.length > 0) console.log(`  one side only: ${read.oneSide.map((m) => m.nick).join(', ')}`)
@@ -150,6 +158,19 @@ for (const { target, read } of results) {
     totals.iconsRight += right
     totals.icons += total
     console.log(`  truth: enemy icons ${right}/${total}${right < total ? ` (want ${iconText(want)})` : ''}`)
+  }
+  if (truth.enemyColumns) {
+    let right = 0
+    let total = 0
+    truth.enemyColumns.forEach((want, row) => {
+      want.forEach((value, column) => {
+        total += 1
+        if (read.enemyColumns?.[row]?.[COLUMN_NAMES[column]!] === value) right += 1
+      })
+    })
+    totals.cellsRight += right
+    totals.cells += total
+    console.log(`  truth: enemy columns ${right}/${total}`)
   }
   if (truth.oneSide) {
     totals.wrong += read.enemies.length
@@ -174,3 +195,4 @@ if (totals.known > 0) {
 }
 if (totals.flags > 0) console.log(`truth: flags ${totals.flagsRight}/${totals.flags} right`)
 if (totals.icons > 0) console.log(`truth: enemy icons ${totals.iconsRight}/${totals.icons} right (a whole picture without the column counts once)`)
+if (totals.cells > 0) console.log(`truth: enemy columns ${totals.cellsRight}/${totals.cells} cells right`)

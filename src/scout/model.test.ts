@@ -3,10 +3,12 @@ import test from 'node:test'
 import type { VehicleClass } from '../wrpl/vehicles.js'
 import { dictionaryFlags, IN_VEHICLE_WITHOUT_ICON } from './flag-evidence.js'
 import {
+  KILL_MOMENTS,
   NEW_VEHICLE_FEATURES,
   OPPONENT_AIR_MEAN,
   SESSION_GAP_SEC,
   STAGE_SWITCH_DELAY_SEC,
+  killLikelihood,
   newVehicleChances,
   newVehicleFeatures,
   opponentAir,
@@ -18,6 +20,7 @@ import {
   vehicleChances,
   vehicleChoiceFeatures,
   weighOpponentAir,
+  type KillTable,
   type ScoutBattle,
   type ScoutPlayerPrediction,
   type ScoutStage,
@@ -213,4 +216,71 @@ test('an opponent that flies moves chances to anti-aircraft; its habit is the me
   assert.equal(opponentAir([{ endTime: 1, air: 2 }, { endTime: 2, air: 4 }]), null)
   const teams = Array.from({ length: 25 }, (_, i) => ({ endTime: i, air: i < 5 ? 9 : 2 }))
   assert.equal(opponentAir(teams), 2) // the latest 20 only
+})
+
+test('the last battle together is the latest a group of them played, not an older one with more of them', () => {
+  const now = STAGE_START + 2 * DAY
+  const players = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'].map((userId) => ({ userId, nick: userId }))
+  const base = { players, unknownPlayers: 0, now, stages, classOf }
+  // Six of them two days ago, four of them an hour ago: the hour-old group.
+  const older = battle('six', now - 2 * DAY, ['mbt'], ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'])
+  const group = battle('four', now - 3600, ['plane'], ['p1', 'p2', 'p3', 'p4'])
+  const known = predictKnownTeam({ ...base, battles: [older, group] })
+  assert.deepEqual(known.lastTogether, { endTime: group.endTime, players: 4 })
+  assert.equal(known.lastHadAir, true)
+  // No battle of four: the one with the most of them, as before.
+  const pairs = predictKnownTeam({ ...base, battles: [battle('three', now - DAY, ['mbt'], ['p1', 'p2', 'p3']), battle('two', now - 3600, ['mbt'], ['p1', 'p2'])] })
+  assert.equal(pairs.lastTogether?.players, 3)
+})
+
+// Kill patterns (none, air, ground, both) at every moment: anti-air shows air kills, tanks ground kills.
+const killTable: KillTable = {
+  F: KILL_MOMENTS.map(() => [0.6, 0.13, 0.25, 0.02]),
+  H: KILL_MOMENTS.map(() => [0.62, 0.11, 0.25, 0.02]),
+  T: KILL_MOMENTS.map(() => [0.69, 0.01, 0.29, 0.01]),
+  L: KILL_MOMENTS.map(() => [0.72, 0.07, 0.19, 0.02]),
+  AA: KILL_MOMENTS.map(() => [0.5, 0.45, 0.03, 0.02]),
+}
+
+test('kill columns: an air kill points to anti-air, a capture rules out aircraft, no kill without the timer says nothing', () => {
+  const air = killLikelihood({ air: 1, ground: 0, captures: null }, 180, killTable)
+  assert.equal(air.AA, 0.45)
+  assert.equal(air.T, 0.01)
+  assert.deepEqual(killLikelihood({ air: 0, ground: 0, captures: null }, null, killTable), { F: 1, H: 1, T: 1, L: 1, AA: 1 })
+  assert.equal(killLikelihood({ air: 0, ground: 0, captures: null }, 180, killTable).AA, 0.5)
+  // A shown kill counts without the timer too.
+  assert.equal(killLikelihood({ air: 1, ground: 0, captures: null }, null, killTable).AA, 0.45)
+  const captured = killLikelihood({ air: null, ground: null, captures: 1 }, null, killTable)
+  assert.ok(captured.F < 0.05 && captured.T === 1)
+})
+
+test('an air kill moves a tanker who also plays anti-air to the anti-air; no columns change nothing', () => {
+  const now = STAGE_START + 2 * DAY
+  // p1 played the tank three times, the SPAA once.
+  const battles = [
+    battle('k1', now - 4000, ['spaa'], ['p1']),
+    battle('k2', now - 3000, ['mbt'], ['p1']),
+    battle('k3', now - 2000, ['mbt'], ['p1']),
+    battle('k4', now - 1000, ['mbt'], ['p1']),
+  ]
+  const base = { players: [{ userId: 'p1', nick: 'one' }], unknownPlayers: 0, battles, now, stages, classOf }
+  const plain = predictKnownTeam(base)
+  assert.equal(plain.players[0]!.vehicles[0]!.vehicleId, 'mbt')
+  assert.deepEqual(predictKnownTeam({ ...base, kills: [null], killMoment: 180, weights: { kills: killTable } }).players, plain.players)
+  const shot = predictKnownTeam({ ...base, kills: [{ air: 1, ground: 0, captures: null }], killMoment: 180, weights: { kills: killTable } })
+  assert.equal(shot.players[0]!.vehicles[0]!.vehicleId, 'spaa')
+  const total = shot.players[0]!.vehicles.reduce((sum, v) => sum + v.chance, 0) + shot.players[0]!.unseenChance
+  assert.ok(Math.abs(total - 1) < 1e-9)
+})
+
+test('a capture on a player with no battles at this BR takes aircraft out of their share of the setup', () => {
+  const now = STAGE_START + 2 * DAY
+  // p1 flies at this cap; p2 has no battles at it, so their whole chance is the unnamed share.
+  const battles = [battle('c1', now - 2000, ['plane'], ['p1'])]
+  const base = { players: [{ userId: 'p1', nick: 'one' }, { userId: 'p2', nick: 'two' }], unknownPlayers: 0, battles, now, stages, classOf }
+  const plain = predictKnownTeam(base)
+  const captured = predictKnownTeam({ ...base, kills: [null, { air: null, ground: null, captures: 1 }] })
+  // p2's aircraft share (the team's class shares, ~0.27) goes; p1's plane stays.
+  assert.ok(plain.setup.expected.F - captured.setup.expected.F > 0.2, `F ${plain.setup.expected.F} → ${captured.setup.expected.F}`)
+  assert.ok(captured.setup.expected.F > 0.7, `F ${captured.setup.expected.F}`)
 })

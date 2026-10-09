@@ -154,11 +154,13 @@ test('a screenshot reply names the flags it used and who shows none, or asks for
     flags: { icons: ['germany_modern', 'usa', 'usa_modern', 'south_africa'], operatorChance: 1 },
   }
   const report: ScoutImageReport = {
-    squadron: null, allySquadron: null, prediction, recognised: 1, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, vehicles, now: 0,
+    squadron: null, allySquadron: null, prediction, recognised: 1, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, killsShown: 0, vehicles, now: 0,
   }
   const used = formatScoutImageReport(report).description
   assert.match(used, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
   assert.doesNotMatch(used, /no flag/)
+  assert.doesNotMatch(used, /destroyed or captured/)
+  assert.match(formatScoutImageReport({ ...report, killsShown: 2 }).description, /What 2 enemies have already destroyed or captured narrows their vehicles too\./)
   const someOut = formatScoutImageReport({ ...report, enemyFlags: { read: 4, rowsWithout: 1 } }).description
   assert.match(someOut, /1 enemy shows no flag \(not spawned yet or destroyed\): their chances rest on their battles alone\./)
   const none = { ...report, prediction: { ...prediction, flags: null } }
@@ -207,7 +209,7 @@ test('a screenshot reply names a new player\'s likely vehicle, marks new ones an
   }
   const report: ScoutImageReport = {
     squadron: null, allySquadron: null, prediction, recognised: 2, unread: [], enemyFlags: { read: 0, rowsWithout: null },
-    statShark: { players: 0, pending: true }, vehicles, now: 0,
+    statShark: { players: 0, pending: true }, killsShown: 0, vehicles, now: 0,
   }
   const text = formatScoutImageReport(report)
   assert.match(text.description, /A vehicle not seen from a player at this BR \(new\) is guessed from what squadrons take at it\./)

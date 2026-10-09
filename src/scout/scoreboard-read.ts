@@ -2,12 +2,14 @@
  * Reads a scoreboard screenshot end to end (worker side): table rows
  * (scoreboard-image.ts) → Tesseract passes (ocr.ts) → known players and
  * teams (nick-match.ts) → the flags above the table (flags.ts) and the
- * enemy rows' icons (row-icons.ts). The test set and its scores:
+ * enemy rows' icons (row-icons.ts) and numbers (scoreboard-columns.ts). The
+ * test set and its scores:
  * `npm run scout:images`.
  */
 
 import { readScoreboardFlags, tableMiddle, type FlagTemplatePack, type ScoreboardFlags } from './flags.js'
 import { readEnemyRowIcons, type RowIcon } from './row-icons.js'
+import { readEnemyColumns, type RowColumns } from './scoreboard-columns.js'
 import { decodeImage, encodePgm, findScoreboardRows, scoreboardSheet } from './scoreboard-image.js'
 import { parseTesseractTsv, runTesseract, OCR_PASSES } from './ocr.js'
 import { indexPlayers, matchRows, splitTeams, unreadEnemyRows, type IndexedPlayer, type KnownPlayer, type NickMatch } from './nick-match.js'
@@ -29,7 +31,9 @@ export interface ScoreboardReadResult {
   flags: ScoreboardFlags | null
   /** Per row, the icon of a player not in a vehicle on the enemy side; null — none; the whole null — the icon column not in the picture, or one team. */
   enemyIcons: (RowIcon | null)[] | null
-  ms: { layout: number; ocr: number; match: number; flags: number }
+  /** Per row, the enemy side's numbers (null — a cell not read); the whole null — the columns are not in the picture. */
+  enemyColumns: (RowColumns | null)[] | null
+  ms: { layout: number; ocr: number; match: number; flags: number; columns: number }
 }
 
 /** `flags.icons` — the flags vehicles show (the vehicle dictionary's trees and operators); null — every template. */
@@ -42,8 +46,8 @@ export async function readScoreboard(
   const started = performance.now()
   const image = decodeImage(bytes)
   const layout = findScoreboardRows(image)
-  const ms = { layout: performance.now() - started, ocr: 0, match: 0, flags: 0 }
-  const empty = { ocrRows: [], enemies: [], allies: [], oneSide: [], unread: [], unreadRows: [], flags: null, enemyIcons: null }
+  const ms = { layout: performance.now() - started, ocr: 0, match: 0, flags: 0, columns: 0 }
+  const empty = { ocrRows: [], enemies: [], allies: [], oneSide: [], unread: [], unreadRows: [], flags: null, enemyIcons: null, enemyColumns: null }
   if (!layout) return { status: 'no-table', rows: 0, ...empty, ms }
   const sheet = scoreboardSheet(image, layout)
   const ocrStarted = performance.now()
@@ -55,14 +59,23 @@ export async function readScoreboard(
   ms.match = performance.now() - matchStarted
   const ocrRows = layout.rows.map((_, index) => readings.map((reading) => reading[index]!.words.map((word) => word.text).join(' ')))
   const base = { rows: layout.rows.length, ocrRows, enemies: split.enemies, allies: split.allies, oneSide: split.oneSide, ms }
-  if (split.splitX === null) return { status: split.oneSide.length > 0 ? 'one-side' : 'no-players', unread: [], unreadRows: [], flags: null, enemyIcons: null, ...base }
+  if (split.splitX === null) {
+    return { status: split.oneSide.length > 0 ? 'one-side' : 'no-players', unread: [], unreadRows: [], flags: null, enemyIcons: null, enemyColumns: null, ...base }
+  }
   const flagsStarted = performance.now()
   const middle = tableMiddle(split.allyEdge, layout)
   const read = flags ? readScoreboardFlags(image, layout, flags.pack, middle, flags.icons) : null
   const enemyIcons = readEnemyRowIcons(image, layout, middle)
   ms.flags = performance.now() - flagsStarted
+  const columnsStarted = performance.now()
+  const enemyColumns = await readEnemyColumns(image, layout, middle, tesseract).catch((error: unknown) => {
+    // The reply still comes without the kill columns.
+    console.warn('[scout] reading the enemy columns failed:', error)
+    return null
+  })
+  ms.columns = performance.now() - columnsStarted
   const unread = unreadEnemyRows(readings, split)
-  return { status: 'ok', unread: unread.map((row) => row.text), unreadRows: unread.map((row) => row.row), flags: read, enemyIcons, ...base }
+  return { status: 'ok', unread: unread.map((row) => row.text), unreadRows: unread.map((row) => row.row), flags: read, enemyIcons, enemyColumns, ...base }
 }
 
 const CANDIDATE_TTL_MS = 10 * 60_000

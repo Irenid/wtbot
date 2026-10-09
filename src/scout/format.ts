@@ -243,6 +243,9 @@ export function formatScoutImageReport(report: ScoutImageReport): ScoutEmbedText
   } else {
     lines.push(`Vehicle chances come from each player's own battles${brText}. A screenshot after they spawn shows their flags and sharpens the guess.`)
   }
+  if (report.killsShown > 0) {
+    lines.push(`What ${report.killsShown === 1 ? '1 enemy has' : `${report.killsShown} enemies have`} already destroyed or captured narrows their vehicles too.`)
+  }
   const guessed = prediction.players.some((player) => player.newVehicles.some((vehicle) => vehicle.chance >= MIN_ALTERNATIVE_CHANCE))
   if (guessed) {
     const shark = report.statShark.players > 0 ? ` and their battles on StatShark (${report.statShark.players} ${report.statShark.players === 1 ? 'player' : 'players'})` : ''

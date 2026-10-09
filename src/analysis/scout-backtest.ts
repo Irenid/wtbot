@@ -8,7 +8,7 @@
 // each keeps its samples, and every Newton step of a fit is a map-reduce.
 // --known-team instead scores the picture path (scout-known-backtest.ts; with
 // --fit / --fit-all it fits that path's weights, --statshark adds StatShark).
-// Run: npm run scout:backtest -- <copy.db> [--fit | --fit-all] [--known-team [--statshark]] [--split YYYY-MM-DD]
+// Run: npm run scout:backtest -- <copy.db> [--fit | --fit-all] [--known-team [--statshark] [--unread-live] [--variants REGEX]] [--split YYYY-MM-DD]
 //      [--threads N] [--vehicles data/wt-vehicles.json]
 // Read-only; never point it at the live data/wtbot.db while the bot writes it.
 import { existsSync } from 'node:fs'
@@ -520,9 +520,9 @@ class WorkerHandle {
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const value = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined)
-  const dbPath = args.find((arg, i) => !arg.startsWith('--') && !['--split', '--threads', '--vehicles'].includes(args[i - 1] ?? ''))
+  const dbPath = args.find((arg, i) => !arg.startsWith('--') && !['--split', '--threads', '--vehicles', '--variants'].includes(args[i - 1] ?? ''))
   if (!dbPath || !existsSync(dbPath)) {
-    console.error('Usage: npm run scout:backtest -- <copy.db> [--fit | --fit-all] [--known-team [--statshark]] [--split YYYY-MM-DD] [--threads N] [--vehicles data/wt-vehicles.json]')
+    console.error('Usage: npm run scout:backtest -- <copy.db> [--fit | --fit-all] [--known-team [--statshark] [--unread-live] [--variants REGEX]] [--split YYYY-MM-DD] [--threads N] [--vehicles data/wt-vehicles.json]')
     process.exit(1)
   }
   const fitMode = args.includes('--fit-all') ? 'all' : args.includes('--fit') ? 'train' : null
@@ -532,7 +532,14 @@ async function main(): Promise<void> {
   const elapsed = () => `${((performance.now() - started) / 1000).toFixed(1)} s`
   const dict = JSON.parse(await readFile(value('--vehicles') ?? 'data/wt-vehicles.json', 'utf8')) as VehicleDict
   if (args.includes('--known-team')) {
-    await knownTeamBacktest(dbPath, dict, split, { fit: fitMode, statshark: args.includes('--statshark'), threads: Math.min(threads, 12) })
+    const variants = value('--variants')
+    await knownTeamBacktest(dbPath, dict, split, {
+      fit: fitMode,
+      statshark: args.includes('--statshark'),
+      threads,
+      variants: variants === undefined ? undefined : new RegExp(variants),
+      unreadLive: args.includes('--unread-live'),
+    })
     return
   }
 

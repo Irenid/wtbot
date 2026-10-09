@@ -410,17 +410,135 @@ Measured 2026-10-09 on the known-team backtest (20,338 teams of 8 of
   half of the players and scored on the other (`SCOUT_SHARK_FOLD=0|1`), their
   first vehicle with everyone in a vehicle went 75.4% → 77.4% and 84.5% →
   85.8% (483 and 387 player-teams), without flags 71.4% → 72.0% and 80.9% →
-  81.9%. StatShark answered 429 after ~60 profiles in a row and still did 15
-  minutes later: a 429 now pauses the whole source (`PlayerStatsService`),
+  81.9%. These gains came from snapshots read after the battle (see
+  "StatShark without the leak" below). StatShark answered 429 after ~60
+  profiles in a row and still did 15 minutes later: a 429 now pauses the
+  whole source (`PlayerStatsService`),
   doubling from 5 minutes to 6 hours, and a screenshot's update then comes
   without it. Live, the first reply and every reply during such a pause read
   each enemy's latest snapshot however old (19 of the 84 were over 2 days old
   on 2026-10-09, the oldest 10 days), so since 2026-10-09 a snapshot older
   than `STATSHARK_FRESH_SEC` (2 days) gives battle counts only: a vehicle
   bought or played since would otherwise count as never played (×0.02).
-- **Constants**: `npm run scout:backtest -- <copy.db> --known-team --fit-all
-  --statshark` on the backup of 2026-10-08 22:04 UTC (99,664 teams, 72,282
-  new-vehicle events); the table above is `--fit` (before 2026-10-01).
+- **Constants**: refitted 2026-10-09 with the kill columns and the air knots
+  (next section): `npm run scout:backtest -- <copy.db> --known-team --fit-all
+  --statshark` on the backup of 2026-10-09 10:05 UTC (99,865 teams, 72,485
+  new-vehicle events); the tables are `--fit` (before 2026-10-01).
+
+### Kill columns, StatShark without the leak, the outcome check
+
+Measured 2026-10-09 on the backup of 10:05 UTC (`--known-team --fit
+--statshark`: 20,808 teams of 8 scored from 2026-10-01, fitted before)
+unless said otherwise.
+
+- **History is at its ceiling.** An offline replica of the per-player model
+  (Python: `vehicleChoiceFeatures`' features on the backtest's teams, 76.3%
+  without flags as the backtest) found nothing for the first vehicle in the
+  lineup's slot order (a switch inside an unchanged lineup takes the earliest
+  other slot 42.1% against 29.8% by chance, yet 76.28% → 76.25%, and
+  81.50% → 81.24% with each player's flag known), class-specific repeat rates
+  (in a session aircraft 86.1%, tanks 83.6%, light tanks 80.0%, SPAA 75.7%:
+  76.27%), the player's switch rate (76.24%), or `VEHICLE_WEIGHTS` refitted on
+  this path's players (the same weights). The opponent's context adds ~0.1:
+  28.1% of teams met the same squadron in the previous 3 h; the previous
+  battle's opponent air and rematch × that meeting's air raise SPAA picks'
+  log-likelihood by 372 and 124 on 144k player-battles, the first vehicle
+  76.59% → 76.71% (ROADMAP).
+- **StatShark without the leak.** `--statshark` counted a snapshot read up to
+  3 days after the battle, so the games played since leaked into "never
+  played" and set `notPlayed` to −3.82 (−7.03 fitted before the split).
+  Counted as the reply reads it (the latest snapshot by its update; fresh
+  within `STATSHARK_FRESH_SEC`), 11 of the 72,485 new-vehicle events have one
+  (6 fresh), and the two weights fall to their prior (`SHARK_L2`): 0.077 and
+  −0.369. The first vehicle is unchanged (77.2% without flags, 82.5% with
+  everyone in a vehicle); the earlier "+1–2 points with StatShark" was the
+  leak. Live, a snapshot older than 2 days gives counts only.
+- **Kill columns.** Each enemy row shows its score, air and ground targets
+  destroyed, assists, zones captured and deaths. By the time since the first
+  spawn (the events' kill feed, team kills left out), the share of players
+  showing no kill / air kills only / ground kills only / both
+  (`KILL_LIKELIHOODS`):
+
+  | At 120 s | none | air | ground | both |
+  |---|---|---|---|---|
+  | SPAA | 66.7% | 31.4% | 1.5% | 0.5% |
+  | tanks | 82.7% | 0.8% | 16.3% | 0.2% |
+  | light tanks | 84.7% | 5.4% | 9.5% | 0.4% |
+  | aircraft | 87.2% | 5.3% | 7.2% | 0.2% |
+
+  At 180 s SPAA show air kills 44.7%, tanks 1.2%. The board counts a scout
+  drone as an air kill (the two M247 of `e-ch68-full` shot theirs 57 and 61 s
+  into the replay), which is how an SPAA shows itself first. A capture needs a ground
+  vehicle (aircraft ×0.01, helicopters ×0.1). Each recognised enemy's options
+  are weighed by their class's chance of the row's pattern; without the
+  moment (the timer is not read) a kill shown uses the 180 s row and no kill
+  says nothing — knowing the moment moved the results below by under 0.1
+  point.
+
+  First vehicle right / class right with the columns, out of sample
+  (operator flags and row icons as the game shows them, columns read
+  without error):
+
+  | Screenshot | Without columns | With columns |
+  |---|---|---|
+  | 60 s after the first spawn | 82.1% / 87.4% | 82.3% / 87.6% |
+  | 120 s | 81.6% / 87.0% | 82.1% / 87.6% |
+  | 180 s | 80.5% / 86.3% | 81.4% / 87.4% |
+  | 300 s | 79.2% / 85.4% | 80.3% / 86.8% |
+
+  Log loss falls at every moment (180 s: 0.665 → 0.641). Players without
+  battles at the cap gain the most (180 s: 25.6% → 27.3%). The offline replica
+  without flags gave +0.15 / +0.51 / +0.89 / +1.08 points at the same moments.
+
+- **Reading the columns** (`scoreboard-columns.ts`). The six header icons
+  stand 0.8–1.75 row pitches above the first row; plane → skull are evenly
+  spaced and ★ → plane is 1.76 spacings, while their offsets in pitches vary
+  with the screen width and UI scale (★ 17.4–22.2 pitches right of the
+  middle), so the columns are found from the icons. Each cell's ink is its
+  brightness over the cell's own background (a colour mask lost thin strokes
+  of the lighter row stripes to JPEG's half-resolution colour), the cells are
+  cropped and set three text heights apart in one line per row, and one
+  Tesseract call with a digit whitelist reads them; the picture's own zero
+  (the glyph most cells share, a ring Tesseract mostly reads as 0) overrules a
+  number read off a zero (correlation ≥ 0.3: zeros 0.34–1.00, ones and fives
+  −0.18–0.19), so doubt falls to "no kill". The bot image's Tesseract 5.3.0
+  read lone zeros away with one cell per line, ran neighbours into one number
+  closer than three text heights, and read zeros of the lighter stripes as 1,
+  4 or 9. On the four test screenshots with the columns: 192 of 192 cells,
+  ~0.4–0.5 s an image.
+- **"At least one aircraft"** was 7–16 points low between 50% and 90% (with
+  flags said 65.2%, happened 81.6%). After the logistic calibration it now
+  goes through isotonic knots per case (`KNOWN_TEAM_AIR_KNOTS`: no flags,
+  flags with every enemy row in a vehicle, other flags), fitted at every
+  screenshot moment with the kill columns; with flags and everyone in a vehicle the middle bands
+  now say 54.9 / 65.1 / 75.8 / 85.6% where 62.9 / 73.2 / 83.0 / 91.7% happen
+  (before: 64.7 / 81.6 / 83.6 / 93.2%), without flags 55.7 / 65.4 / 75.2 /
+  85.9% where 54.9 / 70.4 / 79.4 / 90.5% happen (before: 55.3 / 72.8 / 82.1 /
+  93.1%). The rest is the test period's air (October's 8.0 and 9.0 caps) above
+  the fitting period's: the cap's air share as a calibration feature is the
+  next step (ROADMAP).
+- **Last played together** is the latest battle at least four of them played
+  (`GROUP_MIN_SHARED`), else the one with the most of them: the most-players
+  rule alone picked a battle 69 h old (median) in 2.9% of teams where a
+  group's was 22 h old.
+- **Unread rows.** 1.52% of October's player-battles had no earlier stored
+  battle (6% none at the cap); a screenshot cannot name them, while the
+  backtest scored them as known. `--unread-live` makes them unread rows:
+  the recognised enemies' first vehicle is right 78.1% without
+  flags, 83.2% with everyone in a vehicle and 82.2% at 180 s with the kill
+  columns — 0.7–0.9 points above the all-known figures, the unread being the
+  hardest — while 1.2% of the enemies get classes only. (The live matcher
+  knows the last 120 days, the backtest any stored battle: 86 days so far.)
+- **Outcome check.** Each record keeps its reply's prediction (and the update
+  after StatShark); `npm run scout:outcomes -- <copy.db>` finds each record's
+  battle (most recognised enemies on one team, started within 45 min before
+  the post) and scores reading, first vehicle, stated chance and setup by the
+  moment. The four channel records of 2026-10-08 were test posts of battles
+  18.5 h older, so none counts yet.
+- **The backtest on 26 threads.** Workers stream the rows with shared strings
+  and lineups and rebuild a team's inputs for each pass (keeping them took
+  15 GB at 12 threads): 7 GiB on 26 threads, a full `--fit` run 333 s instead
+  of 474 s with identical results; `--variants REGEX` scores a subset.
 
 ## Guessing the enemy from server data
 

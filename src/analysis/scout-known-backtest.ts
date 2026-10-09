@@ -11,8 +11,11 @@
 // OPPONENT_AIR_WEIGHTS and KNOWN_TEAM_SETUP_CALIBRATION on the teams before
 // the split, --fit-all on every team (the values to ship). --statshark adds the
 // StatShark battles stored for players: a snapshot read after the battle, so
-// its counts may include later games. Teams are split over worker threads,
-// each loading the rows itself (~0.5 GB a thread).
+// its counts may include later games. Teams are split over worker threads
+// (all cores but two): each streams the rows itself with strings and lineups
+// shared, and rebuilds a team's inputs for each pass (keeping them for every
+// team took 15 GB at 12 threads). `--variants <regex>` scores only the variants
+// whose label matches ("full, no flags", "full, 30 s after the first spawn").
 // Read-only; never point it at the live data/wtbot.db while the bot writes it.
 import { DatabaseSync } from 'node:sqlite'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
@@ -20,12 +23,16 @@ import { dictionaryFlags, IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON, type Fl
 import {
   AIR_CALIBRATION,
   COMPOSITION_CALIBRATION,
+  KILL_LIKELIHOODS,
+  KILL_MOMENTS,
+  KNOWN_TEAM_AIR_KNOTS,
   KNOWN_TEAM_SETUP_CALIBRATION,
   NEW_VEHICLE_FEATURES,
   NEW_VEHICLE_WEIGHTS,
   OPPONENT_AIR_MEAN,
   OPPONENT_AIR_WEIGHTS,
   SCOUT_CLASSES,
+  STATSHARK_FRESH_SEC,
   airCalibrationFeatures,
   compositionCalibrationFeatures,
   newVehicleFeatures,
@@ -35,6 +42,10 @@ import {
   predictKnownTeam,
   stageAt,
   type KnownTeamInput,
+  type AirKnotMode,
+  type ChanceKnots,
+  type KillColumns,
+  type KillTable,
   type KnownTeamPrediction,
   type PlayerBackground,
   type ScoutBattle,
@@ -60,9 +71,19 @@ const MOMENTS = ['all', 10, 30, 60, 120, 180, 300] as const
 type Moment = (typeof MOMENTS)[number]
 /** The flags calibration is fitted on screenshots from the spawns to the first losses (scouting is early). */
 const FIT_MOMENTS = [10, 30, 60, 120] as const
-/** StatShark snapshots count for battles up to this long before they were read (the validation sample: 1–2 days). */
-const SHARK_AFTER_SEC = 3 * 86_400
+/** Every screenshot moment and none: the air knots map what any reply says. */
+const MOMENTS_ALL = [null, ...MOMENTS] as const
+/**
+ * A StatShark snapshot counts as live would have it: the latest read by the
+ * reply's update (the screenshot queues the refresh; STATSHARK_WAIT_MS caps the
+ * wait), fresh within STATSHARK_FRESH_SEC. Counting snapshots read days after
+ * the battle (3 days until 2026-10-09) let the games played since leak into
+ * "never played".
+ */
+const SHARK_UPDATE_SEC = 300
 const L2 = 1e-3
+/** The two StatShark weights get a N(0, 0.5²) prior while few players have a snapshot read before their battle. */
+const SHARK_L2 = 4
 const PROB_EDGES = [0, 0.1, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0001]
 const COMPOSITION_EDGES = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0001]
 const NEW_DIM = NEW_VEHICLE_FEATURES.length
@@ -92,6 +113,8 @@ export interface KnownWeights {
   newVehicle: number[]
   opponentAir: Partial<Record<ScoutClass, number>>
   setup: Record<'flags' | 'noFlags', SetupCalibration>
+  kills: KillTable
+  airKnots: Record<AirKnotMode, ChanceKnots>
 }
 
 type ModelKind = 'before' | 'guess' | 'full'
@@ -103,6 +126,8 @@ interface Variant {
   icons: boolean
   /** With StatShark battles in the backgrounds (when loaded). */
   statshark: boolean
+  /** The rows' kill columns at the moment, the timer read ('moment') or not ('unknown'); null — not read. */
+  kills: 'moment' | 'unknown' | null
 }
 
 interface Tally {
@@ -115,6 +140,8 @@ interface Tally {
   classTop1: number
   coldN: number
   coldTop1: number
+  /** Players left unread (--unread-live): not in the per-player figures. */
+  unreadN: number
   shark: { n: number; top1: number; loss: number }
   bins: Bins
   teams: number
@@ -129,12 +156,12 @@ interface Tally {
   airError: number
 }
 const emptyTally = (): Tally => ({
-  n: 0, top1: 0, top3: 0, loss: 0, lumped: 0, classTop1: 0, coldN: 0, coldTop1: 0, shark: { n: 0, top1: 0, loss: 0 },
+  n: 0, top1: 0, top3: 0, loss: 0, lumped: 0, classTop1: 0, coldN: 0, coldTop1: 0, unreadN: 0, shark: { n: 0, top1: 0, loss: 0 },
   bins: emptyBins(PROB_EDGES), teams: 0, inVehicle: 0, lines: new Array<number>(9).fill(0), operator: 0,
   setupTeams: 0, compHit: 0, compSaid: 0, comp: emptyBins(COMPOSITION_EDGES), air: emptyBins(PROB_EDGES), airError: 0,
 })
 function mergeTally(target: Tally, source: Tally): void {
-  for (const key of ['n', 'top1', 'top3', 'loss', 'lumped', 'classTop1', 'coldN', 'coldTop1', 'teams', 'inVehicle', 'operator', 'setupTeams', 'compHit', 'compSaid', 'airError'] as const) {
+  for (const key of ['n', 'top1', 'top3', 'loss', 'lumped', 'classTop1', 'coldN', 'coldTop1', 'unreadN', 'teams', 'inVehicle', 'operator', 'setupTeams', 'compHit', 'compSaid', 'airError'] as const) {
     target[key] += source[key]
   }
   target.shark.n += source.shark.n
@@ -161,6 +188,8 @@ interface KnownWorkerInput {
   parts: number
   fit: 'train' | 'all' | null
   statshark: boolean
+  /** Players without a stored battle are unread rows, as on a screenshot (the matcher knows only stored nicks). */
+  unreadLive: boolean
 }
 
 type KnownRequest =
@@ -168,6 +197,8 @@ type KnownRequest =
   | { op: 'newEval'; weights: number[] }
   | { op: 'opponent'; weights: number[] }
   | { op: 'setup'; weights: KnownWeights; test: boolean }
+  | { op: 'killTable' }
+  | { op: 'airSamples'; weights: KnownWeights }
   | { op: 'evaluate'; weights: KnownWeights; variants: Variant[] }
   | { op: 'close' }
 
@@ -193,21 +224,40 @@ interface TeamContext {
   /** Scored (from the split). */
   test: boolean
   now: number
+  stage: ScoutStage
+  opponentAir: number | null
+  order: Row[]
+  place: Map<string, number>
+  times: Map<string, Timeline> | null | undefined
+}
+
+/** A team's inputs, rebuilt by each pass (inputsOf) rather than kept for every team. */
+interface TeamInputs {
   battles: ScoutBattle[]
   capSpawns: Map<string, number>
   backgrounds: Map<string, PlayerBackground>
   /** The same without StatShark battles (--statshark: their effect). */
   plainBackgrounds: Map<string, PlayerBackground>
-  opponentAir: number | null
   /** The vehicles seen from each player at this cap (the guess leaves them out). */
   seenAtCap: Map<string, Set<string>>
-  order: Row[]
-  place: Map<string, number>
-  times: Map<string, { spawn: number; loss: number }> | null | undefined
+  /** Players with a stored battle by the query (a screenshot can name them). */
+  known: Set<string>
 }
 
-/** Seconds from the battle's first spawn to each slot's first spawn, and to that vehicle's loss (Infinity: never). */
-function spawnTimes(db: DatabaseSync, sessionId: string): Map<string, { spawn: number; loss: number }> | null {
+/** A slot's battle from its events: seconds from the battle's first spawn to its first spawn and that vehicle's loss (Infinity: never), and its kills. */
+interface Timeline {
+  spawn: number
+  loss: number
+  /** Enemy vehicles it destroyed: seconds, and whether an aircraft, a helicopter or a drone (the board's air column). */
+  kills: { t: number; air: boolean }[]
+}
+
+function battleTimeline(
+  db: DatabaseSync,
+  sessionId: string,
+  teamOf: ReadonlyMap<string, number>,
+  classOf: (id: string) => VehicleClass,
+): Map<string, Timeline> | null {
   const row = db.prepare('SELECT events_blob FROM battle_events WHERE session_id = ?').get(sessionId) as { events_blob: Uint8Array } | undefined
   if (!row) return null
   const events = decodeEventsPayload(row.events_blob) as Pick<ReplayEvents, 'units' | 'kills'>
@@ -220,12 +270,20 @@ function spawnTimes(db: DatabaseSync, sessionId: string): Map<string, { spawn: n
   }
   if (first.size === 0) return null
   const t0 = Math.min(...[...first.values()].map((spawn) => spawn.t))
-  const times = new Map<string, { spawn: number; loss: number }>()
+  const timelines = new Map<string, Timeline>()
   for (const [userId, spawn] of first) {
     const losses = events.kills.filter((kill) => kill.victimId === userId && vehicleIdOfModel(kill.victimModel) === spawn.vehicle && kill.time >= spawn.t)
-    times.set(userId, { spawn: (spawn.t - t0) / 1000, loss: losses.length > 0 ? (Math.min(...losses.map((kill) => kill.time)) - t0) / 1000 : Infinity })
+    timelines.set(userId, { spawn: (spawn.t - t0) / 1000, loss: losses.length > 0 ? (Math.min(...losses.map((kill) => kill.time)) - t0) / 1000 : Infinity, kills: [] })
   }
-  return times
+  for (const kill of events.kills) {
+    const killer = timelines.get(kill.killerId)
+    const team = teamOf.get(kill.killerId)
+    if (!killer || team === undefined || teamOf.get(kill.victimId) === team) continue
+    const cls = classOf(vehicleIdOfModel(kill.victimModel))
+    const air = cls === 'F' || cls === 'H' || (cls === '?' && !kill.victimModel.startsWith('tankModels/'))
+    killer.kills.push({ t: (kill.time - t0) / 1000, air })
+  }
+  return timelines
 }
 
 function runKnownWorker(input: KnownWorkerInput): void {
@@ -238,34 +296,45 @@ function runKnownWorker(input: KnownWorkerInput): void {
     SELECT bp.session_id, bp.team, bp.user_id, bp.bot_user_id, bp.nick, bp.clan_tag, bp.vehicle, bp.vehicles, b.start_time, b.duration_sec, b.ingested_at
     FROM battle_players bp JOIN battles b ON b.session_id = bp.session_id
     WHERE bp.team > 0 AND bp.user_id NOT LIKE '-%'
-  `).all() as {
+  `).iterate() as Iterable<{
     session_id: string; team: number; user_id: string; bot_user_id: string | null; nick: string; clan_tag: string; vehicle: string | null
     vehicles: string; start_time: number; duration_sec: number; ingested_at: number
-  }[]
-  const statshark = new Map<string, { fetchedAt: number; battles: Map<string, number> }>()
+  }>
+  /** Every StatShark snapshot of a player, oldest first. */
+  const statshark = new Map<string, { fetchedAt: number; battles: Map<string, number> }[]>()
   if (input.statshark) {
     const rows = db.prepare(`
-      SELECT i.wt_user_id AS user_id, s.fetched_at, v.vehicle_id, sum(coalesce(v.victories, 0) + coalesce(v.defeats, 0)) AS battles
+      SELECT i.wt_user_id AS user_id, s.id AS snapshot_id, s.fetched_at, v.vehicle_id, sum(coalesce(v.victories, 0) + coalesce(v.defeats, 0)) AS battles
       FROM player_external_snapshots s
       JOIN player_identities i ON i.id = s.identity_id
       JOIN player_external_vehicles v ON v.snapshot_id = s.id
       WHERE s.source = 'statshark' AND s.status = 'ok' AND i.wt_user_id IS NOT NULL
-        AND s.id = (SELECT max(s2.id) FROM player_external_snapshots s2 WHERE s2.identity_id = s.identity_id AND s2.source = 'statshark' AND s2.status = 'ok')
-      GROUP BY i.wt_user_id, v.vehicle_id
-    `).all() as { user_id: string; fetched_at: number; vehicle_id: string; battles: number }[]
+      GROUP BY s.id, v.vehicle_id
+      ORDER BY s.fetched_at, s.id
+    `).all() as { user_id: string; snapshot_id: number; fetched_at: number; vehicle_id: string; battles: number }[]
+    const bySnapshot = new Map<number, { fetchedAt: number; battles: Map<string, number> }>()
     for (const row of rows) {
-      let entry = statshark.get(row.user_id)
-      if (!entry) statshark.set(row.user_id, (entry = { fetchedAt: row.fetched_at, battles: new Map() }))
-      entry.battles.set(row.vehicle_id, row.battles)
+      let snapshot = bySnapshot.get(row.snapshot_id)
+      if (!snapshot) {
+        bySnapshot.set(row.snapshot_id, (snapshot = { fetchedAt: row.fetched_at, battles: new Map() }))
+        const list = statshark.get(row.user_id)
+        if (list) list.push(snapshot)
+        else statshark.set(row.user_id, [snapshot])
+      }
+      snapshot.battles.set(row.vehicle_id, row.battles)
     }
   }
   // SCOUT_SHARK_FOLD=0|1: the StatShark weights are fitted on the other half of the players (by user id) and scored on this half.
   const fold = process.env['SCOUT_SHARK_FOLD']
   const heldOut = (userId: string): boolean => fold === undefined || Number(BigInt(userId) % 2n) === Number(fold)
-  /** A snapshot counts like a fresh one at query time: read at most a day before or SHARK_AFTER_SEC after (its later games leak in). */
-  const sharkAt = (userId: string, now: number): Map<string, number> | null => {
-    const entry = statshark.get(userId)
-    return entry && entry.fetchedAt >= now - 86_400 && entry.fetchedAt <= now + SHARK_AFTER_SEC ? entry.battles : null
+  /** The snapshot the reply's update would read (SHARK_UPDATE_SEC); fresh within STATSHARK_FRESH_SEC. */
+  const sharkAt = (userId: string, now: number): { battles: Map<string, number>; fresh: boolean } | null => {
+    let latest: { fetchedAt: number; battles: Map<string, number> } | null = null
+    for (const snapshot of statshark.get(userId) ?? []) {
+      if (snapshot.fetchedAt > now + SHARK_UPDATE_SEC) break
+      latest = snapshot
+    }
+    return latest && { battles: latest.battles, fresh: latest.fetchedAt >= now - STATSHARK_FRESH_SEC }
   }
   const classOf = (id: string): VehicleClass => dict[id]?.cls ?? '?'
   const nationOf = (id: string): string => dict[id]?.country ?? '?'
@@ -273,26 +342,37 @@ function runKnownWorker(input: KnownWorkerInput): void {
   const flagsOf = dictionaryFlags(dict)
   const operatorFlag = (id: string) => flagsOf(id)?.operator ?? dict[id]?.country ?? '?'
 
+  // One copy of each string and lineup (92% of lineups repeat the player's previous one); nothing mutates them.
+  const strings = new Map<string, string>()
+  const intern = (value: string): string => {
+    const known = strings.get(value)
+    if (known !== undefined) return known
+    strings.set(value, value)
+    return value
+  }
+  const lineups = new Map<string, string[]>()
   const byPlayer = new Map<string, Row[]>()
   const teams = new Map<string, Row[]>()
   for (const row of raw) {
     const endTime = row.start_time + row.duration_sec
     const lag = row.ingested_at - endTime
+    let lineup = lineups.get(row.vehicles)
+    if (!lineup) lineups.set(row.vehicles, (lineup = (JSON.parse(row.vehicles) as string[]).map(intern)))
     const entry: Row = {
-      key: `${row.session_id}:${row.team}`,
-      sessionId: row.session_id,
+      key: intern(`${row.session_id}:${row.team}`),
+      sessionId: intern(row.session_id),
       team: row.team,
-      userId: row.user_id,
-      botUserId: row.bot_user_id,
-      nick: row.nick,
-      core: core(row.clan_tag),
-      vehicle: row.vehicle,
-      lineup: JSON.parse(row.vehicles) as string[],
+      userId: intern(row.user_id),
+      botUserId: row.bot_user_id === null ? null : intern(row.bot_user_id),
+      nick: intern(row.nick),
+      core: intern(core(row.clan_tag)),
+      vehicle: row.vehicle === null ? null : intern(row.vehicle),
+      lineup,
       startTime: row.start_time,
       endTime,
       availableAt: lag >= 0 && lag <= LIVE_INGEST_MAX_SEC ? row.ingested_at : endTime + SIMULATED_INGEST_SEC,
     }
-    for (const [map, key] of [[byPlayer, row.user_id], [teams, entry.key]] as const) {
+    for (const [map, key] of [[byPlayer, entry.userId], [teams, entry.key]] as const) {
       const list = map.get(key)
       if (list) list.push(entry)
       else map.set(key, [entry])
@@ -358,12 +438,31 @@ function runKnownWorker(input: KnownWorkerInput): void {
     const now = start + QUERY_DELAY_SEC
     const stage = stageAt(stages, now)
     if (!stage) return
-    const capFrom = periodBounds(stage).from
+    const opponent = teams.get(`${team[0]!.sessionId}:${team[0]!.team === 1 ? 2 : 1}`)
+    const opponentCore = opponent ? teamCore(opponent) : ''
+    const order = [...team].sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0))
+    contexts.push({
+      team,
+      train,
+      test,
+      now,
+      stage,
+      opponentAir: opponentCore === '' ? null : opponentAir((squadronTeams.get(opponentCore) ?? []).filter((t) => t.availableAt <= now)),
+      order,
+      place: new Map(order.map((row, i) => [row.userId, i])),
+      times: undefined,
+    })
+  })
+  /** The players' battles stored by the query, their backgrounds and the vehicles seen from them at the cap. */
+  const inputsOf = (context: TeamContext): TeamInputs => {
+    const { now } = context
+    const capFrom = periodBounds(context.stage).from
     const battles = new Map<string, ScoutBattle & { players: ScoutBattle['players'][number][] }>()
     const backgrounds = new Map<string, PlayerBackground>()
     const plainBackgrounds = new Map<string, PlayerBackground>()
     const seenAtCap = new Map<string, Set<string>>()
-    for (const player of team) {
+    const knownPlayers = new Set<string>()
+    for (const player of context.team) {
       const known: Row[] = []
       const seen = new Set<string>()
       for (const row of byPlayer.get(player.userId) ?? []) {
@@ -379,32 +478,40 @@ function runKnownWorker(input: KnownWorkerInput): void {
           for (const vehicle of row.lineup) seen.add(vehicle)
         }
       }
-      plainBackgrounds.set(player.userId, playerBackground(known, info))
-      backgrounds.set(player.userId, playerBackground(known, info, sharkAt(player.userId, now)))
+      const plain = playerBackground(known, info)
+      const shark = sharkAt(player.userId, now)
+      plainBackgrounds.set(player.userId, plain)
+      backgrounds.set(player.userId, shark ? { ...plain, battles: shark.battles, battlesFresh: shark.fresh } : plain)
       seenAtCap.set(player.userId, seen)
+      if (known.length > 0) knownPlayers.add(player.userId)
     }
-    const opponent = teams.get(`${team[0]!.sessionId}:${team[0]!.team === 1 ? 2 : 1}`)
-    const opponentCore = opponent ? teamCore(opponent) : ''
-    const order = [...team].sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0))
-    contexts.push({
-      team,
-      train,
-      test,
-      now,
-      battles: [...battles.values()],
-      capSpawns: capSpawnsAt(stage, now),
-      backgrounds,
-      plainBackgrounds,
-      opponentAir: opponentCore === '' ? null : opponentAir((squadronTeams.get(opponentCore) ?? []).filter((t) => t.availableAt <= now)),
-      seenAtCap,
-      order,
-      place: new Map(order.map((row, i) => [row.userId, i])),
-      times: undefined,
-    })
-  })
+    return { battles: [...battles.values()], capSpawns: capSpawnsAt(context.stage, now), backgrounds, plainBackgrounds, seenAtCap, known: knownPlayers }
+  }
   const timesOf = (context: TeamContext) => {
-    if (context.times === undefined) context.times = spawnTimes(db, context.team[0]!.sessionId)
+    if (context.times === undefined) {
+      const sessionId = context.team[0]!.sessionId
+      const teamOf = new Map<string, number>()
+      for (const side of [1, 2]) {
+        for (const row of teams.get(`${sessionId}:${side}`) ?? []) {
+          teamOf.set(row.userId, side)
+          if (row.botUserId) teamOf.set(row.botUserId, side)
+        }
+      }
+      context.times = battleTimeline(db, sessionId, teamOf, classOf)
+    }
     return context.times
+  }
+  /** What a row's kill columns show `moment` seconds after the first spawn. */
+  const columnsAt = (context: TeamContext, row: Row, moment: number): KillColumns => {
+    const kills = timesOf(context)?.get(row.botUserId ?? row.userId)?.kills ?? []
+    let air = 0
+    let ground = 0
+    for (const kill of kills) {
+      if (kill.t > moment) continue
+      if (kill.air) air += 1
+      else ground += 1
+    }
+    return { air, ground, captures: null }
   }
   const inVehicleAt = (context: TeamContext, row: Row, moment: Moment): boolean => {
     if (moment === 'all') return true
@@ -430,24 +537,38 @@ function runKnownWorker(input: KnownWorkerInput): void {
       flagsOf,
     }
   }
-  const predict = (context: TeamContext, model: ModelKind, flags: FlagEvidence | undefined, weights: KnownWeights | null, withShark = true): KnownTeamPrediction => {
+  const predict = (
+    context: TeamContext,
+    inputs: TeamInputs,
+    model: ModelKind,
+    flags: FlagEvidence | undefined,
+    weights: KnownWeights | null,
+    withShark = true,
+    kills: { moment: number; known: boolean } | null = null,
+  ): KnownTeamPrediction => {
+    // Live, a player without a stored battle is an unread row: after the recognised ones, keeping its place.
+    const recognised = input.unreadLive ? context.team.filter((row) => inputs.known.has(row.userId)) : context.team
+    const unread = input.unreadLive ? context.team.filter((row) => !inputs.known.has(row.userId)) : []
+    const seatOf = flags && new Map(context.team.map((row, i) => [row.userId, flags.seats[i]!]))
     const base: KnownTeamInput = {
-      players: context.team.map((row) => ({ userId: row.userId, nick: row.nick })),
-      unknownPlayers: 0,
-      battles: context.battles,
+      players: recognised.map((row) => ({ userId: row.userId, nick: row.nick })),
+      unknownPlayers: unread.length,
+      battles: inputs.battles,
       now: context.now,
       stages,
       classOf,
-      flags,
+      flags: flags && seatOf ? { ...flags, seats: [...recognised, ...unread].map((row) => seatOf.get(row.userId)!) } : flags,
+      ...(kills ? { kills: recognised.map((row) => columnsAt(context, row, kills.moment)), killMoment: kills.known ? kills.moment : null } : {}),
     }
-    if (model === 'before') return predictKnownTeam({ ...base, weights: { setup: SQUADRON_SETUP } })
+    const noKnots = { flags: [], noFlags: [], flagsAllIn: [] }
+    if (model === 'before') return predictKnownTeam({ ...base, weights: { setup: SQUADRON_SETUP, airKnots: noKnots } })
     const guess = {
       ...base,
-      capSpawns: context.capSpawns,
-      backgrounds: withShark ? context.backgrounds : context.plainBackgrounds,
+      capSpawns: inputs.capSpawns,
+      backgrounds: withShark ? inputs.backgrounds : inputs.plainBackgrounds,
       nationOf,
     }
-    if (model === 'guess') return predictKnownTeam({ ...guess, weights: { newVehicle: weights?.newVehicle ?? [...NEW_VEHICLE_WEIGHTS], setup: SQUADRON_SETUP } })
+    if (model === 'guess') return predictKnownTeam({ ...guess, weights: { newVehicle: weights?.newVehicle ?? [...NEW_VEHICLE_WEIGHTS], setup: SQUADRON_SETUP, airKnots: noKnots } })
     return predictKnownTeam({
       ...guess,
       opponentAir: context.opponentAir,
@@ -456,22 +577,25 @@ function runKnownWorker(input: KnownWorkerInput): void {
   }
 
   // New-vehicle events: a player taking a vehicle never seen from them at this cap.
-  interface NewEvent { train: boolean; test: boolean; rows: Float64Array; count: number; chosen: number }
+  interface NewEvent { train: boolean; test: boolean; rows: Float64Array; count: number; chosen: number; shark: 'fresh' | 'stale' | null }
   const events: NewEvent[] = []
   for (const context of contexts) {
+    const inputs = inputsOf(context)
     for (const row of context.team) {
-      const seen = context.seenAtCap.get(row.userId)!
+      const seen = inputs.seenAtCap.get(row.userId)!
       if (seen.has(row.vehicle!)) continue
-      const background = fold !== undefined && heldOut(row.userId) ? context.plainBackgrounds : context.backgrounds
-      const features = newVehicleFeatures(context.capSpawns, background.get(row.userId)!, seen, info)
+      const background = fold !== undefined && heldOut(row.userId) ? inputs.plainBackgrounds : inputs.backgrounds
+      const features = newVehicleFeatures(inputs.capSpawns, background.get(row.userId)!, seen, info)
       if (features.vehicles.length === 0) continue
       const index = features.vehicles.indexOf(row.vehicle!)
+      const own = background.get(row.userId)!
       events.push({
         train: context.train,
         test: context.test,
         rows: Float64Array.from(features.rows.flat()),
         count: features.rows.length,
         chosen: index >= 0 ? index : features.rows.length - 1,
+        shark: own.battles === null ? null : own.battlesFresh ? 'fresh' : 'stale',
       })
     }
   }
@@ -541,7 +665,7 @@ function runKnownWorker(input: KnownWorkerInput): void {
       const records: number[] = []
       for (const context of contexts) {
         if (!context.train || context.opponentAir === null) continue
-        const prediction = predict(context, 'guess', undefined, { newVehicle: w, opponentAir: {}, setup: SQUADRON_SETUP })
+        const prediction = predict(context, inputsOf(context), 'guess', undefined, { newVehicle: w, opponentAir: {}, setup: SQUADRON_SETUP, kills: KILL_LIKELIHOODS, airKnots: { flags: [], noFlags: [], flagsAllIn: [] } })
         const truth = new Map(context.team.map((row) => [row.userId, row.vehicle!]))
         for (const player of prediction.players) {
           const actual = truth.get(player.userId)!
@@ -567,6 +691,48 @@ function runKnownWorker(input: KnownWorkerInput): void {
       }
       return records
     },
+    /** Kill patterns (none, air, ground, both) per KILL_MOMENTS row and class over the fitting teams: [row][class][pattern]. */
+    killTable() {
+      const counts = KILL_MOMENTS.map(() => SCOUT_CLASSES.map(() => [0, 0, 0, 0]))
+      for (const context of contexts) {
+        if (!context.train || !timesOf(context)) continue
+        for (const row of context.team) {
+          const c = SCOUT_CLASSES.indexOf(classOf(row.vehicle!) as ScoutClass)
+          if (c < 0) continue
+          KILL_MOMENTS.forEach((moment, m) => {
+            const columns = columnsAt(context, row, moment)
+            counts[m]![c]![(columns.air! > 0 ? 1 : 0) + (columns.ground! > 0 ? 2 : 0)]! += 1
+          })
+        }
+      }
+      return counts
+    },
+    /** The calibrated air chance (before the knots) and whether air happened, at every screenshot moment with the kill columns: [mode 0 no flags / 1 flags / 2 flags all in, chance, happened]. */
+    airSamples(weights: KnownWeights) {
+      const plain = { ...weights, airKnots: { flags: [], noFlags: [], flagsAllIn: [] } }
+      const samples: number[] = []
+      for (const context of contexts) {
+        if (!context.train || !timesOf(context)) continue
+        let classesKnown = true
+        let air = 0
+        for (const row of context.team) {
+          const cls = classOf(row.vehicle!)
+          if (cls === '?') classesKnown = false
+          if (cls === 'F' || cls === 'H') air += 1
+        }
+        if (!classesKnown) continue
+        const inputs = inputsOf(context)
+        for (const moment of MOMENTS_ALL) {
+          const flags = evidenceAt(context, moment, 'operator', true)
+          if (flags === null) continue
+          const kills = typeof moment === 'number' ? { moment, known: false } : null
+          const prediction = predict(context, inputs, 'full', flags, plain, true, kills)
+          const allIn = flags !== undefined && flags.seats.every((seat) => seat.inVehicle === IN_VEHICLE_WITHOUT_ICON)
+          samples.push(prediction.flags ? (allIn ? 2 : 1) : 0, prediction.setup.airChance, air > 0 ? 1 : 0)
+        }
+      }
+      return samples
+    },
     /** Raw setup chances and what happened: [flags 0/1, logit raw composition, hit, raw air, last had air, air happened]. */
     setup(weights: KnownWeights, test: boolean) {
       const samples: number[] = []
@@ -580,10 +746,11 @@ function runKnownWorker(input: KnownWorkerInput): void {
           else counts[cls] += 1
         }
         if (!known) continue
+        const inputs = inputsOf(context)
         for (const moment of [null, ...FIT_MOMENTS] as const) {
           const flags = evidenceAt(context, moment, 'operator', true)
           if (flags === null) continue
-          const prediction = predict(context, 'full', flags, weights)
+          const prediction = predict(context, inputs, 'full', flags, weights)
           const top = prediction.setup.compositions[0]
           if (!top) continue
           const hit = SCOUT_CLASSES.every((cls) => top.counts[cls] === counts[cls]) ? 1 : 0
@@ -598,6 +765,7 @@ function runKnownWorker(input: KnownWorkerInput): void {
       for (const context of contexts) {
         if (!context.test || !timesOf(context)) continue
         teamsScored += 1
+        const inputs = inputsOf(context)
         const truth = new Map(context.team.map((row) => [row.userId, row.vehicle!]))
         const counts: Record<ScoutClass, number> = { F: 0, H: 0, T: 0, L: 0, AA: 0 }
         let classesKnown = true
@@ -610,8 +778,10 @@ function runKnownWorker(input: KnownWorkerInput): void {
           const flags = evidenceAt(context, variant.moment, variant.flag, variant.icons)
           if (flags === null) return
           const tally = tallies[index]!
-          const prediction = predict(context, variant.model, flags, weights, variant.statshark)
+          const kills = variant.kills !== null && typeof variant.moment === 'number' ? { moment: variant.moment, known: variant.kills === 'moment' } : null
+          const prediction = predict(context, inputs, variant.model, flags, weights, variant.statshark, kills)
           tally.teams += 1
+          tally.unreadN += context.team.length - prediction.players.length
           tally.operator += prediction.flags?.operatorChance ?? 0
           if (flags) {
             tally.lines[flags.flags.length]! += 1
@@ -634,7 +804,7 @@ function runKnownWorker(input: KnownWorkerInput): void {
               tally.coldN += 1
               tally.coldTop1 += hit
             }
-            if (context.backgrounds.get(player.userId)?.battles && heldOut(player.userId)) {
+            if (inputs.backgrounds.get(player.userId)?.battles && heldOut(player.userId)) {
               tally.shark.n += 1
               tally.shark.top1 += hit
               tally.shark.loss -= Math.log(chance)
@@ -661,7 +831,10 @@ function runKnownWorker(input: KnownWorkerInput): void {
     train: contexts.filter((context) => context.train).length,
     test: contexts.filter((context) => context.test).length,
     events: events.length,
+    sharkEvents: events.filter((event) => event.shark === 'fresh').length,
+    staleSharkEvents: events.filter((event) => event.shark === 'stale').length,
     sharkPlayers: statshark.size,
+    heapMb: process.memoryUsage().heapUsed / 2 ** 20,
   })
   parentPort!.on('message', (request: KnownRequest) => {
     switch (request.op) {
@@ -676,6 +849,12 @@ function runKnownWorker(input: KnownWorkerInput): void {
         break
       case 'setup':
         parentPort!.postMessage(handlers.setup(request.weights, request.test))
+        break
+      case 'killTable':
+        parentPort!.postMessage(handlers.killTable())
+        break
+      case 'airSamples':
+        parentPort!.postMessage(handlers.airSamples(request.weights))
         break
       case 'evaluate':
         parentPort!.postMessage(handlers.evaluate(request.weights, request.variants))
@@ -743,14 +922,15 @@ async function newton(start: readonly number[], moments: (w: number[]) => Promis
 async function dampedNewton(
   start: readonly number[],
   moments: (w: number[]) => Promise<{ grad: number[]; hess: number[]; ll: number }>,
+  penalties: readonly number[] = start.map(() => L2),
 ): Promise<number[]> {
   const dim = start.length
-  const objective = (w: readonly number[], ll: number) => ll - (L2 / 2) * w.reduce((sum, v) => sum + v * v, 0)
+  const objective = (w: readonly number[], ll: number) => ll - w.reduce((sum, v, i) => sum + (penalties[i]! / 2) * v * v, 0)
   let w = [...start]
   let current = await moments(w)
   for (let iter = 0; iter < 100; iter += 1) {
-    const g = current.grad.map((value, i) => value - L2 * w[i]!)
-    const h = Array.from({ length: dim }, (_, i) => Array.from({ length: dim }, (_, j) => current.hess[i * dim + j]! + (i === j ? L2 : 0)))
+    const g = current.grad.map((value, i) => value - penalties[i]! * w[i]!)
+    const h = Array.from({ length: dim }, (_, i) => Array.from({ length: dim }, (_, j) => current.hess[i * dim + j]! + (i === j ? penalties[i]! : 0)))
     const step = solve(h, g)
     let scale = 1
     let next = w
@@ -809,6 +989,29 @@ function fitOpponentAir(records: readonly number[]): Promise<number[]> {
   })
 }
 
+/** Isotonic regression of y on x over AIR_KNOT_BINS equal-count bins (pool adjacent violators): the knots of a monotone map. */
+const AIR_KNOT_BINS = 20
+function isotonicKnots(points: { x: number; y: number }[]): [number, number][] {
+  if (points.length < AIR_KNOT_BINS * 50) return []
+  const sorted = [...points].sort((a, b) => a.x - b.x)
+  const blocks: { x: number; y: number; n: number }[] = []
+  for (let b = 0; b < AIR_KNOT_BINS; b += 1) {
+    const slice = sorted.slice(Math.floor((b * sorted.length) / AIR_KNOT_BINS), Math.floor(((b + 1) * sorted.length) / AIR_KNOT_BINS))
+    if (slice.length === 0) continue
+    blocks.push({ x: slice.reduce((s, p) => s + p.x, 0) / slice.length, y: slice.reduce((s, p) => s + p.y, 0) / slice.length, n: slice.length })
+  }
+  for (let i = 0; i + 1 < blocks.length;) {
+    if (blocks[i]!.y <= blocks[i + 1]!.y) {
+      i += 1
+      continue
+    }
+    const [a, b] = [blocks[i]!, blocks[i + 1]!]
+    blocks.splice(i, 2, { x: (a.x * a.n + b.x * b.n) / (a.n + b.n), y: (a.y * a.n + b.y * b.n) / (a.n + b.n), n: a.n + b.n })
+    if (i > 0) i -= 1
+  }
+  return blocks.map((block) => [Number(block.x.toFixed(4)), Number(block.y.toFixed(4))])
+}
+
 function printBins(bins: Bins, edges: readonly number[], indent = '    '): void {
   bins.forEach(([sumP, sumY, n], i) => {
     if (n === 0) return
@@ -820,24 +1023,27 @@ export async function knownTeamBacktest(
   dbPath: string,
   dict: VehicleDict,
   split: number,
-  options: { fit: 'train' | 'all' | null; statshark: boolean; threads: number },
+  options: { fit: 'train' | 'all' | null; statshark: boolean; threads: number; variants?: RegExp | undefined; unreadLive?: boolean },
 ): Promise<void> {
   const started = performance.now()
   const elapsed = () => `${((performance.now() - started) / 1000).toFixed(1)} s`
   const parts = Math.max(1, options.threads)
   const workers = Array.from({ length: parts }, (_, part) => {
-    const input: KnownWorkerInput = { kind: 'scout-known', dbPath, dict, split, part, parts, fit: options.fit, statshark: options.statshark }
+    const input: KnownWorkerInput = { kind: 'scout-known', dbPath, dict, split, part, parts, fit: options.fit, statshark: options.statshark, unreadLive: options.unreadLive ?? false }
     return new Handle(new Worker(new URL(import.meta.url), { workerData: input }))
   })
-  const inits = await Promise.all(workers.map((w) => w.next<{ train: number; test: number; events: number; sharkPlayers: number }>()))
+  const inits = await Promise.all(workers.map((w) => w.next<{ train: number; test: number; events: number; sharkEvents: number; staleSharkEvents: number; sharkPlayers: number; heapMb: number }>()))
   const all = <T>(message: KnownRequest) => Promise.all(workers.map((w) => w.request<T>(message)))
-  const sumOf = (field: 'train' | 'test' | 'events') => inits.reduce((s, r) => s + r[field], 0)
-  console.log(`known team: ${sumOf('test')} teams of 8 scored from ${new Date(split * 1000).toISOString().slice(0, 10)}, ${sumOf('train')} fitted on, ${sumOf('events')} new-vehicle events${options.statshark ? `, StatShark for ${inits[0]!.sharkPlayers} players` : ''}; ${parts} threads (${elapsed()})`)
+  const sumOf = (field: 'train' | 'test' | 'events' | 'sharkEvents' | 'staleSharkEvents') => inits.reduce((s, r) => s + r[field], 0)
+  const heaps = inits.map((init) => init.heapMb)
+  console.log(`known team: ${sumOf('test')} teams of 8 scored from ${new Date(split * 1000).toISOString().slice(0, 10)}, ${sumOf('train')} fitted on, ${sumOf('events')} new-vehicle events${options.statshark ? ` (${sumOf('sharkEvents')} with a fresh StatShark snapshot, ${sumOf('staleSharkEvents')} with an older one; ${inits[0]!.sharkPlayers} players have snapshots)` : ''}; ${parts} threads, heap ${Math.round(Math.max(...heaps))} MiB a thread at most, ${(heaps.reduce((a, b) => a + b, 0) / 1024).toFixed(1)} GiB in all (${elapsed()})`)
 
   const weights: KnownWeights = {
     newVehicle: [...NEW_VEHICLE_WEIGHTS],
     opponentAir: { ...OPPONENT_AIR_WEIGHTS },
     setup: { flags: { ...KNOWN_TEAM_SETUP_CALIBRATION.flags }, noFlags: { ...KNOWN_TEAM_SETUP_CALIBRATION.noFlags } },
+    kills: KILL_LIKELIHOODS,
+    airKnots: { flags: [...KNOWN_TEAM_AIR_KNOTS.flags], noFlags: [...KNOWN_TEAM_AIR_KNOTS.noFlags], flagsAllIn: [...KNOWN_TEAM_AIR_KNOTS.flagsAllIn] },
   }
   if (options.fit) {
     weights.newVehicle = await dampedNewton(NEW_VEHICLE_WEIGHTS.map(() => 0), async (w) => {
@@ -847,7 +1053,7 @@ export async function knownTeamBacktest(
         hess: Array.from({ length: NEW_DIM * NEW_DIM }, (_, i) => parts.reduce((s, p) => s + p.hess[i]!, 0)),
         ll: parts.reduce((s, p) => s + p.ll, 0),
       }
-    })
+    }, NEW_VEHICLE_FEATURES.map((name) => (name === 'logBattles' || name === 'notPlayed' ? SHARK_L2 : L2)))
     console.log(`fitted (${options.fit === 'all' ? 'every team' : 'before the split'}, ${elapsed()}):`)
     console.log(`  NEW_VEHICLE_FEATURES ${NEW_VEHICLE_FEATURES.join(', ')}`)
     console.log(`  NEW_VEHICLE_WEIGHTS ${format(weights.newVehicle)}`)
@@ -891,6 +1097,23 @@ export async function knownTeamBacktest(
         console.log(`    air, ${flags ? 'flags' : 'no flags'}, ${name}: held-out log loss ${(loss / test.length).toFixed(4)}, worst band (100+ teams) off by ${(worst * 100).toFixed(1)} points ${format(w)}`)
       }
     }
+    // The kill table: each class's patterns by each moment, add-one smoothed.
+    const killParts = await all<number[][][]>({ op: 'killTable' })
+    const table = Object.fromEntries(SCOUT_CLASSES.map((cls, c) => [cls, KILL_MOMENTS.map((_, m) => {
+      const n = [0, 1, 2, 3].map((pattern) => killParts.reduce((sum, part) => sum + part[m]![c]![pattern]!, 0) + 1)
+      const total = n.reduce((a, b) => a + b, 0)
+      return n.map((value) => Number((value / total).toFixed(4)))
+    })])) as unknown as KillTable
+    weights.kills = table
+    console.log(`  KILL_LIKELIHOODS (rows ${KILL_MOMENTS.join(', ')} s; none, air, ground, both) ${JSON.stringify(table)}`)
+    // The air knots: isotonic over the calibrated chances at every moment, per mode.
+    const airParts = (await all<number[]>({ op: 'airSamples', weights })).flat()
+    for (const [mode, tag] of [['noFlags', 0], ['flags', 1], ['flagsAllIn', 2]] as const) {
+      const points: { x: number; y: number }[] = []
+      for (let o = 0; o + 3 <= airParts.length; o += 3) if (airParts[o] === tag) points.push({ x: airParts[o + 1]!, y: airParts[o + 2]! })
+      weights.airKnots[mode] = isotonicKnots(points)
+    }
+    console.log(`  KNOWN_TEAM_AIR_KNOTS ${JSON.stringify(weights.airKnots)}`)
     console.log(`  (${elapsed()})`)
   }
 
@@ -899,13 +1122,17 @@ export async function knownTeamBacktest(
   console.log(`new-vehicle events from the split: ${newEval.n}; the guess names it first ${pct(newEval.top1 / newEval.n)}, among three ${pct(newEval.top3 / newEval.n)}, log loss ${(newEval.loss / newEval.n).toFixed(4)}; outside the cap's top vehicles ${pct(newEval.other / newEval.n)}`)
 
   const variants: Variant[] = []
-  const add = (name: string, model: ModelKind, moment: Moment | null, flag: 'operator' | 'nation' = 'operator', icons = true, statshark = true) =>
-    variants.push({ name, model, moment, flag, icons, statshark })
+  const add = (name: string, model: ModelKind, moment: Moment | null, flag: 'operator' | 'nation' = 'operator', icons = true, statshark = true, kills: Variant['kills'] = null) =>
+    variants.push({ name, model, moment, flag, icons, statshark, kills })
   for (const model of ['before', 'guess', 'full'] as const) for (const moment of [null, 'all', 30, 180] as const) add(`${model}`, model, moment)
   for (const moment of [10, 60, 120, 300] as const) add('full', 'full', moment)
   for (const moment of ['all', 30, 180] as const) add('full, icons not in the picture', 'full', moment, 'operator', false)
   for (const moment of ['all', 30] as const) add('full, nation flags', 'full', moment, 'nation')
   if (options.statshark) for (const moment of [null, 'all'] as const) add('full without StatShark', 'full', moment, 'operator', true, false)
+  for (const moment of [60, 120, 180, 300] as const) add('full + kills', 'full', moment, 'operator', true, true, 'moment')
+  for (const moment of [120, 180, 300] as const) add('full + kills, timer not read', 'full', moment, 'operator', true, true, 'unknown')
+  const label = (variant: Variant) => `${variant.name}, ${variant.moment === null ? 'no flags' : variant.moment === 'all' ? 'everyone in a vehicle' : `${variant.moment} s after the first spawn`}`
+  if (options.variants) variants.splice(0, variants.length, ...variants.filter((variant) => options.variants!.test(label(variant))))
   const parts2 = await all<{ tallies: Tally[]; teamsScored: number }>({ op: 'evaluate', weights, variants })
   const tallies = variants.map(() => emptyTally())
   for (const part of parts2) part.tallies.forEach((tally, i) => mergeTally(tallies[i]!, tally))
@@ -913,10 +1140,11 @@ export async function knownTeamBacktest(
   variants.forEach((variant, index) => {
     const t = tallies[index]!
     if (t.n === 0) return
-    const when = variant.moment === null ? 'no flags' : variant.moment === 'all' ? 'everyone in a vehicle' : `${variant.moment} s after the first spawn`
+    const when = label(variant).slice(variant.name.length + 2)
     const detail = variant.moment === null ? '' : `; in a vehicle ${pct(t.inVehicle / t.n)}, operator flags said ${pct(t.operator / t.teams)}`
     const shark = t.shark.n > 0 ? `; with StatShark (${t.shark.n}) ${pct(t.shark.top1 / t.shark.n)} / ${(t.shark.loss / t.shark.n).toFixed(4)}` : ''
-    console.log(`  ${variant.name}, ${when}: first ${pct(t.top1 / t.n)}, three ${pct(t.top3 / t.n)}, log loss ${(t.loss / t.n).toFixed(4)} (new vehicles as one ${(t.lumped / t.n).toFixed(4)}), class ${pct(t.classTop1 / t.n)}; no battles at the cap (${pct(t.coldN / t.n)}) ${pct(t.coldTop1 / Math.max(1, t.coldN))}${shark}${detail}`)
+    const unread = t.unreadN > 0 ? `; unread rows ${pct(t.unreadN / (t.n + t.unreadN))} of the players` : ''
+    console.log(`  ${variant.name}, ${when}: first ${pct(t.top1 / t.n)}, three ${pct(t.top3 / t.n)}, log loss ${(t.loss / t.n).toFixed(4)} (new vehicles as one ${(t.lumped / t.n).toFixed(4)}), class ${pct(t.classTop1 / t.n)}; no battles at the cap (${pct(t.coldN / t.n)}) ${pct(t.coldTop1 / Math.max(1, t.coldN))}${unread}${shark}${detail}`)
     console.log(`    setup: most likely right ${pct(t.compHit / t.setupTeams)} (said ${pct(t.compSaid / t.setupTeams)}), aircraft off by ${(t.airError / t.setupTeams).toFixed(2)}`)
     if (variant.moment === null || variant.moment === 'all') {
       if (variant.model === 'full' && variant.icons && variant.flag === 'operator' && variant.statshark) {

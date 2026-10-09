@@ -151,12 +151,28 @@ Open: prove or disprove the RSS plateau for
   for now): decide retention. Improve the reading on them with
   `npm run scout:images` (two of eight Chinese nicks unread on 2026-10-08:
   try `chi_tra`, per-row OCR or a higher scale for CJK rows). Add each new
-  channel screenshot's flags and enemy row icons to `truth.json`.
-- **`/scout` StatShark weights.** `NEW_VEHICLE_WEIGHTS`' two StatShark
-  weights rest on the 84 players with a snapshot on 2026-10-09 (StatShark
-  answered 429 after ~60 profiles): refit with `--known-team --fit-all
-  --statshark` once screenshots have refreshed a few hundred enemies, and
-  check the two-fold split (`SCOUT_SHARK_FOLD`) holds the gain.
+  channel screenshot's flags, enemy row icons and enemy columns to
+  `truth.json`, and score the replies with `npm run scout:outcomes --
+  <copy.db>` once their battles are stored (the four channel records of
+  2026-10-08 were test posts of battles 18 h older).
+- **`/scout` StatShark weights.** Counted as live reads them (the snapshot
+  the reply's update has, fresh within 2 days), only 11 new-vehicle events of
+  2026-07-15 – 10-09 had one, so the two StatShark weights sit near their
+  prior (`SHARK_L2`): refit with `--known-team --fit-all --statshark` once
+  screenshots have refreshed a few hundred enemies before their battles
+  (`scout:outcomes` counts them), and check the two-fold split
+  (`SCOUT_SHARK_FOLD`).
+- **`/scout` air chance.** After `KNOWN_TEAM_AIR_KNOTS`, "at least one
+  aircraft" with flags and everyone in a vehicle still says 55–86% where
+  63–92% happen out of sample (2026-10-09; 8–16 points before): the October
+  caps fly more than the fitting period's. Try the cap's air share (from
+  `capSpawns`) as a calibration feature, refit, and check the bands per
+  moment.
+- **`/scout` opponent context.** The previous battle's opponent air and a
+  rematch × that meeting's air (28% of teams met the same squadron in the
+  previous 3 h) add ~0.1 point to the first vehicle in an offline replica of
+  the model (2026-10-09): worth it only with a cheap query for the opposing
+  team of each enemy's last battle (`read-scout-players`).
 - **Stage switch time.** The BR cap changes on a stage's first day between
   07:00 and 14:00 UTC, while `clan_season_stages` (forum dates, built-in
   schedule) starts stages at 00:00 UTC: during the 01:00–07:00 UTC window of

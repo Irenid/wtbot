@@ -22,7 +22,13 @@ import {
 } from './flag-evidence.js'
 import { ensureFlagTemplates } from './flag-pack.js'
 import {
+  CAPTURE_LIKELIHOOD,
   DEFAULT_CLASS_SHARES,
+  GROUP_MIN_SHARED,
+  KILL_LIKELIHOODS,
+  KILL_MOMENT_UNKNOWN,
+  KILL_MOMENTS,
+  KNOWN_TEAM_AIR_KNOTS,
   KNOWN_TEAM_SETUP_CALIBRATION,
   NEW_VEHICLE_CANDIDATES,
   NEW_VEHICLE_WEIGHTS,
@@ -33,6 +39,7 @@ import {
   ROSTER_WINDOW_SEC,
   STATSHARK_FRESH_SEC,
   VEHICLE_WEIGHTS,
+  killEvidenceShown,
   opponentAir,
   playerBackground,
   predictKnownTeam,
@@ -271,6 +278,8 @@ export interface ScoutImageReport {
   enemyFlags: { read: number; rowsWithout: number | null }
   /** Enemies with StatShark battles in their new-vehicle guesses; pending — refreshes queued, the reply is updated when they end. */
   statShark: { players: number; pending: boolean }
+  /** Recognised enemies whose scoreboard row shows a kill or a capture (scoreboard-columns.ts): their classes are weighed by it. */
+  killsShown: number
   vehicles: VehicleDict
   now: number
 }
@@ -414,6 +423,10 @@ export async function scoutFromImage(
       })),
       nationOf: (id) => vehicleInfo(vehicles, id).country,
       opponentAir: allyAir(allyRows, vehicles),
+      kills: read.enemyColumns === null ? undefined : read.enemies.map((m) => {
+        const columns = read.enemyColumns![m.row]
+        return columns ? { air: columns.air, ground: columns.ground, captures: columns.captures } : null
+      }),
     })
     return {
       squadron: majoritySquadron(read.enemies),
@@ -426,6 +439,10 @@ export async function scoutFromImage(
         rowsWithout: read.enemyIcons && enemyRows.filter((row) => read.enemyIcons![row]).length,
       },
       statShark: { players: shark.length, pending: false },
+      killsShown: read.enemyColumns === null ? 0 : read.enemies.filter((m) => {
+        const columns = read.enemyColumns![m.row]
+        return columns ? killEvidenceShown({ air: columns.air, ground: columns.ground, captures: columns.captures }) : false
+      }).length,
       vehicles,
       now: nowSec,
     }
@@ -474,7 +491,8 @@ export function scoutModelHash(): string {
   modelHash ??= createHash('sha256').update(JSON.stringify([
     VEHICLE_WEIGHTS, NEW_VEHICLE_WEIGHTS, NEW_VEHICLE_CANDIDATES, NEW_VEHICLES_KEPT, OPPONENT_AIR_WEIGHTS, OPPONENT_AIR_MEAN,
     OPPONENT_AIR_BATTLES, KNOWN_TEAM_SETUP_CALIBRATION, DEFAULT_CLASS_SHARES, STATSHARK_FRESH_SEC, IN_VEHICLE_WITH_ICON,
-    IN_VEHICLE_WITHOUT_ICON, DEFAULT_OPERATOR_FLAGS_PRIOR, NATION_FLAG_SHARE,
+    IN_VEHICLE_WITHOUT_ICON, DEFAULT_OPERATOR_FLAGS_PRIOR, NATION_FLAG_SHARE, KILL_LIKELIHOODS, KILL_MOMENTS, KILL_MOMENT_UNKNOWN,
+    CAPTURE_LIKELIHOOD, KNOWN_TEAM_AIR_KNOTS, GROUP_MIN_SHARED,
   ])).digest('hex').slice(0, 12)
   return modelHash
 }
