@@ -313,6 +313,111 @@ Four of the six lines had operator flags on; the CH68 battle shows each way.
   nick is misread in 4 of 10 characters; its look-alike table now folds the
   matcher's Greek and stroked letters (32 of 19,659 nicks, `MΛRS` to `mars`).
 
+### New vehicles, the opponent's air and StatShark
+
+Measured 2026-10-09 on the known-team backtest (20,338 teams of 8 of
+2026-10-01 – 10-08, operator flags, everyone in a vehicle, the model of
+1f8ae62) unless said otherwise.
+
+- **The misses** (19.7% of players): a class switch within one nation 5.2%
+  (56% of them tank ↔ SPAA), no battle at the cap yet 4.6% (a quarter on the
+  cap's first day), a vehicle never seen from them at the cap 4.1%, one of an
+  earlier lineup never spawned 3.4%, another vehicle of the same nation and
+  class 1.5%, another nation 0.8% (4.9% without flags). Repeating the last
+  vehicle (76% of players) is named 98.9%, a switch (19.4%) 26% (6% without
+  flags). Each player's own flag known would give 81.2%, flag and class 88.2%.
+  Asking 90–300 s after the start instead of 20 s: 80.4–80.5%.
+- **What squadrons take** (first spawns of the 50,312 stored battles at six
+  caps; BR from the datamine `wpcost.blkx`, the BR of then only for the current
+  season): 10–14 vehicles make half the spawns at every cap, 39–50 make 80%;
+  at 9.0 and 8.0 58–70% are at the cap and 22% 0.3 under, at 10.0 37/35/22% at
+  the cap, 0.3 and 0.7 under. One vehicle often holds its class: the WZ305 62%
+  of 8.0's SPAA spawns, the Vautour IIN(C) 47% of its aircraft, the Leopard 2K
+  35% of 10.0's tanks, the M247 42% of its SPAA. Premium, gift and squadron
+  vehicles are 24–40% of spawns. Of the players seen with a vehicle before a
+  stage, 92% took the Vautour IIN(C) at 8.0, 70% the WZ305, 37% the Leopard I,
+  24% the ZSU-23-4V.
+- **Stock vehicles** (the owner's hypothesis: a vehicle without its
+  modifications stays out of squadron battles, and they take dozens of
+  battles): modifications cost 77–112k RP for 8.0's popular vehicles (datamine
+  `reqExp`, most ~98k; the Vautour IIN(C) 140k), 133–182k at 9.0, 290–297k for a
+  top-tier tank; forum reports put a top-tier realistic ground battle at 2–10k
+  RP, so 10–70 battles at 8.0 (more: lower tiers earn less) and 30–145 at the
+  top. The 19 players with an official profile have 4,246 of 15,710 vehicles
+  fully upgraded (27%). Squadron battles show no stock dip: the first battle in
+  a vehicle (20,171 by active players since 2026-09-22) scores 92–98% of the
+  player's usual kills for the class, and in the 4,693 vehicles kept for 11+
+  battles the first one scores 109–114% of the vehicle's mean, survival and
+  wins flat. StatShark's per-vehicle battles leave squadron battles out (a
+  Leopard 2K: 3 realistic battles there, 19 stored squadron battles); of the 9
+  players with them and squadron battles this season, the vehicles spawned had
+  a median of 116 battles elsewhere, and of their vehicles within 1.0 BR under
+  the cap 0% with 1–4 battles were taken, ~2% with 10–49, ~5% with 50–199, 11%
+  with 200+ — but 32% of their spawns came in vehicles with under 20 (the
+  Vautour IIN(C) with none: upgraded in squadron battles or with Golden
+  Eagles).
+- **The new-vehicle guess** (`newVehicleChances`): a player's "not seen at
+  this cap" share is spread over the cap's 150 most spawned vehicles so far,
+  every squadron's (`getScoutCapSpawns`, ~0.1 s for a stage), by a conditional
+  logit (`NEW_VEHICLE_FEATURES`): the log of the vehicle's share of the cap's
+  spawns, the player's share of spawns in its nation and its class at any cap
+  in 120 days, whether they were seen with it (any lineup or spawn), StatShark's
+  battles in it and whether StatShark has none; "other" takes the rest. The
+  guesses are options of the flag chain with their own flags. Fitted before
+  2026-10-01 on 72,153 such events: seen with it 2.31, nation 1.17, class
+  0.86, log share 0.85; on the 13,891 events from the split it names the
+  vehicle first 12.2%, among three 23.3%, 11% outside the 150. Alone, the cap's
+  most spawned vehicle named 5% of players without battles at the cap, their
+  usual nation's 11%, the most spawned they were seen with 13%; their flag
+  known exactly would name 37% (flag and class 57%).
+- **The opponent's air** (`OPPONENT_AIR_WEIGHTS`): a player who took SPAA last
+  time keeps it 62% against squadrons spawning under 0.5 aircraft or
+  helicopters a battle, 88% against 3 or more. The screenshot's own squadron's
+  mean over its latest 20 teams (`allyAir`) scales each class by
+  exp(weight × the excess over 2): fitted AA 0.33, T −0.08, the others within
+  ±0.05.
+- **The picture path's setup calibration** (`KNOWN_TEAM_SETUP_CALIBRATION`,
+  without flags and with them, fitted on screenshots 10–120 s after the first
+  spawn): /scout squadron's calibration said 45.9% for the most likely setup
+  that happened 42.1% (flags) and missed the air chance by 24–28 points in 4%
+  of teams. On held-out teams the air calibration over logit and the last
+  battle's air has the best log loss (0.2137 without flags, 0.1530 with; the
+  logit alone 0.2216 and 0.1538, with an interaction 0.2139 and 0.1533).
+- **Backtest** (`npm run scout:backtest -- <copy.db> --known-team --fit`:
+  fitted before 2026-10-01, scored after; first vehicle right / log loss with
+  every vehicle not seen at the cap as one outcome):
+
+  | Screenshot | 1f8ae62 | + new-vehicle guess | + opponent, setup |
+  |---|---|---|---|
+  | no flags | 76.2% / 0.658 | 77.0% / 0.658 | 77.2% / 0.650 |
+  | everyone in a vehicle | 80.3% / 0.425 | 82.2% / 0.417 | 82.5% / 0.409 |
+  | 30 s after the first spawn | 79.9% / 0.443 | 81.8% / 0.435 | 82.1% / 0.427 |
+  | 3 min | 78.7% / 0.512 | 80.3% / 0.507 | 80.6% / 0.499 |
+
+  Players without battles at the cap (4.6%): 0% → 15% without flags, 30% with
+  everyone in a vehicle. Everyone in a vehicle: among three 89.6% → 93.1%, the
+  class 84.7% → 87.6%, the most likely setup 42.1% → 45.0% (said 46.4%), the
+  first vehicle's stated chance within 1.5 points in every band; nation flags
+  78.9%, the icon column cut off 82.3%. ~3 ms a team.
+- **StatShark for screenshots**: with `STATSHARK_PLAYER_STATS_ENABLED` the reply
+  queues a StatShark refresh for each recognised enemy (those without battles
+  at the cap first; the lazy service: 24 h TTL, one at a time, ~5 s each) and
+  is edited when they end or after `STATSHARK_WAIT_MS` (3 min). In the guess
+  log(1 + battles) weighs 0.30 and a vehicle never played outside squadron
+  battles −3.82, fitted on the 84 players with a snapshot read up to 3 days
+  after the battle (64 refreshed for this on 2026-10-09: cold or new at 8.0 on
+  10-07/08; the counts may include a day or two of later games). Fitted on one
+  half of the players and scored on the other (`SCOUT_SHARK_FOLD=0|1`), their
+  first vehicle with everyone in a vehicle went 75.4% → 77.4% and 84.5% →
+  85.8% (483 and 387 player-teams), without flags 71.4% → 72.0% and 80.9% →
+  81.9%. StatShark answered 429 after ~60 profiles in a row and still did 15
+  minutes later: a 429 now pauses the whole source (`PlayerStatsService`),
+  doubling from 5 minutes to 6 hours, and a screenshot's update then comes
+  without it.
+- **Constants**: `npm run scout:backtest -- <copy.db> --known-team --fit-all
+  --statshark` on the backup of 2026-10-08 22:04 UTC (99,664 teams, 72,282
+  new-vehicle events); the table above is `--fit` (before 2026-10-01).
+
 ## Guessing the enemy from server data
 
 - **Candidates** — squadrons whose battle ended at most 20 min before our

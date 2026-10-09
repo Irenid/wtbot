@@ -152,6 +152,11 @@ Open: prove or disprove the RSS plateau for
   `npm run scout:images` (two of eight Chinese nicks unread on 2026-10-08:
   try `chi_tra`, per-row OCR or a higher scale for CJK rows). Add each new
   channel screenshot's flags and enemy row icons to `truth.json`.
+- **`/scout` StatShark weights.** `NEW_VEHICLE_WEIGHTS`' two StatShark
+  weights rest on the 84 players with a snapshot on 2026-10-09 (StatShark
+  answered 429 after ~60 profiles): refit with `--known-team --fit-all
+  --statshark` once screenshots have refreshed a few hundred enemies, and
+  check the two-fold split (`SCOUT_SHARK_FOLD`) holds the gain.
 - **Stage switch time.** The BR cap changes on a stage's first day between
   07:00 and 14:00 UTC, while `clan_season_stages` (forum dates, built-in
   schedule) starts stages at 00:00 UTC: during the 01:00–07:00 UTC window of

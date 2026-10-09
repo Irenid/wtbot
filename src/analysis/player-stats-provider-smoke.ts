@@ -274,6 +274,11 @@ async function verifyService(): Promise<void> {
     assert.equal(backedOff.refreshQueued, false)
     assert.equal(backedOff.nextRetryAt, 1_210)
     assert.equal(provider.fetchCalls, 2)
+    // A 429 pauses the whole source: another player waits for the same retry time.
+    const waiting = savePlayerIdentity({ wtUserId: '45', canonicalNick: 'Waiting', platform: null })
+    assert.equal(service.request(waiting.id).refreshQueued, false)
+    assert.equal(service.pending(waiting.id), null)
+    assert.equal(provider.fetchCalls, 2)
 
     now = 1_210
     provider.results.push(okResult('{"profile":1}', 'tank_alpha'))
@@ -361,7 +366,7 @@ async function verifyService(): Promise<void> {
     assert.equal(metrics.byStatus.error, 1)
     assert.equal(metrics.byStatus.not_found, 1)
     assert.ok(metrics.skippedFresh >= 2)
-    assert.equal(metrics.skippedBackoff, 2)
+    assert.equal(metrics.skippedBackoff, 3)
     await service.stop()
     const fetchCallsAfterStop = provider.fetchCalls
     assert.equal(service.request(identity.id).refreshQueued, false)

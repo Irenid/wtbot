@@ -10,7 +10,16 @@ import { runWorkerTask } from '../workers/pool.js'
 import { ensureVehicleDict, vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
 import { dictionaryFlagIcons, dictionaryFlags, IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON, type FlagEvidence, type FlagSeat, type VehicleFlags } from './flag-evidence.js'
 import { ensureFlagTemplates } from './flag-pack.js'
-import { ROSTER_WINDOW_SEC, predictKnownTeam, predictScout, type KnownTeamPrediction, type ScoutBattle, type ScoutPrediction } from './model.js'
+import {
+  ROSTER_WINDOW_SEC,
+  opponentAir,
+  playerBackground,
+  predictKnownTeam,
+  predictScout,
+  type KnownTeamPrediction,
+  type ScoutBattle,
+  type ScoutPrediction,
+} from './model.js'
 import { displayedNick, type NickMatch } from './nick-match.js'
 import type { RowIcon } from './row-icons.js'
 import type { ScoreboardReadResult } from './scoreboard-read.js'
@@ -209,6 +218,20 @@ export async function buildScoutReport(squadron: ScoutSquadron, hintNick: string
 const IMAGE_CANDIDATE_WINDOW_SEC = 120 * 86_400
 /** Vehicle history of the recognised players: the current BR period at most (a week plus the switch delay). */
 const IMAGE_HISTORY_WINDOW_SEC = 9 * 86_400
+/** Their battles at any cap the new-vehicle guess reads (nations, classes, vehicles seen): the candidate window. */
+const IMAGE_BACKGROUND_WINDOW_SEC = IMAGE_CANDIDATE_WINDOW_SEC
+/** The own squadron's battles its air habit is read from (opponentAir takes the latest 20 teams). */
+const ALLY_AIR_WINDOW_SEC = 14 * 86_400
+/** An own-squadron team counts for the habit with this many of its players (a team of 8, guests aside). */
+const ALLY_MIN_ROWS = 6
+/** How long a reply waits for the enemies' StatShark refreshes (~5 s each, one at a time) before it is updated. */
+const STATSHARK_WAIT_MS = 3 * 60_000
+
+/** StatShark refreshes for /scout pictures (src/index.ts wraps the lazy StatShark service). */
+export interface ScoutStatSharkSource {
+  /** Queues a refresh of the player's snapshot unless a fresh one exists; settles when it ends; null — nothing queued. */
+  refresh(userId: string): Promise<void> | null
+}
 
 export interface ScoutImageReport {
   /** The enemy squadron (most recognised players' tag); null — not in the index. */
@@ -225,12 +248,15 @@ export interface ScoutImageReport {
    * is not in the picture.
    */
   enemyFlags: { read: number; rowsWithout: number | null }
+  /** Enemies with StatShark battles in their new-vehicle guesses; pending — refreshes queued, the reply is updated when they end. */
+  statShark: { players: number; pending: boolean }
   vehicles: VehicleDict
   now: number
 }
 
 export type ScoutImageOutcome =
-  | { kind: 'report'; report: ScoutImageReport; read: ScoreboardReadResult }
+  /** update: the report again once the queued StatShark refreshes end (or their wait runs out); null — none queued. */
+  | { kind: 'report'; report: ScoutImageReport; read: ScoreboardReadResult; update: Promise<ScoutImageReport> | null }
   | { kind: 'no-table' | 'no-players'; read: ScoreboardReadResult }
   | { kind: 'one-side'; read: ScoreboardReadResult; squadron: ScoutSquadron | null }
 
@@ -273,8 +299,26 @@ export function enemySeats(
   ]
 }
 
+/** The own squadron's aircraft and helicopters per battle over its latest teams (its rows: getScoutTeamRows). */
+export function allyAir(rows: readonly ScoutTeamRow[], vehicles: VehicleDict): number | null {
+  const teams = new Map<string, { endTime: number; players: number; air: number }>()
+  for (const row of rows) {
+    const key = `${row.sessionId}:${row.team}`
+    let team = teams.get(key)
+    if (!team) teams.set(key, (team = { endTime: row.startTime + row.durationSec, players: 0, air: 0 }))
+    team.players += 1
+    const cls = row.vehicle ? vehicleInfo(vehicles, row.vehicle).cls : '?'
+    if (cls === 'F' || cls === 'H') team.air += 1
+  }
+  return opponentAir([...teams.values()].filter((team) => team.players >= ALLY_MIN_ROWS))
+}
+
 /** A scoreboard screenshot to the enemy's likely vehicles; OCR and reads run in workers. */
-export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date.now() / 1000)): Promise<ScoutImageOutcome> {
+export async function scoutFromImage(
+  image: Uint8Array,
+  nowSec = Math.floor(Date.now() / 1000),
+  statShark: ScoutStatSharkSource | null = null,
+): Promise<ScoutImageOutcome> {
   const dbPath = getDbWorkerPath()
   if (dbPath === null) throw new Error('/scout pictures need a file database')
   const buffer = image.slice().buffer
@@ -295,13 +339,6 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
   if (read.status === 'no-table' || read.status === 'no-players') return { kind: read.status, read }
   if (read.status === 'one-side') return { kind: 'one-side', read, squadron: majoritySquadron(read.oneSide) }
   if (read.enemies.length === 0) return { kind: 'no-players', read }
-  const { rows, stages } = await runWorkerTask(
-    {
-      kind: 'read-scout-players',
-      input: { dbPath, userIds: read.enemies.map((m) => m.userId), fromTs: nowSec - IMAGE_HISTORY_WINDOW_SEC, toTs: nowSec + 1 },
-    },
-    { priority: 'interactive', timeoutMs: 20_000 },
-  )
   let flagsOf = vehicleFlags.get(vehicles)
   if (!flagsOf) vehicleFlags.set(vehicles, (flagsOf = dictionaryFlags(vehicles)))
   const enemyFlags = read.flags?.enemies ?? []
@@ -313,21 +350,50 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
       }
     : undefined
   const enemyRows = [...read.enemies.map((match) => match.row), ...read.unreadRows]
-  const prediction = predictKnownTeam({
-    players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
-    unknownPlayers: read.unread.length,
-    battles: scoutBattlesFromRows(rows, 1),
-    now: nowSec,
-    stages,
-    classOf: (id) => vehicleInfo(vehicles, id).cls,
-    flags,
-  })
-  return {
-    kind: 'report',
-    read,
-    report: {
+  const allySquadron = majoritySquadron(read.allies)
+  const info = (id: string) => {
+    const vehicle = vehicleInfo(vehicles, id)
+    return { nation: vehicle.country, cls: vehicle.cls }
+  }
+  // The players' rows (any cap) and StatShark battles are read again for the update.
+  const build = async (): Promise<ScoutImageReport> => {
+    const { rows, stages, capSpawns, statShark: shark, allyRows } = await runWorkerTask(
+      {
+        kind: 'read-scout-players',
+        input: {
+          dbPath,
+          userIds: read.enemies.map((m) => m.userId),
+          fromTs: nowSec - IMAGE_BACKGROUND_WINDOW_SEC,
+          toTs: nowSec + 1,
+          allyTags: allySquadron?.tags.slice(0, 8) ?? [],
+          allyFromTs: nowSec - ALLY_AIR_WINDOW_SEC,
+        },
+      },
+      { priority: 'interactive', timeoutMs: 20_000 },
+    )
+    const rowsOf = new Map<string, { vehicle: string | null; lineup: string[] }[]>()
+    for (const row of rows) {
+      const list = rowsOf.get(row.userId) ?? []
+      list.push({ vehicle: row.vehicle, lineup: JSON.parse(row.vehicles) as string[] })
+      rowsOf.set(row.userId, list)
+    }
+    const sharkOf = new Map(shark.map((entry) => [entry.userId, new Map(entry.vehicles)]))
+    const prediction = predictKnownTeam({
+      players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
+      unknownPlayers: read.unread.length,
+      battles: scoutBattlesFromRows(rows.filter((row) => row.startTime >= nowSec - IMAGE_HISTORY_WINDOW_SEC), 1),
+      now: nowSec,
+      stages,
+      classOf: (id) => vehicleInfo(vehicles, id).cls,
+      flags,
+      capSpawns: new Map(capSpawns),
+      backgrounds: new Map(read.enemies.map((m) => [m.userId, playerBackground(rowsOf.get(m.userId) ?? [], info, sharkOf.get(m.userId) ?? null)])),
+      nationOf: (id) => vehicleInfo(vehicles, id).country,
+      opponentAir: allyAir(allyRows, vehicles),
+    })
+    return {
       squadron: majoritySquadron(read.enemies),
-      allySquadron: majoritySquadron(read.allies),
+      allySquadron,
       prediction,
       recognised: read.enemies.length,
       unread: read.unread,
@@ -335,8 +401,44 @@ export async function scoutFromImage(image: Uint8Array, nowSec = Math.floor(Date
         read: enemyFlags.length,
         rowsWithout: read.enemyIcons && enemyRows.filter((row) => read.enemyIcons![row]).length,
       },
+      statShark: { players: shark.length, pending: false },
       vehicles,
       now: nowSec,
-    },
+    }
   }
+  const first = await build()
+  let update: Promise<ScoutImageReport> | null = null
+  if (statShark) {
+    // Players without battles at this BR first: their guess leans on StatShark most.
+    const queued = [...first.prediction.players]
+      .sort((a, b) => a.battlesAtCap - b.battlesAtCap)
+      .map((player) => {
+        try {
+          return statShark.refresh(player.userId)
+        } catch (error) {
+          console.warn('[scout] StatShark refresh not queued:', error)
+          return null
+        }
+      })
+      .filter((refresh): refresh is Promise<void> => refresh !== null)
+    if (queued.length > 0) {
+      first.statShark.pending = true
+      update = (async () => {
+        let timer: NodeJS.Timeout | undefined
+        await Promise.race([
+          Promise.allSettled(queued),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, STATSHARK_WAIT_MS)
+            timer.unref()
+          }),
+        ])
+        clearTimeout(timer)
+        // Always the report again: the reply drops its "checking" line even when StatShark failed.
+        return build()
+      })()
+      // Handled until the reply is sent and attaches its own: an unhandled rejection stops the bot (src/index.ts).
+      void update.catch(() => undefined)
+    }
+  }
+  return { kind: 'report', read, report: first, update }
 }

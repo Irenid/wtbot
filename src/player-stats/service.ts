@@ -83,6 +83,9 @@ export class PlayerStatsService {
   private readonly nextRetryByIdentity = new Map<number, number>()
   private readonly idleWaiters = new Set<() => void>()
   private readonly metrics = emptyMetrics()
+  /** A source answered 429: no refresh starts before this (Unix seconds), whoever asks. */
+  private pausedUntil = 0
+  private rateLimitedInARow = 0
   private draining = false
   private drainScheduled = false
   private activeIdentityId: number | null = null
@@ -128,6 +131,8 @@ export class PlayerStatsService {
     if (active === undefined && this.accepting && canResolve) {
       if (lastCheck?.status === 'ok' && now - lastCheck.lastCheckedAt < this.ttlSeconds) {
         this.metrics.skippedFresh += 1
+      } else if (now < this.pausedUntil) {
+        this.metrics.skippedBackoff += 1
       } else {
         const nextRetryAt = this.nextRetryAt(identity.id, lastCheck)
         if (nextRetryAt !== null && now < nextRetryAt) {
@@ -154,6 +159,11 @@ export class PlayerStatsService {
       lastCheck,
       nextRetryAt: this.nextRetryAt(identity.id, lastCheck),
     }
+  }
+
+  /** The identity's queued or running refresh; null — none. Settles when it ends (rejects as the job does). */
+  pending(identityId: number): Promise<void> | null {
+    return this.jobs.get(identityId)?.promise ?? null
   }
 
   /** Явный refresh для CLI/tests; всё равно дедуплицируется общей очередью. */
@@ -262,6 +272,13 @@ export class PlayerStatsService {
         if (identityId === undefined) break
         const job = this.jobs.get(identityId)
         if (job === undefined) continue
+        if (this.currentTime() < this.pausedUntil) {
+          // Queued before the source answered 429: dropped, a later request queues it again.
+          this.metrics.skippedBackoff += 1
+          this.jobs.delete(identityId)
+          job.resolve()
+          continue
+        }
         this.activeIdentityId = identityId
         this.metrics.started += 1
         try {
@@ -354,6 +371,16 @@ export class PlayerStatsService {
       normalized: result.normalized,
     })
 
+    // A 429 pauses every refresh, doubling while they repeat: the per-player back-off alone let the next players hit it again.
+    if (result.status === 'rate_limited') {
+      this.rateLimitedInARow += 1
+      this.pausedUntil = this.currentTime() + Math.min(
+        this.retryMaxSeconds,
+        this.retryBaseSeconds * (2 ** Math.min(this.rateLimitedInARow - 1, 30)),
+      )
+    } else {
+      this.rateLimitedInARow = 0
+    }
     if (result.status === 'ok') {
       this.failureCounts.delete(identityId)
       this.nextRetryByIdentity.delete(identityId)

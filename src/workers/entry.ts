@@ -482,21 +482,31 @@ async function renderFlagTemplatesTask(
   return { value: { icons: pack.icons, width: pack.width, height: pack.height, rgb }, transfer: [rgb] }
 }
 
-/** /scout by picture: the recognised players' rows. */
+/** /scout by picture: the recognised players' rows, the cap's spawns so far, their StatShark battles, the own squadron's rows. */
 async function readScoutPlayers(
   input: Extract<AnyWorkerTask, { kind: 'read-scout-players' }>['input'],
 ): Promise<{ value: WorkerTaskResult<'read-scout-players'>; transfer: [] }> {
   if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
-  const [{ DatabaseSync }, { getScoutPlayerRows, getScoutStages }] = await Promise.all([
+  const [{ DatabaseSync }, db, { periodBounds, stageAt }] = await Promise.all([
     import('node:sqlite'),
     import('../db/index.js'),
+    import('../scout/model.js'),
   ])
   const database = new DatabaseSync(input.dbPath, { readOnly: true })
   try {
     database.exec('PRAGMA busy_timeout = 5000;')
     database.exec('PRAGMA mmap_size = 1073741824;')
+    const stages = db.getScoutStages(database)
+    const stage = stageAt(stages, input.toTs)
+    const capFrom = stage ? periodBounds(stage).from : input.toTs - 7 * 86_400
     return {
-      value: { rows: getScoutPlayerRows(input.userIds, input.fromTs, input.toTs, database), stages: getScoutStages(database) },
+      value: {
+        rows: db.getScoutPlayerRows(input.userIds, input.fromTs, input.toTs, database),
+        stages,
+        capSpawns: capFrom < input.toTs ? db.getScoutCapSpawns(capFrom, input.toTs, database) : [],
+        statShark: db.getScoutStatSharkBattles(input.userIds, database),
+        allyRows: input.allyTags.length > 0 ? db.getScoutTeamRows(input.allyTags, input.allyFromTs, input.toTs, database) : [],
+      },
       transfer: [],
     }
   } finally {

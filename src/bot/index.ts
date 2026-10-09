@@ -5,6 +5,7 @@ import { commands } from './commands/index.js'
 import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
+import type { ScoutStatSharkSource } from '../scout/report.js'
 import { handleScoutImageMessage, scoutImagesIdle } from './scout-images.js'
 
 let acceptingInteractions = true
@@ -36,7 +37,12 @@ async function messageContentAllowed(): Promise<boolean> {
   }
 }
 
-export async function startBot(): Promise<Client> {
+export interface BotOptions {
+  /** StatShark refreshes /scout pictures queue for the enemies they read; null — StatShark off. */
+  scoutStatShark?: ScoutStatSharkSource | null
+}
+
+export async function startBot(options: BotOptions = {}): Promise<Client> {
   acceptingInteractions = true
   // Guilds — slash commands, GuildVoiceStates — who sits in voice channels
   // (neither is privileged). GuildMessages (+ MessageContent when the portal
@@ -64,7 +70,7 @@ export async function startBot(): Promise<Client> {
   if (config.scoutChannelIds.length > 0) {
     client.on(Events.MessageCreate, (message) => {
       if (!acceptingInteractions) return
-      handleScoutImageMessage(message)
+      handleScoutImageMessage(message, options.scoutStatShark ?? null)
     })
   }
   client.on(Events.Error, (error) => {

@@ -6,6 +6,7 @@ import {
   initDb,
 } from './db/index.js'
 import { startBot, stopBotWork } from './bot/index.js'
+import type { ScoutStatSharkSource } from './scout/report.js'
 import { startVoiceTracker } from './bot/voice-tracker.js'
 import { requestPlayerBoardRefresh, startPlayerBoardPublisher } from './bot/player-board.js'
 import { buildServer } from './web/index.js'
@@ -35,7 +36,7 @@ import {
   STATSHARK_SOURCE,
 } from './player-stats/statshark-normalizer.js'
 import { PlayerStatsService } from './player-stats/service.js'
-import { PlayerStatsCoordinator } from './player-stats/comparison.js'
+import { PlayerStatsCoordinator, resolveKnownPlayer } from './player-stats/comparison.js'
 import { defaultWtUserIdLookupSteps, WtUserIdResolver } from './player-stats/id-lookup.js'
 import { closeWtBrowser } from './parsers/sources/wt-browser.js'
 import { startWtCookieRefresh, stopWtCookieRefresh } from './parsers/sources/wt-request.js'
@@ -154,6 +155,18 @@ const playerStatsServices = [
   officialPlayerStatsService,
   statSharkPlayerStatsService,
 ].filter((service): service is PlayerStatsService => service !== null)
+// /scout pictures queue StatShark refreshes for the enemies they read: per-vehicle battles name a
+// player's likely new vehicle (model.ts newVehicleChances). One at a time, ~5 s each, 24 h TTL.
+const scoutStatShark: ScoutStatSharkSource | null = statSharkPlayerStatsService === null
+  ? null
+  : {
+      refresh(userId) {
+        const resolution = resolveKnownPlayer(userId)
+        if (resolution.status !== 'ok') return null
+        const cache = statSharkPlayerStatsService.request(resolution.identity.id)
+        return cache.refreshQueued ? statSharkPlayerStatsService.pending(resolution.identity.id) : null
+      },
+    }
 const playerStatsCoordinator = new PlayerStatsCoordinator({
   externalServices: playerStatsServices,
   externalSource: playerStatsServices[0]?.source ?? OFFICIAL_PROFILE_SOURCE,
@@ -344,7 +357,7 @@ function getRuntimeStats(): RuntimeStats {
  */
 async function startServices(): Promise<void> {
   // 2. Discord-бот (+трекер голосовых каналов — пишет присутствие в БД)
-  const startedClient = await startBot()
+  const startedClient = await startBot({ scoutStatShark })
   if (shuttingDown) {
     // shutdown мог уже пройти шаг закрытия Discord: этот клиент закрываем сами.
     await startedClient.destroy()

@@ -5929,6 +5929,31 @@ export const SITE_SQL = {
     WHERE b.start_time >= ? AND bp.user_id NOT LIKE '-%'
     GROUP BY bp.user_id
   `,
+  // /scout by picture: spawns per vehicle at the current cap so far, every squadron's (the new-vehicle
+  // guess). CROSS JOIN keeps battles (time index) outside, as scoutRecentPlayers.
+  scoutCapSpawns: `
+    SELECT bp.vehicle AS vehicle, count(*) AS spawns
+    FROM battles b
+    CROSS JOIN battle_players bp ON bp.session_id = b.session_id
+    WHERE b.start_time >= ? AND b.start_time < ?
+      AND bp.team > 0 AND bp.vehicle IS NOT NULL AND bp.user_id NOT LIKE '-%'
+    GROUP BY bp.vehicle
+  `,
+  // /scout by picture: StatShark battles per vehicle from each player's latest successful snapshot.
+  scoutStatSharkBattles: `
+    SELECT i.wt_user_id AS user_id, s.fetched_at, v.vehicle_id,
+           sum(coalesce(v.victories, 0) + coalesce(v.defeats, 0)) AS battles
+    FROM player_identities i
+    JOIN player_external_snapshots s ON s.id = (
+      SELECT s2.id FROM player_external_snapshots s2
+      WHERE s2.identity_id = i.id AND s2.source = 'statshark' AND s2.status = 'ok'
+      ORDER BY s2.fetched_at DESC, s2.id DESC
+      LIMIT 1
+    )
+    JOIN player_external_vehicles v ON v.snapshot_id = s.id
+    WHERE i.wt_user_id IN (${siteInSlots(SITE_ALIAS_IN_SLOTS)})
+    GROUP BY i.wt_user_id, v.vehicle_id
+  `,
   // /scout by picture: the recognised players' own rows, newest first.
   scoutPlayerRows: `
     SELECT bp.session_id, bp.team, bp.user_id, bp.nick, bp.vehicle, bp.vehicles,
@@ -7082,6 +7107,37 @@ export function getScoutPlayerRows(
     durationSec: row.duration_sec,
     ingestedAt: row.ingested_at,
   }))
+}
+
+/** Spawns per vehicle in squadron battles started in [fromTs, toTs): the BR's popularity for /scout's new-vehicle guess. */
+export function getScoutCapSpawns(fromTs: number, toTs: number, database?: DatabaseSync): [string, number][] {
+  if (!Number.isSafeInteger(fromTs) || !Number.isSafeInteger(toTs) || fromTs < 0 || toTs <= fromTs) {
+    throw new RangeError('Invalid /scout period')
+  }
+  const statement = database ? database.prepare(SITE_SQL.scoutCapSpawns) : siteStatement('scoutCapSpawns')
+  return (statement.all(fromTs, toTs) as { vehicle: string; spawns: number }[]).map((row) => [row.vehicle, row.spawns])
+}
+
+export interface ScoutStatSharkBattles {
+  userId: string
+  /** When the snapshot was read (Unix seconds). */
+  fetchedAt: number
+  /** Battles per vehicle outside squadron battles (StatShark leaves those out). */
+  vehicles: [string, number][]
+}
+
+/** StatShark battles per vehicle of up to 16 players (WT user ids), from each one's latest successful snapshot. */
+export function getScoutStatSharkBattles(userIds: readonly string[], database?: DatabaseSync): ScoutStatSharkBattles[] {
+  const ids = [...new Set(userIds.filter((id) => /^\d{1,20}$/.test(id)))].slice(0, SITE_ALIAS_IN_SLOTS)
+  if (ids.length === 0) return []
+  const statement = database ? database.prepare(SITE_SQL.scoutStatSharkBattles) : siteStatement('scoutStatSharkBattles')
+  const byPlayer = new Map<string, ScoutStatSharkBattles>()
+  for (const row of statement.all(...padSiteList(ids, SITE_ALIAS_IN_SLOTS)) as { user_id: string; fetched_at: number; vehicle_id: string; battles: number }[]) {
+    let entry = byPlayer.get(row.user_id)
+    if (!entry) byPlayer.set(row.user_id, (entry = { userId: row.user_id, fetchedAt: row.fetched_at, vehicles: [] }))
+    entry.vehicles.push([row.vehicle_id, row.battles])
+  }
+  return [...byPlayer.values()]
 }
 
 export function getScoutStages(database?: DatabaseSync): { startsAt: number; endsAt: number; maxBr: number }[] {

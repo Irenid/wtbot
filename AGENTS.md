@@ -109,7 +109,7 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WT_VNC_PASSWORD` | VNC to the browser's Xvfb display in Docker: manual login and Cloudflare checks |
 | `WT_REPLAY_HOSTS` | allowlist of CDN hosts for replay parts (`src/wrpl/replay-url-policy.ts`); structural SSRF protection applies without it |
 | `WT_PLAYER_NAMES` | nicknames for `wt-players`: Replay API and HTML profile |
-| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=true`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: companion (primary; runs only with `WT_COMPANION_COOKIE`), site profile, StatShark (fallback, only with a known numeric WT user id) |
+| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=true`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: companion (primary; runs only with `WT_COMPANION_COOKIE`), site profile, StatShark (fallback, only with a known numeric WT user id; also refreshed for the enemies of a `/scout` screenshot) |
 | `WT_PLAYER_ID_LOOKUP_ENABLED=true` | with `WT_PLAYER_STATS_ENABLED`: a profile without an id looks its WT user id up (`POST /api/player-id`, section 8); the Replay API step only with `WT_COOKIE` |
 | `WT_WORKER_THREADS=auto` | from CPU, RAM and reserves; cap 8, estimate 320 MiB per worker |
 | `WT_WORKER_BACKGROUND_RESERVE`, `WT_WORKER_MAX_OLD_SPACE_MB` | slots reserved for interactive work; old space of one worker |
@@ -504,8 +504,17 @@ Data:
   RB leaves an enemy in a vehicle without one). Then `read-scout-players` and
   `predictKnownTeam` (roster known, vehicles from each player's own battles
   at the cap, conditioned on the enemy's flags in that order and on the row
-  icons by `flag-evidence.ts`, both settings mixed; `npm run scout:backtest --
-  <copy.db> --known-team` scores it at moments of real battles). Every image
+  icons by `flag-evidence.ts`, both settings mixed). A player's "not seen at
+  this cap" share is spread over the cap's most spawned vehicles so far, by
+  their nations, classes and vehicles at any cap and StatShark's battles
+  (`newVehicleChances`: a guess is a flag-chain option, so the flags can name
+  it), weighed by the own squadron's air habit (`OPPONENT_AIR_WEIGHTS`) and set
+  in a setup calibration of its own (`KNOWN_TEAM_SETUP_CALIBRATION`). With
+  StatShark on, the reply queues a refresh for each enemy (players without
+  battles at the cap first, through the lazy StatShark service) and is edited
+  once they end, within `STATSHARK_WAIT_MS`. `npm run scout:backtest --
+  <copy.db> --known-team [--fit | --fit-all] [--statshark]` scores it at
+  moments of real battles and fits these (`scout-known-backtest.ts`). Every image
   and its reading stay in `data/scout-images/<day>/`; with `truth.json` there
   (nicks, flags, enemy row icons) they are the test set (`npm run
   scout:images` scores them; Discord IDs inside, never publish).
@@ -667,7 +676,10 @@ Data:
 - `POST /api/player-stats` (the player page on opening, the dashboard form) accepts
   only an exact known nickname or a stable WT user id. Every enabled external
   source has a single-slot lazy queue, 24 h TTL (younger snapshots are not
-  refetched), stale fallback, schema validation and its own rate limit.
+  refetched), stale fallback, schema validation and its own rate limit; a 429
+  pauses the whole source, doubling from the retry base while they repeat
+  (StatShark answered 429 after ~60 profiles in a row on 2026-10-09 and kept
+  it for over 15 minutes).
   Replay and account coverage are never summed; the primary snapshot is
   `account`, all of them `accountSources`. Precedence: Gaijin's companion API,
   the warthunder.com profile, StatShark; the primary is the first source with a
@@ -756,8 +768,8 @@ npm run build:web
 `verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-08**: all
-gates pass, **449 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+each can run alone for the affected subsystem. Baseline on **2026-10-09**: all
+gates pass, **454 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the

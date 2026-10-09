@@ -1,15 +1,24 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { VehicleClass } from '../wrpl/vehicles.js'
+import { dictionaryFlags, IN_VEHICLE_WITHOUT_ICON } from './flag-evidence.js'
 import {
+  OPPONENT_AIR_MEAN,
   SESSION_GAP_SEC,
   STAGE_SWITCH_DELAY_SEC,
+  newVehicleChances,
+  newVehicleFeatures,
+  opponentAir,
+  playerBackground,
+  predictKnownTeam,
   predictScout,
   setupFromPlayers,
   stageAt,
   vehicleChances,
   vehicleChoiceFeatures,
+  weighOpponentAir,
   type ScoutBattle,
+  type ScoutPlayerPrediction,
   type ScoutStage,
 } from './model.js'
 
@@ -132,4 +141,66 @@ test('the setup convolution is exact for independent players', () => {
   assert.ok(Math.abs(setup.compositions[0]!.chance - 0.5) < 1e-12)
   assert.ok(Math.abs(setup.airChance - 0.75) < 1e-12)
   assert.ok(Math.abs(setup.expected.F - 1) < 1e-12)
+})
+
+const nations: Record<string, string> = { plane: 'ussr', heli: 'ussr', mbt: 'ussr', light: 'germany', spaa: 'china', mbt2: 'germany' }
+const info = (id: string) => ({ nation: nations[id] ?? '?', cls: classOf(id) })
+const sum = (values: readonly number[]) => values.reduce((a, b) => a + b, 0)
+
+test('a new vehicle is guessed from the cap\'s spawns, the player\'s nations and classes, what they were seen with and StatShark', () => {
+  const capSpawns = new Map([['mbt', 50], ['mbt2', 40], ['spaa', 30], ['plane', 5]])
+  // Nobody known: the most spawned leads; every chance and the "other" option sum to one.
+  const plain = newVehicleChances(newVehicleFeatures(capSpawns, null, new Set(), info))
+  assert.equal(plain.vehicles[0]!.vehicleId, 'mbt')
+  assert.ok(Math.abs(sum(plain.vehicles.map((v) => v.chance)) + plain.other - 1) < 1e-9)
+  // A German tanker (two battles in mbt2 at another cap) leans to mbt2; a vehicle of theirs at this cap is left out.
+  const german = playerBackground([{ vehicle: 'mbt2', lineup: ['mbt2'] }, { vehicle: 'light', lineup: ['light', 'mbt2'] }], info)
+  const guess = newVehicleChances(newVehicleFeatures(capSpawns, german, new Set(['light']), info))
+  assert.equal(guess.vehicles[0]!.vehicleId, 'mbt2')
+  assert.ok(!guess.vehicles.some((v) => v.vehicleId === 'light'))
+  // StatShark: hundreds of battles in the SPAA, none in the tanks, outweigh the cap's popularity.
+  const shark = playerBackground([], info, new Map([['spaa', 400]]))
+  assert.equal(newVehicleChances(newVehicleFeatures(capSpawns, shark, new Set(), info)).vehicles[0]!.vehicleId, 'spaa')
+})
+
+test('a player without battles at this BR gets the cap\'s vehicles; the flags pick the one their flag shows', () => {
+  const now = STAGE_START + 2 * DAY
+  // p1 played mbt at this cap; p2 never did. The cap's spawns lean to mbt, then spaa (China).
+  const battles = [battle('b1', now - 3600, ['mbt'], ['p1'])]
+  const capSpawns = new Map([['mbt', 60], ['spaa', 40], ['mbt2', 10]])
+  const players = [{ userId: 'p1', nick: 'one' }, { userId: 'p2', nick: 'two' }]
+  const base = { players, unknownPlayers: 0, battles, now, stages, classOf, capSpawns, nationOf: (id: string) => nations[id] ?? '?' }
+  const blind = predictKnownTeam(base)
+  const cold = blind.players.find((p) => p.userId === 'p2')!
+  assert.equal(cold.battlesAtCap, 0)
+  assert.equal(cold.newVehicles[0]!.vehicleId, 'mbt')
+  assert.ok(Math.abs(cold.unseenChance - 1) < 1e-9)
+  // The line shows the USSR (p1's mbt) and China: China's flag can only be p2's SPAA.
+  const dict = Object.fromEntries(Object.keys(nations).map((id) => [id, { name: id, cls: classOf(id), country: nations[id]! }]))
+  const flagged = predictKnownTeam({
+    ...base,
+    flags: {
+      flags: [[{ icon: 'ussr', likelihood: 1 }], [{ icon: 'china', likelihood: 1 }]],
+      seats: [{ place: 0, inVehicle: IN_VEHICLE_WITHOUT_ICON }, { place: 1, inVehicle: IN_VEHICLE_WITHOUT_ICON }],
+      flagsOf: dictionaryFlags(dict),
+    },
+  })
+  const named = flagged.players.find((p) => p.userId === 'p2')!
+  assert.equal(named.newVehicles[0]!.vehicleId, 'spaa')
+  assert.ok(named.newVehicles[0]!.chance > 0.8, `spaa ${named.newVehicles[0]!.chance}`)
+})
+
+test('an opponent that flies moves chances to anti-aircraft; its habit is the mean of its latest battles', () => {
+  const player: ScoutPlayerPrediction = {
+    userId: 'p1', nick: 'one', playChance: 1, battlesAtCap: 5,
+    vehicles: [{ vehicleId: 'mbt', chance: 0.6 }, { vehicleId: 'spaa', chance: 0.3 }],
+    unseenChance: 0.1, newVehicles: [], lineup: [],
+  }
+  weighOpponentAir(player, 4 - OPPONENT_AIR_MEAN, { AA: 0.4, T: -0.1 }, classOf)
+  const chance = (id: string) => player.vehicles.find((v) => v.vehicleId === id)!.chance
+  assert.ok(chance('spaa') > 0.3 && chance('mbt') < 0.6)
+  assert.ok(Math.abs(sum(player.vehicles.map((v) => v.chance)) + player.unseenChance - 1) < 1e-9)
+  assert.equal(opponentAir([{ endTime: 1, air: 2 }, { endTime: 2, air: 4 }]), null)
+  const teams = Array.from({ length: 25 }, (_, i) => ({ endTime: i, air: i < 5 ? 9 : 2 }))
+  assert.equal(opponentAir(teams), 2) // the latest 20 only
 })

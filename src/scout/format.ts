@@ -8,7 +8,7 @@
 
 import { escapeMarkdown } from 'discord.js'
 import { vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
-import { SESSION_GAP_SEC, TEAM_SIZE, type ScoutClass, type ScoutPlayerPrediction, type ScoutSetup } from './model.js'
+import { SESSION_GAP_SEC, TEAM_SIZE, type ScoutClass, type ScoutPlayerPrediction, type ScoutSetup, type VehicleChance } from './model.js'
 import type { ScoutImageReport, ScoutReport } from './report.js'
 
 const CLASS_NAMES: Record<ScoutClass, [string, string]> = {
@@ -97,22 +97,49 @@ export interface ScoutEmbedText {
   fields: { name: string; value: string }[]
 }
 
-/** "nick (plays 84%) — **T-54 (1949) 93%** · ZSU-37-2 16%": the most likely vehicle is the bold part. */
+const byChance = (a: VehicleChance, b: VehicleChance): number => b.chance - a.chance || a.vehicleId.localeCompare(b.vehicleId)
+
+/**
+ * "nick (plays 84%) — **T-54 (1949) 93%** · ZSU-37-2 16%": the most likely
+ * vehicle is the bold part. A vehicle not seen from the player at this BR
+ * (the guess from what squadrons take at it) is marked "new".
+ */
 function playerLine(player: ScoutPlayerPrediction, vehicles: VehicleDict): string {
   const name = (id: string) => escapeMarkdown(plainVehicleName(vehicleInfo(vehicles, id).name))
   const plays = player.playChance < SHOW_PLAY_CHANCE_BELOW ? ` (plays ${percent(player.playChance)})` : ''
   const who = `${escapeMarkdown(player.nick)}${plays}`
-  const [best, ...rest] = player.vehicles
-  if (player.battlesAtCap === 0 || !best) return `${who} — no battles at this BR yet`
-  const parts = [`**${name(best.vehicleId)} ${percent(best.chance)}**`]
-  for (const vehicle of rest.slice(0, 2)) if (vehicle.chance >= MIN_ALTERNATIVE_CHANCE) parts.push(`${name(vehicle.vehicleId)} ${percent(vehicle.chance)}`)
-  if (player.unseenChance >= MIN_UNSEEN_CHANCE) parts.push(`new vehicle ${percent(player.unseenChance)}`)
+  const fresh = new Set(player.newVehicles.map((vehicle) => vehicle.vehicleId))
+  const [best, ...rest] = [...player.vehicles, ...player.newVehicles].sort(byChance)
+  const others = rest.slice(0, 2).filter((vehicle) => vehicle.chance >= MIN_ALTERNATIVE_CHANCE)
+  if (player.battlesAtCap === 0) {
+    if (!best || best.chance < MIN_ALTERNATIVE_CHANCE) return `${who} — no battles at this BR yet`
+    const guesses = [`**${name(best.vehicleId)} ${percent(best.chance)}**`, ...others.map((vehicle) => `${name(vehicle.vehicleId)} ${percent(vehicle.chance)}`)]
+    return `${who} — no battles at this BR yet, likely ${guesses.join(' · ')}`
+  }
+  if (!best) return `${who} — no battles at this BR yet`
+  const label = (vehicle: VehicleChance) => `${name(vehicle.vehicleId)}${fresh.has(vehicle.vehicleId) ? ' (new)' : ''} ${percent(vehicle.chance)}`
+  const shown = [best, ...others]
+  const parts = [`**${label(best)}**`, ...others.map(label)]
+  const named = shown.filter((vehicle) => fresh.has(vehicle.vehicleId)).reduce((sum, vehicle) => sum + vehicle.chance, 0)
+  const unnamed = player.unseenChance - named
+  if (unnamed >= MIN_UNSEEN_CHANCE) parts.push(`${named > 0 ? 'other new vehicle' : 'new vehicle'} ${percent(unnamed)}`)
   return `${who} — ${parts.join(' · ')}`
 }
 
+/** The class of the most likely vehicle; for a player without battles at this BR, the class the guesses agree on half the time. */
 function likelyClass(player: ScoutPlayerPrediction, vehicles: VehicleDict): ScoutClass | 'unknown' {
-  const best = player.vehicles[0]
-  if (player.battlesAtCap === 0 || !best) return 'unknown'
+  const options = [...player.vehicles, ...player.newVehicles].sort(byChance)
+  if (player.battlesAtCap === 0) {
+    const byClass = new Map<ScoutClass, number>()
+    for (const vehicle of options) {
+      const cls = vehicleInfo(vehicles, vehicle.vehicleId).cls
+      if (cls !== '?') byClass.set(cls, (byClass.get(cls) ?? 0) + vehicle.chance)
+    }
+    const top = [...byClass].sort((a, b) => b[1] - a[1])[0]
+    return top && top[1] >= 0.5 ? top[0] : 'unknown'
+  }
+  const best = options[0]
+  if (!best) return 'unknown'
   const cls = vehicleInfo(vehicles, best.vehicleId).cls
   return cls === '?' ? 'unknown' : cls
 }
@@ -216,6 +243,12 @@ export function formatScoutImageReport(report: ScoutImageReport): ScoutEmbedText
   } else {
     lines.push(`Vehicle chances come from each player's own battles${brText}. A screenshot after they spawn shows their flags and sharpens the guess.`)
   }
+  const guessed = prediction.players.some((player) => player.newVehicles.some((vehicle) => vehicle.chance >= MIN_ALTERNATIVE_CHANCE))
+  if (guessed) {
+    const shark = report.statShark.players > 0 ? ` and their battles on StatShark (${report.statShark.players} ${report.statShark.players === 1 ? 'player' : 'players'})` : ''
+    lines.push(`A vehicle not seen from a player at this BR (new) is guessed from what squadrons take at it${shark}.`)
+  }
+  if (report.statShark.pending) lines.push('Checking their battles on StatShark: this reply updates in a minute or two.')
   lines.push('', ...setupLines(prediction.setup))
   const fields = classFields(prediction.players, report.vehicles)
   if (report.unread.length > 0) {

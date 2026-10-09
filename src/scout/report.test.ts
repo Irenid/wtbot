@@ -24,7 +24,7 @@ import {
 } from './format.js'
 import { predictScout, setupFromPlayers, type KnownTeamPrediction, type ScoutBattle } from './model.js'
 import { IN_VEHICLE_WITH_ICON, IN_VEHICLE_WITHOUT_ICON } from './flag-evidence.js'
-import { enemySeats, findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutImageReport, type ScoutReport } from './report.js'
+import { allyAir, enemySeats, findSquadrons, nickKey, recentNicks, scoutBattlesFromRows, type ScoutImageReport, type ScoutReport } from './report.js'
 
 function player(userId: string, nick: string, team: number, clanTag: string, vehicles: string[]): BattlePlayerInput {
   return {
@@ -148,12 +148,13 @@ test('a screenshot reply names the flags it used and who shows none, or asks for
   const prediction: KnownTeamPrediction = {
     maxBr: 8,
     lastTogether: null,
-    players: [{ userId: 'a', nick: 'A', playChance: 1, battlesAtCap: 3, vehicles: [{ vehicleId: 'de_tank', chance: 0.9 }], unseenChance: 0.1, lineup: ['de_tank'] }],
+    lastHadAir: false,
+    players: [{ userId: 'a', nick: 'A', playChance: 1, battlesAtCap: 3, vehicles: [{ vehicleId: 'de_tank', chance: 0.9 }], unseenChance: 0.1, newVehicles: [], lineup: ['de_tank'] }],
     setup: setupFromPlayers([{ classChances: { F: 0, H: 0, T: 1, L: 0, AA: 0 } }]),
     flags: { icons: ['germany_modern', 'usa', 'usa_modern', 'south_africa'], operatorChance: 1 },
   }
   const report: ScoutImageReport = {
-    squadron: null, allySquadron: null, prediction, recognised: 1, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, vehicles, now: 0,
+    squadron: null, allySquadron: null, prediction, recognised: 1, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, vehicles, now: 0,
   }
   const used = formatScoutImageReport(report).description
   assert.match(used, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
@@ -183,4 +184,53 @@ test('enemy rows as flag seats: the game\'s order is the user ids as text, the s
   // A score moved '87' up: the ids give the order, the unrecognised row stands anywhere; no icon column, nothing known.
   const scored = enemySeats([{ userId: '87', row: 0 }, { userId: '120', row: 1 }], [2], null)
   assert.deepEqual(scored, [{ place: 1, inVehicle: null }, { place: 0, inVehicle: null }, { place: null, inVehicle: null }])
+})
+
+test('a screenshot reply names a new player\'s likely vehicle, marks new ones and says when StatShark updates it', () => {
+  const vehicles: VehicleDict = {
+    de_tank: { name: 'Leopard I', cls: 'T', country: 'germany' },
+    cn_spaa: { name: 'WZ305', cls: 'AA', country: 'china' },
+    fr_jet: { name: 'Vautour IIN(C)', cls: 'F', country: 'france' },
+  }
+  const prediction: KnownTeamPrediction = {
+    maxBr: 8,
+    lastTogether: null,
+    lastHadAir: false,
+    players: [
+      // No battles at this BR: the guesses agree on anti-air 70% of the time.
+      { userId: 'a', nick: 'Fresh', playChance: 1, battlesAtCap: 0, vehicles: [], unseenChance: 1, newVehicles: [{ vehicleId: 'cn_spaa', chance: 0.7 }, { vehicleId: 'de_tank', chance: 0.2 }], lineup: [] },
+      // A regular whose new jet is likelier than their tank.
+      { userId: 'b', nick: 'Regular', playChance: 1, battlesAtCap: 9, vehicles: [{ vehicleId: 'de_tank', chance: 0.35 }], unseenChance: 0.65, newVehicles: [{ vehicleId: 'fr_jet', chance: 0.5 }], lineup: [] },
+    ],
+    setup: setupFromPlayers([{ classChances: { F: 0, H: 0, T: 1, L: 0, AA: 0 } }]),
+    flags: null,
+  }
+  const report: ScoutImageReport = {
+    squadron: null, allySquadron: null, prediction, recognised: 2, unread: [], enemyFlags: { read: 0, rowsWithout: null },
+    statShark: { players: 0, pending: true }, vehicles, now: 0,
+  }
+  const text = formatScoutImageReport(report)
+  assert.match(text.description, /A vehicle not seen from a player at this BR \(new\) is guessed from what squadrons take at it\./)
+  assert.match(text.description, /Checking their battles on StatShark: this reply updates in a minute or two\./)
+  const antiAir = text.fields.find((field) => field.name.startsWith('Anti-air'))!
+  assert.match(antiAir.value, /^Fresh — no battles at this BR yet, likely \*\*WZ305 70%\*\* · Leopard I 20%$/m)
+  const air = text.fields.find((field) => field.name.startsWith('Aircraft'))!
+  assert.match(air.value, /^Regular — \*\*Vautour IIN\(C\) \(new\) 50%\*\* · Leopard I 35% · other new vehicle 15%$/m)
+  const updated = formatScoutImageReport({ ...report, statShark: { players: 2, pending: false } }).description
+  assert.match(updated, /and their battles on StatShark \(2 players\)\./)
+  assert.doesNotMatch(updated, /Checking/)
+})
+
+test('the own squadron\'s air habit: aircraft and helicopters a battle over its teams of six or more', () => {
+  const vehicles: VehicleDict = { jet: { name: 'Jet', cls: 'F', country: 'usa' }, tank: { name: 'Tank', cls: 'T', country: 'usa' } }
+  const row = (sessionId: string, index: number, vehicle: string): ScoutTeamRow => ({
+    sessionId, team: 1, userId: `${sessionId}-${index}`, nick: `n${index}`, vehicle, vehicles: '[]', startTime: Number(sessionId.slice(1)) * 1000, durationSec: 300, ingestedAt: 0,
+  })
+  const rows: ScoutTeamRow[] = []
+  for (let battle = 1; battle <= 6; battle += 1) {
+    for (let index = 0; index < 8; index += 1) rows.push(row(`s${battle}`, index, index < (battle % 2 === 0 ? 3 : 1) ? 'jet' : 'tank'))
+  }
+  rows.push(row('s99', 0, 'jet'), row('s99', 1, 'jet')) // two guests' rows: not a team of the squadron
+  assert.equal(allyAir(rows, vehicles), 2)
+  assert.equal(allyAir(rows.slice(0, 16), vehicles), null)
 })

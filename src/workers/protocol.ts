@@ -1,4 +1,4 @@
-import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights, ScoutTeamRow, SitePlayerSearchHit } from '../db/index.js'
+import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights, ScoutStatSharkBattles, ScoutTeamRow, SitePlayerSearchHit } from '../db/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
@@ -211,10 +211,20 @@ export interface WorkerTaskMap {
     input: { svgs: [string, string][] }
     output: WireFlagTemplates
   }
-  /** /scout by picture: the recognised players' rows and the season stages. */
+  /**
+   * /scout by picture: the recognised players' rows and the season stages, the
+   * cap's spawns so far (every squadron), the players' StatShark battles and
+   * the own squadron's rows (allyTags; its air habit).
+   */
   'read-scout-players': {
-    input: { dbPath: string; userIds: string[]; fromTs: number; toTs: number }
-    output: { rows: ScoutTeamRow[]; stages: { startsAt: number; endsAt: number; maxBr: number }[] }
+    input: { dbPath: string; userIds: string[]; fromTs: number; toTs: number; allyTags: string[]; allyFromTs: number }
+    output: {
+      rows: ScoutTeamRow[]
+      stages: { startsAt: number; endsAt: number; maxBr: number }[]
+      capSpawns: [string, number][]
+      statShark: ScoutStatSharkBattles[]
+      allyRows: ScoutTeamRow[]
+    }
   }
   /** /scout: a squadron's player rows and the season stages (src/scout/report.ts). */
   'read-scout-history': {

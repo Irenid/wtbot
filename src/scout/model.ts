@@ -2,9 +2,10 @@
  * Predicts a squadron's team in its next squadron battle: who plays and which
  * vehicle each player spawns. A squadron battle gives one life (0 or 1 deaths
  * in 99.99% of 795,063 rows, 2026-10-08), so the eight spawned vehicles are
- * the whole setup. Both models are logistic regressions whose weights
- * `npm run scout:backtest` fits on stored battles; accuracy, calibration and
- * the dead ends (map, cold start) are in docs/opponent-scouting.md.
+ * the whole setup. The models are logistic regressions whose weights
+ * `npm run scout:backtest` fits on stored battles (`--known-team` the picture
+ * path's); accuracy, calibration and the dead ends (map, cold start) are in
+ * docs/opponent-scouting.md.
  *
  * Pure functions over plain rows: the database reader (`readScoutHistory`)
  * and the backtest feed the same code.
@@ -288,6 +289,112 @@ export function vehicleChances(
   }
 }
 
+/**
+ * A player beyond the current cap: their stored squadron spawns at any cap and
+ * StatShark's per-vehicle battles (playerBackground). It names the vehicle a
+ * player takes when their battles at this cap do not (newVehicleChances).
+ */
+export interface PlayerBackground {
+  /** Spawns per nation (research tree) and per class, any cap. */
+  nations: ReadonlyMap<string, number>
+  classes: ReadonlyMap<string, number>
+  spawns: number
+  /** Every vehicle seen in their lineups or spawns, any cap. */
+  seen: ReadonlySet<string>
+  /** StatShark battles per vehicle (squadron battles are not in them); null — no snapshot. */
+  battles: ReadonlyMap<string, number> | null
+}
+
+/** Spawns per vehicle at the current cap so far, every squadron's: the BR's popularity. */
+export type CapSpawns = ReadonlyMap<string, number>
+
+/** Feature order of NEW_VEHICLE_WEIGHTS; the last scores the "a vehicle outside the cap's popular ones" option. */
+export const NEW_VEHICLE_FEATURES = ['logShare', 'nationShare', 'classShare', 'seenBefore', 'logBattles', 'notPlayed', 'other'] as const
+/**
+ * Conditional logit fitted by `npm run scout:backtest -- <copy.db> --known-team
+ * --fit-all --statshark` on the 72,282 new-vehicle events of 2026-07-15 –
+ * 10-08 (a player taking a vehicle never seen from them at the cap); the two
+ * StatShark weights on the events of the 84 players with a snapshot read up to
+ * 3 days after the battle (docs/opponent-scouting.md).
+ */
+export const NEW_VEHICLE_WEIGHTS: readonly number[] = [0.834, 1.275, 0.89, 2.31, 0.298, -3.82, -1.2]
+/** Candidates: the cap's most spawned vehicles (the top 150 held 96–97% of the spawns at 10.0 and 9.0). */
+export const NEW_VEHICLE_CANDIDATES = 150
+
+export interface NewVehicleFeatures {
+  vehicles: string[]
+  /** One row per vehicle, NEW_VEHICLE_FEATURES order; the "other" option's row last. */
+  rows: number[][]
+}
+
+/** A background from the player's stored rows (any cap; the caller keeps those known at query time) and StatShark's battles. */
+export function playerBackground(
+  rows: Iterable<{ vehicle: string | null; lineup: readonly string[] }>,
+  info: (vehicleId: string) => { nation: string; cls: VehicleClass },
+  battles: ReadonlyMap<string, number> | null = null,
+): PlayerBackground {
+  const nations = new Map<string, number>()
+  const classes = new Map<string, number>()
+  const seen = new Set<string>()
+  let spawns = 0
+  for (const row of rows) {
+    for (const vehicle of row.lineup) seen.add(vehicle)
+    if (!row.vehicle) continue
+    seen.add(row.vehicle)
+    const { nation, cls } = info(row.vehicle)
+    nations.set(nation, (nations.get(nation) ?? 0) + 1)
+    classes.set(cls, (classes.get(cls) ?? 0) + 1)
+    spawns += 1
+  }
+  return { nations, classes, spawns, seen, battles }
+}
+
+/** The cap's popular vehicles as a player's "new vehicle" options (`exclude`: theirs at this cap). */
+export function newVehicleFeatures(
+  capSpawns: CapSpawns,
+  background: PlayerBackground | null,
+  exclude: ReadonlySet<string>,
+  info: (vehicleId: string) => { nation: string; cls: VehicleClass },
+): NewVehicleFeatures {
+  let total = 0
+  for (const count of capSpawns.values()) total += count
+  const ranked = [...capSpawns].filter(([id]) => !exclude.has(id)).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, NEW_VEHICLE_CANDIDATES)
+  const spawns = background?.spawns ?? 0
+  const battles = background?.battles ?? null
+  const rows = ranked.map(([id, count]) => {
+    const { nation, cls } = info(id)
+    const played = battles?.get(id) ?? 0
+    return [
+      Math.log(count / total),
+      spawns > 0 ? (background!.nations.get(nation) ?? 0) / spawns : 0,
+      spawns > 0 ? (background!.classes.get(cls) ?? 0) / spawns : 0,
+      background?.seen.has(id) ? 1 : 0,
+      battles ? Math.log1p(played) : 0,
+      battles && played === 0 ? 1 : 0,
+      0,
+    ]
+  })
+  rows.push([0, 0, 0, 0, 0, 0, 1])
+  return { vehicles: ranked.map(([id]) => id), rows }
+}
+
+/** Softmax over the candidates and "other": chances of a new vehicle, given one is taken. */
+export function newVehicleChances(
+  features: NewVehicleFeatures,
+  weights: readonly number[] = NEW_VEHICLE_WEIGHTS,
+): { vehicles: VehicleChance[]; other: number } {
+  const scores = features.rows.map((row) => dot(weights, row))
+  const max = Math.max(...scores)
+  const exps = scores.map((score) => Math.exp(score - max))
+  const total = exps.reduce((sum, value) => sum + value, 0)
+  return {
+    vehicles: features.vehicles
+      .map((vehicleId, index) => ({ vehicleId, chance: exps[index]! / total }))
+      .sort((a, b) => b.chance - a.chance || a.vehicleId.localeCompare(b.vehicleId)),
+    other: exps[exps.length - 1]! / total,
+  }
+}
+
 export function rosterChance(candidate: RosterCandidate, regime: 'session' | 'break'): number {
   return sigmoid(dot(ROSTER_WEIGHTS[regime], candidate.features))
 }
@@ -329,6 +436,8 @@ export interface ScoutPlayerPrediction {
   vehicles: VehicleChance[]
   /** A vehicle never seen from this player at the current cap (1 without history). */
   unseenChance: number
+  /** The likeliest of those, the cap's popular vehicles (a part of unseenChance, highest first); empty — not guessed. */
+  newVehicles: VehicleChance[]
   /** The last lineup at the current cap. */
   lineup: readonly string[]
 }
@@ -461,28 +570,37 @@ export function compositionCalibrationFeatures(independentChance: number): numbe
   return [1, logit(independentChance)]
 }
 
-export function calibrateSetup(setup: ScoutSetup, lastHadAir: boolean): ScoutSetup {
+export interface SetupCalibration {
+  air: readonly number[]
+  composition: readonly number[]
+}
+
+export function calibrateSetup(
+  setup: ScoutSetup,
+  lastHadAir: boolean,
+  calibration: SetupCalibration = { air: AIR_CALIBRATION, composition: COMPOSITION_CALIBRATION },
+): ScoutSetup {
   return {
     expected: setup.expected,
     compositions: setup.compositions.map((composition) => ({
       counts: composition.counts,
-      chance: sigmoid(dot(COMPOSITION_CALIBRATION, compositionCalibrationFeatures(composition.raw))),
+      chance: sigmoid(dot(calibration.composition, compositionCalibrationFeatures(composition.raw))),
       raw: composition.raw,
     })),
-    airChance: sigmoid(dot(AIR_CALIBRATION, airCalibrationFeatures(setup.rawAirChance, lastHadAir))),
+    airChance: sigmoid(dot(calibration.air, airCalibrationFeatures(setup.rawAirChance, lastHadAir))),
     rawAirChance: setup.rawAirChance,
   }
 }
 
-/** A player's chance of each class: their vehicles', the unseen and unknown-class rest spread by the shares. */
+/** A player's chance of each class: their vehicles' and the guessed new ones', the unguessed and unknown-class rest spread by the shares. */
 function classChancesOf(
   player: ScoutPlayerPrediction,
   classOf: (id: string) => VehicleClass,
   shares: Record<ScoutClass, number>,
 ): Record<ScoutClass, number> {
   const classChances: Record<ScoutClass, number> = { F: 0, H: 0, T: 0, L: 0, AA: 0 }
-  let unknown = player.unseenChance
-  for (const vehicle of player.vehicles) {
+  let unknown = Math.max(0, player.unseenChance - player.newVehicles.reduce((sum, vehicle) => sum + vehicle.chance, 0))
+  for (const vehicle of [...player.vehicles, ...player.newVehicles]) {
     const cls = classOf(vehicle.vehicleId)
     if (cls === '?') unknown += vehicle.chance
     else classChances[cls] += vehicle.chance
@@ -510,6 +628,7 @@ function predictGroup(
       battlesAtCap: own.length,
       vehicles: chances.vehicles,
       unseenChance: chances.unseen,
+      newVehicles: [],
       lineup: own[own.length - 1]?.lineup ?? [],
     }
   })
@@ -578,7 +697,77 @@ export interface KnownTeamInput {
   classOf: (vehicleId: string) => VehicleClass
   /** The flags above the enemy team (flag-evidence.ts); omitted — none read. */
   flags?: FlagEvidence | undefined
+  /** Spawns per vehicle at the current cap so far, every squadron's: names the vehicles a player has not taken at this cap; omitted — unnamed. */
+  capSpawns?: CapSpawns | undefined
+  /** The players' backgrounds (playerBackground) by user id. */
+  backgrounds?: ReadonlyMap<string, PlayerBackground> | undefined
+  /** A vehicle's research-tree nation; the guesses need it with capSpawns. */
+  nationOf?: ((vehicleId: string) => string) | undefined
+  /** Aircraft and helicopters the screenshot's own squadron spawns per battle (opponentAir); null — unknown. */
+  opponentAir?: number | null | undefined
+  /** The backtest's fits; omitted — the shipped constants. */
+  weights?: {
+    newVehicle?: readonly number[]
+    opponentAir?: Readonly<Partial<Record<ScoutClass, number>>>
+    setup?: Readonly<Record<'flags' | 'noFlags', SetupCalibration>>
+  } | undefined
 }
+
+/** New vehicles kept per player; the rest joins the unnamed share (each is an option of the flag chain). */
+export const NEW_VEHICLES_KEPT = 30
+
+/**
+ * Squadrons bring anti-aircraft against an opponent that flies: a player who
+ * took SPAA last time keeps it 62% against squadrons spawning under 0.5
+ * aircraft a battle, 88% against 3 or more (2026-10-01 – 10-08). Per aircraft
+ * a battle above OPPONENT_AIR_MEAN, a class's chances scale by exp(weight).
+ */
+export const OPPONENT_AIR_WEIGHTS: Readonly<Partial<Record<ScoutClass, number>>> = { F: 0.059, H: 0.022, T: -0.079, L: -0.046, AA: 0.347 }
+export const OPPONENT_AIR_MEAN = 2
+/** The own squadron's battles the habit is read from (the latest). */
+export const OPPONENT_AIR_BATTLES = 20
+
+/**
+ * Setup calibrations of the picture path, without flags and with them
+ * (screenshots 10–120 s after the first spawn): the roster is known, so the
+ * raw chances are sharper than /scout squadron's, which overstated the setup
+ * and missed the air chance by 24–28 points in 4% of teams. Same fit.
+ */
+export const KNOWN_TEAM_SETUP_CALIBRATION: Readonly<Record<'flags' | 'noFlags', SetupCalibration>> = {
+  noFlags: { air: [-1.179, 0.637, 1.238], composition: [0.458, 1.137] },
+  flags: { air: [-0.992, 0.901, 0.269], composition: [0.177, 1.126] },
+}
+
+/** Scales a player's options by class for the opponent's air habit (`excess`: its aircraft a battle over the mean); the unnamed share stays. */
+export function weighOpponentAir(
+  player: ScoutPlayerPrediction,
+  excess: number,
+  weights: Readonly<Partial<Record<ScoutClass, number>>>,
+  classOf: (vehicleId: string) => VehicleClass,
+): void {
+  const scaled = (vehicles: readonly VehicleChance[]) => vehicles.map((vehicle) => {
+    const cls = classOf(vehicle.vehicleId)
+    return { vehicleId: vehicle.vehicleId, chance: vehicle.chance * (cls === '?' ? 1 : Math.exp((weights[cls] ?? 0) * excess)) }
+  })
+  const unnamed = Math.max(0, player.unseenChance - chanceSum(player.newVehicles))
+  const vehicles = scaled(player.vehicles)
+  const newVehicles = scaled(player.newVehicles)
+  const total = chanceSum(vehicles) + chanceSum(newVehicles) + unnamed
+  if (!(total > 0)) return
+  const normal = (list: VehicleChance[]) => list.map((vehicle) => ({ vehicleId: vehicle.vehicleId, chance: vehicle.chance / total })).sort(byChance)
+  player.vehicles = normal(vehicles)
+  player.newVehicles = normal(newVehicles)
+  player.unseenChance = unnamed / total + chanceSum(player.newVehicles)
+}
+
+/** Aircraft and helicopters per battle over a squadron's latest teams (any player's spawn of F or H); null — under 5 teams. */
+export function opponentAir(teams: readonly { endTime: number; air: number }[]): number | null {
+  const latest = [...teams].sort((a, b) => b.endTime - a.endTime).slice(0, OPPONENT_AIR_BATTLES)
+  return latest.length >= 5 ? latest.reduce((sum, team) => sum + team.air, 0) / latest.length : null
+}
+
+const chanceSum = (vehicles: readonly VehicleChance[]): number => vehicles.reduce((sum, vehicle) => sum + vehicle.chance, 0)
+const byChance = (a: VehicleChance, b: VehicleChance): number => b.chance - a.chance || a.vehicleId.localeCompare(b.vehicleId)
 
 export interface KnownTeamPrediction {
   maxBr: number | null
@@ -589,14 +778,19 @@ export interface KnownTeamPrediction {
   setup: ScoutSetup
   /** The enemy flags the chances are conditioned on, as their likeliest reading; null — none read, or they fit nobody. */
   flags: { icons: string[]; operatorChance: number } | null
+  /** The air calibration's input: lastTogether's team spawned an aircraft or helicopter. */
+  lastHadAir: boolean
 }
 
 /**
  * The enemy team is known (a scoreboard screenshot): only the vehicles are
  * predicted, each player's from their own battles at the current cap with any
- * squadron, then given the flags above the enemy team when they were read
- * (flag-evidence.ts). The air calibration uses the latest battle most of them
- * played together.
+ * squadron; the share of a vehicle not seen from them at this cap goes to the
+ * cap's popular vehicles (newVehicleChances, with capSpawns), the classes are
+ * weighed by the opponent's air habit (with opponentAir), then everything is
+ * given the flags above the enemy team when they were read (flag-evidence.ts).
+ * The setup uses the picture path's calibration and the latest battle most of
+ * them played together.
  */
 export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
   const known = input.battles
@@ -616,28 +810,48 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
       anchorCount = count
     }
   }
+  const nationOf = input.nationOf
+  const guessing = input.capSpawns !== undefined && input.capSpawns.size > 0 && nationOf !== undefined
+  const info = (id: string) => ({ nation: nationOf?.(id) ?? '?', cls: input.classOf(id) })
   const players: ScoutPlayerPrediction[] = input.players.map((player) => {
     const own = vehicleHistory.get(player.userId) ?? []
     const features = vehicleChoiceFeatures(own, input.now)
     const chances = features ? vehicleChances(features) : { vehicles: [], unseen: 1 }
-    return {
+    const background = input.backgrounds?.get(player.userId) ?? null
+    const newVehicles = guessing && chances.unseen > 0
+      ? newVehicleChances(newVehicleFeatures(input.capSpawns!, background, new Set(features?.vehicles ?? []), info), input.weights?.newVehicle).vehicles
+        .slice(0, NEW_VEHICLES_KEPT)
+        .map((vehicle) => ({ vehicleId: vehicle.vehicleId, chance: vehicle.chance * chances.unseen }))
+      : []
+    const prediction: ScoutPlayerPrediction = {
       userId: player.userId,
       nick: player.nick,
       playChance: 1,
       battlesAtCap: own.length,
       vehicles: chances.vehicles,
       unseenChance: chances.unseen,
+      newVehicles,
       lineup: own[own.length - 1]?.lineup ?? [],
     }
+    if (input.opponentAir !== undefined && input.opponentAir !== null) {
+      weighOpponentAir(prediction, input.opponentAir - OPPONENT_AIR_MEAN, input.weights?.opponentAir ?? OPPONENT_AIR_WEIGHTS, input.classOf)
+    }
+    return prediction
   })
+  // The guessed new vehicles are options with their own flags; the unguessed rest stays unseen.
   const posterior = input.flags
-    ? conditionOnFlags(players.map((player) => ({ vehicles: player.vehicles, unseen: player.unseenChance })), input.flags)
+    ? conditionOnFlags(players.map((player) => ({
+        vehicles: [...player.vehicles, ...player.newVehicles],
+        unseen: Math.max(0, player.unseenChance - chanceSum(player.newVehicles)),
+      })), input.flags)
     : null
   if (posterior) {
     posterior.players.forEach((conditioned, index) => {
       const player = players[index]!
-      player.vehicles = conditioned.vehicles.sort((a, b) => b.chance - a.chance || a.vehicleId.localeCompare(b.vehicleId))
-      player.unseenChance = conditioned.unseen
+      const seen = player.vehicles.length
+      player.vehicles = conditioned.vehicles.slice(0, seen).sort(byChance)
+      player.newVehicles = conditioned.vehicles.slice(seen).sort(byChance)
+      player.unseenChance = conditioned.unseen + chanceSum(player.newVehicles)
     })
   }
   players.sort((a, b) => b.battlesAtCap - a.battlesAtCap || a.nick.localeCompare(b.nick))
@@ -652,7 +866,8 @@ export function predictKnownTeam(input: KnownTeamInput): KnownTeamPrediction {
     maxBr: stage?.maxBr ?? null,
     lastTogether: anchor ? { endTime: anchor.endTime, players: anchorCount } : null,
     players,
-    setup: calibrateSetup(setupFromPlayers(team), lastHadAir),
+    setup: calibrateSetup(setupFromPlayers(team), lastHadAir, (input.weights?.setup ?? KNOWN_TEAM_SETUP_CALIBRATION)[posterior ? 'flags' : 'noFlags']),
     flags: posterior ? { icons: posterior.line, operatorChance: posterior.operatorChance } : null,
+    lastHadAir,
   }
 }
