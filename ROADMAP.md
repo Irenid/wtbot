@@ -37,6 +37,17 @@ full texts are in Git (commit `46b6950` and earlier).
 
 ## Code
 
+- **Bot-played player slots (a8fdc87, DB v22): leftovers.** The independent
+  review of a8fdc87 was stopped on 2026-10-12 before it reported (it had read
+  every reader and run the tests; no findings). Open: whether the game counts
+  a battle the AI played for a player in that player's PSR
+  (`getPlayerBattleResults` includes it; the image's PSR column shows a dash).
+  The 30 posts of 2026-10-12 sent before the deploy miss 62 players; the bot
+  keeps no message ids since 2026-08-01, so fixing them means finding them in
+  the channel history and editing Discord: the owner's decision. Battle
+  499981394946553783 (July) keeps 7 rows: the v9 phantom-bot rule dropped
+  its second bot.
+
 - **English everywhere** (AGENTS.md, section 9). Docs are English; comments
   and strings in `src/`, `frontend/` and configs are still Russian: ~5,500
   lines (comments ~3,300, strings ~2,050: logs, Discord, site, images, tests).
