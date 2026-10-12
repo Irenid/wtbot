@@ -110,6 +110,12 @@ export interface ReplayPlayerResult {
   playedVehicles?: string[] | undefined
   /** The bot slot that played for this player (player-events.ts). */
   botUserId?: string | null | undefined
+  /**
+   * The player's nick from the ECS slot when the AI drove their own slot and
+   * results-BLK names the row after the bot (player-events.ts); `name` keeps
+   * the bot's name. undefined: unknown (no events read).
+   */
+  slotNick?: string | null | undefined
 }
 
 export interface ReplayResults {

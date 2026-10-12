@@ -5,12 +5,13 @@ import {
   botSlotOwners,
   creditBotSlots,
   derivePlayerEventFacts,
+  isAiDrivenSlot,
   teamOfSquadMarker,
 } from './player-events.js'
 import type { ReplayDamage, ReplayKill, ReplayUnitPath, SlotPlayer } from './replay-events.js'
 import type { ReplayPlayerResult } from './replay.js'
 
-const slot = (userId: string, team: number): SlotPlayer => ({ slot: 0, userId, name: userId, clanTag: '', title: '', team })
+const slot = (userId: string, team: number, name = userId): SlotPlayer => ({ slot: 0, userId, name, clanTag: '', title: '', team })
 const unit = (userId: string, model: string, t = 0): ReplayUnitPath => ({
   userId,
   model,
@@ -36,7 +37,7 @@ const damage = (offenderId: string, victimId: string): ReplayDamage => ({
   victimModel: '',
   fire: false,
 })
-const player = (userId: string, team: number, squadId = -1) => ({ userId, team, squadId })
+const player = (userId: string, team: number, squadId = -1, name = userId) => ({ userId, name, team, squadId })
 
 test('a lone slotless player pairs with the lone bot slot of the team and gets its vehicles', () => {
   const facts = derivePlayerEventFacts([player('1', 1), player('2', 1), player('3', 2)], {
@@ -45,7 +46,7 @@ test('a lone slotless player pairs with the lone bot slot of the team and gets i
     kills: [kill('-5', '3')],
   })
 
-  assert.deepEqual(facts.get('2'), { team: 1, playedVehicles: ['t_bot'], botUserId: '-5', teamKills: 0 })
+  assert.deepEqual(facts.get('2'), { team: 1, playedVehicles: ['t_bot'], botUserId: '-5', teamKills: 0, slotNick: null })
   assert.equal(facts.get('1')?.botUserId, null)
   assert.deepEqual(facts.get('1')?.playedVehicles, ['t_one'])
   assert.equal(facts.has('-5'), false, 'facts cover results rows only')
@@ -76,9 +77,36 @@ test('team 0 takes the team of the squad marker, then pairs like any other', () 
     units: [unit('-5', 't_bot')],
     kills: [],
   })
-  assert.deepEqual(facts.get('2'), { team: 2, playedVehicles: ['t_bot'], botUserId: '-5', teamKills: 0 })
+  assert.deepEqual(facts.get('2'), { team: 2, playedVehicles: ['t_bot'], botUserId: '-5', teamKills: 0, slotNick: null })
   assert.equal(facts.get('6')?.team, 0, 'no marker: the team stays unknown')
   assert.equal(facts.get('6')?.botUserId, null)
+})
+
+test('a player slot the AI drove keeps the player\'s nick from the ECS slot, a bot\'s own slot does not', () => {
+  // Results name the row after the bot on the player's own id (2026-10-12: 6 of a team's 8)
+  const facts = derivePlayerEventFacts(
+    [player('7', 1, 4096, 'coop/Bot284'), player('8', 1, 4096, 'Player 8'), player('-3', 2, 0, 'coop/Bot168'), player('9', 2, 4097, 'coop/Bot12')],
+    {
+      players: [slot('7', 1, 'Самый Пивной'), slot('8', 1, 'Player 8'), slot('-3', 2, 'coop/Bot168'), slot('9', 2, 'coop/Bot12')],
+      units: [unit('7', 'tankModels/sw_strv_m38'), unit('-3', 'tankModels/germ_pzkpfw_II_ausf_C')],
+      kills: [],
+    },
+  )
+
+  assert.deepEqual(facts.get('7'), { team: 1, playedVehicles: ['sw_strv_m38'], botUserId: null, teamKills: 0, slotNick: 'Самый Пивной' })
+  assert.equal(facts.get('8')?.slotNick, null, 'results and slot agree')
+  assert.equal(facts.get('-3')?.slotNick, null, 'a bot\'s own slot')
+  assert.equal(facts.get('9')?.slotNick, null, 'no player nick in the slot')
+
+  assert.deepEqual(
+    [
+      { userId: '7', name: 'coop/Bot284', slotNick: 'Самый Пивной' },
+      { userId: '7', name: 'coop/Bot284' },
+      { userId: '-3', name: 'coop/Bot168' },
+      { userId: '8', name: 'Player 8', slotNick: null },
+    ].map(isAiDrivenSlot),
+    [true, true, false, false],
+  )
 })
 
 test('played vehicles follow spawn order without repeats; no tracks at all is unknown', () => {
@@ -143,14 +171,24 @@ test('applyPlayerEventFacts writes the facts onto the results rows', () => {
   })
   const players = [row('1', 1, 4096), row('2', 0, 4096)]
 
-  applyPlayerEventFacts(players, { players: [slot('1', 1), slot('-5', 1)], units: [unit('-5', 't_bot')], kills: [kill('-5', '1')] })
+  const ai = { ...row('3', 1, 4096), name: 'coop/Bot77' }
+  players.push(ai)
+
+  applyPlayerEventFacts(players, {
+    players: [slot('1', 1), slot('-5', 1), slot('3', 1, 'Real Nick')],
+    units: [unit('-5', 't_bot')],
+    kills: [kill('-5', '1')],
+  })
   assert.deepEqual(
-    players.map(({ team, teamKills, playedVehicles, botUserId, vehicles }) => ({ team, teamKills, playedVehicles, botUserId, vehicles })),
+    players.map(({ team, teamKills, playedVehicles, botUserId, vehicles, name, slotNick }) =>
+      ({ team, teamKills, playedVehicles, botUserId, vehicles, name, slotNick })),
     [
-      { team: 1, teamKills: 0, playedVehicles: [], botUserId: null, vehicles: ['lineup_tank'] },
-      { team: 1, teamKills: 1, playedVehicles: ['t_bot'], botUserId: '-5', vehicles: ['lineup_tank'] },
+      { team: 1, teamKills: 0, playedVehicles: [], botUserId: null, vehicles: ['lineup_tank'], name: '1', slotNick: null },
+      { team: 1, teamKills: 1, playedVehicles: ['t_bot'], botUserId: '-5', vehicles: ['lineup_tank'], name: '2', slotNick: null },
+      { team: 1, teamKills: 0, playedVehicles: [], botUserId: null, vehicles: ['lineup_tank'], name: 'coop/Bot77', slotNick: 'Real Nick' },
     ],
   )
+  players.pop()
 
   applyPlayerEventFacts(players, { players: [slot('1', 1)], units: [], kills: [] })
   assert.equal(players[0]?.playedVehicles, undefined, 'unknown: readers use the lineup')

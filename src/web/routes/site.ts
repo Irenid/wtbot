@@ -1769,7 +1769,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
       team.totalScore += player.score
       team.players.push({
         userId: player.user_id || null,
-        nick: player.nick,
+        // A slot the AI drove: results name it after the bot, the ECS slot keeps the player's nick
+        nick: player.slot_nick ?? player.nick,
         clanTag: player.clan_tag ? clanDisplayName(player.clan_tag) : null,
         clanCore: player.clan_tag ? plainClanTag(player.clan_tag) || null : null,
         airKills: player.kills,
@@ -1787,7 +1788,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         // Driven vehicles in spawn order; the lineup when the events have no tracks
         vehicles: parseVehiclesJson(player.played_vehicles ?? player.vehicles),
         disconnected: player.disconnected !== 0,
-        bot: player.bot_user_id !== null,
+        bot: player.bot_user_id !== null || player.slot_nick !== null,
         autoSquad: player.auto_squad === null ? null : player.auto_squad !== 0,
       })
     }

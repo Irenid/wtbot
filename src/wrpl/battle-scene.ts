@@ -143,7 +143,8 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
         .filter((player) => player.user_id !== '' && player.team > 0 && !botSlots.has(player.user_id))
         .map((player) => ({
           userId: player.user_id,
-          nick: player.nick,
+          // A slot the AI drove keeps the player's nick in slot_nick (player-events.ts)
+          nick: player.slot_nick ?? player.nick,
           team: player.team,
           clanTag: player.clan_tag || null,
         })),

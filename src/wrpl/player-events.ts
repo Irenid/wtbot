@@ -16,7 +16,12 @@ import type { ReplayPlayerResult } from './replay.js'
  * - results `teamKills` is almost always 0 (57 rows, mostly drone kills),
  *   while the kill feed has ~8,200 teammate kills;
  * - a player who never loaded in may get team 0, while `squadId` still holds
- *   the team marker (58 rows, 56 of them played by a bot).
+ *   the team marker (58 rows, 56 of them played by a bot);
+ * - the game may also hand the AI the player's own slot: results-BLK then
+ *   names the row after the bot (`coop/Bot…`) on the player's own userId,
+ *   while the ECS slot keeps the nick (all 856 such rows by 2026-10-12; 64%
+ *   never spawned, the rest drove a rank I tank). A wave on 2026-10-12 from
+ *   18:24 UTC took up to 7 of a team's 8 slots.
  */
 
 export interface PlayerEventFacts {
@@ -32,6 +37,8 @@ export interface PlayerEventFacts {
   botUserId: string | null
   /** Teammates destroyed per the kill feed, the bot slot's kills included. */
   teamKills: number
+  /** The ECS slot's nick when the AI drove the player's own slot (results name it after the bot); null otherwise. */
+  slotNick: string | null
 }
 
 type FactsEvents = Pick<ReplayEvents, 'players' | 'units' | 'kills'>
@@ -45,7 +52,19 @@ export function teamOfSquadMarker(squadId: number): number | null {
 /** Unit model → lineup id: ground models carry a `tankModels/` prefix. */
 export const vehicleIdOfModel = (model: string): string => model.replace(/^.*\//, '')
 
-const isBotId = (userId: string): boolean => userId.startsWith('-')
+/** A bot's own slot: the game gives bots negative user ids. */
+export const isBotId = (userId: string): boolean => userId.startsWith('-')
+
+/** results-BLK names bots, and player slots the AI drove, `coop/Bot…`. */
+export const isBotName = (name: string): boolean => name.startsWith('coop/')
+
+/**
+ * The AI drove this player's own slot: the ECS slot's nick is known, or
+ * (results-BLK alone) a real account carries a bot's name.
+ */
+export function isAiDrivenSlot(player: { userId: string; name: string; slotNick?: string | null | undefined }): boolean {
+  return !isBotId(player.userId) && (player.slotNick != null || isBotName(player.name))
+}
 
 function addTo<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
   const values = map.get(key)
@@ -54,9 +73,13 @@ function addTo<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
 }
 
 export function derivePlayerEventFacts(
-  players: readonly { userId: string; team: number; squadId: number }[],
+  players: readonly { userId: string; name: string; team: number; squadId: number }[],
   events: FactsEvents,
 ): Map<string, PlayerEventFacts> {
+  const slotNickOf = new Map<string, string>()
+  for (const slot of events.players) {
+    if (!isBotId(slot.userId) && slot.name !== '' && !isBotName(slot.name)) slotNickOf.set(slot.userId, slot.name)
+  }
   const teamOf = new Map<string, number>()
   for (const slot of events.players) if (slot.team > 0) teamOf.set(slot.userId, slot.team)
   const resolvedTeams = new Map<string, number>()
@@ -107,6 +130,7 @@ export function derivePlayerEventFacts(
     return [...new Set(list.map((spawn) => spawn.vehicle))]
   }
 
+  const nameOf = new Map(players.map((player) => [player.userId, player.name]))
   const facts = new Map<string, PlayerEventFacts>()
   for (const [userId, team] of resolvedTeams) {
     const botUserId = botOf.get(userId) ?? null
@@ -115,12 +139,13 @@ export function derivePlayerEventFacts(
       playedVehicles: playedBy(botUserId ?? userId),
       botUserId,
       teamKills: teamKills.get(userId) ?? 0,
+      slotNick: isBotName(nameOf.get(userId) ?? '') ? slotNickOf.get(userId) ?? null : null,
     })
   }
   return facts
 }
 
-/** Ingest: the facts replace the results' team (≤ 0 only), teamKills and fill playedVehicles and botUserId. */
+/** Ingest: the facts replace the results' team (≤ 0 only), teamKills and fill playedVehicles, botUserId and slotNick. */
 export function applyPlayerEventFacts(players: ReplayPlayerResult[], events: FactsEvents): void {
   const facts = derivePlayerEventFacts(players, events)
   for (const player of players) {
@@ -130,6 +155,7 @@ export function applyPlayerEventFacts(players: ReplayPlayerResult[], events: Fac
     player.teamKills = fact.teamKills
     player.playedVehicles = fact.playedVehicles ?? undefined
     player.botUserId = fact.botUserId
+    player.slotNick = fact.slotNick
   }
 }
 

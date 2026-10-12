@@ -1,6 +1,6 @@
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
-import { buildRosters, tagMarkup } from './render-battle.js'
+import { buildRosters, shownName, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 import { GAME_SYMBOLS_FAMILY } from './wt-fonts.js'
 
@@ -74,7 +74,7 @@ export function collectLogRows(input: BattleLogInput): LogRow[] {
     const known = userId ? teamOf.get(userId) : undefined
     const vehicle = model ? vehicleInfo(dict, modelId(model)).name : ''
     if (known) {
-      return { name: known.p.name.replace(/@(psn|live|epic)$/i, ''), color: known.color, vehicle }
+      return { name: shownName(known.p).replace(/@(psn|live|epic)$/i, ''), color: known.color, vehicle }
     }
     if (!model) return null
     return { name: vehicle, color: AI_COLOR, vehicle: '' }

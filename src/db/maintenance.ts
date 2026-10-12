@@ -23,12 +23,13 @@ import { runWorkerTask } from '../workers/pool.js'
 /**
  * v1 (2026-10-02): data audit — docs/database.md, "Data errors". v2
  * (2026-10-02): played vehicles, bot slots, team kills from the kill feed and
- * the team of team-0 players — docs/replay-data-quality.md.
+ * the team of team-0 players — docs/replay-data-quality.md. v3 (2026-10-12):
+ * the nick of a player whose own slot the AI drove (slot_nick, DB v22).
  */
-const REPAIR_VERSION = 2
+const REPAIR_VERSION = 3
 const REPAIR_CURSOR_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-after`
 const REPAIR_DONE_KEY = `db-maintenance:battle-repair-v${REPAIR_VERSION}-done`
-/** Cursors of earlier passes: gzip → zstd-JSON, the columnar format, repair v1. */
+/** Cursors of earlier passes: gzip → zstd-JSON, the columnar format, repair v1–v2. */
 const LEGACY_REPAIR_KEYS = [
   'db-maintenance:recompress-after',
   'db-maintenance:recompress-done',
@@ -36,6 +37,8 @@ const LEGACY_REPAIR_KEYS = [
   'db-maintenance:events-columnar-done',
   'db-maintenance:battle-repair-v1-after',
   'db-maintenance:battle-repair-v1-done',
+  'db-maintenance:battle-repair-v2-after',
+  'db-maintenance:battle-repair-v2-done',
 ] as const
 /**
  * A batch of 50 battles: decoding and checking take ~2 ms per battle,

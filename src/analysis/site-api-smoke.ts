@@ -304,7 +304,7 @@ async function main(): Promise<void> {
     errors: [],
   }
   // A bot slot (-7) played for Absent, who never loaded in (player-events.ts);
-  // Lost has no known team.
+  // Lost has no known team; the AI drove Driven's own slot, and results name it after the bot.
   const absent = { vehicle: 'enemy_tank', vehicles: [], disconnected: true, score: 300 }
   saveBattle(battle('100200304', nowSec - 1_800, 1, [
     player('501', 'PilotOne', 1, 'test_tank', { clanTag: CLAN_RAW_TAG }),
@@ -312,6 +312,7 @@ async function main(): Promise<void> {
     player('503', 'Absent', 2, 'enemy_tank', { ...absent, playedVehicles: ['enemy_tank'], botUserId: '-7' }),
     player('-7', 'coop/Bot7', 2, 'enemy_tank', { ...absent, playedVehicles: ['enemy_tank'], score: 0 }),
     player('504', 'Lost', 0, 'enemy_tank', { vehicle: null, vehicles: [], playedVehicles: [], disconnected: true, score: 0 }),
+    player('505', 'coop/Bot9', 1, 'test_tank', { vehicle: null, playedVehicles: [], slotNick: 'Driven', score: 0 }),
   ], gzipSync(Buffer.from(JSON.stringify(sceneEvents), 'utf8'))))
 
   const app = buildServer(
@@ -585,8 +586,8 @@ async function main(): Promise<void> {
     assert.equal(siteStatsBody.season.currentStage?.maxBr, expectedSeason.currentStage?.maxBr)
     assert.equal(siteStatsBody.battlesTotal, 5)
     assert.equal(siteStatsBody.battlesWeek, 5)
-    // Distinct user ids of battle_players: with the bot slot and the team-0 row of 100200304
-    assert.equal(siteStatsBody.players, 9)
+    // Distinct user ids of battle_players: with the bot slot, the team-0 row and the AI's slot of 100200304
+    assert.equal(siteStatsBody.players, 10)
     assert.equal(siteStatsBody.clans, 4)
     assert.equal(siteStatsBody.byDay.reduce((sum, dayRow) => sum + dayRow.battles, 0), 5)
 
@@ -794,6 +795,8 @@ async function main(): Promise<void> {
     const absentRow = botTeam?.players[1]
     assert.deepEqual([absentRow?.vehicles, absentRow?.bot, absentRow?.disconnected], [['enemy_tank'], true, true])
     assert.equal(botTeam?.players[0]?.bot, false)
+    const drivenRow = botBattle.teams.find((team) => team.team === 1)?.players.find((entry) => entry.nick === 'Driven')
+    assert.deepEqual([drivenRow?.bot, drivenRow?.vehicles], [true, []], 'the AI\'s slot under the player\'s nick')
 
     const missingBattle = await app.inject({ method: 'GET', url: '/api/battles/424242' })
     assert.equal(missingBattle.statusCode, 404)
@@ -828,7 +831,7 @@ async function main(): Promise<void> {
     // The bot slot's track and kill belong to the player it played for
     assert.equal(sceneBody.units[0]?.userId, '503')
     assert.equal(sceneBody.kills[1]?.killerId, '503')
-    assert.deepEqual(sceneBody.players.map((entry) => entry.nick).sort(), ['Absent', 'EnemyOne', 'PilotOne'])
+    assert.deepEqual(sceneBody.players.map((entry) => entry.nick).sort(), ['Absent', 'Driven', 'EnemyOne', 'PilotOne'])
     const groundUnit = sceneBody.units.find((unit) => unit.source === 'ground' && unit.userId === '501')
     assert.ok(groundUnit && groundUnit.path.length >= 2 && groundUnit.path.length < 400,
       'траектория должна быть прорежена')

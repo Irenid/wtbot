@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildBattleSvg, buildRosters } from './render-battle.js'
+import { buildBattleSvg, buildRosters, summarizeTeams } from './render-battle.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import type { VehicleDict } from './vehicles.js'
 
@@ -249,7 +249,7 @@ test('a row shows the driven vehicles, not the lineup', () => {
 test('a slot played by a bot shows its vehicle with a bot mark instead of a disconnect', () => {
   const svg = renderPlayers([{ ...player, vehicles: [], playedVehicles: ['test_tank'], botUserId: '-7' }])
 
-  assert.match(svg, /<text x="144" y="410"[^>]*>Test Tank<tspan fill="#9aa2b1"> · bot<\/tspan><\/text>/)
+  assert.match(svg, /<text x="144" y="410"[^>]*>Test Tank<tspan fill="#9aa2b1">&#160;· bot<\/tspan><\/text>/)
   assert.doesNotMatch(svg, /Disconnected/)
 })
 
@@ -269,4 +269,55 @@ test('team 0 makes no roster of its own: it joins the smaller team or is dropped
 
   assert.deepEqual(teamsOf([p('a', 1), p('b', 1), p('c', 2), p('lost', 0)]), [['a', 'b'], ['c', 'lost']])
   assert.deepEqual(teamsOf([p('a', 1), p('c', 2), p('lost', 0)]), [['a'], ['c']])
+})
+
+test('a player slot the AI drove shows the player\'s nick with a bot mark; a bot that never spawned leaves a disconnect', () => {
+  // Results name the row after the bot on the player's own id; the ECS slot keeps the nick
+  const ai = { ...player, userId: '159429413', name: 'coop/Bot284', slotNick: 'Самый Пивной', vehicles: ['lineup_tank'] }
+  const driven = renderPlayers([{ ...ai, playedVehicles: ['test_tank'] }])
+  assert.match(driven, />Самый Пивной<\/text>/)
+  assert.doesNotMatch(driven, /coop\/Bot284/)
+  assert.match(driven, /<text x="144" y="410"[^>]*>Test Tank<tspan fill="#9aa2b1">&#160;· bot<\/tspan><\/text>/)
+
+  const idle = renderPlayers([{ ...ai, playedVehicles: [] }])
+  assert.match(idle, />Самый Пивной<\/text>/)
+  assert.match(idle, /<text x="144" y="410"[^>]*>Disconnected<\/text>/)
+
+  const pairedIdle = renderPlayers([{ ...player, vehicles: [], playedVehicles: [], botUserId: '-7' }])
+  assert.match(pairedIdle, /<text x="144" y="410"[^>]*>Disconnected<\/text>/)
+})
+
+test('every slot gets a row: slots the AI drove and a bot that filled an empty place, not a bot standing in for a listed player', () => {
+  const p = (userId: string, team: number, extra: Partial<ReplayPlayerResult> = {}): ReplayPlayerResult =>
+    ({ ...player, userId, name: userId, team, slot: 0, ...extra })
+  const players = [
+    // Team 1 came with 7: the game filled the 8th place with a bot
+    p('a', 1, { score: 500 }),
+    p('ai', 1, { name: 'coop/Bot1', slotNick: 'Real Nick', score: 0 }),
+    p('-1', 1, { name: 'coop/Bot2', score: 0, playedVehicles: ['test_tank'] }),
+    // Team 2: a player who never loaded in (no ECS slot) with the bot paired to them,
+    // and one more whose bot stays unpaired (two slotless players)
+    p('b', 2, { score: 100 }),
+    p('absent', 2, { slot: null, botUserId: '-2' }),
+    p('-2', 2, { name: 'coop/Bot3' }),
+    p('gone', 2, { slot: null }),
+    p('-3', 2, { name: 'coop/Bot4' }),
+  ]
+  const results: ReplayResults = { status: 'success', timePlayed: 60, players }
+  assert.deepEqual(
+    buildRosters(results).map((roster) => roster.map((r) => r.userId).sort()),
+    [['-1', 'a', 'ai'], ['absent', 'b', 'gone']],
+  )
+  assert.deepEqual(summarizeTeams(results, vehicleDict).map((team) => team.players), [['a', 'Real Nick'], ['b', 'absent', 'gone']])
+
+  const svg = renderPlayers(players)
+  assert.match(svg, /fill="#9aa2b1"[^>]*>Bot<\/text>/)
+  assert.match(svg, />Real Nick<\/text>/)
+
+  // results-BLK alone (no ECS slots read): no bot rows, the AI's slot stays with its results name
+  const resultsOnly = players.map(({ slot: _slot, slotNick: _slotNick, botUserId: _botUserId, ...rest }) => rest)
+  assert.deepEqual(
+    buildRosters({ status: 'success', timePlayed: 60, players: resultsOnly }).map((roster) => roster.map((r) => r.userId).sort()),
+    [['a', 'ai'], ['absent', 'b', 'gone']],
+  )
 })

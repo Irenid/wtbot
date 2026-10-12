@@ -1,5 +1,6 @@
 import { ensureUnitIcons, loadMapBackground } from './battle-assets.js'
 import type { BattlePsr } from './battle-psr.js'
+import { isAiDrivenSlot, isBotId } from './player-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 import { ensureGameFlags } from './game-flags.js'
@@ -14,7 +15,8 @@ import { runWorkerTask, transferableBuffer, transferableCopy, type WorkerPriorit
  * (@psn/@live), the PSR column (⊛: the battle's points above, PSR after it
  * below; battle-psr.ts) and air/ground kills, assists, captures, deaths. A
  * disconnected player gets a red mark and the word Disconnected, a row without
- * results — "Unknown Player".
+ * results — "Unknown Player", a slot a bot drove for the player — "· bot"
+ * after the vehicle, a bot that filled an empty place — "Bot".
  *
  * Squadron tag decorations (⚔, lions, flames…) are box-drawing characters
  * that the game's own font draws (wt-fonts.ts); without it they become the
@@ -218,9 +220,26 @@ export async function renderBattleImage(
   return Buffer.from(png)
 }
 
-/** No results row (empty name) or no lineup, and no bot played the slot. */
+/** A bot drove the player's slot: a paired bot slot or the AI in the player's own slot (player-events.ts). */
+function isBotPlayed(p: ReplayPlayerResult): boolean {
+  return Boolean(p.botUserId) || isAiDrivenSlot(p)
+}
+
+/**
+ * Nobody played the slot: no results row (empty name) or no lineup and no
+ * bot, or the bot that held it never spawned.
+ */
 function isDisconnected(p: ReplayPlayerResult): boolean {
-  return (p.name === '' || p.vehicles.length === 0) && !p.botUserId
+  if (isBotPlayed(p) || isBotId(p.userId)) return p.playedVehicles?.length === 0
+  return p.name === '' || p.vehicles.length === 0
+}
+
+/**
+ * The row's name: the player's nick from the ECS slot when the AI drove their
+ * slot (results name the row after the bot), "Bot" for a bot's own slot.
+ */
+export function shownName(p: Pick<ReplayPlayerResult, 'userId' | 'name' | 'slotNick'>): string {
+  return isBotId(p.userId) ? 'Bot' : p.slotNick ?? p.name
 }
 
 /** What the player drove (player-events.ts); the lineup when the events have no tracks. */
@@ -249,7 +268,7 @@ export function summarizeTeams(results: ReplayResults, dict: VehicleDict): TeamS
       clan: clan !== undefined ? decorateTag(clan) : null,
       rawTag: clan ?? null,
       composition,
-      players: roster.filter((p) => p.name !== '').map((p) => splitPlatform(p.name).name),
+      players: roster.filter((p) => p.name !== '' && !isBotId(p.userId)).map((p) => splitPlatform(shownName(p)).name),
     }
   })
 }
@@ -436,7 +455,7 @@ function renderTeam(
 
     // Platform (@psn/@live) → an icon before the nickname. The vehicle line
     // keeps its column and does not follow the icon.
-    const { name, platform } = splitPlatform(p.name)
+    const { name, platform } = splitPlatform(shownName(p))
     const vehicleX = ox + 112
     let nameX = vehicleX
     if (platform === 'live') {
@@ -454,25 +473,27 @@ function renderTeam(
         )
       : defaultNameWidth
     const displayName = esc(trimToWidth(name || 'Unknown Player', nameWidth))
+    const nameColor = isBotId(p.userId) ? '#9aa2b1' : theme.player
     if (psr) {
       const clipId = `player-name-${teamIndex}-${row}`
       parts.push(
         `<clipPath id="${clipId}"><rect x="${nameX}" y="${y + 2}" width="${Math.max(0, ratingX - NAME_RATING_GAP_PX - nameX)}" height="44"/></clipPath>`,
-        text(nameX, y + 36, displayName, 34, theme.player, 'start', 400, ` clip-path="url(#${clipId})"`),
+        text(nameX, y + 36, displayName, 34, nameColor, 'start', 400, ` clip-path="url(#${clipId})"`),
       )
     } else {
-      parts.push(text(nameX, y + 36, displayName, 34, theme.player))
+      parts.push(text(nameX, y + 36, displayName, 34, nameColor))
     }
 
     // Under the nickname: the vehicles, a disconnect note or a dash (never spawned).
-    // A bot slot played for the player: its vehicles, marked "bot".
+    // A bot drove the player's slot: its vehicles, marked "bot".
     if (disconnected) {
       parts.push(text(vehicleX, y + 70, 'Disconnected', 26, '#9aa2b1'))
     } else if (firstId === '') {
       parts.push(text(vehicleX, y + 70, '—', 26, '#9aa2b1'))
     } else {
       const extra = shown.length > 1 ? ` +${shown.length - 1}` : ''
-      const bot = p.botUserId ? '<tspan fill="#9aa2b1"> · bot</tspan>' : ''
+      // A no-break space: resvg drops a plain one at the start of a tspan
+      const bot = isBotPlayed(p) ? '<tspan fill="#9aa2b1">&#160;· bot</tspan>' : ''
       parts.push(text(vehicleX, y + 70, esc(trimToWidth(first.name, bot ? 20 : 26)) + extra + bot, 26, color))
     }
 
@@ -505,14 +526,25 @@ function renderTeam(
 // ---------- shared team logic ----------
 
 /**
- * Humans without bots, grouped by team, sorted by score within a team. The
- * team with the larger score total goes first (left, "gold"), as in Boris
+ * Every player row, slots the AI drove included (results name them after the
+ * bot: player-events.ts), grouped by team, sorted by score within a team. A
+ * bot's own slot (negative id) gets a row only when it filled a place the
+ * squadron left empty: a paired one is drawn in its player's row, and an
+ * unpaired one in a team with players who never loaded in (no ECS slot;
+ * unknown without the events) stands in for one of them, whose row is drawn.
+ * The team with the larger score total goes first (left, "gold"), as in Boris
  * Stats: results-BLK has no honest winner flag. Exported for the console
  * table (battle-summary): the team order is the same everywhere and matches
  * summarizeTeams.
  */
 export function buildRosters(results: ReplayResults): ReplayPlayerResult[][] {
-  const humans = results.players.filter((p) => !p.name.startsWith('coop/'))
+  const players = results.players.filter((p) => !isBotId(p.userId))
+  const paired = new Set(players.flatMap((p) => (p.botUserId ? [p.botUserId] : [])))
+  const standInTeams = new Set(players.filter((p) => p.slot == null).map((p) => p.team))
+  const fillers = results.players.filter(
+    (p) => isBotId(p.userId) && p.team > 0 && !paired.has(p.userId) && !standInTeams.has(p.team),
+  )
+  const humans = [...players, ...fillers]
   const known = humans.filter((p) => p.team > 0)
   const teams = [...new Set(known.map((p) => p.team))].sort()
   const rosters = teams.map((t) => known.filter((p) => p.team === t).sort((a, b) => b.score - a.score))

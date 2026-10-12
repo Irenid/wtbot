@@ -312,6 +312,7 @@ function reconstructRows(
     vehicles: safeParseVehicles(player.vehicles),
     playedVehicles: player.played_vehicles === null ? undefined : safeParseVehicles(player.played_vehicles),
     botUserId: player.bot_user_id,
+    slotNick: player.slot_nick,
   }))
   const results: ReplayResults = {
     status: battle.status ?? '',

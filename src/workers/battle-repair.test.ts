@@ -57,7 +57,13 @@ function legacyEvents() {
 }
 
 const canonicalEvents = {
-  teamWon: 2, players: [{ slot: 0, userId: '5', name: 'Done', clanTag: '', title: 't', team: 1 }], kills: [], damage: [], chat: [],
+  teamWon: 2,
+  players: [
+    { slot: 0, userId: '5', name: 'Done', clanTag: '', title: 't', team: 1 },
+    // The AI drove this player's slot: the results row carries the bot's name
+    { slot: 1, userId: '6', name: 'Real Nick', clanTag: '', title: '', team: 1 },
+  ],
+  kills: [], damage: [], chat: [],
   units: [{ userId: '5', model: 'm', source: 'ground', path: [{ t: 0, x: 1, y: 2, z: 3 }, { t: 9, x: 4, y: 5, z: 6 }] }],
   zones: [], endTime: 1_000,
 }
@@ -91,6 +97,7 @@ test('stored battle repair: canonical events, empty fields and player facts from
     player.run('101', '1', 'Pilot', 1, null, null)
     player.run('101', '-13', 'coop/Bot1', 2, null, null)
     player.run('102', '5', 'Done', 1, 0, 't')
+    player.run('102', '6', 'coop/Bot9', 1, 1, null)
     // No ECS slot: Absent is the only one on team 2, so the bot slot played for
     // them; Lost has team 0 and the team 1 squad marker.
     player.run('101', '2', 'Absent', 2, null, null)
@@ -116,7 +123,7 @@ test('stored battle repair: canonical events, empty fields and player facts from
     const result = await runWorkerTask({ kind: 'repair-battle-events', input: input('') })
     assert.deepEqual(
       [result.scanned, result.rewritten, result.changedMeanwhile, result.filledRows, result.playerRows, result.lastSessionId],
-      [3, 1, 0, 3, 5, '103'],
+      [3, 1, 0, 3, 6, '103'],
       'only the old-parse battle is rewritten; slot and title of two players, counters of the battle without events, facts of every player',
     )
     assert.equal(result.repairs.chatNames, 1)
@@ -166,18 +173,21 @@ test('stored battle repair: canonical events, empty fields and player facts from
           { user_id: '2', slot: null, title: null },
           { user_id: '3', slot: null, title: null },
           { user_id: '5', slot: 0, title: 't' },
+          { user_id: '6', slot: 1, title: null },
         ],
       )
       assert.deepEqual(
         check.prepare(`
-          SELECT user_id, team, vehicle, played_vehicles, bot_user_id, team_kills FROM battle_players ORDER BY session_id, user_id
+          SELECT user_id, team, vehicle, played_vehicles, bot_user_id, team_kills, slot_nick
+          FROM battle_players ORDER BY session_id, user_id
         `).all().map((r) => ({ ...r })),
         [
-          { user_id: '-13', team: 2, vehicle: 't', played_vehicles: '["t"]', bot_user_id: null, team_kills: 0 },
-          { user_id: '1', team: 1, vehicle: 'f_16', played_vehicles: '["f_16"]', bot_user_id: null, team_kills: 0 },
-          { user_id: '2', team: 2, vehicle: 't', played_vehicles: '["t"]', bot_user_id: '-13', team_kills: 0 },
-          { user_id: '3', team: 1, vehicle: null, played_vehicles: '[]', bot_user_id: null, team_kills: 0 },
-          { user_id: '5', team: 1, vehicle: 'm', played_vehicles: '["m"]', bot_user_id: null, team_kills: 0 },
+          { user_id: '-13', team: 2, vehicle: 't', played_vehicles: '["t"]', bot_user_id: null, team_kills: 0, slot_nick: null },
+          { user_id: '1', team: 1, vehicle: 'f_16', played_vehicles: '["f_16"]', bot_user_id: null, team_kills: 0, slot_nick: null },
+          { user_id: '2', team: 2, vehicle: 't', played_vehicles: '["t"]', bot_user_id: '-13', team_kills: 0, slot_nick: null },
+          { user_id: '3', team: 1, vehicle: null, played_vehicles: '[]', bot_user_id: null, team_kills: 0, slot_nick: null },
+          { user_id: '5', team: 1, vehicle: 'm', played_vehicles: '["m"]', bot_user_id: null, team_kills: 0, slot_nick: null },
+          { user_id: '6', team: 1, vehicle: null, played_vehicles: '[]', bot_user_id: null, team_kills: 0, slot_nick: 'Real Nick' },
         ],
       )
       assert.deepEqual(Buffer.from(blobOf('102')), canonicalBlob, 'a canonical battle is not rewritten')
@@ -209,7 +219,7 @@ test('the repair does not overwrite a battle that ingest re-parsed after the rea
       assert.equal(replaced, false)
       assert.equal((database.prepare("SELECT COUNT(*) AS n FROM battle_kills WHERE session_id = '7'").get() as { n: number }).n, 1)
       database.prepare(`INSERT INTO battle_players (session_id, user_id, nick, nick_base, team) VALUES ('7', 'a', 'A', 'A', 1)`).run()
-      const facts = { userId: 'a', team: 2, vehicle: 'x', playedVehicles: ['x'], botUserId: null, teamKills: 3 }
+      const facts = { userId: 'a', team: 2, vehicle: 'x', playedVehicles: ['x'], botUserId: null, teamKills: 3, slotNick: 'B' }
       assert.equal(updateBattlePlayerFacts(database, { sessionId: '7', eventsBlob: Buffer.from('прежний'), players: [facts] }), null)
       assert.deepEqual(
         { ...database.prepare("SELECT team, played_vehicles, team_kills FROM battle_players WHERE session_id = '7'").get() },

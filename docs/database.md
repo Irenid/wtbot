@@ -329,7 +329,8 @@ correct data is not rewritten.
 - `coop/Bot…`: 339 rows with a negative id are bots; 607 with a real userId
   are player slots driven by the AI (0 points, the account has a normal
   nickname in other battles, the site's item shows a random name); player
-  statistics exclude them.
+  statistics exclude them. Since v22 battle pictures show them under the ECS
+  slot's nick (next sections).
 - Chat messages starting with a tab (PSN players) or with ANSI color codes —
   message content.
 - 5 July battles without a winner — no parts on the CDN, no other source of
@@ -359,6 +360,33 @@ facts, so the pass finds nothing to change in battles parsed by the new code.
   `BATTLE_SCENE_VERSION` 3). A log, heatmap or scene built during the first
   pass for a battle its batch has not reached yet keeps the bot slot's
   crediting until the LRU evicts it.
+
+## Player slots the AI drove (12 October, migration v22)
+
+The game may hand the AI a player's own slot and name the results row after
+the bot (`coop/Bot…` on the player's userId); the ECS slot keeps the nick
+(`replay-data-quality.md`). The battle image dropped every `coop/` row, so a
+team showed 7 players or fewer: 853 of 109,552 teams by 2026-10-12, and from
+18:24 UTC that day, when players failed to load Test Site-2271 and Fire arc,
+up to 7 of a team's 8. Migration v22 adds the nullable
+`battle_players.slot_nick`: that nick, NULL for every other row. `nick` keeps
+the bot's name, so player statistics, search and nick lookups still leave the
+row out. Ingest writes it; repair pass v3 (`REPAIR_VERSION` 3) fills stored
+battles from the ECS slots with the ingest rule (`player-events.ts`).
+
+- Every stored row (875,941 of 54,716 battles, backup of 2026-10-12 18:25
+  UTC) was checked against its ECS slot: the names differ only in the 856
+  `coop/` rows with a real userId, and each of those slots holds a nick.
+- On a copy of 18:50 UTC (54,776 battles) pass v3 filled 898 rows in 99 s
+  without pauses (batches of 500; the bot's 50 with 500 ms pauses take
+  ~11 min). Teams shown with fewer than 8 rows: 853 → 1 (a July battle whose
+  second bot the v9 rule dropped as a phantom).
+- The image draws such a slot under `slot_nick` with "· bot" after the AI's
+  vehicle, or as Disconnected when the AI never spawned (64%); a bot's own
+  row only when it filled a place the squadron left empty (no teammate
+  without an ECS slot: 28 teams). The site's battle page shows `slot_nick` as
+  played by a bot. New cache versions: `BATTLE_MEDIA_VERSION` 47,
+  `BATTLE_SCENE_VERSION` 7.
 
 ## Page usage (2 October, evening)
 
@@ -480,6 +508,13 @@ the CDN while their parts are there (~2 weeks).
   primary key). The v20 image runs on a v21 database after
   `PRAGMA user_version = 20` with the bot stopped; back on v21 the migration
   runs again and fills the battles ingested in between.
+- **v22** only adds the nullable `battle_players.slot_nick`, and the v21
+  image names its columns in SQL: it runs on a v22 database after
+  `PRAGMA user_version = 21` with the bot stopped and ignores the column (its
+  repair pass v2 repeats once and changes nothing). Battles it ingests get no
+  `slot_nick`; back on v22, delete the `bot_state` keys
+  `db-maintenance:battle-repair-v3-after` and `-v3-done`, and pass v3 fills
+  them.
 
 ## Should we move to PostgreSQL
 

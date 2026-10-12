@@ -64,6 +64,15 @@ and repair pass v2, migration v19 — `database.md`):
   log, heatmaps and scene to the bot. 511 pairs (`bot_user_id`); a team with
   two slotless players or two bot slots stays unpaired — 4 such players have
   kills and keep the disconnect mark.
+- **The AI in the player's own slot** (2026-10-12). The game may also hand
+  the AI the slot of a player who failed to load and name the results row
+  after the bot (`coop/Bot…`) on the player's own userId; the Replay API item
+  shows a random bot name, the ECS slot the player's nick. The battle image
+  hid every `coop/` row, so the team lost a row: 853 of 109,552 teams, and
+  from 18:24 UTC on 2026-10-12 (players failing to load Test Site-2271 and
+  Fire arc) up to 7 of a team's 8. Of the 856 such rows by 18:25 UTC 64%
+  never spawned, the rest drove a rank I tank. `slot_nick` (v22,
+  `database.md`) keeps the nick.
 - **Team kills.** Results `teamKills` is non-zero in 57 rows (mostly drone
   kills); the kill feed has 8,225 teammate kills, now counted from it (a bot
   slot's go to its player).

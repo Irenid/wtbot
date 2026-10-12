@@ -231,6 +231,7 @@ function buildBattleInput(
       vehicles: player.vehicles,
       playedVehicles: player.playedVehicles ?? null,
       botUserId: player.botUserId ?? null,
+      slotNick: player.slotNick ?? null,
       disconnected,
       slot: slot?.slot ?? player.slot ?? null,
       title: slot?.title || player.title || null,

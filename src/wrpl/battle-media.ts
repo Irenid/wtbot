@@ -151,7 +151,8 @@ export async function cachedBattleHeatmap2x(
 // diacritics in the key.
 // 45: chat senders get the squadron tags the game left out (squadron-tags.ts).
 // 46: maps from the HQ textures; air heatmaps on the game's air map (src/tactical-map).
-const BATTLE_MEDIA_VERSION = 46
+// 47: player slots the AI drove (DB v22 slot_nick) and bots that filled an empty place get rows.
+const BATTLE_MEDIA_VERSION = 47
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)

@@ -747,6 +747,41 @@ test('migration v19 adds the event fact columns of battle_players as unknown', (
   }
 })
 
+test('migration v22 adds slot_nick of battle_players as unknown', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v22-'))
+  const dbPath = path.join(root, 'v22.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    // Schema v21: a player slot the AI drove carries only the bot's name.
+    const database = new DatabaseSync(dbPath)
+    database.exec('ALTER TABLE battle_players DROP COLUMN slot_nick')
+    database.exec(`
+      INSERT INTO battle_players (session_id, user_id, nick, nick_base, team)
+      VALUES ('1', '159429413', 'coop/Bot284', 'coop/Bot284', 1)
+    `)
+    database.exec('PRAGMA user_version = 21')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      // NULL until repair pass v3 reads the ECS slots
+      assert.deepEqual({ ...migrated.prepare('SELECT nick, slot_nick FROM battle_players').get() }, {
+        nick: 'coop/Bot284',
+        slot_nick: null,
+      })
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('migration v21 gives stored squadron-battle players without a tag their team tag', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v21-'))
   const dbPath = path.join(root, 'v21.db')

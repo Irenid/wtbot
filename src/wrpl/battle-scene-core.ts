@@ -12,7 +12,8 @@ import type { ReplayEvents, SpaceTime } from './replay-events.js'
 // 4: wt-tools maps with "-", "()" or diacritics in the key (battle-assets.ts).
 // 5: maps drawn from the game client (src/tactical-map): their view and the perspective of team 1.
 // 6: the HQ map textures and the air view (map.air: the game's air map around the air tracks).
-export const BATTLE_SCENE_VERSION = 6
+// 7: a player slot the AI drove carries the player's nick (DB v22 slot_nick), not the bot's.
+export const BATTLE_SCENE_VERSION = 7
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000

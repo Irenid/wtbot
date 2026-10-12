@@ -2,7 +2,7 @@ import type { MapImageViewport, MissileSeeker } from './battle-assets.js'
 import type { MissionInfo } from './mission-info.js'
 import type { ReplayEvents, ReplayKill, ReplayUnitPath, SpaceTime } from './replay-events.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
-import { buildRosters, clanDisplayName, tagMarkup } from './render-battle.js'
+import { buildRosters, clanDisplayName, shownName, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 
 /**
@@ -339,7 +339,7 @@ export function prepareHeatmapScene(
       if (paths.length === 0) return
       const preparedPlayer: PlayerPaths = {
         userId: player.userId,
-        name: player.name.replace(/@(psn|live|epic)$/i, ''),
+        name: shownName(player).replace(/@(psn|live|epic)$/i, ''),
         clanTag: player.clanTag,
         color: PATH_COLORS[Math.min(ti, 1)]![pi % 8]!,
         models: [...new Set(paths.map((unit) => modelId(unit.model)))],

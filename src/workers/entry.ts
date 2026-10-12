@@ -642,18 +642,20 @@ async function readScoutPlayers(
 
 interface StoredPlayerFacts {
   user_id: string
+  nick: string
   team: number
   squad_id: number
   vehicle: string | null
   played_vehicles: string | null
   bot_user_id: string | null
   team_kills: number
+  slot_nick: string | null
 }
 
 /** Stored players whose facts from the events (player-events.ts) differ from the row. */
 function playerFactUpdates(rows: readonly StoredPlayerFacts[], events: Omit<ReplayEvents, 'errors'>) {
   const facts = derivePlayerEventFacts(
-    rows.map((row) => ({ userId: row.user_id, team: row.team, squadId: row.squad_id })),
+    rows.map((row) => ({ userId: row.user_id, name: row.nick, team: row.team, squadId: row.squad_id })),
     events,
   )
   return rows.flatMap((row) => {
@@ -663,7 +665,7 @@ function playerFactUpdates(rows: readonly StoredPlayerFacts[], events: Omit<Repl
     const vehicle = fact.playedVehicles === null ? row.vehicle : fact.playedVehicles[0] ?? null
     const played = fact.playedVehicles === null ? null : JSON.stringify(fact.playedVehicles)
     const same = row.team === fact.team && row.vehicle === vehicle && row.played_vehicles === played &&
-      row.bot_user_id === fact.botUserId && row.team_kills === fact.teamKills
+      row.bot_user_id === fact.botUserId && row.team_kills === fact.teamKills && row.slot_nick === fact.slotNick
     return same ? [] : [{ ...fact, userId: row.user_id, vehicle }]
   })
 }
@@ -710,7 +712,7 @@ async function repairBattleEvents(
       'SELECT 1 FROM battles WHERE session_id = ? AND (air_unit_count IS NULL OR chat_count IS NULL)',
     )
     const storedPlayers = database.prepare(
-      'SELECT user_id, team, squad_id, vehicle, played_vehicles, bot_user_id, team_kills FROM battle_players WHERE session_id = ?',
+      'SELECT user_id, nick, team, squad_id, vehicle, played_vehicles, bot_user_id, team_kills, slot_nick FROM battle_players WHERE session_id = ?',
     )
     const repairs: EventsRepairCounts = { chatNames: 0, duplicateKills: 0, signedIds: 0, brokenChat: 0, roundedValues: 0 }
     const plans = rows.map((row) => {

@@ -375,14 +375,20 @@ Access:
   `crafts_info`), not what was driven; credits a bot slot's kills and score to
   the player who did not load in (the bot keeps its deaths); has
   `teamKills` ≈ 0; may give team 0 to a player who never loaded in while
-  `squad_id` keeps the marker. `player-events.ts` (ingest and repair v2)
-  derives from the events: `played_vehicles` in spawn order (`vehicle` is its
-  first; NULL — no tracks, readers use the lineup), `bot_user_id` (only the
-  team's single slotless player and single negative-id slot pair up),
-  `team_kills` from the kill feed, the team from the squad marker. Readers
-  hide a paired bot row, credit its tracks, kills and damage to the player
-  (`creditBotSlots`, scene `botSlots`) and draw no card for team ≤ 0. Audit —
-  `docs/replay-data-quality.md`.
+  `squad_id` keeps the marker; may hand the AI the player's own slot and name
+  the row after the bot (`coop/Bot…` on the player's userId: up to 7 of a
+  team's 8 when players failed to load a map, 2026-10-12). `player-events.ts`
+  (ingest and repair v3) derives from the events: `played_vehicles` in spawn
+  order (`vehicle` is its first; NULL — no tracks, readers use the lineup),
+  `bot_user_id` (only the team's single slotless player and single
+  negative-id slot pair up), `team_kills` from the kill feed, the team from
+  the squad marker, `slot_nick` (the ECS slot's nick of a row named after the
+  bot; `nick` keeps the bot's name, so player statistics leave the row out).
+  Readers hide a paired bot row, credit its tracks, kills and damage to the
+  player (`creditBotSlots`, scene `botSlots`) and draw no card for team ≤ 0;
+  the battle image (`buildRosters`) draws every player row, the AI's under
+  `slot_nick`, and a bot's own row only when it filled a place the squadron
+  left empty. Audit — `docs/replay-data-quality.md`.
 - The game sometimes records no squadron tag for a player, in results-BLK and
   the ECS slot alike, for a whole login session (0.8% of rows, 2026-10-08).
   `fillSquadronTags` (`squadron-tags.ts`) gives such a player the team's tag

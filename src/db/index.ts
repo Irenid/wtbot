@@ -907,6 +907,16 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       }
     },
   },
+  {
+    version: 22,
+    apply(database) {
+      // The player's nick when the AI drove their own slot and results-BLK
+      // names the row after the bot (src/wrpl/player-events.ts). Ingest writes
+      // it; repair pass v3 (db/maintenance.ts) fills stored battles from the
+      // ECS slots. NULL: any other row, or not filled yet.
+      addColumnIfMissing(database, 'battle_players', 'slot_nick', 'TEXT')
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -1388,6 +1398,9 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
       played_vehicles TEXT,
       -- The bot slot that played for this player (v19).
       bot_user_id     TEXT,
+      -- The player's nick from the ECS slot when the AI drove their own slot:
+      -- nick then holds the bot's name, coop/Bot… (v22).
+      slot_nick       TEXT,
       PRIMARY KEY (session_id, user_id)
     );
 
@@ -5016,6 +5029,8 @@ export interface BattlePlayerInput {
   playedVehicles?: readonly string[] | null | undefined
   /** The bot slot that played for this player. */
   botUserId?: string | null | undefined
+  /** The player's nick from the ECS slot when the AI drove their own slot (nick is the bot's). */
+  slotNick?: string | null | undefined
   disconnected: boolean
   slot: number | null
   title: string | null
@@ -5146,8 +5161,8 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
         session_id, user_id, nick, nick_search, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
         ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
         award_damage, team_kills, squad_id, vehicle, vehicles, disconnected, slot, title, auto_squad,
-        played_vehicles, bot_user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        played_vehicles, bot_user_id, slot_nick
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const p of b.players) {
       pStmt.run(
@@ -5156,7 +5171,7 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
         p.aiKills, p.aiGroundKills, p.assists, p.deaths, p.captureZone, p.damageZone, p.score,
         p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
         p.slot, p.title, p.autoSquad === null ? null : (p.autoSquad ? 1 : 0),
-        p.playedVehicles == null ? null : JSON.stringify(p.playedVehicles), p.botUserId ?? null,
+        p.playedVehicles == null ? null : JSON.stringify(p.playedVehicles), p.botUserId ?? null, p.slotNick ?? null,
       )
     }
 
@@ -5253,12 +5268,12 @@ export function fillMissingBattleFields(
 }
 
 /**
- * Facts from the events for stored players (repair pass v2,
+ * Facts from the events for stored players (repair pass,
  * src/wrpl/player-events.ts): team, vehicle, played_vehicles, bot_user_id,
- * team_kills. Only if the events blob is still the one the facts came from
- * (ingest may have re-parsed the battle) and only rows that differ. Call
- * inside a write transaction. Returns the rows written; null — the blob
- * changed, nothing written.
+ * team_kills (v2), slot_nick (v3). Only if the events blob is still the one
+ * the facts came from (ingest may have re-parsed the battle) and only rows
+ * that differ. Call inside a write transaction. Returns the rows written;
+ * null — the blob changed, nothing written.
  */
 export function updateBattlePlayerFacts(
   database: DatabaseSync,
@@ -5272,6 +5287,7 @@ export function updateBattlePlayerFacts(
       playedVehicles: readonly string[] | null
       botUserId: string | null
       teamKills: number
+      slotNick: string | null
     }[]
   },
 ): number | null {
@@ -5280,14 +5296,15 @@ export function updateBattlePlayerFacts(
     .get(input.sessionId, input.eventsBlob)
   if (current === undefined) return null
   const update = database.prepare(`
-    UPDATE battle_players SET team = ?, vehicle = ?, played_vehicles = ?, bot_user_id = ?, team_kills = ?
+    UPDATE battle_players SET team = ?, vehicle = ?, played_vehicles = ?, bot_user_id = ?, team_kills = ?, slot_nick = ?
     WHERE session_id = ? AND user_id = ?
-      AND (team IS NOT ? OR vehicle IS NOT ? OR played_vehicles IS NOT ? OR bot_user_id IS NOT ? OR team_kills IS NOT ?)
+      AND (team IS NOT ? OR vehicle IS NOT ? OR played_vehicles IS NOT ? OR bot_user_id IS NOT ? OR team_kills IS NOT ?
+        OR slot_nick IS NOT ?)
   `)
   let rows = 0
   for (const p of input.players) {
     const played = p.playedVehicles === null ? null : JSON.stringify(p.playedVehicles)
-    const values = [p.team, p.vehicle, played, p.botUserId, p.teamKills] as const
+    const values = [p.team, p.vehicle, played, p.botUserId, p.teamKills, p.slotNick] as const
     rows += Number(update.run(...values, input.sessionId, p.userId, ...values).changes)
   }
   return rows
@@ -5418,6 +5435,8 @@ export interface BattlePlayerRow {
   /** JSON array; NULL — unknown (v19 column not filled yet), use the lineup. */
   played_vehicles: string | null
   bot_user_id: string | null
+  /** The player's nick when the AI drove their own slot (nick is the bot's, v22); NULL otherwise. */
+  slot_nick: string | null
 }
 
 export interface BattleForRender {
@@ -5449,7 +5468,7 @@ export function getBattleSummaryForRender(sessionId: string): BattleSummaryForRe
       SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
              ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
              award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
-             slot, title, auto_squad, played_vehicles, bot_user_id
+             slot, title, auto_squad, played_vehicles, bot_user_id, slot_nick
       FROM battle_players WHERE session_id = ?
     `)
     .all(battle.session_id) as unknown as BattlePlayerRow[]
@@ -5486,7 +5505,7 @@ export function getBattleForRender(sessionId: string): BattleForRender | null {
       SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
              ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
              award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
-             slot, title, auto_squad, played_vehicles, bot_user_id
+             slot, title, auto_squad, played_vehicles, bot_user_id, slot_nick
       FROM battle_players WHERE session_id = ?
     `)
     .all(battle.session_id) as unknown as BattlePlayerRow[]
@@ -6045,7 +6064,7 @@ export const SITE_SQL = {
     SELECT user_id, nick, clan_tag, team, kills, ground_kills, naval_kills, ai_kills,
            ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
            award_damage, team_kills, squad_id, vehicle, vehicles, disconnected,
-           slot, title, auto_squad, played_vehicles, bot_user_id
+           slot, title, auto_squad, played_vehicles, bot_user_id, slot_nick
     FROM battle_players
     WHERE session_id = ?
   `,
