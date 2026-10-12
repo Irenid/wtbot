@@ -11,7 +11,8 @@ import type { ReplayEvents, SpaceTime } from './replay-events.js'
 // 3: bot slot tracks and kills credited to their players (player-events.ts).
 // 4: wt-tools maps with "-", "()" or diacritics in the key (battle-assets.ts).
 // 5: maps drawn from the game client (src/tactical-map): their view and the perspective of team 1.
-export const BATTLE_SCENE_VERSION = 5
+// 6: the HQ map textures and the air view (map.air: the game's air map around the air tracks).
+export const BATTLE_SCENE_VERSION = 6
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000
@@ -72,10 +73,13 @@ export interface BattleScene {
   durationSec: number
   teamWon: number
   endTimeMs: number
-  /** Видимая область мира [x0, z0, x1, z1]. */
+  /** The world rect shown [x0, z0, x1, z1]. */
   worldBounds: [number, number, number, number]
-  /** team: the game-file map's perspective whose blue bases are team 1's (map.png?team=). */
-  map: { available: boolean; level: string; team?: 'A' | 'B' }
+  /**
+   * team: the game-file map's perspective whose blue bases are team 1's (map.png?team=); air: the
+   * air view's world rect (sceneAir; map.png?kind=air draws it on the first request).
+   */
+  map: { available: boolean; level: string; team?: 'A' | 'B'; air?: { view: [number, number, number, number] } }
   zones: { name: string; x: number; z: number }[]
   players: ScenePlayerRef[]
   units: BattleSceneUnit[]
@@ -213,14 +217,7 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
   }
 
   // Team 1's first ground positions decide which perspective of the game-file map shows it blue.
-  let mapTeam: 'A' | 'B' | null = null
-  if (input.mapSpawns) {
-    const teamOne = new Set(input.players.filter((p) => p.team === 1).map((p) => p.userId))
-    const starts = events.units
-      .filter((unit) => unit.source === 'ground' && unit.path.length > 0 && teamOne.has(player(unit.userId) ?? ''))
-      .map((unit) => unit.path[0]!)
-    mapTeam = pickPerspective({ spawns: input.mapSpawns }, starts)
-  }
+  const mapTeam = input.mapSpawns ? pickPerspective({ spawns: input.mapSpawns }, teamOneGroundStarts(units, input.players)) : null
 
   return {
     v: BATTLE_SCENE_VERSION,
@@ -244,10 +241,84 @@ export function buildBattleScene(events: ReplayEvents, input: ScenePrepareInput)
   }
 }
 
-/** Полный worker-путь: распаковка events_blob → сцена → gzip JSON для браузера. */
-export function prepareSceneFromBlob(eventsBlob: ArrayBuffer, input: ScenePrepareInput): ArrayBuffer {
-  const events = decodeEventsPayload(new Uint8Array(eventsBlob)) as ReplayEvents
-  const scene = buildBattleScene(events, input)
+/** The scene from a stored events blob (a worker decodes it). */
+export function buildSceneFromBlob(eventsBlob: ArrayBuffer, input: ScenePrepareInput): BattleScene {
+  return buildBattleScene(decodeEventsPayload(new Uint8Array(eventsBlob)) as ReplayEvents, input)
+}
+
+/** The scene as gzip JSON for the browser. */
+export function gzipScene(scene: BattleScene): ArrayBuffer {
   const gz = gzipSync(Buffer.from(JSON.stringify(scene), 'utf8'))
   return gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength)
+}
+
+/** Where team 1's ground vehicles started (the scene's tracks keep their first points). */
+function teamOneGroundStarts(units: readonly BattleSceneUnit[], players: readonly ScenePlayerRef[]): { x: number; z: number }[] {
+  const teamOne = new Set(players.filter((p) => p.team === 1).map((p) => p.userId))
+  return units
+    .filter((unit) => unit.source === 'ground' && unit.path.length > 0 && unit.userId !== null && teamOne.has(unit.userId))
+    .map((unit) => ({ x: unit.path[0]![1], z: unit.path[0]![2] }))
+}
+
+/** The air map (src/tactical-map spec): what the scene's air view needs of it. */
+export interface SceneAirInput {
+  /** The air map's own view: the air view stays inside it. */
+  view: { x0: number; z0: number; x1: number; z1: number }
+  /** Its bases: the perspective when the ground map is missing. */
+  spawns: { team: 'A' | 'B'; kind: string; x: number; z: number }[]
+  /** The margin around the tracks, percent: the air heatmaps' WT_HEATMAP_AIR_PADDING_PERCENT. */
+  paddingPercent: number
+}
+
+export interface SceneAir {
+  view: { x0: number; z0: number; x1: number; z1: number }
+  team: 'A' | 'B'
+}
+
+/** The air view's smallest side: a short flight still shows a few of the air map's 6 500 m cells. */
+const MIN_AIR_VIEW_METERS = 8_000
+
+/**
+ * The scene's air view: a square around every air track and the ground view
+ * (worldBounds) with the margin, at least MIN_AIR_VIEW_METERS, moved inside
+ * the air map's view (all of it when larger). Null without air tracks.
+ */
+export function sceneAirView(
+  scene: Pick<BattleScene, 'units' | 'worldBounds'>,
+  airView: { x0: number; z0: number; x1: number; z1: number },
+  paddingPercent = 6,
+): { x0: number; z0: number; x1: number; z1: number } | null {
+  let [x0, z0, x1, z1] = scene.worldBounds
+  let air = false
+  for (const unit of scene.units) {
+    if (unit.source !== 'air') continue
+    for (const [, x, z] of unit.path) {
+      air = true
+      if (x < x0) x0 = x
+      if (z < z0) z0 = z
+      if (x > x1) x1 = x
+      if (z > z1) z1 = z
+    }
+  }
+  if (!air) return null
+  const limit = Math.min(airView.x1 - airView.x0, airView.z1 - airView.z0)
+  const side = Math.min(limit, Math.max(MIN_AIR_VIEW_METERS, Math.max(x1 - x0, z1 - z0) * (1 + paddingPercent / 100)))
+  const clamp = (centre: number, low: number, high: number): number => Math.min(Math.max(centre - side / 2, low), high - side)
+  const left = clamp((x0 + x1) / 2, airView.x0, airView.x1)
+  const bottom = clamp((z0 + z1) / 2, airView.z0, airView.z1)
+  return { x0: left, z0: bottom, x1: left + side, z1: bottom + side }
+}
+
+/**
+ * The scene's air view and the perspective it is drawn in: the ground map's
+ * (map.team), else the same rule over the air map's tank bases, so a failed
+ * ground map leaves the air view drawable. Null without the air map or
+ * without air tracks.
+ */
+export function sceneAir(scene: BattleScene, air: SceneAirInput | null): SceneAir | null {
+  if (!air) return null
+  const view = sceneAirView(scene, air.view, air.paddingPercent)
+  if (!view) return null
+  const team = scene.map.team ?? pickPerspective({ spawns: air.spawns }, teamOneGroundStarts(scene.units, scene.players)) ?? 'A'
+  return { view, team }
 }

@@ -47,13 +47,16 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    one. Flags, the clan-tag font and the tactical maps come from the game
    client; compose mounts `data/wt-game/` read-only. Copy the files into it at
    the game's paths (again after a game patch; `ui/` alone gives flags, and
-   maps fall back to wt-tools snapshots):
+   maps fall back to wt-tools snapshots). The last one exists when the launcher
+   installed the high-quality textures (251 MB): with it the maps are drawn from
+   2048² textures instead of 1024², as the game draws them then.
 
    ```bash
    GAME=~/.local/share/Steam/steamapps/common/"War Thunder"
    for f in mis.vromfs.bin aces.vromfs.bin content/base/res/locations_maps.dxp.bin \
-       ui/tex.vromfs.bin ui/atlases.vromfs.bin ui/fonts.vromfs.bin; do
-     install -D -p -m 644 "$GAME/$f" "data/wt-game/$f"
+       ui/tex.vromfs.bin ui/atlases.vromfs.bin ui/fonts.vromfs.bin \
+       content.hq/hq_tex/res/hq_tex_locations_maps.dxp.bin; do
+     [ -f "$GAME/$f" ] && install -D -p -m 644 "$GAME/$f" "data/wt-game/$f"
    done
    ```
 

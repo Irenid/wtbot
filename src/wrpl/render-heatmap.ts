@@ -6,36 +6,41 @@ import { buildRosters, clanDisplayName, tagMarkup } from './render-battle.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 
 /**
- * Хитмапа боя в стиле Boris Stats: траектории игроков поверх карты,
- * черепа в цвете погибшего со значком причины смерти (силуэт класса
- * убийцы: танк/самолёт/вертолёт/зенитка; для авиации — тип ГСН ракеты
- * ИК/ПАРЛ/АРЛ/ЗУР; звезда — разбился; ободок — цвет убийцы), пунктирные
- * линии фрагов от убийцы к жертве, пятна долгих стоянок с длительностью,
- * точки в конце пути выживших и метки минут вдоль траекторий. Справа — информационная панель:
- * карта/режим/дата, команды в порядке сторон на карте (победитель,
- * игроки с фрагами/смертями, техникой, очками и временем гибели) и
- * блок условных обозначений.
+ * A battle heatmap in the style of Boris Stats: the players' tracks over the
+ * map; skulls in the victim's colour with a cause-of-death badge (the killer's
+ * class silhouette: tank, plane, helicopter, AA; for aircraft the missile's
+ * seeker: IR, SARH, ARH, SAM; a star is a crash; the ring is the killer's
+ * colour); dashed kill lines from killer to victim; long stops with their
+ * duration; dots at the survivors' last positions; minute marks along the
+ * tracks. On the right an information panel: map, mode and date, the teams in
+ * the order of their sides on the map (winner, players with kills and deaths,
+ * vehicles, score and time of death) and the legend.
  *
- * mode='ground' — наземная техника (GMSync), mode='air' — авиация
- * (пакеты лётной модели). Наземная карта занимает весь кадр (ровно
- * battleArea); воздушная — по габаритам траекторий, battleArea на ней
- * маленький квадрат. Без файла миссии — по габаритам траекторий.
+ * mode='ground': ground vehicles (GMSync); mode='air': aircraft (flight-model
+ * packets). The ground map fills the frame (exactly the battle area); the air
+ * view follows the tracks, with the battle area a small square in it. Without
+ * the mission file the view follows the tracks.
  *
- * Строгие слои снизу вверх: основа → изображение → запасная сетка → затемнение →
- * граница боя → подписи спавнов → маршруты → пятна стоянок → длительности стоянок →
- * метки минут → линии выстрелов → точки стрелявших → выноски маркеров → точки выживших →
- * черепа → причины смерти → подписи техники. Разные типы элементов не делят слой;
- * экземпляры одного типа сортируются по времени, поздние рисуются выше ранних.
+ * Strict layers, bottom to top: base → image → fallback grid → shade → battle
+ * area border → spawn labels → routes → stops → stop durations → minute marks →
+ * shot lines → shooter dots → marker callouts → survivor dots → skulls → causes
+ * of death → vehicle labels. Element types never share a layer; instances of
+ * one type are sorted by time, later ones on top.
  *
  * Background: the mission's tactical map as the game draws it, built from the
  * game client (src/tactical-map; mission.area is then its view), else the
  * wt-tools snapshot of the mission's mode (ensureTacticalMap, exactly
  * battleArea), else a hand-placed screenshot data/maps/<level>.jpg stretched
- * over battleArea, else a dark grid.
+ * over battleArea, else a dark grid. The air view's background is the game's
+ * air map drawn for that view (HeatmapInput.airMap), with the ground map inset
+ * at the battle area; without the client, the level map captured from the
+ * game's port 8111 (data/maps/<level>.jpg + .map.json), if any.
  */
 
-const MAP_W = 1400
-/** Ширина информационной панели справа от карты */
+/** The map square's side in output pixels at 1× (the image is this plus PANEL_W wide). */
+export const HEATMAP_MAP_SIZE = 1400
+const MAP_W = HEATMAP_MAP_SIZE
+/** The information panel's width, right of the map. */
 const PANEL_W = 480
 
 /**
@@ -96,7 +101,7 @@ const CAPTURED_MAP_RENDERING_ENABLED = false
 const FONTS = `Segoe UI, Segoe UI Symbol, Microsoft YaHei, Malgun Gothic, Yu Gothic UI, Arial, sans-serif`
 
 export interface HeatmapInput {
-  /** " [Domination #2] North Holland" — по нему ищется снимок карты */
+  /** " [Domination #2] North Holland": the wt-tools snapshot is looked up by it. */
   missionName: string
   header: WrplHeader
   results: ReplayResults
@@ -104,14 +109,20 @@ export interface HeatmapInput {
   dict: VehicleDict
   mission: MissionInfo | null
   mode: 'ground' | 'air'
-  /** Индекс команды из buildRosters; без значения рисуются обе команды. */
+  /** A roster index of buildRosters; without it both teams are drawn. */
   teamIndex?: number
-  /** Тип ГСН по id оружия (для значков причины смерти) */
+  /** Seeker type by weapon id (cause-of-death icons). */
   seekers?: Map<string, MissileSeeker>
-  /** Масштаб итогового PNG; влияет только на подготовку изображения для HD. */
+  /** The output PNG's scale; only changes how the map image is prepared for HD. */
   renderScale?: 1 | 2
-  /** Настройки авиационной подложки; отсутствие сохраняет стандартное поведение. */
+  /** Air background settings; without them the defaults apply. */
   heatmapOptions?: Partial<HeatmapRenderOptions>
+  /**
+   * Air mode: the game's air map drawn for the scene's map square (src/tactical-map
+   * composeTacticalMap over PreparedHeatmapScene.mapRect); it replaces the captured
+   * level map, and the ground map stays inset at the battle area.
+   */
+  airMap?: { href: string; rect: { x0: number; z0: number; x1: number; z1: number } } | null
 }
 
 export interface HeatmapRenderOptions {
@@ -259,6 +270,8 @@ export interface PreparedHeatmapScene {
   fullBleed: boolean
   px: (x: number) => number
   pz: (z: number) => number
+  /** The world rect of the whole map square (0…MAP_W in both axes): an air map drawn for it fills the square. */
+  mapRect: { x0: number; z0: number; x1: number; z1: number }
   endTime: number
 }
 
@@ -366,6 +379,7 @@ export function prepareHeatmapScene(
   const view = fullBleed ? 1 : 0.94
   const px = (x: number): number => ((x - cx) / half) * (MAP_W / 2) * view + MAP_W / 2
   const pz = (z: number): number => MAP_W / 2 - ((z - cz) / half) * (MAP_W / 2) * view
+  const mapRect = { x0: cx - half / view, z0: cz - half / view, x1: cx + half / view, z1: cz + half / view }
 
   const preparedRoutesByPlayer = new Map<PlayerPaths, PreparedRoutePart[]>()
   const visibleSegmentsByPlayer = new Map<PlayerPaths, PixelSegment[]>()
@@ -491,8 +505,21 @@ export function prepareHeatmapScene(
     fullBleed,
     px,
     pz,
+    mapRect,
     endTime,
   }
+}
+
+/**
+ * Whether an air heatmap insets the ground map at the battle area: the air map
+ * drawn under it then leaves out its own tank bases and zones there.
+ */
+export function groundMapInset(
+  scene: Pick<PreparedHeatmapScene, 'heatmapOptions'>,
+  tacticalMap: string | null,
+  mission: MissionInfo | null,
+): boolean {
+  return scene.heatmapOptions.airShowGroundMap && tacticalMap !== null && Boolean(mission?.area)
 }
 
 export function buildHeatmapSvg(
@@ -567,8 +594,9 @@ export function buildHeatmapSvg(
     parts.push(`<g data-map-layer="${String(level).padStart(2, '0')}-${name}">`, ...items, `</g>`)
   }
 
-  // На земле режимный снимок покрывает battleArea. Для авиации полный map.img
-  // служит общей подложкой, а режимный снимок остаётся отдельной вставкой battleArea.
+  // On the ground the map covers the battle area. In the air the air map is the background (the
+  // game's, drawn for this view, else the level map captured from port 8111), and the ground map
+  // stays inset at the battle area.
   const mapImageAttrs = renderScale === 2
     ? ` image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"`
     : ''
@@ -576,19 +604,21 @@ export function buildHeatmapSvg(
   const mapImages: string[] = []
   const shades: string[] = []
   const airMapObjects: string[] = []
-  const airBackground = mode === 'air' && fallbackMap && fallbackImageWorldBounds
+  const gameAirMap = mode === 'air' ? input.airMap ?? null : null
+  const airRect = gameAirMap?.rect ?? (fallbackMap ? fallbackImageWorldBounds : undefined)
+  const airBackground = mode === 'air' && airRect
   if (airBackground) {
-    const imageX = px(fallbackImageWorldBounds.x0)
-    const imageY = pz(fallbackImageWorldBounds.z1)
-    const imageWidth = px(fallbackImageWorldBounds.x1) - imageX
-    const imageHeight = pz(fallbackImageWorldBounds.z0) - imageY
+    const imageX = px(airRect.x0)
+    const imageY = pz(airRect.z1)
+    const imageWidth = px(airRect.x1) - imageX
+    const imageHeight = pz(airRect.z0) - imageY
     mapImages.push(
-      `<image data-map-role="air-background" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none"${mapImageAttrs} href="${fallbackMap}"/>`,
+      `<image data-map-role="${gameAirMap ? 'air-map' : 'air-background'}" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none"${mapImageAttrs} href="${gameAirMap?.href ?? fallbackMap}"/>`,
     )
     shades.push(
       `<rect x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" fill="#0a0e14" fill-opacity="0.18"/>`,
     )
-    if (heatmapOptions.airShowGroundMap && tacticalMap && mission?.area) {
+    if (groundMapInset(scene, tacticalMap, mission) && mission?.area) {
       const a = mission.area
       const tacticalX = px(a.x0)
       const tacticalY = pz(a.z1)
@@ -596,7 +626,8 @@ export function buildHeatmapSvg(
         `<image data-map-role="tactical-overlay" x="${r1(tacticalX)}" y="${r1(tacticalY)}" width="${r1(px(a.x1) - tacticalX)}" height="${r1(pz(a.z0) - tacticalY)}" preserveAspectRatio="none"${mapImageAttrs} href="${tacticalMap}"/>`,
       )
     }
-    if (capturedMapRendering) {
+    // The game's air map draws its own airfields and air spawns.
+    if (capturedMapRendering && !gameAirMap) {
       for (const [index, airfield] of (
         heatmapOptions.airShowAirfields ? (fallbackMapViewport?.airfields ?? []) : []
       ).entries()) {

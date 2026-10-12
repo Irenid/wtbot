@@ -36,8 +36,9 @@ services:
     volumes:
       - ./data:/app/data
       # ./data/wt-game: copies of the game files the bot reads, at the game's
-      # paths (TACTICAL_MAP_SOURCES in src/tactical-map/game-files.ts; ui/ alone
-      # gives flags and fonts, maps then fall back to wt-tools snapshots).
+      # paths (TACTICAL_MAP_SOURCES in src/tactical-map/game-files.ts, plus the
+      # optional HQ textures of TACTICAL_MAP_OPTIONAL_SOURCES; ui/ alone gives
+      # flags and fonts, maps then fall back to wt-tools snapshots).
       # Or WT_GAME_HOST_DIR in .env: the game folder itself (Steam:
       # ~/.local/share/Steam/steamapps/common/War Thunder), following patches.
       - ${WT_GAME_HOST_DIR:-./data/wt-game}:/opt/war-thunder:ro

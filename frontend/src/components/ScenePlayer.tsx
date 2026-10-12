@@ -3,19 +3,22 @@ import { battleMapUrl, type BattleScene, type SceneUnit, type VehicleDict } from
 import { t, useLocale } from '../i18n'
 import { fmtInt } from '../lib/format'
 
-// Интерактивная «карта-видео»: Canvas 2D поверх тактической карты (или сетки).
-// React управляет только обвязкой; сам кадр рисуется в requestAnimationFrame
-// из мутируемого стейта (время/фильтры в ref), чтобы держать 60 fps.
+// An interactive "map video": Canvas 2D over the tactical map (or a grid). React
+// handles only the controls; the frame is drawn in requestAnimationFrame from
+// mutable state (time and filters in a ref) to hold 60 fps. The map is the
+// game's ground map, or its air map around the flights (scene.map.air).
+
+type MapKind = 'ground' | 'air'
 
 const TEAM_COLORS = ['#5f80f2', '#d0731f'] as const
 const TEAM_BRIGHT = ['#7f9bff', '#f2984a'] as const
 const NEUTRAL_COLOR = '#7d7885'
 const TRAIL_MS = 45_000
 const KILL_FLASH_MS = 2_500
-/** Юнит скрывается спустя несколько секунд после конца траектории (смерть/выход). */
+/** A unit disappears a few seconds after its track ends (death or leaving). */
 const LINGER_MS = 5_000
 const SPEEDS = [1, 4, 16] as const
-/** Событие подсвечивается в ленте это время после наступления. */
+/** An event stays highlighted in the feed this long after it happens. */
 const FEED_RECENT_MS = 40_000
 
 interface PlayerState {
@@ -37,7 +40,7 @@ function formatClock(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-/** Позиция юнита в момент t: линейная интерполяция соседних точек пути. */
+/** The unit's position at t: linear interpolation between the neighbouring track points. */
 function unitPosition(unit: SceneUnit, t: number): [number, number] | null {
   const path = unit.path
   if (path.length === 0) return null
@@ -79,7 +82,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
     showZones: true,
     focusUserId: null,
   })
-  // Зеркало для UI: обновляется таймером, а не каждым кадром.
+  // The UI mirror: updated by a timer, not every frame.
   const [uiTime, setUiTime] = useState(0)
   const [uiPlaying, setUiPlaying] = useState(false)
   const [uiSpeed, setUiSpeed] = useState(4)
@@ -89,7 +92,15 @@ export function ScenePlayer({ scene, dict, battleKey }: {
   const [showKills, setShowKills] = useState(true)
   const [showZones, setShowZones] = useState(true)
   const [focusUserId, setFocusUserId] = useState<string | null>(null)
-  const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null)
+  const [mapKind, setMapKind] = useState<MapKind>('ground')
+  // The loaded image with its kind: after a switch the other kind's image is not drawn over the new bounds.
+  const [loadedMap, setLoadedMap] = useState<{ kind: MapKind; image: HTMLImageElement } | null>(null)
+  const airView = scene.map.air?.view ?? null
+  const kind: MapKind = mapKind === 'air' && airView ? 'air' : 'ground'
+  const mapImage = loadedMap?.kind === kind ? loadedMap.image : null
+  const bounds = kind === 'air' && airView ? airView : scene.worldBounds
+  // The game's maps draw the capture zones themselves (the ground map when it comes from the game files).
+  const zonesOnMap = kind === 'air' || scene.map.team !== undefined
 
   const teamByUser = useMemo(() => {
     const map = new Map<string, number>()
@@ -113,14 +124,14 @@ export function ScenePlayer({ scene, dict, battleKey }: {
   }, [showTeams, showAir, showTraj, showKills, showZones, focusUserId])
 
   useEffect(() => {
-    if (!scene.map.available) return
+    if (kind === 'ground' && !scene.map.available) return
     const image = new Image()
-    image.onload = () => setMapImage(image)
-    image.src = battleMapUrl(battleKey, scene.map.team)
+    image.onload = () => setLoadedMap({ kind, image })
+    image.src = battleMapUrl(battleKey, { team: scene.map.team, kind, v: scene.v })
     return () => { image.onload = null }
-  }, [scene, battleKey])
+  }, [scene, battleKey, kind])
 
-  // Основной цикл отрисовки.
+  // The main drawing loop.
   useEffect(() => {
     const canvas = canvasRef.current
     const box = boxRef.current
@@ -128,7 +139,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
     const context = canvas.getContext('2d')
     if (!context) return
 
-    const [x0, z0, x1, z1] = scene.worldBounds
+    const [x0, z0, x1, z1] = bounds
     const worldW = Math.max(1, x1 - x0)
     const worldH = Math.max(1, z1 - z0)
 
@@ -159,8 +170,8 @@ export function ScenePlayer({ scene, dict, battleKey }: {
       const W = canvas.width
       const H = canvas.height
 
-      // Статичный кадр (пауза, конец боя) не перерисовываем 60 раз в секунду:
-      // кадр меняется только вместе со временем, размером, фильтрами или фокусом.
+      // A static frame (paused, battle over) is not redrawn 60 times a second: it changes only with
+      // the time, size, filters or focus.
       const signature = [
         t, W, H, state.showZones, state.showAir, state.showTeams[0], state.showTeams[1],
         state.showTraj, state.showKills, state.focusUserId ?? '',
@@ -186,16 +197,17 @@ export function ScenePlayer({ scene, dict, battleKey }: {
         context.drawImage(mapImage, wx(x0), wz(z1), worldW * scale, worldH * scale)
         context.globalAlpha = 1
       } else {
-        // Сетка каждые 500 м — ориентир без картинки карты.
+        // A 500 m grid for orientation without a map image (5 km over the air view's tens of km).
+        const step = worldW > 10_000 ? 5_000 : 500
         context.strokeStyle = '#26232c'
         context.lineWidth = 1
-        for (let gx = Math.ceil(x0 / 500) * 500; gx <= x1; gx += 500) {
+        for (let gx = Math.ceil(x0 / step) * step; gx <= x1; gx += step) {
           context.beginPath()
           context.moveTo(wx(gx), wz(z0))
           context.lineTo(wx(gx), wz(z1))
           context.stroke()
         }
-        for (let gz = Math.ceil(z0 / 500) * 500; gz <= z1; gz += 500) {
+        for (let gz = Math.ceil(z0 / step) * step; gz <= z1; gz += step) {
           context.beginPath()
           context.moveTo(wx(x0), wz(gz))
           context.lineTo(wx(x1), wz(gz))
@@ -203,8 +215,8 @@ export function ScenePlayer({ scene, dict, battleKey }: {
         }
       }
 
-      // Зоны захвата.
-      if (state.showZones) {
+      // Capture zones, unless the map image draws them.
+      if (state.showZones && !(mapImage && zonesOnMap)) {
         for (const zone of scene.zones) {
           const zx = wx(zone.x)
           const zy = wz(zone.z)
@@ -234,7 +246,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
         const dimmed = state.focusUserId !== null && !focused
         const color = team === 1 ? TEAM_COLORS[0] : team === 2 ? TEAM_COLORS[1] : NEUTRAL_COLOR
 
-        // Хвост траектории за последние TRAIL_MS.
+        // The track's tail over the last TRAIL_MS.
         if (state.showTraj) {
           context.beginPath()
           let started = false
@@ -258,7 +270,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
           }
         }
 
-        // Сам юнит.
+        // The unit itself.
         const ux = wx(position[0])
         const uy = wz(position[1])
         context.beginPath()
@@ -284,7 +296,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
         context.globalAlpha = 1
       }
 
-      // Маркеры килов: вспышка вокруг момента события.
+      // Kill markers: a flash around the moment of the kill.
       if (state.showKills) {
         for (const kill of scene.kills) {
           if (kill.x === null || kill.z === null) continue
@@ -314,9 +326,9 @@ export function ScenePlayer({ scene, dict, battleKey }: {
       disposed = true
       cancelAnimationFrame(raf)
     }
-  }, [scene, mapImage, teamByUser, nickByUser])
+  }, [scene, mapImage, teamByUser, nickByUser, bounds, zonesOnMap])
 
-  // Синхронизация UI-зеркала времени (10 раз в секунду достаточно).
+  // Sync the UI's time mirror (10 times a second is enough).
   useEffect(() => {
     const timer = window.setInterval(() => {
       setUiTime(stateRef.current.timeMs)
@@ -325,7 +337,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
     return () => window.clearInterval(timer)
   }, [])
 
-  // Лента событий: килы + финал боя, синхронно с картой.
+  // The event feed: kills and the battle's end, synced with the map.
   const feed = useMemo(() => {
     const entries = scene.kills
       .filter((kill) => kill.killerId !== null || kill.victimId !== null)
@@ -430,6 +442,21 @@ export function ScenePlayer({ scene, dict, battleKey }: {
               </button>
             ))}
           </div>
+          {airView && (
+            <div className="seg-control" role="group" aria-label={t('scene.map.aria')}>
+              {(['ground', 'air'] as const).map((option) => (
+                <button
+                  key={option}
+                  className={kind === option ? 'active' : ''}
+                  type="button"
+                  aria-pressed={kind === option}
+                  onClick={() => setMapKind(option)}
+                >
+                  {t(option === 'air' ? 'scene.map.air' : 'scene.map.ground')}
+                </button>
+              ))}
+            </div>
+          )}
           <span className="muted small" style={{ fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
             {formatClock(uiTime)} / {formatClock(scene.endTimeMs)}
           </span>
@@ -444,7 +471,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
           style={{ width: '100%', marginTop: 8, cursor: 'pointer' }}
           aria-label={t('scene.timeline.aria')}
         />
-        {/* Метки событий на таймлайне: клик — прыжок к моменту. */}
+        {/* Event marks on the timeline: a click jumps to the moment. */}
         {feed.length > 0 && scene.endTimeMs > 0 && (
           <div style={{ position: 'relative', height: 8, margin: '2px 6px 0' }}>
             {feed.map((entry) => (
@@ -472,10 +499,12 @@ export function ScenePlayer({ scene, dict, battleKey }: {
             <input type="checkbox" checked={showKills} onChange={(event) => setShowKills(event.target.checked)} />{' '}
             {t('scene.toggle.kills')}
           </label>
-          <label style={{ cursor: 'pointer' }}>
-            <input type="checkbox" checked={showZones} onChange={(event) => setShowZones(event.target.checked)} />{' '}
-            {t('scene.toggle.zones')}
-          </label>
+          {!(mapImage && zonesOnMap) && (
+            <label style={{ cursor: 'pointer' }}>
+              <input type="checkbox" checked={showZones} onChange={(event) => setShowZones(event.target.checked)} />{' '}
+              {t('scene.toggle.zones')}
+            </label>
+          )}
           <label style={{ cursor: 'pointer' }}>
             <input
               type="checkbox"
@@ -496,7 +525,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
             <input type="checkbox" checked={showAir} onChange={(event) => setShowAir(event.target.checked)} />{' '}
             {t('scene.toggle.air')}
           </label>
-          {!scene.map.available && <span className="muted">{t('scene.mapMissing')}</span>}
+          {kind === 'ground' && !scene.map.available && <span className="muted">{t('scene.mapMissing')}</span>}
         </div>
 
         {scene.units.length === 0 && (

@@ -1,4 +1,4 @@
-import type { BlkMap, BlkValue } from '../wrpl/blk.js'
+import { BLK_ORDER, type BlkMap, type BlkValue } from '../wrpl/blk.js'
 
 /**
  * The map side of a mission: which battle areas, capture zones and respawn
@@ -14,8 +14,13 @@ import type { BlkMap, BlkValue } from '../wrpl/blk.js'
  * missionMarkAsRespawnPoint with "@variable" names. This module runs that
  * initMission chain: variables, triggerEnable, the conditions that are known
  * before any unit moves (difficulty, objectExists, variable comparisons,
- * mission postfix, environment) and the map actions. Conditions on units are
- * false at the start; periodic triggers never run.
+ * mission postfix, environment) and the map actions, each trigger's actions in
+ * file order. Conditions on units are false at the start; periodic triggers
+ * never run.
+ *
+ * air_spawn_template marks the helipads (objectGroups t1_helipad,
+ * t1_helipad_farspawn) and, from rank 26 (ucav_min_mrank), a UCAV spawn
+ * duplicated 6 km ahead of the near helipad, 3 km up.
  */
 
 export type MissionDifficulty = 'arcade' | 'realistic' | 'simulator'
@@ -85,6 +90,8 @@ interface Trigger {
 interface LoadedMission {
   areas: Map<string, AreaShape>
   squads: Map<string, { tm: AreaShape['tm']; members: string[] }>
+  /** units.objectGroups: placed objects (helipads), a respawn point's target as a point. */
+  objects: Map<string, AreaShape>
   triggers: Trigger[]
   variables: Map<string, BlkValue>
   settings: BlkMap
@@ -108,6 +115,27 @@ function blocks(value: BlkValue | undefined): BlkMap[] {
   return asArray(value).filter(isMap)
 }
 
+/**
+ * A block's child blocks in stored order (BLK_ORDER), each occurrence of a
+ * repeated name once; a tree built in code (no order) keeps the grouped order.
+ */
+function orderedBlocks(block: BlkMap): [string, BlkMap][] {
+  const order = block[BLK_ORDER]
+  if (!order) return Object.entries(block).flatMap(([name, value]) => blocks(value).map((b): [string, BlkMap] => [name, b]))
+  const total = new Map<string, number>()
+  for (const name of order) total.set(name, (total.get(name) ?? 0) + 1)
+  const seen = new Map<string, number>()
+  const out: [string, BlkMap][] = []
+  for (const name of order) {
+    const index = seen.get(name) ?? 0
+    seen.set(name, index + 1)
+    const value = block[name]
+    const item = total.get(name)! > 1 && Array.isArray(value) ? value[index] : value
+    if (isMap(item)) out.push([name, item])
+  }
+  return out
+}
+
 function str(value: BlkValue | undefined): string | null {
   return typeof value === 'string' ? value : null
 }
@@ -120,7 +148,7 @@ function tmOf(value: BlkValue | undefined): AreaShape['tm'] | null {
 
 /** Loads the mission and its imports; the first definition of a name wins. */
 function loadMission(rel: string, load: MissionLoader): LoadedMission {
-  const result: LoadedMission = { areas: new Map(), squads: new Map(), triggers: [], variables: new Map(), settings: {} }
+  const result: LoadedMission = { areas: new Map(), squads: new Map(), objects: new Map(), triggers: [], variables: new Map(), settings: {} }
   const visited = new Set<string>()
   const visit = (file: string, parts: { areas: boolean; units: boolean; triggers: boolean }, top: boolean): void => {
     const key = file.trim().toLowerCase().replace(/\\/g, '/')
@@ -148,6 +176,11 @@ function loadMission(rel: string, load: MissionLoader): LoadedMission {
         const tm = tmOf(squad['tm'])
         const members = isMap(squad['props']) ? asArray(squad['props']['squad_members']).filter((m): m is string => typeof m === 'string') : []
         if (name && tm && !result.squads.has(name.toLowerCase())) result.squads.set(name.toLowerCase(), { tm, members })
+      }
+      for (const group of blocks(doc['units']['objectGroups'])) {
+        const name = str(group['name'])
+        const tm = tmOf(group['tm'])
+        if (name && tm && !result.objects.has(name.toLowerCase())) result.objects.set(name.toLowerCase(), { name, type: 'Point', tm })
       }
     }
     if (parts.triggers) {
@@ -244,11 +277,21 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
     asArray(value).map(resolve).filter((name): name is string => name !== null && name !== '')
   const area = (name: string): AreaShape | null => mission.areas.get(name.toLowerCase()) ?? null
   const squad = (name: string) => mission.squads.get(name.toLowerCase()) ?? null
+  const object = (name: string): AreaShape | null => mission.objects.get(name.toLowerCase()) ?? null
   const exists = (name: string, type: string): boolean => {
     if (type === 'area') return area(name) !== null
     if (type === 'squad') return squad(name) !== null
-    return area(name) !== null || squad(name) !== null
+    if (type === 'objectGroup') return object(name) !== null
+    return area(name) !== null || squad(name) !== null || object(name) !== null
   }
+  /** A target's shapes: an area_squad's member areas, an area, or an object group as a point. */
+  const shapesOf = (name: string): AreaShape[] => {
+    const s = squad(name)
+    if (s) return s.members.map(area).filter((shape): shape is AreaShape => shape !== null)
+    const single = area(name) ?? object(name)
+    return single ? [single] : []
+  }
+  let duplicates = 0
   const team = (value: BlkValue | undefined): 'A' | 'B' | 'Both' =>
     value === 'A' || value === 'B' ? value : 'Both'
 
@@ -266,7 +309,9 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
       case 'varCompareString': {
         const name = str(c['var_value'])
         const left = name === null ? undefined : variables.get(name)
-        const right = c['value']
+        // var_value_other compares with another variable (ucav_spawn_check: session_rank ≥ ucav_min_mrank).
+        const other = str(c['var_value_other'])
+        const right = other ? variables.get(other) : c['value']
         const op = String(c['comparasion_func'] ?? 'equal')
         if (left === undefined || right === undefined) return false
         if (op === 'equal') return left === right
@@ -386,7 +431,8 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
           mapArea: a['mapArea'] === true,
           airMapArea: a['airMapArea'] === true,
           ground: a['ground'] !== false,
-          air: a['air'] === true,
+          // The parser (0x1d80440) sets flag 0x0001 unless the action says air: false.
+          air: a['air'] !== false,
           killArea: a['killArea'] === true,
           detectionArea: a['detectionArea'] === true,
           killOutOfBattleArea: a['killOutOfBattleArea'] === true,
@@ -406,16 +452,13 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
         const group = respawnGroup++
         const tags = isMap(a['tags']) ? Object.entries(a['tags']).filter(([, on]) => on === true).map(([tag]) => tag) : []
         for (const name of targets) {
-          const s = squad(name)
-          const areas = s
-            ? s.members.map(area).filter((shape): shape is AreaShape => shape !== null)
-            : (area(name) ? [area(name)!] : [])
+          const areas = shapesOf(name)
           if (areas.length === 0) continue
           result.respawnBases.push({
             name,
             team: team(a['team']),
             areas,
-            squadTm: s?.tm ?? null,
+            squadTm: squad(name)?.tm ?? null,
             tags,
             showOnMap: a['showOnMap'] !== false,
             isAirfield: a['isAirfield'] === true,
@@ -425,9 +468,28 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
         }
         return
       }
+      case 'duplicateAreaAtPos': {
+        // A copy of the template area at the target's position plus posOffset, in the target's own
+        // axes (spawnOffsetSpace "object": x ahead, y up) or in world axes; var_out names the copy.
+        const template = area(resolve(a['area']) ?? '')
+        const target = names(a['target']).flatMap(shapesOf)[0]
+        const out = str(a['var_out'])
+        if (!template || !target) return
+        const offset = Array.isArray(a['posOffset']) && a['posOffset'].every((x) => typeof x === 'number') ? a['posOffset'] as number[] : [0, 0, 0]
+        const local = a['spawnOffsetSpace'] === 'object'
+        const p = target.tm[3]
+        const position = [0, 1, 2].map((i) => p[i]! + [0, 1, 2].reduce((sum, axis) => {
+          const row = target.tm[axis]!
+          const unit = local ? (Math.hypot(...row) || 1) : 1
+          return sum + (offset[axis] ?? 0) * (local ? row[i]! / unit : (axis === i ? 1 : 0))
+        }, 0))
+        const name = `${template.name}#${++duplicates}`
+        mission.areas.set(name.toLowerCase(), { name, type: template.type, tm: [template.tm[0], template.tm[1], template.tm[2], position] })
+        if (out) variables.set(out, name)
+        return
+      }
       case 'missionMarkAsRearmZone':
       case 'missionMarkAsExitZone':
-      case 'duplicateAreaAtPos':
         result.warnings.push(`${trigger}: ${kind} is not drawn`)
         return
       default:
@@ -445,9 +507,8 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
     const actions = isMap(trigger.node[branch]) ? trigger.node[branch] : {}
     const outer = pending
     pending = []
-    for (const [kind, value] of Object.entries(actions)) {
-      for (const a of blocks(value)) action(kind, a, trigger.name)
-    }
+    // File order: ucav_spawn_near alternates duplicateAreaAtPos and the mark that reads its var_out.
+    for (const [kind, a] of orderedBlocks(actions)) action(kind, a, trigger.name)
     const enabledHere = pending
     pending = outer
     for (const next of enabledHere) run(next)

@@ -13,14 +13,18 @@ import { buildBattleLogSvg } from '../wrpl/render-battle-log.js'
 import { buildBattleSvg } from '../wrpl/render-battle.js'
 import {
   buildHeatmapSvg,
+  groundMapInset,
+  HEATMAP_MAP_SIZE,
   prepareHeatmapScene,
   type HeatmapInput,
+  type HeatmapRenderOptions,
   type PreparedHeatmapScene,
 } from '../wrpl/render-heatmap.js'
 import { summarizeMissionDocument } from '../wrpl/mission-info.js'
-import { prepareSceneFromBlob } from '../wrpl/battle-scene-core.js'
+import { buildSceneFromBlob, gzipScene, sceneAir } from '../wrpl/battle-scene-core.js'
+import type { MapImageViewport } from '../wrpl/battle-assets.js'
 import { unpackVromfs } from '../wrpl/vromfs.js'
-import { buildTacticalMap } from '../tactical-map/build.js'
+import type { SpawnKind, Team } from '../tactical-map/model.js'
 import { pickPerspective } from '../tactical-map/perspective.js'
 import { atlasFlags } from '../wrpl/game-flags-atlas.js'
 import { buildVehicleDict } from '../wrpl/vehicles.js'
@@ -39,6 +43,7 @@ import type {
   WorkerRequest,
   WorkerResponse,
   WorkerTaskResult,
+  WireAirMap,
 } from './protocol.js'
 import { resolveRenderFonts } from './render-fonts.js'
 import { SqliteCheckpointSchedule } from './sqlite-checkpoint.js'
@@ -60,25 +65,121 @@ function epochNow(): number {
 /**
  * The heatmap background: the game-file maps (both perspectives, src/tactical-map), each team's
  * heatmap from its own side, the combined one from the first roster's; else the wt-tools snapshot.
+ * A roster's side is where its players' ground vehicles started (battle-scene-core does the same),
+ * in the air heatmaps too: the first ground spawn is the team's base.
  */
-function heatmapMaps(assets: MediaRenderInput['assets']): {
+function heatmapMaps(assets: MediaRenderInput['assets'], events: ReplayEvents): {
   any: string | null
   forRoster(scene: PreparedHeatmapScene, rosterIndex: number): string | null
+  perspective(scene: PreparedHeatmapScene, rosterIndex: number): Team
 } {
+  const spawns = assets.gameMaps?.spawns ?? assets.airMap?.spec.spawns ?? null
+  const perspective = (scene: PreparedHeatmapScene, rosterIndex: number): Team => {
+    if (!spawns) return 'A'
+    const ids = new Set((scene.rosters[rosterIndex] ?? []).map((player) => player.userId))
+    const starts = events.units
+      .filter((unit) => unit.source === 'ground' && unit.path.length > 0 && ids.has(unit.userId))
+      .map((unit) => unit.path[0]!)
+    return pickPerspective({ spawns }, starts.length > 0 ? starts : scene.teamSpawnClustersByTeam[rosterIndex] ?? []) ?? 'A'
+  }
   const game = assets.gameMaps
   if (!game) {
     const snapshot = assets.tacticalMap ? dataUri('image/png', assets.tacticalMap) : null
-    return { any: snapshot, forRoster: () => snapshot }
+    return { any: snapshot, forRoster: () => snapshot, perspective }
   }
-  const uris = new Map<'A' | 'B', string>()
-  const uri = (team: 'A' | 'B'): string => {
+  const uris = new Map<Team, string>()
+  const uri = (team: Team): string => {
     let value = uris.get(team)
     if (!value) uris.set(team, (value = dataUri(game[team].mime, game[team].data)))
     return value
   }
+  return { any: uri('A'), forRoster: (scene, rosterIndex) => uri(perspective(scene, rosterIndex)), perspective }
+}
+
+/** The air scene's bounds without auto zoom: the whole air map (it takes the captured level map's place). */
+function airMapViewport(airMap: WireAirMap): MapImageViewport {
+  return { x: 0, y: 0, width: 1, height: 1, imageWorldBounds: { ...airMap.spec.view } }
+}
+
+/**
+ * Base kinds an air heatmap's map draws: WT_HEATMAP_AIR_SHOW_AIRFIELDS and _SHOW_SPAWNS hide
+ * theirs; tank bases only without the ground map inset over the battle area (it has its own).
+ */
+function airMapKinds(options: HeatmapRenderOptions, inset: boolean): SpawnKind[] {
+  return [
+    ...(inset ? [] : ['tank'] as const),
+    ...(options.airShowAirfields ? ['airfield', 'helicopter'] as const : []),
+    ...(options.airShowSpawns ? ['ucav', 'bomber', 'fighter'] as const : []),
+  ]
+}
+
+type AirMapImage = NonNullable<HeatmapInput['airMap']>
+
+/**
+ * The game's air map drawn for an air scene's map square in a team's colours
+ * (src/tactical-map composeTacticalMap: the texture read from the game files,
+ * grid, labels and icons at the respawn screen's sizes), as a JPEG data URI;
+ * null with a warning when it cannot be drawn.
+ */
+async function airMapImage(airMap: WireAirMap, scene: PreparedHeatmapScene, team: Team, scale: number, inset: boolean): Promise<AirMapImage | null> {
+  try {
+    const { composeTacticalMap, encodeMapImage } = await import('../tactical-map/build.js')
+    const image = composeTacticalMap(airMap.spec, {
+      gameDir: airMap.gameDir,
+      view: scene.mapRect,
+      size: HEATMAP_MAP_SIZE * scale,
+      team,
+      fontFile: airMap.fontFile,
+      kinds: airMapKinds(scene.heatmapOptions, inset),
+      zones: !inset,
+    })
+    return { href: `data:image/jpeg;base64,${encodeMapImage(image, 'jpeg', 90).toString('base64')}`, rect: scene.mapRect }
+  } catch (error) {
+    console.warn(`[maps] air map ${airMap.spec.mission}: ${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
+}
+
+interface HeatmapBackground {
+  scene: PreparedHeatmapScene
+  /** The level map captured from port 8111 and its overlays: none under the game's air map. */
+  fallbackMap: string | null
+  svgViewport: MapImageViewport | undefined
+  /** The game's air map in a roster's perspective, drawn once per perspective; null on the ground and without one. */
+  airMap(rosterIndex: number): Promise<AirMapImage | null>
+}
+
+/**
+ * A heatmap mode's scene and background. In the air the game's air map
+ * replaces the level map captured from port 8111 with its overlays (airfields,
+ * spawns, grid); when its first view cannot be drawn, the scene is prepared
+ * again over the capture, as without the air map.
+ */
+async function prepareHeatmapBackground(
+  assets: MediaRenderInput['assets'],
+  heatmapInput: HeatmapInput,
+  maps: ReturnType<typeof heatmapMaps>,
+  scale: number,
+): Promise<HeatmapBackground> {
+  const spec = heatmapInput.mode === 'air' ? assets.airMap ?? null : null
+  if (spec) {
+    const scene = prepareHeatmapScene(heatmapInput, maps.any, airMapViewport(spec))
+    const inset = groundMapInset(scene, maps.any, heatmapInput.mission)
+    const drawn = new Map<Team, Promise<AirMapImage | null>>()
+    const draw = (rosterIndex: number): Promise<AirMapImage | null> => {
+      const team = maps.perspective(scene, rosterIndex)
+      let image = drawn.get(team)
+      if (!image) drawn.set(team, (image = airMapImage(spec, scene, team, scale, inset)))
+      return image
+    }
+    if (await draw(heatmapInput.teamIndex ?? 0)) return { scene, fallbackMap: null, svgViewport: undefined, airMap: draw }
+  }
+  const viewport = assets.fallbackMap?.viewport
   return {
-    any: uri('A'),
-    forRoster: (scene, rosterIndex) => uri(pickPerspective(game, scene.teamSpawnClustersByTeam[rosterIndex] ?? []) ?? 'A'),
+    scene: prepareHeatmapScene(heatmapInput, maps.any, viewport),
+    fallbackMap: assets.fallbackMap ? dataUri(assets.fallbackMap.mime, assets.fallbackMap.data) : null,
+    svgViewport: viewport,
+    airMap: async () => null,
   }
 }
 
@@ -213,10 +314,7 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
   creditBotSlots(events, botSlotOwners(input.results.players))
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
-  const maps = heatmapMaps(input.assets)
-  const fallbackMap = input.assets.fallbackMap
-    ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
-    : null
+  const maps = heatmapMaps(input.assets, events)
   const heatmapInput: HeatmapInput = {
     missionName: input.missionName,
     header: input.header,
@@ -230,16 +328,17 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
     seekers: new Map(input.assets.seekers),
     renderScale: input.scale,
   }
-  const scene = prepareHeatmapScene(heatmapInput, maps.any, input.assets.fallbackMap?.viewport)
+  const background = await prepareHeatmapBackground(input.assets, heatmapInput, maps, input.scale)
+  heatmapInput.airMap = await background.airMap(input.teamIndex ?? 0)
   const svg = buildHeatmapSvg(
     heatmapInput,
     gameFont,
-    maps.forRoster(scene, input.teamIndex ?? 0),
-    fallbackMap,
-    input.assets.fallbackMap?.viewport,
+    maps.forRoster(background.scene, input.teamIndex ?? 0),
+    background.fallbackMap,
+    background.svgViewport,
     input.assets.mapIconFont,
     undefined,
-    scene,
+    background.scene,
   )
   const png = await rasterize(svg, fonts, input.scale)
   return { value: png, transfer: [png] }
@@ -839,10 +938,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const fonts = clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
   const seekers = new Map(input.assets.seekers)
-  const maps = heatmapMaps(input.assets)
-  const fallbackMap = input.assets.fallbackMap
-    ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
-    : null
+  const maps = heatmapMaps(input.assets, events)
   addPhase(profile, 'assets.prepare', performance.now() - started)
   const shared = {
     missionName: input.missionName,
@@ -862,30 +958,6 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   addPhase(profile, 'log.svg', performance.now() - started)
   const log = await rasterize(logSvg, fonts, 1, profile, 'log.resvg')
 
-  const renderHeatmapVariant = async (
-    heatmapInput: HeatmapInput,
-    scene: PreparedHeatmapScene,
-    phase: string,
-    teamIndex?: number,
-  ): Promise<ArrayBuffer> => {
-    const svgStarted = performance.now()
-    const svg = buildHeatmapSvg(
-      {
-        ...heatmapInput,
-        ...(teamIndex === undefined ? {} : { teamIndex }),
-      },
-      gameFont,
-      maps.forRoster(scene, teamIndex ?? 0),
-      fallbackMap,
-      input.assets.fallbackMap?.viewport,
-      input.assets.mapIconFont,
-      undefined,
-      scene,
-    )
-    addPhase(profile, `${phase}.svg`, performance.now() - svgStarted)
-    return rasterize(svg, fonts, 1, profile, `${phase}.resvg`)
-  }
-
   const renderHeatmapMode = async (mode: 'ground' | 'air'): Promise<{
     general: ArrayBuffer
     teams: [ArrayBuffer, ArrayBuffer]
@@ -897,14 +969,37 @@ async function renderMedia(input: MediaRenderInput): Promise<{
       seekers,
     }
     started = performance.now()
-    const scene = prepareHeatmapScene(heatmapInput, maps.any, input.assets.fallbackMap?.viewport)
+    const background = await prepareHeatmapBackground(input.assets, heatmapInput, maps, 1)
+    const scene = background.scene
     addPhase(profile, `heatmap-${mode}.prepare`, performance.now() - started)
+    const renderVariant = async (phase: string, teamIndex?: number): Promise<ArrayBuffer> => {
+      const airStarted = performance.now()
+      const variant: HeatmapInput = {
+        ...heatmapInput,
+        ...(teamIndex === undefined ? {} : { teamIndex }),
+        airMap: await background.airMap(teamIndex ?? 0),
+      }
+      if (mode === 'air') addPhase(profile, `${phase}.air-map`, performance.now() - airStarted)
+      const svgStarted = performance.now()
+      const svg = buildHeatmapSvg(
+        variant,
+        gameFont,
+        maps.forRoster(scene, teamIndex ?? 0),
+        background.fallbackMap,
+        background.svgViewport,
+        input.assets.mapIconFont,
+        undefined,
+        scene,
+      )
+      addPhase(profile, `${phase}.svg`, performance.now() - svgStarted)
+      return rasterize(svg, fonts, 1, profile, `${phase}.resvg`)
+    }
     const teamPhase = mode === 'ground' ? 'heatmap-team' : 'heatmap-team-air'
     return {
-      general: await renderHeatmapVariant(heatmapInput, scene, `heatmap-${mode}`),
+      general: await renderVariant(`heatmap-${mode}`),
       teams: [
-        await renderHeatmapVariant(heatmapInput, scene, `${teamPhase}-0`, 0),
-        await renderHeatmapVariant(heatmapInput, scene, `${teamPhase}-1`, 1),
+        await renderVariant(`${teamPhase}-0`, 0),
+        await renderVariant(`${teamPhase}-1`, 1),
       ],
     }
   }
@@ -952,10 +1047,7 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
   const fonts = input.kind === 'chat' ? [] : clanFontFiles(input.assets.fontFiles)
   const gameFont = fonts.length > 0
   const seekers = heatmap ? new Map(input.assets.seekers) : new Map()
-  const maps = heatmap ? heatmapMaps(input.assets) : null
-  const fallbackMap = heatmap && input.assets.fallbackMap
-    ? dataUri(input.assets.fallbackMap.mime, input.assets.fallbackMap.data)
-    : null
+  const maps = heatmap ? heatmapMaps(input.assets, events) : null
   addPhase(profile, 'assets.prepare', performance.now() - started)
 
   const shared = {
@@ -991,18 +1083,19 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
       seekers,
       ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
     }
-    const scene = prepareHeatmapScene(heatmapInput, maps?.any ?? null, input.assets.fallbackMap?.viewport)
+    const background = await prepareHeatmapBackground(input.assets, heatmapInput, maps!, 1)
+    heatmapInput.airMap = await background.airMap(selection.teamIndex ?? 0)
     addPhase(profile, 'media.prepare', performance.now() - started)
     started = performance.now()
     const svg = buildHeatmapSvg(
       heatmapInput,
       gameFont,
-      maps?.forRoster(scene, selection.teamIndex ?? 0) ?? null,
-      fallbackMap,
-      input.assets.fallbackMap?.viewport,
+      maps?.forRoster(background.scene, selection.teamIndex ?? 0) ?? null,
+      background.fallbackMap,
+      background.svgViewport,
       input.assets.mapIconFont,
       undefined,
-      scene,
+      background.scene,
     )
     addPhase(profile, 'media.svg', performance.now() - started)
     media = await rasterize(svg, fonts, 1, profile, 'media.resvg')
@@ -1044,15 +1137,41 @@ function parseMission(input: Extract<AnyWorkerTask, { kind: 'parse-mission' }>['
   }
 }
 
-function buildTacticalMapTask(input: Extract<AnyWorkerTask, { kind: 'build-tactical-map' }>['input']) {
+// The tactical map module loads Resvg's native binding: imported on use, like rasterize, so that
+// a missing binding leaves the other tasks working.
+async function buildTacticalMapTask(input: Extract<AnyWorkerTask, { kind: 'build-tactical-map' }>['input']) {
+  const { buildTacticalMap } = await import('../tactical-map/build.js')
   const built = buildTacticalMap(input)
   const image = exactArrayBuffer(built.image)
   return { value: { image, mime: built.mime, meta: built.meta }, transfer: [image] }
 }
 
+async function buildTacticalMapSpecTask(input: Extract<AnyWorkerTask, { kind: 'build-tactical-map-spec' }>['input']) {
+  const { buildTacticalMapSpec } = await import('../tactical-map/build.js')
+  return { value: buildTacticalMapSpec(input), transfer: [] }
+}
+
+/** The battle scene and, with the mission's air map and air tracks, its air view (sceneAir). */
 function prepareScene(input: Extract<AnyWorkerTask, { kind: 'prepare-scene' }>['input']) {
-  const sceneGzip = prepareSceneFromBlob(input.eventsBlob, input.scene)
-  return { value: sceneGzip, transfer: [sceneGzip] }
+  const scene = buildSceneFromBlob(input.eventsBlob, input.scene)
+  const air = sceneAir(scene, input.air ?? null)
+  if (air) scene.map.air = { view: [air.view.x0, air.view.z0, air.view.x1, air.view.z1] }
+  const sceneGzip = gzipScene(scene)
+  return { value: { scene: sceneGzip, air }, transfer: [sceneGzip] }
+}
+
+/** One view of a map as a JPEG: the site's air view, drawn on its first request. */
+async function composeTacticalMapTask(input: Extract<AnyWorkerTask, { kind: 'compose-tactical-map' }>['input']) {
+  const { composeTacticalMap, encodeMapImage } = await import('../tactical-map/build.js')
+  const image = composeTacticalMap(input.map.spec, {
+    gameDir: input.map.gameDir,
+    view: input.view,
+    size: input.size,
+    team: input.team,
+    fontFile: input.map.fontFile,
+  })
+  const jpeg = exactArrayBuffer(encodeMapImage(image, 'jpeg', 90))
+  return { value: jpeg, transfer: [jpeg] }
 }
 
 async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer: ArrayBuffer[] }> {
@@ -1107,8 +1226,12 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return parseMission(task.input)
     case 'prepare-scene':
       return prepareScene(task.input)
+    case 'compose-tactical-map':
+      return await composeTacticalMapTask(task.input)
     case 'build-tactical-map':
-      return buildTacticalMapTask(task.input)
+      return await buildTacticalMapTask(task.input)
+    case 'build-tactical-map-spec':
+      return await buildTacticalMapSpecTask(task.input)
   }
 }
 

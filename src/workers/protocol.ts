@@ -6,9 +6,10 @@ import type { MapImageViewport, MissileSeeker } from '../wrpl/battle-assets.js'
 import type { VehicleDict } from '../wrpl/vehicles.js'
 import type { BattleItemMeta, BattleParseProfile } from '../wrpl/battle-transform.js'
 import type { BattleMediaKind } from '../wrpl/battle-media-kind.js'
-import type { ScenePrepareInput } from '../wrpl/battle-scene-core.js'
+import type { SceneAir, SceneAirInput, ScenePrepareInput } from '../wrpl/battle-scene-core.js'
 import type { EventsRepairCounts } from '../wrpl/events-repair.js'
-import type { TacticalMapBuildInput, TacticalMapMeta } from '../tactical-map/build.js'
+import type { TacticalMapBuildInput, TacticalMapSpecInput } from '../tactical-map/build.js'
+import type { TacticalMapMeta, TacticalMapSpec } from '../tactical-map/spec.js'
 
 /** FlagTemplatePack (src/scout/flags.ts) with its pixels as a transferable buffer. */
 export interface WireFlagTemplates { icons: string[]; width: number; height: number; rgb: ArrayBuffer }
@@ -74,6 +75,17 @@ export interface WireGameMaps {
   spawns: { team: 'A' | 'B'; kind: string; x: number; z: number }[]
 }
 
+/**
+ * A mission's air map for the worker to draw the view it needs (src/tactical-map
+ * composeTacticalMap): the spec, the game folder its texture is read from, the
+ * label font.
+ */
+export interface WireAirMap {
+  spec: TacticalMapSpec
+  gameDir: string
+  fontFile: string | null
+}
+
 export interface MediaRenderInput {
   missionName: string
   header: WrplHeader
@@ -89,6 +101,8 @@ export interface MediaRenderInput {
     tacticalMap: ArrayBuffer | null
     /** Takes the place of tacticalMap; mission.area is then the maps' view. */
     gameMaps?: WireGameMaps | null
+    /** The air heatmaps' background; takes the place of fallbackMap there. */
+    airMap?: WireAirMap | null
     fallbackMap: WireImage | null
     seekers: [string, MissileSeeker][]
   }
@@ -327,14 +341,25 @@ export interface WorkerTaskMap {
     input: { document: ArrayBuffer }
     output: MissionDocSummary
   }
+  /** The site's battle scene (gzip JSON) and, with the air map and air tracks, its air view (sceneAir). */
   'prepare-scene': {
-    input: { eventsBlob: ArrayBuffer; scene: ScenePrepareInput }
+    input: { eventsBlob: ArrayBuffer; scene: ScenePrepareInput; air?: SceneAirInput | null }
+    output: { scene: ArrayBuffer; air: SceneAir | null }
+  }
+  /** One view of a map as a JPEG (src/tactical-map composeTacticalMap): the scene's air view. */
+  'compose-tactical-map': {
+    input: { map: WireAirMap; view: { x0: number; z0: number; x1: number; z1: number }; size: number; team: 'A' | 'B' }
     output: ArrayBuffer
   }
-  /** A mission's tactical map drawn from the game files (src/tactical-map/build.ts). */
+  /** A mission's ground map drawn from the game files (src/tactical-map/build.ts). */
   'build-tactical-map': {
     input: TacticalMapBuildInput
     output: { image: ArrayBuffer; mime: 'image/png' | 'image/jpeg'; meta: TacticalMapMeta }
+  }
+  /** A mission's map spec from the game files: the air map's cache entry. */
+  'build-tactical-map-spec': {
+    input: TacticalMapSpecInput
+    output: TacticalMapSpec
   }
 }
 

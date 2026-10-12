@@ -709,8 +709,11 @@ export interface BattleScene {
   teamWon: number
   endTimeMs: number
   worldBounds: [number, number, number, number]
-  /** team: the perspective of the map drawn from the game files in which team 1's bases are blue. */
-  map: { available: boolean; level: string; team?: 'A' | 'B' }
+  /**
+   * team: the perspective of the map drawn from the game files in which team 1's bases are blue;
+   * air: the air map's view (world rect), drawn when the battle has air tracks.
+   */
+  map: { available: boolean; level: string; team?: 'A' | 'B'; air?: { view: [number, number, number, number] } }
   zones: { name: string; x: number; z: number }[]
   players: { userId: string; nick: string; team: number; clanTag: string | null }[]
   units: SceneUnit[]
@@ -722,8 +725,14 @@ export function fetchBattleScene(key: string): Promise<BattleScene> {
   return getJson(`/api/battles/${encodeURIComponent(key)}/scene`)
 }
 
-export function battleMapUrl(key: string, team?: 'A' | 'B'): string {
-  return `/api/battles/${encodeURIComponent(key)}/map.png${team ? `?team=${team}` : ''}`
+/** The battle's map image: the ground map in a perspective, or the scene's air view; v (the scene version) renews the URL. */
+export function battleMapUrl(key: string, options: { team?: 'A' | 'B' | undefined; kind?: 'ground' | 'air'; v?: number } = {}): string {
+  const query = new URLSearchParams()
+  if (options.team) query.set('team', options.team)
+  if (options.kind === 'air') query.set('kind', 'air')
+  if (options.v !== undefined) query.set('v', String(options.v))
+  const search = query.toString()
+  return `/api/battles/${encodeURIComponent(key)}/map.png${search ? `?${search}` : ''}`
 }
 
 export interface VehicleInfo { name: string; cls: 'F' | 'H' | 'T' | 'L' | 'AA' | '?'; country: string }

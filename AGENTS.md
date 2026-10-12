@@ -125,7 +125,7 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 | `WT_REPLAY_PROCESS_BUDGET_MB` | shared limit for replay buffers, 128–8192 MiB; auto reserves it before sizing the pool |
 | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` | reserve by cached size or 1× `Content-Length` instead of the 96 MiB worst case; off until an RSS plateau is proven (`docs/performance.md`) |
 | `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_HEATMAP_AIR_*` | media cache, air heatmap parameters |
-| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `./data/wt-game` (copies of `TACTICAL_MAP_SOURCES` at the game's paths; `ui/` alone: no maps) or `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` |
+| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `./data/wt-game` (copies of `TACTICAL_MAP_SOURCES` and, when installed, the HQ textures of `TACTICAL_MAP_OPTIONAL_SOURCES`, at the game's paths; `ui/` alone: no maps) or `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` |
 | `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ` | daily `db-backup-schedule` (`backup` service) |
 | `ANTHROPIC_API_KEY` | manual `npm run analyze` only |
 
@@ -448,18 +448,26 @@ media hands the compressed blob to a worker.
 - Heatmaps and the site's battle player draw on the mission's tactical map
   as the game's respawn screen shows it, built from the game client
   (`src/tactical-map/`, `docs/tactical-maps.md`: frame, grid and drawing
-  reverse-engineered and checked on 160 snapshots): texture, out-of-bounds
-  hatch, grid, labels, zones, tank bases, cell size (no arrows to bases
-  outside the view yet: ROADMAP). A
+  reverse-engineered and checked on 160 snapshots): texture (the HQ pack's
+  2048² when installed), out-of-bounds hatch, grid, labels, zones, tank bases,
+  cell size (no arrows to bases outside the view yet: ROADMAP). A
   worker task `build-tactical-map` builds each perspective once per game
   version into `data/maps/game/`; which replay team stands at which mission
   team's spawn varies, so both are built and the renderer picks by the
-  team's first positions (the scene's `map.team` → `map.png?team=`). Air
-  spawns follow the battle's season-stage BR cap. Without the client: the
-  wt-tools snapshot of the mission's mode (exactly battleArea), else the
-  local level map; never substitute another mode's map.
-  `/api/battles/:key/map.png` builds a game-client map on a miss, a snapshot
-  only from disk.
+  team's first ground positions (the scene's `map.team` → `map.png?team=`).
+  Air spawns follow the battle's season-stage BR cap. The air heatmaps and the
+  player's air view draw on the mission's air map (the level's whole air
+  texture and grid, every base kind): `build-tactical-map-spec` caches its spec
+  (`ensureGameAirMap`), and the worker that renders a view draws it
+  (`composeTacticalMap`, reading only the texture), the ground map inset at the
+  battle area in heatmaps. The scene saves its air view (`map.air`, a sidecar
+  `-air.json`), and `map.png?kind=air` draws it on the first request (worker
+  task `compose-tactical-map`). A spec is cached only when its texture is
+  installed: otherwise the air heatmaps keep the level map captured from port
+  8111, as when drawing fails. Without the client: the wt-tools snapshot
+  of the mission's mode (exactly battleArea), else the local level map; never
+  substitute another mode's map. `/api/battles/:key/map.png` builds a
+  game-client ground map on a miss, a snapshot only from disk.
 - The winner comes from events and the database, never from results-BLK;
   anonymized names are restored by `userId`, not only by nickname.
 - Resvg font order (`src/workers/render-fonts.ts`) is the fallback order: a UI
@@ -481,10 +489,11 @@ Data:
 - `data/scout-images/` — screenshots sent to `/scout` and their readings;
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
-  `data/maps/game/` — tactical maps from the game client (JPEG + meta,
-  rebuilt after a game patch);
-- `data/wt-game/` — copies of the game files (`TACTICAL_MAP_SOURCES`, at the
-  game's paths; recopy after a patch) for Docker without `WT_GAME_HOST_DIR`:
+  `data/maps/game/` — tactical maps from the game client (ground maps as JPEG +
+  meta, air maps as their spec; rebuilt after a game patch);
+- `data/wt-game/` — copies of the game files (`TACTICAL_MAP_SOURCES` and the
+  optional HQ textures, at the game's paths; recopy after a patch) for Docker
+  without `WT_GAME_HOST_DIR`:
   flags are read from the atlas at every start (the battle image's nations; every flag as `/scout`
   picture templates); on failure the built-in flags remain and the image still
   renders, and pictures are read without flags.
@@ -801,14 +810,15 @@ npm run build:web
 `verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-09**: all
-gates pass, **470 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+each can run alone for the affected subsystem. Baseline on **2026-10-12**: all
+gates pass, **477 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 `npm run maps:build -- --db <copy.db> --compare` (offline, needs the game
 client) builds every squadron mission's tactical map into
-`data/maps/game/export/` and scores it against the wt-tools snapshots; rerun it
-after a game patch or a drawing change (`docs/tactical-maps.md`, results).
+`data/maps/game/export/` and scores it against the wt-tools snapshots
+(`--kind air`: the whole air maps, unscored); rerun it after a game patch or a
+drawing change (`docs/tactical-maps.md`, results).
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the
 image) and Windows (Node 24), `npm audit`, a Docker image build. When changing

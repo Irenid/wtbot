@@ -4,22 +4,24 @@ import path from 'node:path'
 import { writeFileAtomic } from '../atomic-file.js'
 import { runWorkerTask, type WorkerPriority } from '../workers/pool.js'
 import { findWarThunderGameDir } from '../wrpl/wt-fonts.js'
-import { TACTICAL_MAP_VERSION, type TacticalMapMeta } from './build.js'
-import { TACTICAL_MAP_SOURCES } from './game-files.js'
+import { TACTICAL_MAP_OPTIONAL_SOURCES, TACTICAL_MAP_SOURCES } from './game-files.js'
 import type { Team } from './model.js'
 import { balanceBucket } from './perspective.js'
+import { LABEL_FONT_FILE, TACTICAL_MAP_VERSION, type TacticalMapMeta, type TacticalMapSpec } from './spec.js'
 
 /**
  * Tactical maps drawn from the local game client (build.ts in a CPU worker),
- * cached in data/maps/game/ as <mission>-<team>-r<rank>-<size>-<hash>.jpg plus
- * its .json meta. The hash covers the mission, TACTICAL_MAP_VERSION and the
- * size and mtime of every game file the map is built from: a game patch or a
- * drawing change rebuilds it, and the older variant is deleted.
+ * cached in data/maps/game/: a ground map as <mission>-<team>-r<rank>-<size>-<hash>.jpg
+ * plus its .json meta, an air map as its spec <mission>-air-r<rank>-<hash>.json
+ * (drawn for each heatmap's view by the worker that renders it). The hash
+ * covers the mission, TACTICAL_MAP_VERSION and the size and mtime of every
+ * game file the map is built from (the HQ pack's presence too): a game patch or
+ * a drawing change rebuilds it, and the older variant is deleted.
  *
- * The map shows the respawn screen as a team sees it (its bases blue, the
- * hatch of its battle areas); which replay team stands at which mission team's
- * spawn differs from battle to battle (40 recent battles: 18 and 22), so both
- * perspectives are built and the renderer picks by the players' first
+ * The ground map shows the respawn screen as a team sees it (its bases blue,
+ * the hatch of its battle areas); which replay team stands at which mission
+ * team's spawn differs from battle to battle (40 recent battles: 18 and 22),
+ * so both perspectives are built and the renderer picks by the players' first
  * positions (pickPerspective).
  */
 
@@ -29,6 +31,7 @@ const BUILD_TIMEOUT_MS = 60_000
 /** A failed build is not retried for this long (a broken mission, a missing texture). */
 const FAILURE_TTL_MS = 10 * 60_000
 const GAME_DIR_TTL_MS = 10 * 60_000
+const MAX_SPEC_BYTES = 4 * 1024 * 1024
 
 export interface GameTacticalMap {
   image: Buffer
@@ -38,9 +41,16 @@ export interface GameTacticalMap {
 
 export type GameTacticalMaps = Record<Team, GameTacticalMap>
 
+/** An air map for a worker to draw: its spec, the game folder its texture is read from, the label font. */
+export interface GameAirMap {
+  spec: TacticalMapSpec
+  gameDir: string
+  fontFile: string | null
+}
+
 let gameDirCache: { dir: string | null; at: number } | null = null
 
-/** The game folder with every source of the map, or null; re-probed every GAME_DIR_TTL_MS. */
+/** The game folder with every required source of the map, or null; re-probed every GAME_DIR_TTL_MS. */
 async function gameDir(): Promise<string | null> {
   if (gameDirCache && Date.now() - gameDirCache.at < GAME_DIR_TTL_MS) return gameDirCache.dir
   const dir = await findWarThunderGameDir()
@@ -63,11 +73,19 @@ async function gameDir(): Promise<string | null> {
 }
 
 async function sourcesStamp(dir: string): Promise<string> {
-  const parts = await Promise.all(Object.values(TACTICAL_MAP_SOURCES).map(async (rel) => {
+  const required = Object.values(TACTICAL_MAP_SOURCES).map(async (rel) => {
     const info = await stat(path.join(dir, ...rel.split('/')))
     return `${rel}=${info.size}:${Math.round(info.mtimeMs)}`
-  }))
-  return parts.join(';')
+  })
+  const optional = Object.values(TACTICAL_MAP_OPTIONAL_SOURCES).map(async (rel) => {
+    try {
+      const info = await stat(path.join(dir, ...rel.split('/')))
+      return `${rel}=${info.size}:${Math.round(info.mtimeMs)}`
+    } catch {
+      return `${rel}=none`
+    }
+  })
+  return (await Promise.all([...required, ...optional])).join(';')
 }
 
 const MISSION_PATTERN = /^gamedata\/missions\/[a-z0-9_./-]+\.blk$/
@@ -81,7 +99,20 @@ interface MapRequest {
 }
 
 const inflight = new Map<string, Promise<GameTacticalMap | null>>()
+const inflightSpecs = new Map<string, Promise<TacticalMapSpec | null>>()
 const failures = new Map<string, number>()
+
+function normalizedMission(missionSettings: string): string | null {
+  const mission = missionSettings.trim().toLowerCase().replace(/\\/g, '/')
+  return MISSION_PATTERN.test(mission) ? mission : null
+}
+
+async function cacheHash(mission: string, dir: string): Promise<string> {
+  return createHash('sha256')
+    .update(`${mission}\n${TACTICAL_MAP_VERSION}\n${await sourcesStamp(dir)}`)
+    .digest('hex')
+    .slice(0, 12)
+}
 
 async function readCached(file: string): Promise<GameTacticalMap | null> {
   try {
@@ -95,17 +126,13 @@ async function readCached(file: string): Promise<GameTacticalMap | null> {
 }
 
 async function ensureOne(request: MapRequest): Promise<GameTacticalMap | null> {
-  const mission = request.missionSettings.trim().toLowerCase().replace(/\\/g, '/')
-  if (!MISSION_PATTERN.test(mission)) return null
+  const mission = normalizedMission(request.missionSettings)
+  if (!mission) return null
   const dir = await gameDir()
   if (!dir) return null
   const bucket = balanceBucket(request.balanceLevel)
   const stem = `${path.basename(mission, '.blk')}-${request.team}-r${bucket}-${request.size}`
-  const hash = createHash('sha256')
-    .update(`${mission}\n${TACTICAL_MAP_VERSION}\n${await sourcesStamp(dir)}`)
-    .digest('hex')
-    .slice(0, 12)
-  const file = path.join(CACHE_DIR, `${stem}-${hash}.jpg`)
+  const file = path.join(CACHE_DIR, `${stem}-${await cacheHash(mission, dir)}.jpg`)
   const cached = await readCached(file)
   if (cached) return cached
   if ((failures.get(file) ?? 0) > Date.now()) return null
@@ -138,7 +165,7 @@ async function ensureOne(request: MapRequest): Promise<GameTacticalMap | null> {
   return job
 }
 
-/** Deletes other builds of the same mission, team, rank and size (an older game or drawing version). */
+/** Deletes other builds of the same mission, team (or "air"), rank and size: an older game or drawing version. */
 async function pruneVariants(stem: string, keep: string): Promise<void> {
   let names: string[]
   try {
@@ -146,13 +173,13 @@ async function pruneVariants(stem: string, keep: string): Promise<void> {
   } catch {
     return
   }
-  const keepStem = keep.replace(/\.jpg$/, '')
+  const keepStem = keep.replace(/\.(jpg|json)$/, '')
   await Promise.all(names
     .filter((name) => name.startsWith(`${stem}-`) && !name.startsWith(keepStem))
     .map((name) => rm(path.join(CACHE_DIR, name), { force: true }).catch(() => undefined)))
 }
 
-/** One perspective of a mission's map; null without the game client or for a mission it cannot build. */
+/** One perspective of a mission's ground map; null without the game client or for a mission it cannot build. */
 export function ensureGameTacticalMap(
   missionSettings: string,
   options: { team: Team; balanceLevel: number; size?: number; priority?: WorkerPriority },
@@ -169,6 +196,65 @@ export async function ensureGameTacticalMaps(
   return a && b ? { A: a, B: b } : null
 }
 
+async function readCachedSpec(file: string): Promise<TacticalMapSpec | null> {
+  try {
+    if ((await stat(file)).size > MAX_SPEC_BYTES) return null
+    const spec = JSON.parse(await readFile(file, 'utf8')) as TacticalMapSpec
+    return spec.version === TACTICAL_MAP_VERSION && spec.kind === 'air' ? spec : null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return null
+    throw error
+  }
+}
+
+/**
+ * A mission's air map (the map of aircraft: the level's whole air texture, its
+ * grid, every base): the spec, built once per game version and rank bucket; a
+ * worker draws the view it needs (composeTacticalMap). Null without the game
+ * client or for a mission it cannot build.
+ */
+export async function ensureGameAirMap(
+  missionSettings: string,
+  options: { balanceLevel: number; priority?: WorkerPriority },
+): Promise<GameAirMap | null> {
+  const mission = normalizedMission(missionSettings)
+  if (!mission) return null
+  const dir = await gameDir()
+  if (!dir) return null
+  const bucket = balanceBucket(options.balanceLevel)
+  const stem = `${path.basename(mission, '.blk')}-air-r${bucket}`
+  const file = path.join(CACHE_DIR, `${stem}-${await cacheHash(mission, dir)}.json`)
+  const fontFile = path.resolve(FONT_DIR, LABEL_FONT_FILE)
+  const withFont = async (spec: TacticalMapSpec | null): Promise<GameAirMap | null> =>
+    spec ? { spec, gameDir: dir, fontFile: await stat(fontFile).then(() => fontFile, () => null) } : null
+  const cached = await readCachedSpec(file)
+  if (cached) return withFont(cached)
+  if ((failures.get(file) ?? 0) > Date.now()) return null
+
+  let job = inflightSpecs.get(file)
+  if (!job) {
+    job = (async (): Promise<TacticalMapSpec | null> => {
+      try {
+        const spec = await runWorkerTask(
+          { kind: 'build-tactical-map-spec', input: { gameDir: dir, mission, balanceLevel: bucket, kind: 'air', fontDir: path.resolve(FONT_DIR) } },
+          { priority: options.priority ?? 'normal', timeoutMs: BUILD_TIMEOUT_MS },
+        )
+        await writeFileAtomic(file, `${JSON.stringify(spec)}\n`)
+        await pruneVariants(stem, path.basename(file))
+        return spec
+      } catch (error) {
+        failures.set(file, Date.now() + FAILURE_TTL_MS)
+        console.warn(`[maps] ${mission} (air): ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      } finally {
+        inflightSpecs.delete(file)
+      }
+    })()
+    inflightSpecs.set(file, job)
+  }
+  return withFont(await job)
+}
+
 /** For tests: forget the game folder probe. */
 export function resetGameTacticalMapsForTests(): void {
   gameDirCache = null
@@ -177,4 +263,4 @@ export function resetGameTacticalMapsForTests(): void {
 
 export { CACHE_DIR as GAME_MAP_CACHE_DIR }
 export { balanceBucket, balanceLevelOfBr, pickPerspective } from './perspective.js'
-export type { TacticalMapMeta }
+export type { TacticalMapMeta, TacticalMapSpec }

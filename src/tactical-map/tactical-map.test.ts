@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import { zstdCompressSync } from 'node:zlib'
-import { parseBlk, type BlkMap } from '../wrpl/blk.js'
+import { BLK_ORDER, parseBlk, type BlkMap } from '../wrpl/blk.js'
 import { unpackVromfs, vromfsBlkNames } from '../wrpl/vromfs.js'
 import { decodeDdsxTexture, readDxpPack, unpackDdsxData } from './dxp.js'
+import { GameFiles, TACTICAL_MAP_OPTIONAL_SOURCES, TACTICAL_MAP_SOURCES } from './game-files.js'
 import { interpretMission } from './mission.js'
-import { areaRect, gridLabels, gridStep, viewRect } from './model.js'
+import { areaRect, buildTacticalMapModel, gridLabels, gridStep, viewRect, type BlkSource } from './model.js'
 import { balanceBucket, balanceLevelOfBr, pickPerspective } from './perspective.js'
-import { mergeSpawns } from './render.js'
-import { buildBattleScene } from '../wrpl/battle-scene-core.js'
+import { MAP_SPAWN_KINDS, mapIconNames, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
+import { buildBattleScene, sceneAir, sceneAirView } from '../wrpl/battle-scene-core.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
 import { oodleDecompress } from './oodle.js'
 
@@ -195,6 +199,8 @@ test('VROMFS shared name map decodes slim BLKs, repeated vector keys stay separa
   const expected = { level: 'levels/test.bin', tankGridSteps: [[256, 256], [130, 130]], mission: { name: 'dom' } }
   assert.deepEqual(parseBlk(files[0]!.data, names), expected)
   assert.deepEqual(parseBlk(files[1]!.data, names), expected)
+  // The stored order: params, then child blocks, a repeated key once per occurrence.
+  assert.deepEqual(parseBlk(files[0]!.data, names)[BLK_ORDER], ['level', 'tankGridSteps', 'tankGridSteps', 'mission'])
   assert.throws(() => parseBlk(files[0]!.data), /shared name map/)
 })
 
@@ -310,7 +316,15 @@ test('respawn areas merge within 200 m per team and kind; the icon sits at the m
     { team: 'B' as const, kind: 'tank' as const, x: 100, z: 0 },
     { team: 'A' as const, kind: 'fighter' as const, x: 50, z: 0 },
   ]
-  assert.deepEqual(mergeSpawns(spawns, 200).map((s) => [s.team, s.kind, s.x]), [['A', 'tank', 150], ['B', 'tank', 100], ['A', 'fighter', 50]])
+  assert.deepEqual(mergeSpawns(spawns).map((s) => [s.team, s.kind, s.x]), [['A', 'tank', 150], ['B', 'tank', 100], ['A', 'fighter', 50]])
+  // Aircraft bases merge within 2 km (minDistBetweenZonesOnAircraftRespawnBases), tanks 1.5 km apart do not.
+  const apart = [
+    { team: 'A' as const, kind: 'fighter' as const, x: 0, z: 0 },
+    { team: 'A' as const, kind: 'fighter' as const, x: 1500, z: 0 },
+    { team: 'A' as const, kind: 'tank' as const, x: 0, z: 5000 },
+    { team: 'A' as const, kind: 'tank' as const, x: 1500, z: 5000 },
+  ]
+  assert.deepEqual(mergeSpawns(apart).map((s) => [s.kind, s.x]), [['fighter', 750], ['tank', 0], ['tank', 1500]])
 })
 
 test('mission triggers fire depth first: each rank check marks its own air spawn', () => {
@@ -378,4 +392,238 @@ test('the battle scene names the map perspective in which team 1 starts on the b
   }
   assert.deepEqual(buildBattleScene(events, input).map, { available: true, level: 'levels/avg_test.bin', team: 'B' })
   assert.deepEqual(buildBattleScene(events, { ...input, mapSpawns: null }).map, { available: true, level: 'levels/avg_test.bin' })
+})
+
+/** air_spawn_template's helipad and UCAV logic in miniature: object groups, var_value_other, file-order actions. */
+function heliMission(): BlkMap {
+  const ucavNear: BlkMap = {
+    is_enabled: false,
+    events: { initMission: {} },
+    conditions: { objectExists: [{ target: 't1_helipad', type: 'objectGroup' }, { target: 't2_helipad', type: 'objectGroup' }] },
+    actions: {
+      duplicateAreaAtPos: [
+        { area: 'spawn_ucav', target: 't1_helipad', var_out: 'ucav_spawn_name', posOffset: [6000, 3000, 0], spawnOffsetSpace: 'object' },
+        { area: 'spawn_ucav', target: 't2_helipad', var_out: 'ucav_spawn_name', posOffset: [6000, 3000, 0], spawnOffsetSpace: 'object' },
+      ],
+      missionMarkAsRespawnPoint: [
+        { target: '@ucav_spawn_name', team: 'A', showOnMap: true, tags: { type_strike_ucav: true, helicopter: false } },
+        { target: '@ucav_spawn_name', team: 'B', showOnMap: true, tags: { type_strike_ucav: true, helicopter: false } },
+      ],
+    },
+  }
+  // The file alternates them; the parser keeps that order in BLK_ORDER.
+  Object.defineProperty(ucavNear['actions'], BLK_ORDER, { value: ['duplicateAreaAtPos', 'missionMarkAsRespawnPoint', 'duplicateAreaAtPos', 'missionMarkAsRespawnPoint'] })
+  const heliTags = { helicopter: true, type_attack_helicopter: true, tank: false }
+  return {
+    mission_settings: { mission: { level: 'levels/avg_test.bin' } },
+    variables: { session_rank: 0, ucav_min_mrank: 0, ucav_spawn_name: '' },
+    areas: { spawn_ucav: { type: 'Sphere', tm: [[20, 0, 0], [0, 20, 0], [0, 0, 20], [0, 0, 0]] } },
+    units: {
+      objectGroups: [
+        // t1 faces north (local x = world +z), t2 faces west.
+        { name: 't1_helipad', tm: [[0, 0, 1], [0, 1, 0], [-1, 0, 0], [1000, 50, 2000]] },
+        { name: 't2_helipad', tm: [[-1, 0, 0], [0, 1, 0], [0, 0, -1], [-4000, 20, 0]] },
+      ],
+    },
+    triggers: {
+      init: {
+        is_enabled: true,
+        events: { initMission: {} },
+        actions: {
+          missionGetBalanceLevel: { input_var: 'session_rank' },
+          varSetInt: { value: 26, var: 'ucav_min_mrank' },
+          triggerEnable: { target: ['helipads', 'ucav_check'] },
+        },
+      },
+      helipads: {
+        is_enabled: false,
+        events: { initMission: {} },
+        conditions: { objectExists: [{ target: 't1_helipad', type: 'objectGroup' }, { target: 't2_helipad', type: 'objectGroup' }] },
+        actions: {
+          missionMarkAsRespawnPoint: [
+            { target: 't1_helipad', team: 'A', isAirfield: true, showOnMap: true, tags: heliTags },
+            { target: 't2_helipad', team: 'B', isAirfield: true, showOnMap: true, tags: heliTags },
+          ],
+        },
+      },
+      ucav_check: {
+        is_enabled: false,
+        events: { initMission: {} },
+        conditions: { varCompareInt: { var_value: 'session_rank', value: 0, comparasion_func: 'notLess', var_value_other: 'ucav_min_mrank' } },
+        actions: { triggerEnable: { target: 'ucav_near' } },
+      },
+      ucav_near: ucavNear,
+    },
+  }
+}
+
+test('mission triggers: helipads on object groups, UCAV spawns duplicated ahead of them in file order', () => {
+  const mission = heliMission()
+  const bases = (rank: number) => interpretMission('m.blk', () => mission, { balanceLevel: rank }).respawnBases
+    .map((base) => [base.name, base.team, base.isAirfield, Math.round(base.areas[0]!.tm[3][0]!), Math.round(base.areas[0]!.tm[3][2]!)])
+  assert.deepEqual(bases(25), [['t1_helipad', 'A', true, 1000, 2000], ['t2_helipad', 'B', true, -4000, 0]], 'below ucav_min_mrank 26: no UCAV')
+  const top = bases(30)
+  // 6 km along each helipad's own x axis: t1 north of it, t2 west of it.
+  assert.deepEqual(top.slice(2).map((base) => base.slice(1)), [['A', false, 1000, 8000], ['B', false, -10000, 0]])
+})
+
+/** A level and mission source for the model: an air map of 65 536 m, a 4 096 m tank map. */
+function airSource(level: BlkMap): BlkSource {
+  return (archive, name) => (archive === 'mis.vromfs.bin' ? (name === 'm.blk' ? heliMission() : null) : name === 'levels/avg_test.blk' ? level : null)
+}
+
+test('the air map: mapCoord frame, the level grid over the whole rect, every base kind', () => {
+  const level: BlkMap = {
+    mapCoord0: [-32768, -32768],
+    mapCoord1: [32768, 32768],
+    gridSteps: [2048, 2048],
+    customLevelMap: 'test_air_map*',
+    mapColorMult: [200, 220, 240, 255],
+    tankMapCoord0: [0, 0],
+    tankMapCoord1: [4096, 4096],
+    tankGridSteps: [410, 410],
+  }
+  const air = buildTacticalMapModel('m.blk', airSource(level), { kind: 'air', balanceLevel: 30 })
+  assert.equal(air.texture.name, 'test_air_map')
+  assert.deepEqual(air.texture.colorMult, [240, 220, 200, 255], 'E3DCOLOR bytes are B, G, R, A')
+  assert.deepEqual(air.view, { x0: -32768, z0: -32768, x1: 32768, z1: 32768 })
+  assert.deepEqual([air.grid.zeroX, air.grid.zeroZ, air.grid.step], [-32768, 32768, 6500])
+  assert.deepEqual([...new Set(air.spawns.map((spawn) => spawn.kind))], ['helicopter', 'ucav'])
+  const tank = buildTacticalMapModel('m.blk', airSource(level), { kind: 'tank', balanceLevel: 30 })
+  assert.equal(tank.texture.name, 'avg_test_tankmap')
+  assert.deepEqual([tank.grid.zeroX, tank.grid.zeroZ, tank.grid.step], [0, 4096, 550], 'floor(4096 / (7 · 50)) · 50')
+  // A gridZeroPoint at or below the rect's south edge falls back to the north-west corner.
+  const low = buildTacticalMapModel('m.blk', airSource({ ...level, gridZeroPoint: [0, -32768] }), { kind: 'air' })
+  assert.deepEqual([low.grid.zeroX, low.grid.zeroZ], [-32768, 32768])
+})
+
+test('a crop of a map keeps the whole map\'s cell names and draws its icons at UI size', () => {
+  const grid = { zeroX: -32768, zeroZ: 32768, step: 6500 }
+  const view = { x0: -32768, z0: -32768, x1: 32768, z1: 32768 }
+  const crop = { x0: -20000, z0: 0, x1: -7000, z1: 13000 }
+  const { columns, rows } = gridLabels({ grid, view }, crop)
+  assert.deepEqual(columns.map((c) => c.label), ['3', '4'])
+  assert.deepEqual(rows.map((r) => r.label), ['d', 'e'])
+  // Cells outside the map's view get no label.
+  const beyond = gridLabels({ grid, view }, { x0: -40000, z0: 20000, x1: -27000, z1: 33000 })
+  assert.deepEqual(beyond.columns.map((c) => c.label), ['1'])
+  const icon = (fill: string) => `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36"><style>.cls-1{fill:${fill}}</style><path class="cls-1" id="a" d="M0 0h36v36z"/></svg>`
+  const icons = { get: (name: string) => (name.startsWith('objective_') ? icon('#fff') : undefined) }
+  const spec = {
+    grid,
+    view,
+    zones: [{ letter: 'A', x: -10000, z: 5000, radius: 50 }],
+    spawns: [
+      { team: 'A' as const, kind: 'helicopter' as const, x: -15000, z: 6000 },
+      { team: 'B' as const, kind: 'airfield' as const, x: -12000, z: 4000 },
+      { team: 'B' as const, kind: 'tank' as const, x: -11000, z: 4000 },
+    ],
+    showCellSize: true,
+  }
+  const svg = tacticalMapOverlaySvg(spec, renderGeometry({ view: crop }, 1400), null, icons, { team: 'A', kinds: MAP_SPAWN_KINDS.air, zones: false })
+  assert.match(svg, /class="objective_helicopter-cls-1"/)
+  assert.match(svg, /\.objective_helicopter-cls-1\{/)
+  assert.match(svg, /id="objective_airfield-a"/)
+  assert.match(svg, /filter="url\(#tint-054afb\)"/, 'the own helicopter in the own colour')
+  assert.doesNotMatch(svg, /basezone_small_mark/, 'zones: false')
+  assert.match(svg, />6500 m</)
+  // The tank map draws tank bases only.
+  const tankSvg = tacticalMapOverlaySvg(spec, renderGeometry({ view: crop }, 1400), null, icons, { team: 'A' })
+  assert.doesNotMatch(tankSvg, /objective_helicopter/)
+  assert.match(tankSvg, /objective_tank/)
+})
+
+test('the scene\'s air view: a square around the air tracks and the ground view, inside the air map', () => {
+  const scene = {
+    worldBounds: [0, 0, 1600, 1600] as [number, number, number, number],
+    units: [
+      { id: 0, userId: 'p', model: 'm', source: 'air' as const, path: [[0, -9000, 800], [1000, 12000, 900]] as [number, number, number][] },
+      { id: 1, userId: 'q', model: 't', source: 'ground' as const, path: [[0, 800, 800]] as [number, number, number][] },
+    ],
+  }
+  const airView = { x0: -32768, z0: -32768, x1: 32768, z1: 32768 }
+  const view = sceneAirView(scene, airView)!
+  assert.ok(Math.abs(view.x1 - view.x0 - 21000 * 1.06) < 1e-6, 'the longer side with a 6% margin')
+  assert.ok(Math.abs(view.z1 - view.z0 - (view.x1 - view.x0)) < 1e-6, 'square')
+  assert.ok(view.x0 < -9000 && view.x1 > 12000 && view.z0 < 0 && view.z1 > 1600)
+  // At least 8 km; moved inside the air map; null without air tracks.
+  const short = sceneAirView({ ...scene, units: [{ ...scene.units[0]!, path: [[0, 30000, 30000], [1, 30500, 30500]] }] }, airView)!
+  assert.ok(short.x1 <= airView.x1 && short.z1 <= airView.z1 && short.x1 - short.x0 >= 8000)
+  assert.equal(sceneAirView({ ...scene, units: [scene.units[1]!] }, airView), null)
+})
+
+test('map textures: the HQ pack\'s larger texture when installed, else the base pack\'s', () => {
+  const OODLE = 0x60000000
+  const dir = mkdtempSync(path.join(tmpdir(), 'wtbot-hq-'))
+  try {
+    const write = (rel: string, data: Buffer): void => {
+      const file = path.join(dir, ...rel.split('/'))
+      mkdirSync(path.dirname(file), { recursive: true })
+      writeFileSync(file, data)
+    }
+    const red = dxt1Block(0xf800)
+    const blue = dxt1Block(0x001f)
+    write(TACTICAL_MAP_SOURCES.maps, dxpPack([
+      { name: 'lvl_map', format: 'DXT1', width: 4, height: 4, levels: 1, flags: OODLE, data: red },
+      { name: 'big_map', format: 'DXT1', width: 8, height: 8, levels: 1, flags: OODLE, data: Buffer.concat([red, red, red, red]) },
+    ]))
+    const files = new GameFiles(dir)
+    assert.equal(files.mapTexture('lvl_map')!.width, 4, 'without the HQ pack')
+    write(TACTICAL_MAP_OPTIONAL_SOURCES.mapsHq, dxpPack([
+      { name: 'lvl_map', format: 'DXT1', width: 8, height: 8, levels: 1, flags: OODLE | 0x00080000, data: Buffer.concat([blue, blue, blue, blue]) },
+      // The game's empty HQ entries (avg_ireland_tankmap: 4096² in the base pack).
+      { name: 'big_map', format: 'DXT1', width: 0, height: 0, levels: 0, flags: 0, data: Buffer.alloc(0) },
+    ]))
+    const hq = files.mapTexture('lvl_map')!
+    assert.equal(hq.width, 8)
+    assert.deepEqual([...hq.data.subarray(0, 4)], [0, 0, 255, 255])
+    assert.equal(files.mapTexture('big_map')!.width, 8, 'an empty HQ entry keeps the base texture')
+    assert.equal(files.mapTexture('missing_map'), null)
+    assert.equal(files.hasMapTexture('lvl_map'), true)
+    assert.equal(files.hasMapTexture('missing_map'), false)
+    // A truncated HQ pack (a partial copy) falls back to the base pack instead of failing the map.
+    write(TACTICAL_MAP_OPTIONAL_SOURCES.mapsHq, Buffer.from('DxP2 truncated'))
+    assert.equal(files.mapTexture('lvl_map')!.width, 4)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the scene\'s air view keeps working when the ground maps failed: its perspective comes from the air map\'s bases', () => {
+  const events = {
+    endTime: 60_000,
+    units: [
+      { userId: 'p1', model: 'tankModels/t', source: 'ground', path: [{ t: 0, x: 990, z: 1000 }, { t: 1000, x: 900, z: 900 }] },
+      { userId: 'p2', model: 'tankModels/t', source: 'ground', path: [{ t: 0, x: 10, z: 5 }, { t: 1000, x: 100, z: 100 }] },
+      { userId: 'p1', model: 'planes/f', source: 'air', path: [{ t: 0, x: 9000, z: 9000 }, { t: 1000, x: 4000, z: 3000 }] },
+    ],
+    kills: [],
+    zones: [],
+  } as unknown as ReplayEvents
+  const spawns = [{ team: 'A' as const, kind: 'tank', x: 0, z: 0 }, { team: 'B' as const, kind: 'tank', x: 1000, z: 1000 }]
+  const input = {
+    sessionId: '1', missionName: 'm', gameMode: null, startTime: 0, durationSec: 60, teamWon: 1,
+    missionArea: { x0: 0, z0: 0, x1: 1000, z1: 1000 }, mapAvailable: true, level: 'levels/avg_test.bin',
+    players: [{ userId: 'p1', nick: 'a', team: 1, clanTag: null }, { userId: 'p2', nick: 'b', team: 2, clanTag: null }],
+    botSlots: [],
+  }
+  const air = { view: { x0: -32768, z0: -32768, x1: 32768, z1: 32768 }, spawns, paddingPercent: 10 }
+  // Both maps: the ground map's perspective.
+  const both = buildBattleScene(events, { ...input, mapSpawns: spawns })
+  assert.equal(sceneAir(both, air)?.team, 'B')
+  // The ground maps failed: no map.team, and the air map's tank bases give the same side.
+  const airOnly = buildBattleScene(events, { ...input, mapSpawns: null })
+  assert.equal(airOnly.map.team, undefined)
+  const view = sceneAir(airOnly, air)!
+  assert.equal(view.team, 'B')
+  assert.ok(Math.abs(view.view.x1 - view.view.x0 - 9000 * 1.1) < 1e-6, 'the margin is the air heatmaps\' padding')
+  // The air map failed, or no aircraft flew: no air view.
+  assert.equal(sceneAir(both, null), null)
+  assert.equal(sceneAir(buildBattleScene({ ...events, units: events.units.slice(0, 2) }, { ...input, mapSpawns: spawns }), air), null)
+})
+
+test('maps carry the zone icons of every letter the atlas has', () => {
+  const names = mapIconNames(MAP_SPAWN_KINDS.tank)
+  assert.ok(names.includes('basezone_small_mark_a') && names.includes('basezone_small_mark_p'))
+  assert.ok(names.includes('objective_tank_outline') && !names.includes('objective_fighter'))
 })

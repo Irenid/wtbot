@@ -7,48 +7,78 @@ import {
 } from '../db/index.js'
 import { runWorkerTask } from '../workers/pool.js'
 import { writeFileAtomic } from '../atomic-file.js'
-import { ensureGameTacticalMap, ensureGameTacticalMaps } from '../tactical-map/index.js'
+import { ensureGameAirMap, ensureGameTacticalMap, ensureGameTacticalMaps } from '../tactical-map/index.js'
 import type { Team } from '../tactical-map/model.js'
 import { ensureTacticalMap, loadCachedTacticalMap, loadLocalTacticalMap } from './battle-assets.js'
 import { battleBalanceLevel, enforceBattleCacheCap } from './battle-media.js'
 import { fetchMissionInfo } from './mission-info.js'
-import { BATTLE_SCENE_VERSION, type ScenePrepareInput } from './battle-scene-core.js'
+import { BATTLE_SCENE_VERSION, type SceneAir, type ScenePrepareInput } from './battle-scene-core.js'
 
-// Оркестрация сцены боя (main thread): чтение БД, миссия, выбор карты и кэш.
-// Тяжёлая работа (gunzip/прореживание/gzip) — в worker-задаче prepare-scene;
-// сюда данные приходят и уходят transferable-буферами (воркер не видит БД).
+// The battle scene's orchestration (main thread): the database, the mission,
+// the map and the cache. The heavy work (gunzip, thinning, gzip, drawing the
+// air view) runs in worker tasks; data goes in and out as transferable
+// buffers (the worker does not see the database).
 
 const CACHE_DIR = './data/battles'
 const MAX_SCENE_BYTES = 16 * 1024 * 1024
-/** Бюджет одновременных сборок сцен: разные session не должны занимать пул целиком. */
+/** Concurrent scene builds: different sessions must not take the whole pool. */
 const MAX_ACTIVE_BUILDS = 2
 const SCENE_TIMEOUT_MS = 120_000
+const AIR_MAP_TIMEOUT_MS = 60_000
 
 const sceneCacheFile = (sessionIdHex: string): string =>
   path.join(CACHE_DIR, `${sessionIdHex}-scene-v${BATTLE_SCENE_VERSION}.json.gz`)
 
+/** The scene's air view (sceneAir: its world rect and perspective), saved with the scene. */
+const sceneAirFile = (sessionIdHex: string): string =>
+  path.join(CACHE_DIR, `${sessionIdHex}-scene-v${BATTLE_SCENE_VERSION}-air.json`)
+
+/** The air view drawn, on its first request: one session's set in the shared LRU. */
+const sceneAirMapFile = (sessionIdHex: string): string =>
+  path.join(CACHE_DIR, `${sessionIdHex}-scene-v${BATTLE_SCENE_VERSION}-air.jpg`)
+
 const isGzip = (data: Buffer): boolean => data.length > 2 && data[0] === 0x1f && data[1] === 0x8b
+const isJpeg = (data: Buffer): boolean => data.length > 3 && data[0] === 0xff && data[1] === 0xd8
 
 export type BattleSceneResult =
   | { status: 'ok'; sceneGzip: Buffer }
   | { status: 'not_found' }
-  /** Бой разобран, но events_blob отсутствует — плеер деградирует до сообщения. */
+  /** The battle is parsed but has no events blob: the player falls back to a message. */
   | { status: 'no_events' }
-  /** Заняты все слоты сборки сцен; клиенту стоит повторить через несколько секунд. */
+  /** Every scene build slot is busy; the client retries in a few seconds. */
   | { status: 'busy' }
 
 const inflightScenes = new Map<string, Promise<BattleSceneResult>>()
+const inflightAirMaps = new Map<string, Promise<{ data: Buffer; mime: 'image/jpeg' } | null>>()
 let activeBuilds = 0
 
-async function readCachedScene(file: string): Promise<Buffer | null> {
-  if (!config.battleCacheEnabled) return null
+async function readOptional(file: string): Promise<Buffer | null> {
   try {
-    const data = await readFile(file)
-    if (data.byteLength > MAX_SCENE_BYTES || !isGzip(data)) return null
-    return data
+    return await readFile(file)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
+  }
+}
+
+async function readCachedScene(file: string): Promise<Buffer | null> {
+  if (!config.battleCacheEnabled) return null
+  const data = await readOptional(file)
+  return data && data.byteLength <= MAX_SCENE_BYTES && isGzip(data) ? data : null
+}
+
+/** The saved air view, checked: a square of at most 200 km and a team. */
+async function readSceneAir(sessionIdHex: string): Promise<SceneAir | null> {
+  const data = await readOptional(sceneAirFile(sessionIdHex))
+  if (!data || data.byteLength > 4096) return null
+  try {
+    const air = JSON.parse(data.toString('utf8')) as SceneAir
+    const { x0, z0, x1, z1 } = air.view
+    const valid = [x0, z0, x1, z1].every((n) => typeof n === 'number' && Number.isFinite(n)) &&
+      x1 > x0 && z1 > z0 && x1 - x0 <= 200_000 && z1 - z0 <= 200_000 && (air.team === 'A' || air.team === 'B')
+    return valid ? { view: { x0, z0, x1, z1 }, team: air.team } : null
+  } catch {
+    return null
   }
 }
 
@@ -75,14 +105,16 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
     if (!blob || blob.byteLength === 0) return { status: 'no_events' }
 
     const battle = summary.battle
-    // Maps drawn from the game client first: their view is the scene's world rect.
-    const gameMaps = battle.mission_settings
-      ? await ensureGameTacticalMaps(battle.mission_settings, {
-          balanceLevel: battleBalanceLevel(battle.start_time),
-          size: SCENE_MAP_SIZE,
-          priority: 'interactive',
-        }).catch(() => null)
-      : null
+    const balanceLevel = battleBalanceLevel(battle.start_time)
+    // Maps drawn from the game client first: their view is the scene's world rect. Either may fail
+    // alone: without the ground maps the scene falls back to a snapshot and the air view takes its
+    // perspective from the air map's bases; without the air map there is no air view.
+    const [gameMaps, airMap] = battle.mission_settings
+      ? await Promise.all([
+          ensureGameTacticalMaps(battle.mission_settings, { balanceLevel, size: SCENE_MAP_SIZE, priority: 'interactive' }).catch(() => null),
+          ensureGameAirMap(battle.mission_settings, { balanceLevel, priority: 'interactive' }).catch(() => null),
+        ])
+      : [null, null]
     const mission = gameMaps
       ? { area: { ...gameMaps.A.meta.view } }
       : battle.mission_settings
@@ -117,17 +149,21 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
         })),
       botSlots: [...botSlots],
     }
+    const air = airMap
+      ? { view: airMap.spec.view, spawns: airMap.spec.spawns, paddingPercent: config.heatmapOptions.airPaddingPercent }
+      : null
 
     // An exact ArrayBuffer, no SharedArrayBuffer branch: a copy of just the slice.
     const eventsAb = new ArrayBuffer(blob.byteLength)
     new Uint8Array(eventsAb).set(blob)
-    const sceneAb = await runWorkerTask(
-      { kind: 'prepare-scene', input: { eventsBlob: eventsAb, scene } },
+    const prepared = await runWorkerTask(
+      { kind: 'prepare-scene', input: { eventsBlob: eventsAb, scene, air } },
       { priority: 'interactive', timeoutMs: SCENE_TIMEOUT_MS, transferList: [eventsAb] },
     )
-    const sceneGzip = Buffer.from(sceneAb)
-    // Like the PNG artifacts: saved even with the read cache disabled,
-    // written atomically and subject to the directory's shared LRU cap.
+    const sceneGzip = Buffer.from(prepared.scene)
+    // The air view before the scene that names it (map.png?kind=air draws from it). Like the PNG
+    // artifacts: saved even with the read cache disabled, atomically, under the shared LRU cap.
+    if (prepared.air) await writeFileAtomic(sceneAirFile(battle.session_hex), `${JSON.stringify(prepared.air)}\n`).catch(() => undefined)
     if (sceneGzip.byteLength <= MAX_SCENE_BYTES) {
       await writeFileAtomic(file, sceneGzip).catch(() => undefined)
       await enforceBattleCacheCap(sceneGzip.byteLength).catch(() => undefined)
@@ -142,10 +178,10 @@ export async function buildBattleSceneGzip(sessionId: string): Promise<BattleSce
 }
 
 /**
- * Подложка сцены — та же, что у наземной хитмапы: снимок тактической карты
- * режима миссии (wt-tools, покрывает ровно battleArea; скачивается один раз и
- * лежит в data/maps), иначе старая локальная карта уровня. Раньше сцена брала
- * только локальную, а она есть у единиц уровней — плеер почти всегда был без карты.
+ * The scene's background, as the ground heatmap's: the snapshot of the
+ * mission's mode (wt-tools, exactly battleArea; downloaded once into
+ * data/maps), else the old local level map. The scene used to take only the
+ * local one, which few levels have.
  */
 async function sceneMapImage(missionName: string, level: string): Promise<Buffer | null> {
   return (await ensureTacticalMap(missionName).catch(() => null))
@@ -156,16 +192,67 @@ async function sceneMapImage(missionName: string, level: string): Promise<Buffer
 const SCENE_MAP_SIZE = 1400
 
 /**
- * The battle's map for the player; null when there is none. With `team` (the
- * scene's map.team) the game-file map of that perspective, built on a miss
- * (a worker task, single-flight); otherwise only from disk: the wt-tools
- * snapshot is downloaded by the scene build, and the player asks for the map
- * only when the scene announced it.
+ * The scene's air view as a JPEG: drawn on its first request (a worker task,
+ * single-flight per session) from the view the scene build saved, then read
+ * from the cache. A browser may keep a scene whose files the LRU evicted: the
+ * scene is built again then.
  */
-export async function loadBattleSceneMap(sessionId: string, team: Team | null = null): Promise<{ data: Buffer; mime: 'image/png' | 'image/jpeg' } | null> {
+async function loadSceneAirMap(
+  sessionId: string,
+  battle: { session_hex: string; mission_settings: string | null; start_time: number },
+): Promise<{ data: Buffer; mime: 'image/jpeg' } | null> {
+  const hex = battle.session_hex
+  const image = sceneAirMapFile(hex)
+  const cached = await readOptional(image)
+  if (cached && isJpeg(cached)) return { data: cached, mime: 'image/jpeg' }
+  let job = inflightAirMaps.get(hex)
+  if (!job) {
+    job = (async () => {
+      try {
+        let air = await readSceneAir(hex)
+        if (!air) {
+          await buildBattleSceneGzip(sessionId)
+          air = await readSceneAir(hex)
+        }
+        if (!air || !battle.mission_settings) return null
+        const map = await ensureGameAirMap(battle.mission_settings, { balanceLevel: battleBalanceLevel(battle.start_time), priority: 'interactive' })
+        if (!map) return null
+        const jpeg = Buffer.from(await runWorkerTask(
+          { kind: 'compose-tactical-map', input: { map, view: air.view, size: SCENE_MAP_SIZE, team: air.team } },
+          { priority: 'interactive', timeoutMs: AIR_MAP_TIMEOUT_MS },
+        ))
+        await writeFileAtomic(image, jpeg).catch(() => undefined)
+        await enforceBattleCacheCap(jpeg.byteLength).catch(() => undefined)
+        return { data: jpeg, mime: 'image/jpeg' as const }
+      } catch (error) {
+        console.warn(`[maps] air view ${hex}: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      } finally {
+        inflightAirMaps.delete(hex)
+      }
+    })()
+    inflightAirMaps.set(hex, job)
+  }
+  return job
+}
+
+/**
+ * The battle's map for the player; null when there is none. kind "air": the
+ * scene's air view (loadSceneAirMap). With `team` (the scene's map.team) the
+ * game-file ground map of that perspective, built on a miss (a worker task,
+ * single-flight); otherwise only from disk: the wt-tools snapshot is
+ * downloaded by the scene build, and the player asks for the map only when the
+ * scene announced it.
+ */
+export async function loadBattleSceneMap(
+  sessionId: string,
+  team: Team | null = null,
+  kind: 'ground' | 'air' = 'ground',
+): Promise<{ data: Buffer; mime: 'image/png' | 'image/jpeg' } | null> {
   const summary = getSiteBattleSummary(sessionId)
   if (!summary) return null
   const battle = summary.battle
+  if (kind === 'air') return loadSceneAirMap(sessionId, battle)
   if (team && battle.mission_settings) {
     const map = await ensureGameTacticalMap(battle.mission_settings, {
       team,

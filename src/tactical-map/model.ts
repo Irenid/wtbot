@@ -23,6 +23,15 @@ import { interpretMission, type AreaShape, type MissionDifficulty, type MissionM
  * The respawn map shows a square of the grid's longer side around its centre,
  * moved back inside the texture rect when it overhangs; the grid lattice runs
  * through the whole view.
+ *
+ * The air map (the airplane record, the map of aircraft in a ground battle):
+ * map_min/map_max from mapCoord0/1, the texture customLevelMap or
+ * "<level>_map", colour mapColorMult, grid zero gridZeroPoint (default the
+ * north-west corner), steps gridSteps (default 2000) through adjustGridSteps,
+ * and no grid size key: the grid spans the whole rect (0x266fb5f). Areas a
+ * missionBattleArea marks air and airMapArea replace its zero and size;
+ * squadron missions mark none (their actions say air: false), so their air
+ * map is the level's: 65 536 m, a 6 500 m grid.
  */
 
 export interface WorldRect {
@@ -34,6 +43,9 @@ export interface WorldRect {
 
 export type Team = 'A' | 'B'
 
+/** The game's map types drawn here: the tank map (respawn screen of ground vehicles) and the air map. */
+export type MapKind = 'tank' | 'air'
+
 export interface MapZone {
   letter: string
   x: number
@@ -41,11 +53,13 @@ export interface MapZone {
   radius: number
 }
 
+export type SpawnKind = 'tank' | 'fighter' | 'bomber' | 'helicopter' | 'ucav' | 'airfield' | 'other'
+
 export interface MapSpawn {
   team: Team
   x: number
   z: number
-  kind: 'tank' | 'fighter' | 'bomber' | 'helicopter' | 'other'
+  kind: SpawnKind
 }
 
 /** A battle-area shape on the ground plane: a (rotated) rectangle or a circle. */
@@ -63,10 +77,11 @@ export interface MapBattleAreas {
 export interface TacticalMapModel {
   mission: string
   level: string
+  kind: MapKind
   difficulty: MissionDifficulty
   /** The world rect the map image shows. */
   view: WorldRect
-  /** The texture's world rect (tankMapCoord0/1). */
+  /** The texture's world rect (tankMapCoord0/1, mapCoord0/1). */
   texture: { name: string; rect: WorldRect; colorMult: [number, number, number, number] }
   /** Grid lattice: lines at zero.x + k·step and zero.z − k·step. */
   grid: { zeroX: number; zeroZ: number; step: number; sizeX: number; sizeZ: number }
@@ -165,41 +180,74 @@ export function viewRect(grid: { zeroX: number; zeroZ: number; sizeX: number; si
 }
 
 /**
- * Grid labels at the lattice cells whose centre is strictly inside the view
- * (alaska_town_dom: 7.5 cells, no "8" and no "h" on the snapshot): columns 1,
- * 2, … and rows a, b, …
+ * Grid labels at the lattice cells whose centre is strictly inside the visible
+ * rect (alaska_town_dom: 7.5 cells, no "8" and no "h" on the snapshot), named
+ * from the map's own view: its first such column is "1", its first row "a". A
+ * crop of the air map keeps the whole map's cell names; cells outside the view
+ * get none.
  */
-export function gridLabels(model: Pick<TacticalMapModel, 'grid' | 'view'>): { columns: { x: number; label: string }[]; rows: { z: number; label: string }[] } {
+export function gridLabels(model: { grid: { zeroX: number; zeroZ: number; step: number }; view: WorldRect }, visible: WorldRect = model.view): { columns: { x: number; label: string }[]; rows: { z: number; label: string }[] } {
   const { grid, view } = model
   const columns: { x: number; label: string }[] = []
   const rows: { z: number; label: string }[] = []
   if (grid.step <= 1) return { columns, rows }
   const eps = 1e-3
-  for (let k = Math.floor((view.x0 - grid.zeroX) / grid.step) - 1; grid.zeroX + (k + 0.5) * grid.step < view.x1 - eps; k++) {
-    const x = grid.zeroX + (k + 0.5) * grid.step
-    if (x > view.x0 + eps) columns.push({ x, label: String(columns.length + 1) })
+  const step = grid.step
+  // The view's first column and row: the first lattice cells whose centre is inside it.
+  const firstColumn = Math.floor((view.x0 + eps - grid.zeroX) / step - 0.5) + 1
+  const firstRow = Math.floor((grid.zeroZ - view.z1 + eps) / step - 0.5) + 1
+  for (let k = Math.floor((visible.x0 - grid.zeroX) / step) - 1; grid.zeroX + (k + 0.5) * step < visible.x1 - eps; k++) {
+    const x = grid.zeroX + (k + 0.5) * step
+    if (x > visible.x0 + eps && x < view.x1 - eps && k >= firstColumn) columns.push({ x, label: String(k - firstColumn + 1) })
   }
-  for (let k = Math.floor((grid.zeroZ - view.z1) / grid.step) - 1; grid.zeroZ - (k + 0.5) * grid.step > view.z0 + eps; k++) {
-    const z = grid.zeroZ - (k + 0.5) * grid.step
-    if (z < view.z1 - eps && rows.length < 26) rows.push({ z, label: String.fromCharCode(97 + rows.length) })
+  for (let k = Math.floor((grid.zeroZ - visible.z1) / step) - 1; grid.zeroZ - (k + 0.5) * step > visible.z0 + eps; k++) {
+    const z = grid.zeroZ - (k + 0.5) * step
+    if (z < visible.z1 - eps && z > view.z0 + eps && k >= firstRow && k - firstRow < 26) rows.push({ z, label: String.fromCharCode(97 + k - firstRow) })
   }
   return { columns, rows }
 }
 
-function spawnKind(tags: string[]): MapSpawn['kind'] {
+/**
+ * The icon kind of a respawn base (hud.blk tacticalMap): tags name the unit
+ * classes it spawns; a base without tags takes any aircraft
+ * (t1_air_spawn_hardcore); isAirfield is a runway (t1_airfield) or, with
+ * helicopter tags, a helipad.
+ */
+function spawnKind(tags: string[], isAirfield: boolean): SpawnKind {
   if (tags.includes('tank')) return 'tank'
   if (tags.some((tag) => tag.includes('helicopter'))) return 'helicopter'
+  if (tags.includes('type_strike_ucav')) return 'ucav'
+  if (isAirfield) return 'airfield'
   if (tags.some((tag) => tag.includes('bomber'))) return 'bomber'
-  if (tags.length === 0 || tags.some((tag) => tag.includes('fighter') || tag === 'air')) return 'fighter'
+  if (tags.length === 0 || tags.some((tag) => tag.includes('fighter') || tag === 'air' || tag === 'type_assault' || tag === 'type_interceptor')) return 'fighter'
   return 'other'
+}
+
+/** The level keys of a map record (level loader 0x266f570) and the record's defaults. */
+const RECORD_KEYS: Record<MapKind, {
+  coord0: string
+  coord1: string
+  zero: string
+  steps: string
+  /** null: the record has no size key and the grid spans the texture rect. */
+  size: string | null
+  defaultSteps: number
+  colorMult: string
+  texture: string
+  suffix: string
+}> = {
+  tank: { coord0: 'tankMapCoord0', coord1: 'tankMapCoord1', zero: 'tankGridZeroPoint', steps: 'tankGridSteps', size: 'tankGridSize', defaultSteps: 1, colorMult: 'tankMapColorMult', texture: 'customLevelTankMap', suffix: '_tankmap' },
+  air: { coord0: 'mapCoord0', coord1: 'mapCoord1', zero: 'gridZeroPoint', steps: 'gridSteps', size: null, defaultSteps: 2000, colorMult: 'mapColorMult', texture: 'customLevelMap', suffix: '_map' },
 }
 
 export function buildTacticalMapModel(
   missionRel: string,
   source: BlkSource,
-  options: { difficulty?: MissionDifficulty; balanceLevel?: number } = {},
+  options: { difficulty?: MissionDifficulty; balanceLevel?: number; kind?: MapKind } = {},
 ): TacticalMapModel {
   const difficulty = options.difficulty ?? 'realistic'
+  const kind = options.kind ?? 'tank'
+  const keys = RECORD_KEYS[kind]
   const missionMap = interpretMission(missionRel, (rel) => source('mis.vromfs.bin', rel), { difficulty, balanceLevel: options.balanceLevel ?? 0 })
   const level = missionMap.level.replace(/^.*[/\\]/, '').replace(/\.bin$/i, '')
   const settings = source('aces.vromfs.bin', `levels/${level}.blk`)
@@ -213,14 +261,14 @@ export function buildTacticalMapModel(
     ? settings['alternativeMapCoord']
     : null
   const get = (key: string): [number, number] | null => point2(alternative?.[key]) ?? point2(settings[key])
-  const mapMin = get('tankMapCoord0') ?? [-15000, -15000]
-  const mapMax = get('tankMapCoord1') ?? [15000, 15000]
-  if (mapMax[0] <= mapMin[0] || mapMax[1] <= mapMin[1]) throw new Error(`level ${level} has an empty tank map rect`)
+  const mapMin = get(keys.coord0) ?? [-15000, -15000]
+  const mapMax = get(keys.coord1) ?? [15000, 15000]
+  if (mapMax[0] <= mapMin[0] || mapMax[1] <= mapMin[1]) throw new Error(`level ${level} has an empty ${kind} map rect`)
   const textureRect = { x0: mapMin[0], z0: mapMin[1], x1: mapMax[0], z1: mapMax[1] }
-  const zero = get('tankGridZeroPoint')
-  const size = get('tankGridSize') ?? [mapMax[0] - mapMin[0], mapMax[1] - mapMin[1]]
-  const levelStep = (get('tankGridSteps') ?? [1, 1])[0]
-  // "numY < 0! Incorrect tankGridZeroPoint" (0x266ffe3): a zero below the rect falls back to its corner.
+  const zero = get(keys.zero)
+  const size = (keys.size === null ? null : get(keys.size)) ?? [mapMax[0] - mapMin[0], mapMax[1] - mapMin[1]]
+  const levelStep = (get(keys.steps) ?? [keys.defaultSteps, keys.defaultSteps])[0]
+  // "numY < 0! Incorrect tankGridZeroPoint" (0x266ffe3, gridZeroPoint 0x2670044): a zero below the rect falls back to its corner.
   const levelZero: [number, number] = zero && zero[1] > mapMin[1] ? zero : [mapMin[0], mapMax[1]]
   let grid = {
     zeroX: levelZero[0],
@@ -229,7 +277,8 @@ export function buildTacticalMapModel(
     sizeZ: size[1],
     step: gridStep(size[0], size[1], 0, levelStep, cellCount, stepDiv),
   }
-  const mapAreas = missionMap.battleAreas.filter((area) => area.mapArea && area.ground)
+  // The union (0x266ef00): flags ground|mapArea (0x30) for the tank map, air|airMapArea (0x401) for the air map.
+  const mapAreas = missionMap.battleAreas.filter((area) => (kind === 'tank' ? area.mapArea && area.ground : area.airMapArea && area.air))
   if (mapAreas.length > 0) {
     const rects = mapAreas.map((area) => areaRect(area.area))
     const x0 = Math.min(...rects.map((r) => r.x0))
@@ -241,16 +290,17 @@ export function buildTacticalMapModel(
   }
   const view = viewRect(grid, textureRect)
 
-  const textureName = (typeof settings['customLevelTankMap'] === 'string' ? settings['customLevelTankMap'] : `${level}_tankmap`)
+  const textureName = (typeof settings[keys.texture] === 'string' ? settings[keys.texture] as string : `${level}${keys.suffix}`)
     .replace(/[*$?].*$/, '')
-  const mult = settings['tankMapColorMult']
+  const mult = settings[keys.colorMult]
   const colorMult: [number, number, number, number] = Array.isArray(mult) && mult.length === 4 && mult.every((x) => typeof x === 'number')
     // BLK colours are E3DCOLOR bytes: blue, green, red, alpha.
     ? [mult[2] as number, mult[1] as number, mult[0] as number, mult[3] as number]
     : [255, 255, 255, 255]
 
+  // A team's battle areas of the map's unit class: ground areas on the tank map, air areas on the air map.
   const areasFor = (team: Team): MapBattleAreas => {
-    const mine = missionMap.battleAreas.filter((area) => area.ground && (area.team === 'Both' || area.team === team))
+    const mine = missionMap.battleAreas.filter((area) => (kind === 'tank' ? area.ground : area.air) && (area.team === 'Both' || area.team === team))
     const shapes = (list: typeof mine): GroundShape[] =>
       list.map((area) => groundShape(area.area)).filter((shape): shape is GroundShape => shape !== null)
     return {
@@ -269,13 +319,14 @@ export function buildTacticalMapModel(
   const spawns: MapSpawn[] = []
   for (const base of missionMap.respawnBases) {
     if (!base.showOnMap || base.team === 'Both') continue
-    const kind = spawnKind(base.tags)
-    for (const area of base.areas) spawns.push({ team: base.team, x: area.tm[3][0]!, z: area.tm[3][2]!, kind })
+    const spawn = spawnKind(base.tags, base.isAirfield)
+    for (const area of base.areas) spawns.push({ team: base.team, x: area.tm[3][0]!, z: area.tm[3][2]!, kind: spawn })
   }
 
   return {
     mission: missionRel,
     level,
+    kind,
     difficulty,
     view,
     texture: { name: textureName, rect: textureRect, colorMult },

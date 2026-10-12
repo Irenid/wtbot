@@ -5,7 +5,7 @@ import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { mapConcurrent } from '../concurrency.js'
 import { getBattleWeaponIds, getScoutStages, markBattleIngest, saveBattle } from '../db/index.js'
-import { balanceLevelOfBr, ensureGameTacticalMaps, type GameTacticalMaps } from '../tactical-map/index.js'
+import { balanceLevelOfBr, ensureGameAirMap, ensureGameTacticalMaps, type GameAirMap, type GameTacticalMaps } from '../tactical-map/index.js'
 import {
   runWorkerTask,
   transferableBuffer,
@@ -150,7 +150,8 @@ export async function cachedBattleHeatmap2x(
 // 44: icons and missile seekers of mixed-case ids, wt-tools maps with "-", "()" or
 // diacritics in the key.
 // 45: chat senders get the squadron tags the game left out (squadron-tags.ts).
-const BATTLE_MEDIA_VERSION = 45
+// 46: maps from the HQ textures; air heatmaps on the game's air map (src/tactical-map).
+const BATTLE_MEDIA_VERSION = 46
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)
@@ -209,7 +210,7 @@ function releaseCacheSession(sessionIdHex: string): void {
   else activeCacheSessions.delete(sessionIdHex)
 }
 
-/** Рендерит только запрошенную heatmap в 2×, не создавая остальные материалы боя. */
+/** Renders only the requested heatmap at 2×, without the battle's other media. */
 export function buildBattleHeatmap2x(
   sessionId: string,
   kind: BattleHeatmapKind,
@@ -240,12 +241,16 @@ async function doBuildBattleHeatmap2x(
   state: MediaBuildState,
 ): Promise<Buffer> {
   const stored = reconstructBattle(sessionId)
-  if (!stored?.eventsBlob) throw new Error('Бой ещё не сохранён в базе для HD-рендера')
+  if (!stored?.eventsBlob) throw new Error('the battle is not stored yet: the HD render reads it from the database')
 
   const missionName = meta.missionName ?? stored.header.locName ?? ''
   const weaponIds = getBattleWeaponIds(stored.header.sessionId)
   const trackMission = workerControlTracker(state)
-  const gameMaps = await battleGameMaps(stored.missionSettings, stored.header, 2, state)
+  const selection = heatmapSelection(kind)
+  const [gameMaps, airMap] = await Promise.all([
+    battleGameMaps(stored.missionSettings, stored.header, 2, state),
+    selection.mode === 'air' ? battleAirMap(stored.missionSettings, stored.header, state) : null,
+  ])
   const [dict, mission, gameFontFiles, seekers, mapIconFont] = await Promise.all([
     ensureVehicleDict(state.priority),
     gameMaps
@@ -276,7 +281,6 @@ async function doBuildBattleHeatmap2x(
   if (wireTacticalMap) transferList.push(wireTacticalMap)
   if (wireMaps) transferList.push(wireMaps.A.data, wireMaps.B.data)
   if (wireFallbackMap) transferList.push(wireFallbackMap.data)
-  const selection = heatmapSelection(kind)
   const trackRender = workerControlTracker(state)
   const rendered = await runWorkerTask(
     {
@@ -298,6 +302,7 @@ async function doBuildBattleHeatmap2x(
           mapIconFont: mapIconFont !== null,
           tacticalMap: wireTacticalMap,
           gameMaps: wireMaps,
+          airMap,
           fallbackMap: wireFallbackMap,
           seekers: [...seekers],
         },
@@ -312,10 +317,9 @@ async function doBuildBattleHeatmap2x(
   ).finally(() => trackRender(null))
   const png = Buffer.from(rendered)
   if (png.byteLength > MAX_IMAGE_BYTES) {
-    throw new Error(`HD-карта слишком велика: ${(png.byteLength / 1024 / 1024).toFixed(1)} МБ`)
+    throw new Error(`the HD map is too large: ${(png.byteLength / 1024 / 1024).toFixed(1)} MiB`)
   }
-  // Флаг управляет повторным использованием, но результат каждого рендера
-  // сохраняется на диск независимо от него.
+  // The cache flag controls reuse; every render is saved regardless.
   await mkdir(CACHE_DIR, { recursive: true })
   await writeFileAtomic(highResCacheFile(stored.header.sessionIdHex, kind), png)
   await enforceCacheCap(png.byteLength)
@@ -410,6 +414,15 @@ async function battleGameMaps(missionSettings: string | null, header: WrplHeader
   }).catch(() => null)
 }
 
+/** The battle's air map (its spec: the worker draws each air heatmap's view); null without the game client. */
+async function battleAirMap(missionSettings: string | null, header: WrplHeader, state: MediaBuildState): Promise<GameAirMap | null> {
+  if (!missionSettings) return null
+  return ensureGameAirMap(missionSettings, {
+    balanceLevel: battleBalanceLevel(header.startTime),
+    priority: state.priority,
+  }).catch(() => null)
+}
+
 function gameMapMission(maps: GameTacticalMaps): MissionInfo {
   const view = maps.A.meta.view
   return { area: { ...view }, zones: maps.A.meta.zones.map((zone) => ({ letter: zone.letter, x: zone.x, z: zone.z })) }
@@ -431,10 +444,14 @@ async function loadBattleRenderAssets(
   state: MediaBuildState,
   needsHeatmap: boolean,
   needsFonts: boolean,
+  needsAirMap = needsHeatmap,
 ) {
   const trackMission = workerControlTracker(state)
   // Maps drawn from the game client replace the datamine's mission area and the wt-tools snapshot.
-  const gameMaps = needsHeatmap ? await battleGameMaps(source.missionSettings, source.header, 1, state) : null
+  const [gameMaps, airMap] = await Promise.all([
+    needsHeatmap ? battleGameMaps(source.missionSettings, source.header, 1, state) : null,
+    needsAirMap ? battleAirMap(source.missionSettings, source.header, state) : null,
+  ])
   const missionPromise = gameMaps
     ? Promise.resolve(gameMapMission(gameMaps))
     : needsHeatmap && source.missionSettings
@@ -457,7 +474,7 @@ async function loadBattleRenderAssets(
     ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(source.header.level))
     : null
   const fallbackMap = needsHeatmap ? await loadMapBackground(source.header.level) : null
-  return { dict, mission, gameFontFiles, fontFiles, seekers, mapIconFont, tacticalMap, gameMaps, fallbackMap }
+  return { dict, mission, gameFontFiles, fontFiles, seekers, mapIconFont, tacticalMap, gameMaps, airMap, fallbackMap }
 }
 
 function mediaWorkerPayload(
@@ -494,6 +511,7 @@ function mediaWorkerPayload(
         mapIconFont: assets.mapIconFont !== null,
         tacticalMap: wireTacticalMap,
         gameMaps: wireMaps,
+        airMap: assets.airMap,
         fallbackMap: wireFallbackMap,
         seekers: [...assets.seekers],
       },
@@ -558,12 +576,14 @@ async function doBuildBattleMediaKind(
 ): Promise<Buffer> {
   const source = await loadBattleRenderSource(sessionId, partUrls, meta, realNames, state)
   const missionName = meta.missionName ?? source.header.locName ?? ''
+  const heatmap = isBattleHeatmapKind(kind)
   const assets = await loadBattleRenderAssets(
     source,
     missionName,
     state,
-    isBattleHeatmapKind(kind),
+    heatmap,
     kind !== 'chat',
+    heatmap && heatmapSelection(kind).mode === 'air',
   )
   const payload = mediaWorkerPayload(source, missionName, assets)
   const trackRender = workerControlTracker(state)
@@ -585,7 +605,7 @@ async function doBuildBattleMediaKind(
   const maxBytes = kind === 'chat' ? MAX_CHAT_BYTES : MAX_IMAGE_BYTES
   if (media.byteLength > maxBytes) {
     throw new Error(
-      `${kind === 'chat' ? 'Чат' : 'Изображение'} слишком велико: ${(media.byteLength / 1024 / 1024).toFixed(1)} МБ`,
+      `${kind === 'chat' ? 'the chat' : 'the image'} is too large: ${(media.byteLength / 1024 / 1024).toFixed(1)} MiB`,
     )
   }
   const summary = { ...rendered.summary, errors: source.parseErrors }

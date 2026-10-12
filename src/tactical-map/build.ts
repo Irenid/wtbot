@@ -4,23 +4,25 @@ import path from 'node:path'
 import { Resvg } from '@resvg/resvg-js'
 import jpeg from 'jpeg-js'
 import { PNG } from 'pngjs'
+import type { RgbaImage } from './dxp.js'
 import { GameFiles, TACTICAL_MAP_SOURCES } from './game-files.js'
-import { buildTacticalMapModel, type Team, type WorldRect } from './model.js'
+import { buildTacticalMapModel, type MapKind, type SpawnKind, type Team, type WorldRect } from './model.js'
 import { applyHatch, applyTone, sampleFrame } from './raster.js'
-import { GAME_MAP_STYLE, hatchStyle, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
+import { GAME_MAP_STYLE, hatchStyle, MAP_SPAWN_KINDS, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
+import { LABEL_FONT_FILE, TACTICAL_MAP_VERSION, tacticalMapSpec, type TacticalMapMeta, type TacticalMapSpec } from './spec.js'
 
 /**
- * Builds one mission's tactical map from the game files (CPU worker task
- * build-tactical-map): the model (model.ts), the texture resampled to the view
- * with the game's tone and out-of-bounds hatch (raster.ts), the overlay drawn
- * by Resvg on a transparent layer and composited over it (render.ts).
+ * Draws tactical maps from the game files in a CPU worker: the spec (model.ts
+ * from the archives, spec.ts), then any view of it (composeTacticalMap): the
+ * texture resampled to the view with the game's tone and out-of-bounds hatch
+ * (raster.ts), the overlay drawn by Resvg on a transparent layer and
+ * composited over it (render.ts). A ground map is drawn whole and cached as an
+ * image (build-tactical-map); an air map is cached as its spec and drawn for
+ * each heatmap's view.
  */
 
-/** Bumped when the drawing changes: cached maps of older versions are rebuilt. */
-export const TACTICAL_MAP_VERSION = 1
-
-/** The grid labels' font: tiny_text_hud is PT Sans Web, reduced height (ui/fonts.vromfs.bin fonts.dynfont.blk). */
-const LABEL_FONT = 'ttfs/pt_sans-web-regular-reducedheight.ttf'
+/** The grid labels' font in ui/fonts.vromfs.bin (fonts.dynfont.blk tiny_text_hud). */
+const LABEL_FONT = `ttfs/${LABEL_FONT_FILE}`
 
 export interface TacticalMapBuildInput {
   gameDir: string
@@ -36,19 +38,12 @@ export interface TacticalMapBuildInput {
   fontDir: string
 }
 
-export interface TacticalMapMeta {
-  version: number
+export interface TacticalMapSpecInput {
+  gameDir: string
   mission: string
-  level: string
-  team: Team
   balanceLevel: number
-  size: number
-  /** The world rect the image covers (x east, z north). */
-  view: WorldRect
-  grid: { zeroX: number; zeroZ: number; step: number }
-  zones: { letter: string; x: number; z: number; radius: number }[]
-  /** Respawn bases as drawn: one per merged group. */
-  spawns: { team: Team; kind: string; x: number; z: number }[]
+  kind: MapKind
+  fontDir: string
 }
 
 export interface TacticalMapBuildResult {
@@ -57,12 +52,27 @@ export interface TacticalMapBuildResult {
   meta: TacticalMapMeta
 }
 
+export interface ComposeOptions {
+  gameDir: string
+  /** The world rect to draw (square); the spec's view by default. */
+  view?: WorldRect
+  size: number
+  team: Team
+  /** The label font (LABEL_FONT_FILE in the font folder); without it the labels fall back to no font. */
+  fontFile: string | null
+  /** Base kinds to draw; MAP_SPAWN_KINDS of the spec's kind by default. */
+  kinds?: readonly SpawnKind[]
+  /** false: no capture zones. */
+  zones?: boolean
+}
+
+/** The label font extracted into fontDir (once; a parallel worker may win the race); null without it in the game files. */
 function labelFont(files: GameFiles, fontDir: string): string | null {
-  const file = path.resolve(fontDir, path.basename(LABEL_FONT))
+  const file = path.resolve(fontDir, LABEL_FONT_FILE)
   if (existsSync(file)) return file
   const data = files.file(TACTICAL_MAP_SOURCES.fonts, LABEL_FONT)
   if (!data) return null
-  // A sibling temporary file renamed into place; a parallel worker may win the race.
+  // A sibling temporary file renamed into place.
   mkdirSync(path.dirname(file), { recursive: true })
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
   try {
@@ -76,30 +86,47 @@ function labelFont(files: GameFiles, fontDir: string): string | null {
   return file
 }
 
-export function buildTacticalMap(input: TacticalMapBuildInput): TacticalMapBuildResult {
+/**
+ * A mission's map spec from the archives; also extracts the label font the
+ * drawing needs. A missing texture fails here, so no spec of an undrawable map
+ * is cached (the air heatmaps then keep the level map captured from port 8111).
+ */
+export function buildTacticalMapSpec(input: TacticalMapSpecInput): TacticalMapSpec {
   const files = new GameFiles(input.gameDir)
   const model = buildTacticalMapModel(input.mission, (archive, name) => files.blk(archive, name), {
     difficulty: 'realistic',
     balanceLevel: input.balanceLevel,
+    kind: input.kind,
   })
-  const texture = files.texture(TACTICAL_MAP_SOURCES.maps, model.texture.name)
-  if (!texture) throw new Error(`no texture ${model.texture.name} in ${TACTICAL_MAP_SOURCES.maps}`)
-  const size = input.size
-  const geometry = renderGeometry(model, size)
+  if (!files.hasMapTexture(model.texture.name)) throw new Error(`no texture ${model.texture.name} in ${TACTICAL_MAP_SOURCES.maps}`)
+  labelFont(files, input.fontDir)
+  return tacticalMapSpec(model, input.balanceLevel, (name) => files.file(TACTICAL_MAP_SOURCES.icons, `gameuiskin/${name}.svg`)?.toString('utf8'))
+}
+
+/** One view of a map as RGBA: the texture (the HQ pack's when installed), tone, hatch, overlay. */
+export function composeTacticalMap(spec: TacticalMapSpec, options: ComposeOptions): RgbaImage {
+  const files = new GameFiles(options.gameDir)
+  const texture = files.mapTexture(spec.texture.name)
+  if (!texture) throw new Error(`no texture ${spec.texture.name} in ${TACTICAL_MAP_SOURCES.maps}`)
+  const size = options.size
+  const geometry = renderGeometry({ view: options.view ?? spec.view }, size)
   const style = GAME_MAP_STYLE
 
-  const base = sampleFrame(texture, model.texture.rect, model.view, size, [0, 0, 0, 255], model.texture.colorMult)
+  const base = sampleFrame(texture, spec.texture.rect, geometry.view, size, [0, 0, 0, 255], spec.texture.colorMult)
   applyTone(base, style.tone)
-  if (model.battleAreaPreset !== null) {
-    const metres = size / (model.view.x1 - model.view.x0)
-    applyHatch(base, model.areas[input.team], (x, z) => [geometry.px(x), geometry.py(z)], metres, hatchStyle(style, geometry.k))
+  if (spec.battleAreaPreset !== null) {
+    const metres = size / (geometry.view.x1 - geometry.view.x0)
+    applyHatch(base, spec.areas[options.team], (x, z) => [geometry.px(x), geometry.py(z)], metres, hatchStyle(style, geometry.k))
   }
 
-  const icons = { get: (name: string) => files.file(TACTICAL_MAP_SOURCES.icons, `gameuiskin/${name}.svg`)?.toString('utf8') }
-  const svg = tacticalMapOverlaySvg(model, geometry, null, icons, { team: input.team })
-  const font = labelFont(files, input.fontDir)
+  const icons = { get: (name: string) => spec.icons[name] }
+  const svg = tacticalMapOverlaySvg(spec, geometry, null, icons, {
+    team: options.team,
+    kinds: options.kinds ?? MAP_SPAWN_KINDS[spec.kind],
+    ...(options.zones === undefined ? {} : { zones: options.zones }),
+  })
   const overlay = new Resvg(svg, {
-    font: { loadSystemFonts: false, fontFiles: font ? [font] : [], defaultFontFamily: style.fontFamily },
+    font: { loadSystemFonts: false, fontFiles: options.fontFile ? [options.fontFile] : [], defaultFontFamily: style.fontFamily },
   }).render()
   if (overlay.width !== size || overlay.height !== size) throw new Error('overlay size mismatch')
   // Resvg returns straight (non-premultiplied) RGBA: out = overlay over base.
@@ -113,24 +140,39 @@ export function buildTacticalMap(input: TacticalMapBuildInput): TacticalMapBuild
     out[i + 2] = Math.round(top[i + 2]! * a + out[i + 2]! * (1 - a))
     out[i + 3] = 255
   }
+  return base
+}
 
-  const image = input.format === 'jpeg'
-    ? Buffer.from(jpeg.encode({ data: out, width: size, height: size }, 92).data)
-    : PNG.sync.write(Object.assign(new PNG({ width: size, height: size }), { data: out }))
+export function encodeMapImage(image: RgbaImage, format: 'png' | 'jpeg', quality = 92): Buffer {
+  return format === 'jpeg'
+    ? Buffer.from(jpeg.encode({ data: image.data, width: image.width, height: image.height }, quality).data)
+    : PNG.sync.write(Object.assign(new PNG({ width: image.width, height: image.height }), { data: image.data }))
+}
+
+/** A mission's ground map (the respawn screen of tanks) as one team sees it. */
+export function buildTacticalMap(input: TacticalMapBuildInput): TacticalMapBuildResult {
+  const spec = buildTacticalMapSpec({ gameDir: input.gameDir, mission: input.mission, balanceLevel: input.balanceLevel, kind: 'tank', fontDir: input.fontDir })
+  const fontFile = path.resolve(input.fontDir, LABEL_FONT_FILE)
+  const image = composeTacticalMap(spec, {
+    gameDir: input.gameDir,
+    size: input.size,
+    team: input.team,
+    fontFile: existsSync(fontFile) ? fontFile : null,
+  })
   return {
-    image,
+    image: encodeMapImage(image, input.format),
     mime: input.format === 'jpeg' ? 'image/jpeg' : 'image/png',
     meta: {
       version: TACTICAL_MAP_VERSION,
       mission: input.mission,
-      level: model.level,
+      level: spec.level,
       team: input.team,
       balanceLevel: input.balanceLevel,
-      size,
-      view: model.view,
-      grid: { zeroX: model.grid.zeroX, zeroZ: model.grid.zeroZ, step: model.grid.step },
-      zones: model.zones,
-      spawns: mergeSpawns(model.spawns, style.spawnMergeMeters),
+      size: input.size,
+      view: spec.view,
+      grid: spec.grid,
+      zones: spec.zones,
+      spawns: mergeSpawns(spec.spawns),
     },
   }
 }

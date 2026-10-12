@@ -1856,11 +1856,20 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     }
   })
 
-  // ?team= is the scene's map.team: the game-file map in which team 1's bases are blue.
-  app.get<{ Params: { key: string }; Querystring: { team?: 'A' | 'B' } }>('/api/battles/:key/map.png', {
+  // ?team= is the scene's map.team: the game-file map in which team 1's bases are blue; ?kind=air
+  // the scene's air view (map.air); ?v= the scene version, so a new drawing gets a new URL.
+  app.get<{ Params: { key: string }; Querystring: { team?: 'A' | 'B'; kind?: 'ground' | 'air'; v?: number } }>('/api/battles/:key/map.png', {
     schema: {
       params: battleKeyParams,
-      querystring: { type: 'object', additionalProperties: false, properties: { team: { type: 'string', enum: ['A', 'B'] } } },
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          team: { type: 'string', enum: ['A', 'B'] },
+          kind: { type: 'string', enum: ['ground', 'air'] },
+          v: { type: 'integer', minimum: 0, maximum: 1000 },
+        },
+      },
     },
   }, async (request, reply) => {
     if (!passRateLimit(request, reply)) return reply
@@ -1868,7 +1877,7 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
     if (!sessionId) {
       return reply.code(400).send({ ok: false, code: 'INVALID_BATTLE', error: 'Battle key: a decimal session id or a 16-character hex' })
     }
-    const map = await loadBattleSceneMap(sessionId, request.query.team ?? null)
+    const map = await loadBattleSceneMap(sessionId, request.query.team ?? null, request.query.kind ?? 'ground')
     if (!map) {
       return reply.code(404).send({ ok: false, code: 'MAP_UNAVAILABLE', error: 'No tactical map for this battle' })
     }

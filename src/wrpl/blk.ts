@@ -26,9 +26,17 @@ import { MAX_BLK_DECOMPRESSED_BYTES } from './decompression-limits.js'
  * Name ids index the shared names first, then the file's own ones.
  */
 
+/**
+ * A parsed block's keys in stored order (its params, then its child blocks), one
+ * per occurrence: grouping a repeated key into an array loses how different keys
+ * interleave, and a mission trigger runs its actions in file order.
+ */
+export const BLK_ORDER: unique symbol = Symbol('blk order')
+
 export type BlkValue = string | number | boolean | BlkValue[] | BlkMap
 export interface BlkMap {
   [key: string]: BlkValue
+  [BLK_ORDER]?: readonly string[]
 }
 
 /** What slim BLKs (labels 3–5) need: the container's shared names and zstd dictionary. */
@@ -272,7 +280,11 @@ function parseFatBlk(buf: Buffer, sharedNames: readonly string[] = []): BlkMap {
     visiting.add(idx)
     const m: BlkMap = {}
     const repeated = new Set<string>()
-    for (const f of fb.fields) putKV(m, f.name, f.value, repeated)
+    const order: string[] = []
+    for (const f of fb.fields) {
+      putKV(m, f.name, f.value, repeated)
+      order.push(f.name)
+    }
     for (let c = fb.firstChild; c < fb.firstChild + fb.childCount; c++) {
       const child = flat[c]
       if (!child) throw new Error(`child block ${c} out of range`)
@@ -280,8 +292,11 @@ function parseFatBlk(buf: Buffer, sharedNames: readonly string[] = []): BlkMap {
       if (claimed[c] === 1) throw new Error(`block ${c} occurs twice in the BLK tree`)
       claimed[c] = 1
       putKV(m, child.name, build(c, depth + 1), repeated)
+      order.push(child.name)
     }
     visiting.delete(idx)
+    // Not enumerable: JSON, Object.entries and structured clones see the plain tree.
+    Object.defineProperty(m, BLK_ORDER, { value: order })
     return m
   }
 

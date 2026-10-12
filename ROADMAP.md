@@ -54,10 +54,11 @@ full texts are in Git (commit `46b6950` and earlier).
 - **Tactical map: arrows to bases outside the view.** The game draws
   `arrow_mark.svg` (hud.blk `outOfMapArrow`, 15×18 UI px) at the frame's edge
   for every base outside it; `src/tactical-map/render.ts` draws none yet. The
-  snapshots show two arrows per team where the model has one position: the
-  rest are helicopter, UCAV and airfield spawns (air_spawn_template's
-  categories `heli_spawn_logic`, `ucav_spawn_logic`, `enable_airfields_part`;
-  their targets are `units.objectGroups`, which `mission.ts` does not load).
+  snapshots show two arrows per team where the tank bases give one: the rest
+  are helicopter, UCAV and airfield spawns (air_spawn_template's categories
+  `heli_spawn_logic`, `ucav_spawn_logic`, `enable_airfields_part`), which the
+  model now has (helipads and airfields on `units.objectGroups`, UCAVs from
+  rank 26; the air map draws them). Which of them get an arrow is unknown.
   Placement measured so far: the base's position clamped 7.3 UI px inside the
   frame, pointing away from the view centre (corner arrows diagonal); the
   ardennes and sun_city snapshots also have one on an edge (x 256 and 508 of
