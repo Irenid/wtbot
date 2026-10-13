@@ -26,9 +26,10 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
 - Documents: `README.md` — running; this file — contracts; `ROADMAP.md` — the
   only list of open tasks (closed items are deleted); `docs/` — measurements
   and notes (`performance.md`, `database.md`, `replay-data-quality.md`,
-  `opponent-scouting.md`, `nick-search.md`, `tactical-maps.md`); `LICENSES/` —
-  licenses of ported code; `tools/oodle-wasm/` — the source of
-  `src/tactical-map/oodle.wasm`; skills — `.claude/skills/verify/` (checks, live bot),
+  `opponent-scouting.md`, `nick-search.md`, `tactical-maps.md`,
+  `squadrons.md`); `LICENSES/` — licenses of ported code; `tools/oodle-wasm/`
+  — the source of `src/tactical-map/oodle.wasm`; skills —
+  `.claude/skills/verify/` (checks, live bot),
   `.agents/skills/monorepo-debug/` (diagnostics). Do not add new plans or
   audits to the repository root.
 - Do not read or print `.env` values without a direct need; for diagnostics
@@ -46,11 +47,13 @@ Never without the owner's explicit permission:
 ## 2. Architecture
 
 Modular TypeScript monolith. One Node.js process: Discord, Fastify, the parser
-scheduler, ingest coordination. A bounded `worker_threads` pool: WRPL parsing,
-zlib/zstd/gzip, Resvg, part of the geometry, provably blocking SQLite writes.
-Entry point — `src/index.ts`; storage — synchronous `node:sqlite`, all SQL in
-`src/db/index.ts`, no ORM. Modules call this API directly: moving to async
-storage would touch every caller, not only `src/db/`.
+scheduler, ingest coordination. A bounded `worker_threads` pool takes CPU and
+blocking work (task list — `src/workers/protocol.ts`): WRPL parsing,
+compression, Resvg, OCR, tactical maps, heavy reads on their own connections,
+long SQLite writes, maintenance. Entry point — `src/index.ts`; storage —
+synchronous `node:sqlite`, SQL in `src/db/index.ts` (section 4), no ORM.
+Modules call this API directly: moving to async storage would touch every
+caller, not only `src/db/`.
 
 ```text
 warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
@@ -60,24 +63,35 @@ warthunder.com / CDN -> parser sources -> items -> staged WRPL ingest
 `src/`: `index.ts` (startup, shutdown), `config.ts` and `runtime-options.ts`
 (env, resource plan), `db/` (bootstrap, migrations, SQL, maintenance), `bot/`
 (commands, announcer, voice tracker, player board), `web/` (API, dashboard
-`/statistics`, SPA `/`), `parsers/` (scheduler, sources, cookies, browser, backfill),
-`wrpl/` (replays, ingest, assets, media), `workers/` (pool, protocol),
-`player-stats/` (external providers), `tactical-map/` (tactical maps drawn from
-the game client), `analysis/` (manual CLIs, smoke checks, paid AI analysis). `frontend/` — React/Vite SPA; `data/` — database, cookies,
-caches, assets.
+`/statistics`, SPA `/`), `parsers/` (scheduler, sources, cookies, browser,
+backfill), `wrpl/` (replays, ingest, assets, media), `workers/` (pool,
+protocol), `player-stats/` (external providers), `scout/` (`/scout`),
+`tactical-map/` (tactical maps drawn from the game client), `analysis/`
+(manual CLIs, smoke checks, paid AI analysis). Shared helpers at the top level
+— reuse them instead of new copies: `atomic-file.ts` (`writeFileAtomic`),
+`recoverable-file-lock.ts`, `http-response.ts` (bounded body reads),
+`concurrency.ts` (`mapConcurrent`), `battle-lifecycle.ts` (ingest events),
+`html-text.ts`, `psr.ts`, `nick-search.ts`, `clan-season*.ts`. `frontend/` —
+React/Vite SPA; `data/` — database, cookies, caches, assets.
 
 Startup: Discord token check → process lock → signal and fatal-error handlers
 → SQLite (no page warmup) → player stats → Discord → player board → voice
 tracker → Fastify → SQLite warmup in a worker → WT cookie refresh (browser on
-demand) → parsers → ingest → database maintenance. Shutdown: refuse new work,
-up to 10 s to drain producers, then the browser, Discord, the CPU pool and
-SQLite last. Do not close the pool before worker-task producers have stopped.
+demand) → parsers → ingest → database maintenance; a stage that awaits the
+network returns once shutdown has begun, so later stages never start.
+Shutdown: refuse new work, up to 10 s (`PRODUCER_DRAIN_MS`) to drain
+producers, then the browser, Discord, the CPU pool (`closeWorkerPool(10_000)`)
+and SQLite last; compose's `stop_grace_period` (45 s) must stay above these
+waits, or Docker kills the process mid-shutdown. Do not close the pool before
+worker-task producers have stopped.
 
 ### Concurrency
 
 - Independent I/O runs in parallel: `Promise.all` when the input is bounded by
   configuration or a small constant; otherwise a worker loop with an explicit
-  concurrency cap, byte budget, timeout and cancellation.
+  concurrency cap, byte budget, timeout and cancellation (`mapConcurrent` for
+  a plain cap: results in input order, every item runs, the first error is
+  thrown at the end).
 - A sequential `await` in a loop only for dependent results, required order,
   rate limits, locks, retry/backoff, short-circuit search or a shared budget;
   write the reason next to the loop.
@@ -96,49 +110,43 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 - Node.js ≥ 22.15.0 (`zstdDecompressSync`); npm, install with `npm ci`;
   `package-lock.json` changes only together with dependencies.
 - `.env` is local and outside Git; the full catalogue with defaults is
-  `.env.example`. A new variable goes at once into `src/config.ts` or
-  `src/runtime-options.ts`, `.env.example` and, if it is a contract, here. No
-  real values in tracked files.
+  `.env.example`. A new bot variable goes at once into `src/config.ts` or
+  `src/runtime-options.ts` (exceptions: `WT_GAME_DIR`, read by
+  `findWarThunderGameDir`; `WTBOT_BACKUP_*`, read by the backup service),
+  `.env.example` and, if it is a contract, here; a knob of one CLI is
+  documented in that CLI's header. No real values in tracked files.
 
 | Variable | Contract |
 |---|---|
-| `TOKEN` | required by the bot process and CLIs importing `src/config.ts` (`battle`, `analyze`, `backfill`, `deploy:commands`); standalone CLIs (`db:backup`) do not need it |
-| `CLIENT_ID`, `GUILD_ID` | slash-command registration |
+| `TOKEN` | read on first use (`config.token`): only the bot process (checked first at startup) and `deploy:commands` need it; other CLIs run without it |
 | `DB_PATH`, `WTBOT_ALLOW_NEW_DB=false` | a new database only when explicitly allowed |
 | `PORT`, `WEB_HOST=127.0.0.1`, `WEB_TOKEN` | loopback accepts only a loopback `Host` (DNS rebinding); non-loopback (always `0.0.0.0` in Docker) only with `WEB_TOKEN`: Bearer or HTTP Basic password |
-| `WEB_TRUST_PROXY` | `false`/`true`/IP-CIDR list for `X-Forwarded-For`; Fastify 5.12 has no hop count |
-| `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer; the bot does not read them, the token never reaches the bundle |
-| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — all channels; a battles channel without a clan tag announces every clan (~1,800 battles a day); the tag filters publishing, not collection |
+| `WEB_TRUST_PROXY` | `false`/`true`, or a list of IP/CIDR and `loopback`/`linklocal`/`uniquelocal`, for `X-Forwarded-For`; Fastify 5.12 has no hop count |
+| `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer, POSTs included; the bot does not read them, the token never reaches the bundle |
+| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — all channels; a battles channel without a clan tag announces every clan (~1,500 battles a day, 869–2,466 over 2026-09-24…10-11); the tag filters publishing, not collection |
 | `WT_SCOUT_CHANNEL` | channels where a scoreboard screenshot is read and answered (`src/bot/scout-images.ts`); adds the `GuildMessages` intent, and `MessageContent` only when the application has it (asking without it fails the login, 4014) |
-| `WT_ANNOUNCE_MAX_AGE_HOURS=2` | older battles are marked done instead of posted: downtime does not flood the channel with history |
-| `WT_COOKIE` | warthunder.com session for `wt-replays` and `wt-players` |
 | `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
-| `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) or Edge/Chrome/Chromium (Linux) for addresses behind Cloudflare; `NO_SANDBOX=true` only in Docker |
-| `WT_VNC_PASSWORD` | VNC to the browser's Xvfb display in Docker: manual login and Cloudflare checks |
+| `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) or Edge/Chrome/Chromium (Linux) for addresses behind Cloudflare; `NO_SANDBOX=true` only in Docker; `WT_VNC_PASSWORD` opens VNC to its Xvfb display in Docker for a manual login or Cloudflare check |
 | `WT_REPLAY_HOSTS` | allowlist of CDN hosts for replay parts (`src/wrpl/replay-url-policy.ts`); structural SSRF protection applies without it |
-| `WT_PLAYER_NAMES` | nicknames for `wt-players`: Replay API and HTML profile |
-| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=true`, `STATSHARK_PLAYER_STATS_ENABLED=false` | lazy account snapshots: companion (primary; runs only with `WT_COMPANION_COOKIE`), site profile, StatShark (fallback, only with a known numeric WT user id; also refreshed for the enemies of a `/scout` screenshot) |
+| `WT_PLAYER_STATS_ENABLED=true`, `WT_COMPANION_PROFILE_ENABLED=true`, `STATSHARK_PLAYER_STATS_ENABLED=false` | one switch per lazy account source: the warthunder.com profile, companion (runs only with `WT_COMPANION_COOKIE`), StatShark (only with a known numeric WT user id; also refreshed for the enemies of a `/scout` screenshot); precedence — section 8 |
 | `WT_PLAYER_ID_LOOKUP_ENABLED=true` | with `WT_PLAYER_STATS_ENABLED`: a profile without an id looks its WT user id up (`POST /api/player-id`, section 8); the Replay API step only with `WT_COOKIE` |
-| `WT_WORKER_THREADS=auto` | from CPU, RAM and reserves; cap 8, estimate 320 MiB per worker |
+| `WT_WORKER_THREADS=auto` | auto: CPUs minus `WT_WORKER_RESERVE_CPUS` (1); free RAM minus `WT_WORKER_MEMORY_RESERVE_MB` (15%, at least 512 MiB) and the replay budget, at `WT_WORKER_ESTIMATED_MB` (320) per worker; cap 8 |
 | `WT_WORKER_BACKGROUND_RESERVE`, `WT_WORKER_MAX_OLD_SPACE_MB` | slots reserved for interactive work; old space of one worker |
 | `WT_INGEST_CONCURRENCY` | cap 32; above the pool size it overlaps CDN I/O at the cost of RAM held by replays |
 | `WT_INGEST_ADAPTIVE_ENABLED=true` | AIMD lowers concurrency on 429/retry/5xx and on replay-budget or SQLite-queue pressure |
 | `WT_INGEST_PIPELINE_ENABLED=true` | staged pipeline; `false` — the previous runner (rollback) |
 | `WT_REPLAY_PROCESS_BUDGET_MB` | shared limit for replay buffers, 128–8192 MiB; auto reserves it before sizing the pool |
 | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` | reserve by cached size or 1× `Content-Length` instead of the 96 MiB worst case; off until an RSS plateau is proven (`docs/performance.md`) |
-| `WT_BATTLE_CACHE_MB`, `WT_BATTLE_CACHE_ENABLED`, `WT_HEATMAP_AIR_*` | media cache, air heatmap parameters |
-| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `./data/wt-game` (copies of `TACTICAL_MAP_SOURCES` and, when installed, the HQ textures of `TACTICAL_MAP_OPTIONAL_SOURCES`, at the game's paths; `ui/` alone: no maps) or `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` |
-| `WTBOT_BACKUP_TIME`, `WTBOT_BACKUP_DIR`, `WTBOT_BACKUP_KEEP`, `TZ` | daily `db-backup-schedule` (`backup` service) |
-| `ANTHROPIC_API_KEY` | manual `npm run analyze` only |
+| `WT_GAME_DIR`, `WT_GAME_HOST_DIR` | the War Thunder client (found in the Steam libraries of Windows and Linux without it): flags, clan-tag font, tactical maps (section 7); compose mounts `./data/wt-game` (copies of `TACTICAL_MAP_SOURCES` and, when installed, the HQ textures of `TACTICAL_MAP_OPTIONAL_SOURCES`, at the game's paths; recopy after a patch; `ui/` alone: flags and font, maps from the wt-tools snapshots) or `WT_GAME_HOST_DIR` read-only at `/opt/war-thunder` |
 
 - Production runs in Docker on Linux (`Dockerfile`, `docker-compose.yml`,
   `docker/entrypoint.sh`): Chromium under Xvfb, `node` user, `./data` volume,
   `restart: unless-stopped`. Development and tests — Linux or Windows (CI runs
-  both). `data/*` paths are relative to the working directory: `WORKDIR /app`
-  in Docker, the repository root locally. If your checkout is the production
-  compose directory, its `data/` is the running bot's data: `npm run dev`,
-  `battle` and backfill write to the same database, and a second bot would use
-  the same Discord token.
+  both). `data/*` paths are relative to the working directory (`/app` in
+  Docker). If your checkout is the production compose directory, its `data/`
+  is the running bot's: `npm run dev`, `site`, `battle` and backfill write to
+  that database (`initDb()` migrates every database it opens), and a second
+  bot would use the same Discord token.
 - Deploy only with permission. Before `docker compose build`, tag the running
   image (`docker tag wtbot:latest wtbot:pre-<what>`): an untagged image is gone
   once the container is recreated. Back up the database as a separate step and
@@ -152,47 +160,40 @@ SQLite last. Do not close the pool before worker-task producers have stopped.
 
 `node:sqlite` is synchronous: a query on the main thread stalls the Discord
 heartbeat, the voice tracker and Fastify. Queries are short, indexed and
-parameterized. Measurements, decisions and migration rollback —
-`docs/database.md`.
+parameterized. Connection settings, VACUUM, maintenance cadence,
+measurements, decisions and migration rollback — `docs/database.md`.
 
-- SQL lives only in typed functions of `src/db/index.ts`; batch writes run in
-  a transaction.
+- SQL lives in typed functions of `src/db/index.ts` (a worker passes its own
+  connection); batch writes run in a transaction. The inline SELECTs of
+  `repair-battle-events` and `read-site-dashboard-stats` in
+  `workers/entry.ts` move there when touched.
 - Check a new or changed heavy SELECT with `EXPLAIN QUERY PLAN`, also on a
   copy of the production database: since v17 the planner has statistics
   (`ANALYZE`, then `PRAGMA optimize`), and the `:memory:` plan may differ.
 - The events blob lives in `battle_events` and is read only by one battle's
   key (`SCAN battle_events` is forbidden); `battles` is compact,
-  `WITHOUT ROWID` by `session_id`. A large value (blob, JSON > ~1 KiB) in a hot
-  row takes its own page, and the columns after it are read through an
-  overflow chain.
+  `WITHOUT ROWID` by `session_id`. Keep values over ~1 KiB (blob, JSON) out of
+  hot rows: the columns after them are read through an overflow chain.
 - Each `battle_players` index costs ~16 entries (the battle's players) per
   battle: add one only for a query whose plan uses it.
-- `WHERE session_id = ? OR session_hex = ?` uses a multi-index OR with
-  `idx_battles_session_hex`, not a full scan.
-- `getIngestStats().pending` and `getPendingBattleItems()` share one
-  retryable predicate; the pending aggregate does not read `events_blob`.
-- `initDb()` is the idempotent bootstrap of a clean database,
-  `runDbMigrations()` versions via `PRAGMA user_version`. A change to a table,
-  index or constraint is a new migration version plus the matching bootstrap
-  change; never hide migration errors behind a broad `catch`. The code refuses
-  a database with `user_version > DB_SCHEMA_VERSION`, so after a migration the
-  previous image needs a backup.
-- Connection: WAL, `synchronous = NORMAL` (commits skip fsync; a power loss
-  rolls back the last transactions but does not corrupt the file), mmap 1 GiB,
-  `journal_size_limit`, `temp_store = MEMORY` after VACUUM. A new database gets
-  `auto_vacuum = INCREMENTAL`; startup VACUUM runs only for a database without
-  it (once, minutes per gigabytes, bot offline) when free space exceeds 20% and
-  256 MiB.
-- Maintenance (`db/maintenance.ts`) runs in worker tasks `db-maintenance` and
-  `repair-battle-events`, never on the main thread: each repair batch returns
-  freed pages at once; every few hours `PRAGMA optimize(0x10002)` (without flag
-  0x10000 a fresh connection sees no tables) and `incremental_vacuum` in
-  `VACUUM_STEP_PAGES` (256 pages) steps with a pause; it stops before the CPU
-  pool.
+- `getIngestStats().pending` counts exactly what `getPendingBattleItems()`
+  selects (no `battle_ingest` row, or `error` with
+  `attempts < BATTLE_INGEST_MAX_ATTEMPTS`): change both together
+  (`ingest-stats.test.ts`).
+- `initDb()` is the idempotent bootstrap of a clean database and migrates any
+  database it opens; `runDbMigrations()` versions via `PRAGMA user_version`.
+  A change to a table, index or constraint is a new migration version plus the
+  matching bootstrap change; never hide migration errors behind a broad
+  `catch`. The code refuses a database with `user_version > DB_SCHEMA_VERSION`,
+  so after a migration the previous image needs a backup.
+- Every connection sets `busy_timeout = 5000`: without it a connection next to
+  a writer fails at once with `SQLITE_BUSY`.
+- Maintenance (`db/maintenance.ts`) runs only in worker tasks `db-maintenance`
+  and `repair-battle-events`, `incremental_vacuum` in `VACUUM_STEP_PAGES` steps
+  with a pause, and stops before the CPU pool.
 - A background write transaction (worker, maintenance, a one-off script next
   to the bot) takes tens of milliseconds at most: a main-thread write waits for
-  the foreign lock synchronously and the event loop stalls. One 8,192-page
-  `incremental_vacuum` portion held the lock for 1.3 s (watchdog, 2026-10-02).
+  the foreign lock synchronously and the event loop stalls.
 - Stored battles are fixed by the `repair-battle-events` pass: the rules in
   `events-repair.ts` and `player-events.ts` are the ingest rules; columnar
   format, empty `slot`, `title`, `air_unit_count`, `chat_count` and the player
@@ -206,23 +207,27 @@ parameterized. Measurements, decisions and migration rollback —
   battle's data.
 - Frequent writes to the database file (ingest, parser history, player board
   publication) run as worker tasks `persist-ingested-battle`,
-  `record-parse-result`, `update-player-stat-board-publication`; `:memory:`
-  tests use a sync fallback.
+  `record-parse-result`, `update-player-stat-board-publication`. Without a
+  file (`getDbWorkerPath()` null, `:memory:`) parse history and the player
+  board write synchronously; ingest persists only through the worker.
 - A worker write changes `PRAGMA data_version`: main-thread read caches are
   invalidated through it, never on the assumption that only main writes.
-- `primeKnownItemExternalIds('wt-replays')` loads known IDs from a covering
-  unique index before the parsers start: a hit skips SQLite, a miss queries
-  (keeps parallel backfill correct).
-- Player search uses the indexed `canonical_nick_search`, `nick_search`,
-  `battle_players.nick_search`: JS `NFKC` + locale-neutral lowercase
-  (`normalizePlayerSearchKey`), never `COLLATE NOCASE`; typo-tolerant matches
-  scan these keys in a worker (section 8, "Player search").
+- `primeKnownItemExternalIds('wt-replays')` loads known IDs before the parsers
+  start; a miss still queries SQLite, because backfill writes from another
+  process.
+- Player search keys (`canonical_nick_search`, `nick_search`,
+  `battle_players.nick_search`) are JS `NFKC` + locale-neutral lowercase
+  (`normalizePlayerSearchKey`); new nick matching uses them, never
+  `COLLATE NOCASE` (`findKnownPlayerMatches` still matches voice and
+  clan-snapshot nicks with it). Typo-tolerant matches scan these keys in a
+  worker (section 8, "Player search").
 - `items`: transactional writes, `UNIQUE(source, external_id)`, changes
   detected by `content_hash` of title + JSON; new sources and backfill keep it.
 - `db:backup`: `VACUUM INTO`, lock, free-space check, rotation, read-only
-  `quick_check`. Restore only with the service stopped: check the backup, save
-  the current database as `.pre-restore`, check a temporary copy, then replace
-  `DB_PATH`.
+  `quick_check`; the compose `backup` service runs it daily
+  (`db-backup-schedule`, `WTBOT_BACKUP_*`, time in `TZ`). Restore only with the
+  service stopped: check the backup, save the current database as
+  `.pre-restore`, check a temporary copy, then replace `DB_PATH`.
 
 ## 5. Workers
 
@@ -230,15 +235,23 @@ parameterized. Measurements, decisions and migration rollback —
   worker; Discord, Fastify and SQLite handles never do.
 - Not on the main thread: synchronous WRPL/BLK/VROMFS/ECS parsing, large JSON
   transforms, compression, base64 images, Resvg (`@resvg/resvg-js` is created
-  only in workers), provably long SQLite writes.
-- Pool: limits on task count and transferable bytes, priorities, reserved
-  interactive slots, queue and execution timeouts, hung-worker replacement.
+  only in workers), provably long SQLite writes. Summaries never read
+  `events_blob` (`reconstructBattleSummary()`); media hands the compressed blob
+  to a worker.
+- A caller's `timeoutMs` covers queueing and execution (defaults per priority:
+  `DEFAULT_TIMEOUT_MS` in `workers/pool.ts`). The pool also caps queued tasks
+  and transferable bytes, keeps interactive slots, replaces hung workers and
+  recycles a render worker after `MAX_RENDER_JOBS_PER_WORKER` jobs (Resvg's
+  native memory).
 - An interactive request raises the priority of the shared background task
   instead of starting a duplicate.
-- `EXEC_TIMEOUT`, queue timeout, startup or scheduling failure and queue
-  overflow spend no ingest or announcement attempts — except 3 timeouts in a
-  row (`ExecTimeoutBudget`), otherwise a deterministically slow task would
-  repeat forever. A failure of a parse that already ran is a normal attempt.
+- Attempts (`BATTLE_INGEST_MAX_ATTEMPTS`): `EXEC_TIMEOUT`, queue timeout,
+  startup or scheduling failure and queue overflow spend no ingest or
+  announcement attempt — except 3 parse or render timeouts in a row
+  (`ExecTimeoutBudget`), otherwise a deterministically slow task would repeat
+  forever. SQLite write timeouts never spend one (disk overload would turn
+  into lost battles); a replay-budget timeout defers the item. A failure of a
+  parse that already ran, and `TASK_TOO_LARGE`, are normal attempts.
 - Discord handlers still `deferReply`/`deferUpdate` right away.
 
 ## 6. Parsers and warthunder.com access
@@ -246,46 +259,41 @@ parameterized. Measurements, decisions and migration rollback —
 Sources (constants live in their files under `src/parsers/sources/`):
 
 - `wt-replays` — every 20 s, up to 50 pages (`PLANNED_REPLAYS_MAX_PAGES`),
-  `stopAtKnown`, no `fetchDetails`; stops at a known page, the last incomplete
-  page, a date cutoff or the cap.
+  `stopAtKnown`, no `fetchDetails`; stops at the first page holding a known
+  battle, a page under 20 items or the cap (backfill: at its date cutoff).
 - `wt-players` — every 30 min, `WT_PLAYER_NAMES` one by one, only the first
-  Replay API page.
+  Replay API page. Player collection (`collectPlayerItem`: this source and the
+  player board) runs through one queue, one collection per nick; a session
+  error or 429 ends the batch.
 - `wt-clans` — every 20 min the first 5 pages of the squadron leaderboard (top
-  100), every 12 h further while the season rating (`dr_era5_hist`) is above
-  zero, up to 100 pages (hitting the cap shows in the source status). A tag
-  missing from the dictionary (a squadron that began playing after the last
-  full crawl: 1.9% of teams on 2026-10-03) has no claninfo name, so no PSR:
-  the battle post's last update asks for the full crawl at once
-  (`lookupUnknownClanTags` → `runParserNow`; one lookup at a time; a tag not
-  found is retried after 15 min, doubling up to 12 h), then fetches claninfo
-  and redraws the post. A crawl writes `clans` with one shared `rating_at`,
-  change points of rating, battles,
-  wins, kills and deaths to `clan_rating_history`, the core tags it read in
-  place order and whether it was full to `clan_crawls` (kept
-  `CLAN_CRAWL_KEEP_SEC`, 3 days: change points cannot tell an unchanged
-  squadron from one the crawl missed), the leaderboard season to
-  `bot_state` `wt-clans:season` (a mismatch with the forum shows in the
-  status). Region, type, slogan and rewards arrive HTML-escaped with game
-  markup (`<color=#…>`, `<b>`) — plain text is stored; tag and name stay as
-  they are (keys of battles and claninfo). Profile: `_id` (survives tag
-  changes), description and announcement (line breaks kept, ≤ 2048 chars),
-  `membership_req` `{ranks, battles}`, auto-accept, undecorated tag
-  `lastPaidTag`, last season's decoration. Then the claninfo roster of 5
-  leaders whose roster is older than a day (otherwise only clans from drawn
-  battles would have rosters and PSR): role (the deputy's cell reads the
-  untranslated key `clan/deputy`), join date, activity; an unknown cell value
-  becomes `NULL`. Founding date — the leaderboard's `cdate`:
-  claninfo shows "01.01.1970".
+  100); a full crawl every `FULL_CRAWL_INTERVAL_SEC` (12 h, due from 0.9 of
+  it) while the season rating (`dr_era5_hist`) is above zero, up to 100 pages
+  (hitting the cap shows in the source status). A tag missing from the
+  dictionary has no claninfo name, so no PSR: the battle post's last update
+  asks for the full crawl at once (`lookupUnknownClanTags` → `runParserNow`;
+  one lookup at a time; a tag not found is retried after 15 min, doubling up
+  to 12 h), then fetches claninfo and redraws the post. A crawl writes `clans`
+  with one shared `rating_at`; `clan_crawls` (the core tags read, in place
+  order, and whether the crawl was full) is kept `CLAN_CRAWL_KEEP_SEC`:
+  change points cannot tell an unchanged squadron from one the crawl missed.
+  Text fields are stored as plain text (no HTML escapes or game markup); tag
+  and name stay as they are (keys of battles and claninfo); `_id` survives tag
+  changes; the founding date is the leaderboard's `cdate` (claninfo shows
+  1970). Then the claninfo rosters of 5 leaders whose roster is older than a
+  day. Stored fields, history and the season check: `docs/squadrons.md`.
 - `wt-clan-season` — every 6 h the first post of
   `forum.warthunder.ru/raw/2509/1` (not warthunder.com: no Cloudflare, a plain
   bounded fetch) → seasons `forum-YYYY-MM-DD` in `clan_seasons`.
 
-The scheduler starts sources at once, never overlaps runs of one source, keeps
-results per source and backs off exponentially up to 30 min; a worker task
-writes parse history for a file database. A new source is a `ParserSource`
-with a unique `name`, `intervalMs` and `run(): Promise<{ summary, items? }>`,
-registered in `src/parsers/sources/index.ts`; rerunning unchanged items yields
-`unchanged`.
+The scheduler starts sources at once, never overlaps runs of one source and
+backs off exponentially up to 30 min; a worker task writes parse history for
+a file database. A run that ends after stop or restart saves nothing and
+counts no failure (the source collects its items again); `runParserNow()`
+waits for the active run and never starts a second. A new source is a
+`ParserSource` with a unique `name`, `intervalMs` and
+`run(signal): Promise<{ summary, items? }>` that checks `signal` between
+requests, registered in `src/parsers/sources/index.ts`; rerunning unchanged
+items yields `unchanged`.
 
 Access:
 
@@ -293,46 +301,57 @@ Access:
   empty list does not prove it works (source status
   `API вернул пустой список` — "API returned an empty list": `WT_COOKIE`
   expired, log in by hand).
-- Every warthunder.com request goes through `fetchWtResponse()` or
-  `waitForRequestSlot()`: one queue per process, 1,500 ms spacing,
-  `Retry-After`. A direct `fetch()` to the site's HTML or API is forbidden.
-- Cloudflare checks individual addresses: in October 2026 only the player
-  profile and player search got 403 `cf-mitigated: challenge`, while the
-  Replay API, leaderboards, claninfo and WTCS answered directly. So the
-  transport is chosen per route (first three path segments): a direct request
-  first, the browser after a Cloudflare check, the direct path re-probed every
-  6 h; modes are in `/api/stats` → `wtTransport.routes`. A network failure of
-  a direct request is retried once through the browser without changing the
-  route's mode.
-- Jar `data/wt-cookies.json`: live cookies in plain text, atomic writes, an
-  inter-process lock; it also keeps the User-Agent of the browser that issued
-  the session (direct requests present themselves as that browser).
+- Every request to the warthunder.com site and API goes through
+  `fetchWtResponse()` or `waitForRequestSlot()`: one queue per process,
+  1,500 ms spacing, `Retry-After`. A direct `fetch()` to the site's HTML or
+  API is forbidden. Outside the queue: `companion-app.warthunder.com`, a
+  separate service (section 8), and clearance probes (hence
+  `MAX_FAILED_CLEARANCE_PROBES`).
+- Cloudflare challenges single addresses (in October 2026 only the player
+  profile and player search: the `wt-request.ts` header), so the transport is
+  chosen per route (first three path segments): a direct request first, the
+  browser after a 403 `cf-mitigated: challenge`, the direct path re-probed
+  every 6 h; modes are in `/api/stats` → `wtTransport.routes`. A network
+  failure of a direct request is retried once through the browser without
+  changing the route's mode.
+- Jar `data/wt-cookies.json`: live cookies in plain text, written atomically
+  (0600 in a 0700 directory) under an inter-process lock and keyed by the
+  sha256 of `WT_COOKIE` (a new `WT_COOKIE` restarts the session from it); it
+  also keeps the User-Agent of the browser that issued the session (direct
+  requests present themselves as that browser).
 - The jar owns the WT session (`identity_*`); only the Replay API needs it. A
   public direct request goes without cookies and leaves the jar alone; direct
   requests never send Cloudflare cookies. The browser gets the jar session
   only while the Replay API goes through it, and writes it back then;
   otherwise it browses anonymously: the server rotates `identity_sid`, and two
-  live copies of one session would diverge. The browser's own session (a VNC
-  login) is adopted into the jar when the Replay API returns an empty list;
-  without one the Replay API moves to the browser for 6 h. A host-only cookie
-  copy next to the domain cookie was a past bug: the server read a stale
-  `identity_sid`, redirected to login, and the Replay API returned an empty
-  list.
+  live copies of one session would diverge. On an empty list (at most every
+  5 min) the browser's own session (a VNC login) is adopted into the jar;
+  without one a browser carrying the session refreshes clearance and session,
+  and a direct one moves the Replay API to the browser until the 6 h
+  re-probe. Never seed host-only cookie copies next to the domain ones
+  (`removeDuplicateCookies`: the server read the stale `identity_sid`).
 - claninfo (`src/wrpl/clan-info.ts`) uses its own direct `fetch` without
   cookies, but after `waitForRequestSlot()`; a 429 delays the whole queue. If
   it starts answering 403 `cf-mitigated: challenge`, switch it to
-  `fetchWtResponse()`.
-- The browser is a normal process driven over CDP: a persistent Playwright
-  context and true headless mode fail Cloudflare; hidden mode is an
-  off-screen window; CAPTCHAs are never solved automatically. Platform code
-  (paths, Docker flags, `/proc`, SingletonLock) lives in
-  `wt-browser-platform.ts`; on Linux without `DISPLAY` the browser does not
-  start. Clearance probes: pause 0.5→4 s, at most
-  `MAX_FAILED_CLEARANCE_PROBES` failures per attempt.
+  `fetchWtResponse()`. A clan is read at most every 2 min (10 min after a
+  failure; only `force` and `freshAfter` skip the wait); 404s from 3
+  different clans pause claninfo for 1 h, and renders use stored snapshots.
+  `fetchClanMembers()` returns the whole roster or throws: its list replaces
+  `clan_roster`, so a parser change keeps the member-anchor count check.
+- The browser is a normal process driven over CDP, hidden as an off-screen
+  window (a persistent Playwright context and true headless mode fail
+  Cloudflare); CAPTCHAs are never solved automatically. CDP binds 127.0.0.1
+  with `--remote-allow-origins` pinned to it: the port drives a logged-in
+  session. Stale-browser cleanup refuses short and personal Edge/Chrome
+  profiles (`profileTooBroadToKill`). Platform code lives in
+  `wt-browser-platform.ts`; Linux needs `DISPLAY` or `WAYLAND_DISPLAY`.
+  Clearance probes: pause 0.5→4 s, at most `MAX_FAILED_CLEARANCE_PROBES`
+  failures per attempt.
 - `.wrpl` parts come from the CDN through a plain bounded `fetch`: the browser
   transport decodes bodies as text.
-- Every external fetch has a timeout, a response byte limit and a schema or
-  format check before anything is cached permanently.
+- Every external fetch has a timeout, a response byte limit
+  (`readResponseBuffer`/`Text`/`Json` in `src/http-response.ts`) and a schema
+  or format check before anything is cached permanently.
 - `npm run backfill -- <days>` closes a gap (3 days by default, parsing left to
   ingest) while the parts are still on the CDN (~2 weeks).
 
@@ -340,96 +359,95 @@ Access:
 
 ### Ingest
 
-- A tick takes up to `2 × concurrency` pending items: newest first, every 8th
-  sweep oldest first. Producers (every 500 ms) download a replay into a
-  bounded ready queue (by count and bytes) → up to 4 consumers → worker
-  `parse-battle` → serialized `persist-ingested-battle` on its own connection:
-  one transaction updates `battles`, `battle_events`, `battle_players`,
-  `battle_kills`, `battle_chat`, `battle_ingest`. Passive WAL checkpoint every
-  32 commits or 60 s, and a separate worker task on shutdown.
-- AIMD and the process byte budget keep the load on the CDN, the pool, SQLite
-  and RAM in check; a budget timeout defers the item without an attempt.
-- After the commit the session's cached parts and its old artifacts in
-  `data/battles/` are deleted: the battle can be rebuilt from its rows and
-  events blob.
-- The events blob (`battle_events`, `events-codec.ts`) is columnar:
-  trajectories (99% of events) as delta arrays, zstd-19, ~20 KiB per battle.
-  A write verifies a byte-exact round trip, otherwise it stores zstd-JSON;
-  readers also accept zstd-JSON and gzip. Read through
-  `decodeEventsPayload`/`decodeEventsBlob`; `inflateEventsBlob` (JSON text) is
-  only for hashes and format conversion. An image without the columnar format
-  cannot read these blobs (rollback — `docs/database.md`).
-- The Replay API lists ~2% of battles before they end: their `partsCount` and
-  `endTime` are early, and the bot reads an item only once. So before
-  downloading, ingest probes for parts after the known ones
-  (`withUnlistedReplayParts`: a one-byte GET until the first 404; a 429 is
-  retried, any other error fails the attempt instead of ending the list,
-  otherwise an old battle with an incomplete list would become `expired`). A
-  404/410 for a battle younger than an hour (from `endTime`) means "not
-  uploaded yet". Intermediate results (part 0001, ~95 s, no status) are not
-  stored; the final results of a battle that ran out of time (also without a
-  status) are told apart by a duration at least the listed one
+- Pipeline (tick, sweep order, queues, consumers — `docs/performance.md`):
+  downloads start ≥ 500 ms apart (`PAUSE_MS`) into a bounded ready queue →
+  worker `parse-battle` → `persist-ingested-battle`, serialized on the ingest
+  connection: one transaction writes `battles`, `battle_events`,
+  `battle_players`, `battle_kills`, `battle_chat`, `battle_ingest`. That
+  connection disables autocheckpoint: a PASSIVE checkpoint follows a commit
+  once 32 commits or 60 s have accumulated, and worker task
+  `checkpoint-ingest-database` runs on shutdown.
+- AIMD and the process byte budget bound the load on the CDN, the pool, SQLite
+  and RAM (what spends an attempt — section 5).
+- After the commit the session's old artifacts in `data/battles/` are dropped,
+  then `committed` is emitted, then the cached parts: the announcement and the
+  site build media from the new rows, and the battle can be rebuilt from its
+  rows and events blob. `battle-lifecycle.ts` listeners are synchronous:
+  parsers emit `discovered` (wakes ingest), ingest emits `committed` (the
+  announcer).
+- Every path that parses a battle passes the Replay API item's user ids
+  (`listedUserIdsFromItem`): without them `battleParticipants` keeps phantom
+  bot rows.
+- The events blob (`battle_events`, `events-codec.ts`) is columnar. A write
+  verifies a byte-exact round trip, otherwise it stores zstd-JSON; readers
+  also accept zstd-JSON and gzip. Read through
+  `decodeEventsPayload`/`decodeEventsBlob`; `inflateEventsBlob` (JSON text)
+  only for the corpus hash. An image without the columnar format cannot read
+  these blobs (sizes and rollback — `docs/database.md`).
+- The Replay API lists some battles before they end, with early `partsCount`
+  and `endTime`, and the bot reads an item only once. So before downloading,
+  ingest probes for parts after the known ones (`withUnlistedReplayParts`: a
+  one-byte GET until the first 404; a 429 is retried, any other error fails
+  the attempt instead of ending the list, otherwise an old battle with an
+  incomplete list would become `expired`). A 404/410 within
+  `PART_UPLOAD_GRACE_MS` (1 h) of the earlier of `endTime` and first sighting
+  means "not uploaded yet". Intermediate results (part 0001, no status) are
+  not stored; the final results of a battle that ran out of time (also
+  without a status) last within 10 s of the listed duration
   (`hasFinalReplayResults`). Such a battle waits in memory
   (`ReplayPartWaitList`, 1→3 min) without an attempt; `expired` only after
-  that window. A truncated battle in the data: `status` NULL, `team_won = 0`,
-  ~95 s (v11–v14 requeued such battles).
-- results-BLK lists each player's lineup (`vehicles`, matchingInfo
-  `crafts_info`), not what was driven; credits a bot slot's kills and score to
-  the player who did not load in (the bot keeps its deaths); has
-  `teamKills` ≈ 0; may give team 0 to a player who never loaded in while
-  `squad_id` keeps the marker; may hand the AI the player's own slot and name
-  the row after the bot (`coop/Bot…` on the player's userId: up to 7 of a
-  team's 8 when players failed to load a map, 2026-10-12). `player-events.ts`
-  (ingest and repair v3) derives from the events: `played_vehicles` in spawn
-  order (`vehicle` is its first; NULL — no tracks, readers use the lineup),
-  `bot_user_id` (only the team's single slotless player and single
-  negative-id slot pair up), `team_kills` from the kill feed, the team from
-  the squad marker, `slot_nick` (the ECS slot's nick of a row named after the
-  bot; `nick` keeps the bot's name, so player statistics leave the row out).
-  Readers hide a paired bot row, credit its tracks, kills and damage to the
-  player (`creditBotSlots`, scene `botSlots`) and draw no card for team ≤ 0;
-  the battle image (`buildRosters`) draws every player row, the AI's under
-  `slot_nick`, and a bot's own row only when it filled a place the squadron
-  left empty. Audit — `docs/replay-data-quality.md`.
-- The game sometimes records no squadron tag for a player, in results-BLK and
-  the ECS slot alike, for a whole login session (0.8% of rows, 2026-10-08).
-  `fillSquadronTags` (`squadron-tags.ts`) gives such a player the team's tag
-  when every real player of the team carries its squadron-battle marker
-  (`squad_id` 4096/4097; never a random battle's platoons) and the team's tags
-  share one core: ingest after the event facts, the results-only render of
-  an unstored battle, migration v21 for stored rows. The chat text takes the
-  results tags over the slots'; the events blob keeps the slots as recorded.
+  that window. Shares, durations and the truncated-battle signature —
+  `docs/replay-data-quality.md`.
+- results-BLK is not what happened (its quirks —
+  `docs/replay-data-quality.md`). `player-events.ts` (ingest and repair)
+  derives from the events: `played_vehicles` in spawn order (`vehicle` is its
+  first; NULL — no tracks, readers use the lineup), `bot_user_id` (only the
+  team's single slotless player and single negative-id slot pair up),
+  `team_kills` from the kill feed, the team from the squad marker, `slot_nick`
+  (the ECS slot's nick of a row named after the bot; `nick` keeps the bot's
+  name, so player statistics leave the row out). Readers hide a paired bot
+  row and credit its tracks, kills and damage to the player (`creditBotSlots`,
+  scene `botSlots`). The site draws no card for team ≤ 0; the battle image
+  (`buildRosters`) puts such a player into the smaller team (equal teams: no
+  row), draws the AI's row under `slot_nick`, and a bot's own row only when it
+  filled a place the squadron left empty.
+- The game sometimes records no squadron tag for a player for a whole login
+  session. `fillSquadronTags` (`squadron-tags.ts`) gives such a player the
+  team's tag when every real player of the team carries its squadron-battle
+  marker (`squad_id` 4096/4097; never a random battle's platoons) and the
+  team's tags share one core: ingest after the event facts, the results-only
+  render of an unstored battle, migration v21 for stored rows. The chat text
+  takes the results tags over the slots'; the events blob keeps the slots as
+  recorded.
 
 ### Untrusted binary input
 
-`.wrpl`, BLK, VROMFS and ECS packets are untrusted data without a schema. In
-`bit-reader.ts`, `packet-stream.ts`, `lz4.ts`, `ecs.ts`, `gm-sync.ts`,
-`replay-events.ts` and new decoders:
+`.wrpl`, BLK, VROMFS, DxP2 and ECS packets — replays and game files alike —
+are untrusted data without a schema. In the decoders of `src/wrpl/`
+(`bit-reader`, `packet-stream`, `lz4`, `ecs`, `gm-sync`, `replay-events`,
+`blk`, `vromfs`), `tactical-map/dxp.ts`, `oodle.ts` and new ones:
 
 - check lengths, counts, offsets and ranges before arithmetic and allocation;
   never remove bounds checks of varints, LZ4, ECS, FAT BLK, VROMFS, XOR/RLE or
   packet fields; a TypeScript non-null assertion is not a runtime guard;
-- zlib/zstd/gzip get output limits, workers an execution timeout;
+- decompression gets output limits (`decompression-limits.ts`), workers an
+  execution timeout;
 - after a parser change run the corpus (`npm run verify:benchmark-corpus`:
   hash, outcome, data contract).
 
-Format: the packet stream starts after `1234 + settingsBlkSize`, parts are
-concatenated logically. Compression is detected by magic
-(`packetStreamCodec`): zlib before 2.59, zstd since 2.59 (header `101404`),
-when the ECS construct message also gained a format byte before the component
-count (`ECS_CONSTRUCT_PREFIX_VERSION`). A slot userId is a signed int64
-(`BigInt.asIntN`; negative for bots, as in results-BLK). Chat strings have a
-varint length (`readVarLenStr`: a one-byte length truncated messages longer
-than 127 bytes). The chat is signed with the anonymous `fakeName`s of the
-Replay API item — ingest replaces them with real names (`fakeNamesFromItem`)
-before storing. ECS links an entity UID to a model and a player; aircraft
-tracks come from flight-model packets, ground tracks from GMSync
-(delta/XOR/RLE).
+The format (stream offset, codecs by game version, userIds, chat strings, ECS
+and track sources) is described in the headers of `replay.ts`,
+`replay-events.ts`, `ecs.ts`, `gm-sync.ts` and `bit-reader.ts`. A non-zero ECS
+construct format byte (`ECS_CONSTRUCT_PREFIX_VERSION`) is a new format: the
+parse fails loudly, never skips it. The chat is signed with the anonymous
+`fakeName`s of the Replay API item — ingest replaces them with real names
+(`fakeNamesFromItem`) before storing.
 
 A game patch breaks parsing silently — results-BLK (players, scores) still
 reads, the events do not:
 
-- a part no codec can decompress is a parse error, not an empty battle;
+- a part that fails to decompress goes to `events.errors`; a battle with no
+  decompressible part is a parse error, not an empty battle;
 - one failing ECS entity does not abort the packet (the block boundary is
   known): the others, player vehicles included, still parse, and the error
   goes to `events.errors`;
@@ -440,54 +458,43 @@ reads, the events do not:
   `battle_ingest` status (example: v6/v7) while the parts are on the CDN
   (~2 weeks).
 
-`prepareBattleData()` downloads and reserves parts, `parsePreparedBattleData()`
-hands them to a worker; the previous `loadBattleData()` stays for rollback and
-interactive paths. `reconstructBattleSummary()` does not read `events_blob`;
-media hands the compressed blob to a worker.
-
 ### Media and cache
 
 - Media is built from SQLite, from the CDN only when needed; parallel builds of
   one session are merged, and an interactive request raises the priority.
 - `buildBattleMediaKind()` + `render-media-kind` build only the requested log,
   chat or heatmap; `buildBattleMedia()` + `render-media` build the full set for
-  warmup and CLI; the 2× heatmap is separate. Ground/air/team heatmaps reuse
+  the `battle` CLI; the 2× heatmap is separate. Ground/air/team heatmaps reuse
   `PreparedHeatmapScene`; SVG builders are pure functions.
-- Heatmaps and the site's battle player draw on the mission's tactical map
-  as the game's respawn screen shows it, built from the game client
-  (`src/tactical-map/`, `docs/tactical-maps.md`: frame, grid and drawing
-  reverse-engineered and checked on 160 snapshots): texture (the HQ pack's
-  2048² when installed), out-of-bounds hatch, grid, labels, zones, tank bases,
-  cell size (no arrows to bases outside the view yet: ROADMAP). A
-  worker task `build-tactical-map` builds each perspective once per game
-  version into `data/maps/game/`; which replay team stands at which mission
-  team's spawn varies, so both are built and the renderer picks by the
-  team's first ground positions (the scene's `map.team` → `map.png?team=`).
-  Mission imports load by the battle's rank (season-stage BR cap: the rank's
-  airfields, helipads from 20, UCAV from 26), difficulty and parameter, and
-  squadron battles force the airfield spawn (`SQUADRON_BATTLE_DESCRIPTOR`:
-  aircraft start on the runway, bombers at the `_arcade` air spawns); maps are
-  cached per `BALANCE_LEVEL_THRESHOLDS` bucket. The air heatmaps and the
-  player's air view draw on the mission's air map (the level's whole air
-  texture and grid, every base kind): `build-tactical-map-spec` caches its spec
-  (`ensureGameAirMap`), and the worker that renders a view draws it
-  (`composeTacticalMap`, reading only the texture), the ground map inset at the
-  battle area in heatmaps. The scene saves its air view (`map.air`, a sidecar
-  `-air.json`), and `map.png?kind=air` draws it on the first request (worker
-  task `compose-tactical-map`). A spec is cached only when its texture is
-  installed: otherwise the air heatmaps keep the level map captured from port
-  8111, as when drawing fails. Without the client: the wt-tools snapshot
-  of the mission's mode (exactly battleArea), else the local level map; never
-  substitute another mode's map. `/api/battles/:key/map.png` builds a
-  game-client ground map on a miss, a snapshot only from disk.
+- A change to what media, a scene or a map draws bumps its version, otherwise
+  cached artifacts keep the old drawing: `BATTLE_MEDIA_VERSION`
+  (`battle-media.ts`, checked in `*-meta.json`), `BATTLE_SCENE_VERSION`
+  (`battle-scene-core.ts`, in `-scene-v<N>` file names),
+  `TACTICAL_MAP_VERSION` (`tactical-map/spec.ts`, in the map cache hash;
+  `pruneStaleMaps` deletes older hashes).
+- Heatmaps and the site's battle player draw the mission's tactical map as
+  the game's respawn screen shows it, built from the game client
+  (`src/tactical-map/`; drawing, mission objects, air maps and cache —
+  `docs/tactical-maps.md`). Both perspectives are built, and the renderer
+  picks by the team's first ground positions (the scene's `map.team` →
+  `map.png?team=`); squadron battles force the airfield spawn
+  (`SQUADRON_BATTLE_DESCRIPTOR`); maps are cached per
+  `BALANCE_LEVEL_THRESHOLDS` bucket (a `[maps]` warning that a rank's map
+  differs means a new threshold); an air map's spec is cached only with its
+  texture installed. A mission path must match `MISSION_PATTERN` before it
+  reaches the file system; a failed build is retried after `FAILURE_TTL_MS`.
+  Without the client: the wt-tools snapshot of the mission's mode (exactly
+  battleArea), else the local level map; never substitute another mode's map.
+  `/api/battles/:key/map.png` builds a game-client ground map on a miss, a
+  snapshot only from disk.
 - The winner comes from events and the database, never from results-BLK;
   anonymized names are restored by `userId`, not only by nickname.
 - Resvg font order (`src/workers/render-fonts.ts`) is the fallback order: a UI
   font without box-drawing glyphs (Linux — Noto Sans from `fonts-noto-core`,
-  Windows — Segoe UI), the game font, scripts, symbols. DejaVu with
-  box-drawing draws frames instead of the game's glyphs in clan tags;
-  `map-icons.ttf` is not in the Resvg base set: it replaces digits and letters
-  with icons.
+  Windows — Segoe UI), the game font, scripts, symbols. Of the asset fonts a
+  render gets only `symbols_skyquake.ttf` (`clanFontFiles`): `map-icons.ttf`
+  (family `indicators`) maps digits and letters to icons and must never join
+  glyph selection.
 
 Data:
 
@@ -498,165 +505,77 @@ Data:
   whole session set; `WT_BATTLE_CACHE_ENABLED=false` disables reuse, not
   saving;
 - `benchmarks/fixtures/replays/` — the only permanent WRPL corpus;
-- `data/scout-images/` — screenshots sent to `/scout` and their readings;
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
-  `data/maps/game/` — tactical maps from the game client (ground maps as JPEG +
-  meta, air maps as their spec; rebuilt after a game patch);
-- `data/wt-game/` — copies of the game files (`TACTICAL_MAP_SOURCES` and the
-  optional HQ textures, at the game's paths; recopy after a patch) for Docker
-  without `WT_GAME_HOST_DIR`:
-  flags are read from the atlas at every start (the battle image's nations; every flag as `/scout`
-  picture templates); on failure the built-in flags remain and the image still
-  renders, and pictures are read without flags.
+  `data/maps/game/` — tactical maps from the game client (rebuilt after a game
+  patch);
+- `data/wt-game/` — copies of the game files for Docker (section 3,
+  `WT_GAME_DIR`). The game's flags load from its atlas once per process
+  (`game-flags.ts`); without them the battle image keeps its built-in flags
+  and `/scout` reads pictures without flags.
 
 ## 8. Discord, site and player statistics
 
-- Slash command: a file in `src/bot/commands/`, registration in
-  `src/bot/commands/index.ts`, then `npm run deploy:commands` — only with
-  permission.
+- Slash command: a file in `src/bot/commands/` (autocomplete:
+  `Command.autocomplete`), registration in `src/bot/commands/index.ts`, then
+  `npm run deploy:commands` — only with permission.
 - `/battle` and the announcer share `renderBattlePost()`; `battle:*` buttons
-  are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral.
-- `/scout squadron [player]` (`src/scout/`): the enemy squadron's likely
-  players, each one's vehicle chances and the team's class counts, from its
-  stored battles (worker task `read-scout-history`, 30 s cache; squadron
-  and player autocomplete through `Command.autocomplete`). One spawn per
-  player in a squadron battle, so the eight vehicles are the setup.
-  `model.ts` holds logistic weights and calibrations that
-  `npm run scout:backtest -- <copy.db> --fit-all` fits (`--fit`: train
-  before `--split`, test after); refit after a rules or format change and
-  update the accuracy in `docs/opponent-scouting.md`. The BR cap switches
-  `STAGE_SWITCH_DELAY_SEC` after the schedule's 00:00 UTC.
-- `/scout` by picture: a Tab screenshot in `WT_SCOUT_CHANNEL` → worker task
-  `read-scoreboard-image` (`src/scout/scoreboard-read.ts`): rows by
-  horizontal colour edges and even spacing (team colours are never assumed),
-  one Tesseract child process per model of `OCR_PASSES` (the image installs
-  them), nicks of the last 120 days matched approximately in every reading;
-  the right-hand nick of a row is the enemy. The flags above the table
-  (`src/scout/flags.ts`: the game's own flags as templates, drawn once by
-  worker task `render-flag-templates`) are built like the game's
-  `getCountriesByTeam` (datamine `mpstatistics.nut`): the team's players in
-  the order of their user ids as text (the rows' order while scores tie),
-  only those in a vehicle, each flag once — a vehicle's operator
-  (`wt-vehicles.json` `operator`, unittags `operatorCountry`) or its nation,
-  by the viewer's game setting. A player not spawned yet or destroyed shows
-  no flag and an icon in the row (`row-icons.ts`: a parachute or a figure;
-  RB leaves an enemy in a vehicle without one). Then `read-scout-players` and
-  `predictKnownTeam` (roster known, vehicles from each player's own battles
-  at the cap, conditioned on the enemy's flags in that order and on the row
-  icons by `flag-evidence.ts`, both settings mixed). A player's "not seen at
-  this cap" share is spread over the cap's most spawned vehicles so far, by
-  their nations, classes and vehicles at any cap and StatShark's battles
-  (`newVehicleChances`: a guess is a flag-chain option, so the flags can name
-  it), weighed by the own squadron's air habit (`OPPONENT_AIR_WEIGHTS`) and set
-  in a setup calibration of its own (`KNOWN_TEAM_SETUP_CALIBRATION`). With
-  StatShark on, the reply queues a refresh for each enemy (players without
-  battles at the cap first, through the lazy StatShark service) and is edited
-  once they end, within `STATSHARK_WAIT_MS`; a snapshot older than
-  `STATSHARK_FRESH_SEC` (2 days) gives battle counts, but a vehicle missing
-  from it no longer counts as never played. The enemy rows' numbers
-  (`scoreboard-columns.ts`: the six columns found from their header icons,
-  one Tesseract call with a digit whitelist, the picture's own zero
-  overruling a number read off a zero) weigh each recognised enemy's classes
-  by their kills and captures (`killLikelihood`, `KILL_LIKELIHOODS`; the timer
-  is not read, so a kill shown counts and none says nothing), and "at least
-  one aircraft" goes through `KNOWN_TEAM_AIR_KNOTS`. `npm run scout:backtest
-  -- <copy.db> --known-team [--fit | --fit-all] [--statshark] [--unread-live]
-  [--variants REGEX]` scores it at moments of real battles (kill columns from
-  the events; `--statshark` counts the snapshot the reply's update would read;
-  `--unread-live` makes players without a stored battle unread rows) and fits
-  these (`scout-known-backtest.ts`: all cores but two, ~7 GB). Every image, its
-  reading and the prediction (`scoutPredictionRecord`, again after the
-  StatShark update, with a hash of the model's constants) stay in
-  `data/scout-images/<day>/`; with `truth.json` there (nicks, flags, enemy row
-  icons and columns) they are the test set (`npm run scout:images` scores
-  them), and `npm run scout:outcomes -- <copy.db>` scores the replies against
-  their battles once stored (Discord IDs inside, never publish).
-- The image's PSR column (`src/wrpl/battle-psr.ts`): the battle's points by
-  the guides' formula above, PSR after the battle below (before it while the
-  winner is unknown). The formula's opponent is the enemy team's average PSR,
-  at least 1500: the drawn battle's from its players' estimates, an earlier
-  one's from their readings before its start (`getBattleTeamPsr`, cached). A
-  claninfo read at the announcement lags up to 15 min, so the PSR before the
-  battle is the last readings (snapshot changes, the last roster read) carried
-  over the player's stored battles; which battles a reading counts is a
-  Viterbi path over read times and values. `PSR_RECHECK_AFTER_SEC` (16 min)
-  after the battle the post rereads the pages (`freshAfter`), and
-  `PSR_RECHECK_STORE_WAIT_SEC` (3 min) later redraws when a number changes: a
-  reading that counts exactly the battle gives the page's own PSR. The wait
-  lets the battles the read counts be stored: a player's next battle often
-  ends before the recheck (median 7 min apart), and a read counting a battle
-  the path lacks is pinned on this one. The page shows the PSR after a battle
-  only if it refreshed before the next one ended (about half of players); the
-  others keep the formula's. The page's change replaces the formula's only
-  past the rounding, within 4 points and with the result's sign; otherwise it
-  holds another battle. The recheck queue is in memory: a restart drops the
-  waiting ones.
-  Rechecked players whose battle two readings isolate feed
-  `psrFormulaCheck()` (`/api/stats` → `psrFormula`, a warning under 90%): a
-  drop means Gaijin changed the rule. Accuracy in the module header.
+  are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral. A
+  post's updates run in order — ratings, winner, unknown-tag lookup
+  (`queueBattlePostUpdates`), then the PSR recheck — in bounded queues
+  (`MAX_WINNER_UPDATES`, `MAX_WINNER_UPDATE_BYTES`, `MAX_POST_RECHECKS`,
+  `MAX_POST_RECHECK_BYTES`); a `/battle` reply is edited for at most
+  `INTERACTION_EDIT_MS` (14 min: the interaction token expires at 15).
+- `/scout squadron [player]` (`src/scout/`; read `docs/opponent-scouting.md`
+  before changing the model: method, accuracy, backtests) reads history in
+  worker task `read-scout-history`. `model.ts` holds logistic weights and
+  calibrations that `npm run scout:backtest -- <copy.db> --fit-all` fits
+  (`--fit`: train before `--split`, test after; `--known-team` for a
+  screenshot's roster: all cores but two, ~7 GB); refit after a rules or
+  format change and update the accuracy in the doc.
+- `/scout` by picture: a Tab screenshot in `WT_SCOUT_CHANNEL`; OCR, nick
+  matching and flag drawing run only in worker tasks (`read-scoreboard-image`,
+  `read-scout-players`, `render-flag-templates`), Tesseract with the models of
+  `OCR_PASSES` that the `Dockerfile` installs; team colours are never assumed.
+  Intake: one read at a time, ≤ 20 queued, ≤ 4 images a message,
+  ≤ `MAX_IMAGE_BYTES` (25 MiB) each, bots ignored. `data/scout-images/<day>/`
+  keeps every image, its reading and the prediction (`scoutPredictionRecord`;
+  Discord IDs inside: never publish); with `truth.json` the days are the test
+  set (`npm run scout:images`), and `npm run scout:outcomes -- <copy.db>`
+  scores the replies against their stored battles.
+- The image's PSR column (`src/wrpl/battle-psr.ts`; method and accuracy in its
+  header): the battle's points by the guides' formula (`src/psr.ts`) above,
+  PSR after the battle below (before it while the winner is unknown).
+  `PSR_RECHECK_AFTER_SEC` (16 min) after the battle the post rereads the pages
+  (`freshAfter`) and `PSR_RECHECK_STORE_WAIT_SEC` (3 min) later redraws when a
+  number changes; the recheck queue is in memory: a restart drops the waiting
+  ones. `battlePsr()` reads SQLite on the main thread inside
+  `renderBattlePost()` (3.7 ms a battle on average, 14 ms at most): a new read
+  there stays indexed or moves to a worker. A falling `psrFormulaCheck()`
+  (`/api/stats` → `psrFormula`; a log warning under 90% once 300 of the last
+  1,000 checks exist) means Gaijin changed the rule.
 - Announcer: attempts and message state in `announce_state`, the baseline in
   `bot_state`; the first start does not publish history; battles older than
   `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()`. A
-  battle is posted once, after its commit; preliminary messages are no longer
-  sent (since 2026-08-01), and the legacy ones behind the baseline
-  (`getUnfinishedAnnounceMessages()`, loaded at announcer start, kept until
-  resolved) are edited into the post or the error, or marked done if Discord
-  deleted them.
+  battle is posted once, in battle start order, after a commit that stored its
+  winner; a terminal ingest without a winner resolves it unposted
+  (`battleAnnouncementDecision`). Preliminary messages are no longer sent; the
+  legacy ones behind the baseline (`getUnfinishedAnnounceMessages()`, loaded
+  at announcer start, kept until resolved) are edited into the post or the
+  error, or marked done if Discord deleted them.
 - `/playerboard setup` stores the channel and one editable message in SQLite;
   the board shows the current voice snapshot and writes its publication state
   through a worker task only when the hash changes. The WT nickname is the
   display name up to the first `(`.
-- `POST /api/voice/refresh` — at most once per 5 s (`Retry-After`),
-  single-flight `refreshVoice()`.
-- Squadrons on the site: rating, place, the list's 24 h change, the clan
-  page's "30 days" delta and chart are official, from the leaderboard (PSR
-  snapshots exist only for clans from drawn battles, and their sum missed the
-  leaders). Ranking tiers (`RANK_TIER_*` in `src/web/routes/site.ts`): the
-  latest crawl, earlier crawls of the season, clans with a rating above zero
-  missed by the last full crawl (`wt-clans:full-crawl-at`; disbanded or fallen
-  to zero: a stale rating would outrank clans in the table), then clans
-  without official data, rated by the PSR sum from snapshots (a zero sum —
-  seen only in an earlier season — is left out of the list and the home
-  count; its page still opens). A zero rating
-  below the crawled part is confirmed by the full crawl, not dropped. A
-  renamed squadron (one leaderboard `_id`, else one founding time) is one row
-  under its newest core tag (`renamedClanCores`; its old core used to keep its
-  last row among the dropped: 4 squadrons on 2026-10-05); old links,
-  favourites and search resolve to it, its history and crawl reads stay under
-  the old core.
-  The 24 h change and the day's battles and wins end at the clan's own
-  confirmation time (top 100 every 20 min, the rest at full crawls) and start
-  at the `clan_crawls` read nearest a day before it, at most
-  `DAY_BASE_MAX_SHIFT_SEC` (6 h) off and no further than the log's start;
-  otherwise at the last history point before that mark (alone it gave the
-  rest 32–36 h, 2026-10-05). `/api/clans` returns the window
-  (`delta24hFrom`, `delta24hTo`; null after that fallback: history cannot
-  tell when the base was read). A squadron's page (`/api/clans/:coreTag`)
-  carries its row's day figures, places moved and live mark from the same
-  snapshot, and `ranking`: the table's size, leader, tier cut-offs, records
-  and the neighbours one place up and down (null unless both are `current`:
-  a dropped or estimated rating is no score to pass). `clan_roster` is the last
-  non-empty roster; the roster, members' PSR and their deltas are filtered by
-  it. A member links to an identity by alias, else to the single WT user id
-  of the exact nick in replays (a reused nick: none), else to
-  `/players/nick/:nick` — the matching of `resolveKnownPlayer` without its
-  writes: a GET creates no identity; that page then looks the id up
-  (`POST /api/player-id`).
-- `/api/clans` views (`src/web/clan-ranking.ts`): `sort`
-  (place/change/battles/winRate/kd/members), `dir`, `live`, `tags` (≤ 50 core
-  tags: the SPA's favourites, kept only in the browser's localStorage); search
-  → filters → sort → page. A win rate or K/D from fewer than
-  `MIN_RATE_BATTLES` (50) season battles sorts after the rest and holds no
-  record. Places moved compare with the table a day before the latest crawl,
-  rebuilt from `clan_crawls` (`clanPlacesAt`: squadrons dropped since keep
-  their place; none until the log holds a full crawl before that moment).
-  "Playing now" (`recentBattles`): squadron battles from replays that ended
-  within `LIVE_WINDOW_SEC` (45 min), for every squadron; a team counts when its
-  tagged players share one core tag; no marks while `wt-replays` has had no
-  successful run for `LIVE_MAX_REPLAY_AGE_SEC` (10 min). The leaderboard's
-  battle counts lagged a crawl or two and marked top-100 entrants for old
-  battles.
+- Squadrons on the site — `docs/squadrons.md` (ranking tiers `RANK_TIER_*`,
+  renamed squadrons, the 24 h window, `ranking`, rosters, the `/api/clans`
+  views of `src/web/clan-ranking.ts`). Official figures come from the
+  leaderboard; a PSR sum from snapshots rates only a clan without official
+  data. A GET creates no player identity: roster links use
+  `resolveKnownPlayer`'s matching without its writes. The SPA copies
+  `MIN_RATE_BATTLES`, `REWARD_TIERS` (`CLAN_REWARD_TIER_PLACES`) and the
+  `tags` cap (`MAX_FAVORITE_CLANS`, 50) from the server: change both sides
+  together.
 - `clan.about` of `/api/clans/:coreTag` (`readClanAbout`,
   `src/web/clan-about.ts`): links and join requirements read on request
   from the squadron's untrusted slogan, description and announcement. The
@@ -675,44 +594,37 @@ Data:
   built-in one is an error.
 - Dashboard `/statistics` (`DASHBOARD_PATH`) — HTML in
   `src/web/routes/pages.ts`: user data goes through `textContent`, never
-  `innerHTML`. SPA at the root — only when `frontend/dist` exists: named routes
-  (`/api/*`, `/health`, the dashboard) win over its static wildcard, other GET
-  paths get `index.html` except `/assets/*` (a missing hashed asset stays a
-  404). `/app/*`, the SPA's address until 2026-10-04, redirects 301 to the
-  same path at the root (`legacySpaTarget` collapses leading slashes: no open
-  redirect).
+  `innerHTML`. SPA at the root (`src/web/routes/spa.ts`) — only when
+  `frontend/dist` exists: named routes (`/api/*`, `/health`, the dashboard)
+  win over its static wildcard; other GET and HEAD paths get `index.html`,
+  except `/api/*` and `/assets/*`, which get the JSON 404 (a missing hashed
+  asset after a deploy is never HTML). `/app/*`, the SPA's address until
+  2026-10-04, redirects 301 to the same path at the root (`legacySpaTarget`
+  collapses leading slashes: no open redirect).
 - A new route goes to `src/web/routes/`, dependencies through an explicit
   `WebDeps`, no hidden singletons; APIs have a schema, bounded limits and a
-  rate limit.
+  rate limit (site routes: `passRateLimit`, 60 weight units per IP and 240 in
+  all per minute).
 - Web listens on loopback by default; outside only through a reverse proxy and
-  `WEB_TOKEN`, which then guards every path except `/health`. A POST with a
-  foreign `Origin`/`Sec-Fetch-Site` gets 403 in every mode; without these
+  `WEB_TOKEN`, which then guards every path except `/health` (judged by the
+  matched route, else the normalized path: `isProtectedRequest`). A POST with
+  a foreign `Origin`/`Sec-Fetch-Site` gets 403 in every mode; without these
   headers (not a browser) it passes. With a token, the `onSend` hook turns
   `public` into `private` on protected responses, so a shared proxy cache
   never serves them without the token.
-- Player search (`GET /api/players`, the home page): nick prefixes and an
-  exact WT user id from SQL, live, plus typo-tolerant matches
-  (`src/nick-search.ts`): each nick in three views — how it looks in Latin
-  letters (look-alikes, leet), how a Russian reads it (volapuk: `AKYJIA` is
-  акула), how it sounds (transliteration both ways) — and the query's other
-  keyboard layout; edits weighted in quarters, edits allowed by query length
-  (`maxEdits`). Worker task `search-player-nicks` keeps an index of every
-  replay, identity and alias key for `NICK_INDEX_TTL_MS` (20,086 keys on
-  2026-10-08: built in 240 ms, a query 8–10 ms); a failed task leaves the
-  prefix matches. Rank: an exact id, the match (`compareNickScores`),
-  identity before alias before replay, battles. `/scout`'s player
-  autocomplete ranks the squadron's recent nicks the same way (`rankNicks`);
-  its screenshot matcher folds nicks with the look view (`lookAlike`).
-  The weights are fitted with `npm run bench:nick-search -- <copy.db>` on
-  simulated queries; rerun it after changing a rule, and plain typos must not
-  drop (`docs/nick-search.md`: method, results, rejected ideas).
-- Player page (`/players/…`): `/api/players/:key` — profile, clan with
-  the roster role, sources with `account` (level, dates, clan and nickname
-  history, WT leaderboard places); `/api/players/:key/insights?days=` — a
-  breakdown of local replays (maps, vehicles, clans, teammates, weapons,
-  opponents, hours) over the period's last 500 battles: worker task
-  `read-player-insights` with its own read-only connection, 1 min cache, rate
-  limit weight 2.
+- Player search (`GET /api/players`, the home page; views, weights and
+  measurements — `docs/nick-search.md`): nick prefixes and an exact WT user id
+  from SQL, live, plus typo-tolerant matches (`src/nick-search.ts`) from
+  worker task `search-player-nicks`, whose index of every replay, identity
+  and alias key lives `NICK_INDEX_TTL_MS`; a failed task leaves the prefix
+  matches. Rank: an exact id, the match (`compareNickScores`), identity before
+  alias before replay, battles. `/scout`'s player autocomplete (`rankNicks`)
+  and screenshot matcher (`lookAlike`) reuse it. After changing a rule rerun
+  `npm run bench:nick-search -- <copy.db>`: plain typos must not drop.
+- Player page (`/players/…`): `/api/players/:key` (profile, clan with the
+  roster role, account sources) and `/api/players/:key/insights?days=` (local
+  replays, the period's last 500 battles: worker task `read-player-insights`
+  on its own read-only connection, 1 min cache, rate limit weight 2).
 - Guides (`/guides`, `frontend/src/pages/GuidesPage.tsx`, `pages/guides/`)
   hold three kinds of facts. The PSR rule is `frontend/src/lib/psr.ts`: tables
   and the calculator compute from it for an enemy team at or below 1500 (the
@@ -727,32 +639,36 @@ Data:
   `frontend/src/i18n/guide/<locale>.ts`, each implementing `GuideText` (a
   missing translation is a type error); `**bold**` and `[label](/path#id)`
   become React nodes in `Rich`, never HTML.
-- `POST /api/player-stats` (the player page on opening, the dashboard form) accepts
-  only an exact known nickname or a stable WT user id. Every enabled external
-  source has a single-slot lazy queue, 24 h TTL (younger snapshots are not
-  refetched), stale fallback, schema validation and its own rate limit; a 429
-  pauses the whole source, doubling from the retry base while they repeat
-  (StatShark answered 429 after ~60 profiles in a row on 2026-10-09 and kept
-  it for over 15 minutes).
-  Replay and account coverage are never summed; the primary snapshot is
-  `account`, all of them `accountSources`. Precedence: Gaijin's companion API,
-  the warthunder.com profile, StatShark; the primary is the first source with a
-  fresh snapshot (last check `ok` within the TTL), else the first with any
-  snapshot, and the site lists sources in the same order, fresh first. The
-  player page takes level and title from companion, the registration date from
-  the site profile, and only what neither publishes from StatShark: the last
-  login, squadron and nickname history, WT leaderboard places.
+- `POST /api/player-stats` (the player page on opening, the dashboard form)
+  accepts only an exact known nickname or a stable WT user id (route limits
+  `STATS_PER_IP_LIMIT`, `STATS_GLOBAL_LIMIT`). Every enabled external source
+  has a single-slot lazy queue, 24 h TTL (younger snapshots are not
+  refetched), stale fallback, schema validation and its own rate limit. A
+  player's failed check is retried after 5 min, doubling up to 6 h
+  (`DEFAULT_RETRY_*_SECONDS`); a 429 pauses the whole source, doubling from
+  the same base while they repeat (StatShark answered 429 after ~60 profiles
+  in a row on 2026-10-09 and kept it for over 15 minutes). Replay and account
+  coverage are never summed; the primary snapshot is `account`, all of them
+  `accountSources`. Precedence: Gaijin's companion API, the warthunder.com
+  profile, StatShark; the primary is the first source with a fresh snapshot
+  (last check `ok` within the TTL), else the first with any snapshot, and the
+  site lists sources in the same order, fresh first. The player page takes
+  each field from the first source that has it: level (companion, site
+  profile, StatShark), title (companion, StatShark), registration date (site
+  profile, StatShark); the last login, squadron and nickname history and WT
+  leaderboard places come from StatShark only.
 - `POST /api/player-id` (asked once by a profile without an id, which then
-  opens `/players/<id>`): `WtUserIdResolver` (`src/player-stats/id-lookup.ts`)
-  answers from local data (one id; the nick's nick-only identity adopts it),
-  else asks the public companion nick search (no cookie; a prefix list of 100
-  may omit the nick), then the Replay API by name (random battles, the shared
-  queue, one call per 10 s). Exactly one account with the case-folded nick is
-  stored as identity + aliases (`exact_nick`, `medium`: a stale roster nick may
-  now be another account), so the roster links it from then on; several or
-  none link nothing (cached 12 h, failures 5 min). Only locally known nicks
-  reach a source; one lookup at a time, one per nick, ≤ 32 queued (`busy`);
-  the request waits 15 s, then answers `pending`.
+  opens `/players/<id>`; route limits `ID_PER_IP_LIMIT`, `ID_GLOBAL_LIMIT`):
+  `WtUserIdResolver` (`src/player-stats/id-lookup.ts`) answers from local
+  data (one id; the nick's nick-only identity adopts it), else asks the
+  public companion nick search (no cookie; a prefix list of 100 may omit the
+  nick), then the Replay API by name (random battles, the shared queue, one
+  call per 10 s). Exactly one account with the case-folded nick is stored as
+  identity + aliases (`exact_nick`, `medium`: a stale roster nick may now be
+  another account), so the roster links it from then on; several or none link
+  nothing (cached 12 h, failures 5 min). Only locally known nicks reach a
+  source; one lookup at a time, one per nick, ≤ 32 queued (`busy`); the
+  request waits 15 s, then answers `pending`.
 
 Provider invariants:
 
@@ -768,14 +684,14 @@ Provider invariants:
   elite vehicles, medals per nation) → `player_external_countries`; a missing
   block or unknown markup gives an empty list, not a snapshot error.
 - Companion uses its own official session and does not touch the site's
-  Cloudflare. Its profile method answers only a logged-in session
-  (`!ERROR:AUTH_RESPONSE_STATUS_IS_LOGINERROR` without one, 2026-10-07). A
-  warthunder.com login is not one: its `identity_sid` is a `.warthunder.com`
-  cookie, reaches the companion host and still gets HTTP 400, as does a fresh
-  login's full set (`identity_sid`/`_token`/`_id`, `_identity`, `_csrf`) — the
-  session comes from the WT Assistant app's own login, which is undocumented. Per
-  mode and vehicle it gives battles, victories, deaths, respawns and air,
-  ground and naval kills, plus level and title — not SL/RP.
+  Cloudflare. Its profile method answers only a session from the WT Assistant
+  app's own, undocumented login: without one
+  `!ERROR:AUTH_RESPONSE_STATUS_IS_LOGINERROR`, and warthunder.com login
+  cookies get HTTP 400 (2026-10-07). A missing or logged-out session is the
+  source's `error` (retried), never `private` (would wait the TTL). Per mode:
+  battles, victories, deaths, time played and air, ground and naval kills (no
+  respawns); per vehicle: flyouts, victories, defeats, deaths and kills; plus
+  level and title — not SL/RP.
 - StatShark only by a numeric user id through the shared browser; the
   Turnstile token stays in the browser's `localStorage` (never in Node,
   SQLite, env or logs), the analytics endpoint is blocked.
@@ -797,7 +713,7 @@ analysis per item.
   lengths, nicknames or chat, the Russian UI dictionary
   `frontend/src/i18n/ru.ts` (values) and guide text
   `frontend/src/i18n/guide/ru.ts`, and old stored Russian text the code must
-  still recognize. Code text is still mostly Russian (ROADMAP, "English
+  still recognize. Russian code text remains (ROADMAP, "English
   everywhere"): when you change a function, translate its comments and strings
   in the same change and check whether the code is still needed — review
   happens on touch, not as a whole-repo sweep.
@@ -816,21 +732,21 @@ Offline gates (full list — `package.json`):
 npm run build                 # dist/ from tsconfig.build.json, no tests
 npm run verify                # typecheck, npm test, offline verify:*, corpus
 npm run verify:workers:dist
-npm run build:web
+npm run build:web             # the SPA: its own tsc -b and Vite build
 ```
 
-`verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
+`verify` = `typecheck` (`src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
-`verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-13**: all
-gates pass, **483 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
-the test count changes, state the new one; any new failure is a regression.
-
-`npm run maps:build -- --db <copy.db> --compare` (offline, needs the game
-client) builds every squadron mission's tactical map into
-`data/maps/game/export/` and scores it against the wt-tools snapshots
-(`--kind air`: the whole air maps, unscored); rerun it after a game patch or a
-drawing change (`docs/tactical-maps.md`, results).
+`verify:player-stats`, `verify:player-stats-provider`,
+`verify:player-stats-api`, `verify:player-board`,
+`verify:player-board-voice`, `verify:benchmark-corpus` (needs
+`data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
+alone for the affected subsystem. It never type-checks `frontend/`: after a
+frontend change run `build:web`. Baseline on **2026-10-13**: all gates pass,
+**483 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+count changes, state the new one; any new failure is a regression. After a
+game patch or a map-drawing change rerun `npm run maps:build`
+(`docs/tactical-maps.md`).
 
 CI (`.github/workflows/ci.yml`): the same steps on Linux (Node 26, as the
 image) and Windows (Node 24), `npm audit`, a Docker image build. When changing
@@ -841,26 +757,26 @@ that use fetch (libuv assert), and no test hangs. Dependabot runs weekly.
 Only with explicit permission (external or local effects):
 
 - `npm run dev`, `npm start`, `npm run dev:bot`, `npm run start:bot`;
+- `npm run site` — the API over `DB_PATH`, which `initDb()` migrates;
+- `npm run dev:web` with `WTBOT_API_URL` — its POSTs act on production;
 - `npm run deploy:commands` — changes Discord slash commands;
 - `npm run backfill -- <days>` — network and database writes;
 - `npm run analyze -- <limit>` — paid API calls;
-- `npm run battle -- <id>` — may download a replay and build media;
+- `npm run battle -- <id>` — may download a replay, build media and store the
+  battle;
+- `npm run capture:map` — reads a running game client (port 8111), writes
+  `data/maps/` and `data/fonts/`;
 - `verify:player-stats-live`, `verify:statshark-live`, `verify:wt-transport`,
   `benchmark:performance-soak` — external services (soak clears
   `WT_BATTLES_CHANNEL` but still uses the network and the database).
 
-An allowed live run: wait for Discord ready and web listen; check `/health`,
-`/api/stats` (status of every source), `/api/items?limit=3`, `/api/voice`,
-parser and ingest logs, and that unchanged items are not rewritten. Watch the
-per-battle lines `[ingest] бой …: убийств N, победитель …` (battle: kills N,
-winner): a run of `убийств 0, победитель ?` means a game patch broke parsing
-(section 7). With `WT_BATTLES_CHANNEL` set, the announcement queue goes to the
-real channel — estimate it first. Check the bot running in Docker through logs
-and the API (skill `verify`). Windows: after a watch run check child node
-processes and port 3000 — `process.kill(pid, 'SIGINT')` exits without
-handlers; graceful shutdown is tested with Ctrl+C or `docker compose stop`.
-`ExperimentalWarning: SQLite` is expected on Node ≤ 24; Node 26 does not print
-it.
+An allowed live run follows skill `verify` (checks, logs, the bot in Docker);
+a run of `[ingest]` lines with `убийств 0, победитель ?` (kills 0, winner ?)
+means a game patch broke parsing (section 7). With `WT_BATTLES_CHANNEL` set,
+the announcement queue goes to the real channel — estimate it first. Windows:
+after a watch run check child node processes and port 3000 —
+`process.kill(pid, 'SIGINT')` exits without handlers; graceful shutdown is
+tested with Ctrl+C or `docker compose stop`.
 
 ## 11. Licenses
 

@@ -176,6 +176,15 @@ downscaled to 2000 px), 51 enemies the bot has battles of. Reading, rewritten
   nicks drawn on synthetic tables (their squadrons mixed, so only tag-confirmed
   finds count): 19 without the jpn pass, 35 with it and the letters rule.
 
+Where it runs: worker task `read-scoreboard-image`
+(`src/scout/scoreboard-read.ts`) reads the picture with one Tesseract child
+process per model of `OCR_PASSES` (the `Dockerfile` installs them: change both
+together), `read-scout-players` loads the recognised players' battles, and
+`render-flag-templates` draws the flag templates once. Every image, its
+reading and the prediction (`scoutPredictionRecord`, again after the StatShark
+update, with a hash of the model's constants) stay in
+`data/scout-images/<day>/`; they hold Discord IDs: never publish them.
+
 ### Flags above the table
 
 The game builds the line in `getCountriesByTeam` (`gui.vromfs.bin`
@@ -457,7 +466,7 @@ unless said otherwise.
   destroyed, assists, zones captured and deaths. By the time since the first
   spawn (the events' kill feed, team kills left out), the share of players
   showing no kill / air kills only / ground kills only / both
-  (`KILL_LIKELIHOODS`):
+  (`KILL_LIKELIHOODS`, applied by `killLikelihood`):
 
   | At 120 s | none | air | ground | both |
   |---|---|---|---|---|

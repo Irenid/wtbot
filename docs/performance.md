@@ -55,6 +55,16 @@ Fixture `large-mixed-air` (11.81 MiB), 1 worker, 10 warm runs:
 Packet decoding is still the largest phase, but live CPU workers are not
 saturated: rewriting it now brings nothing end to end.
 
+### Ingest pipeline
+
+- A tick (every `TICK_MS`, 20 s; a `discovered` event wakes it at once) takes
+  up to `BATCH_MULTIPLIER` (2) × concurrency pending items: newest first,
+  every 8th sweep oldest first.
+- Producers start downloads ≥ `PAUSE_MS` (500 ms) apart into a ready queue
+  bounded by count and bytes (`READY_QUEUE_*` hysteresis: 4/2 replays,
+  256/128 MiB); up to 4 consumers hand them to worker `parse-battle`, then to
+  the serialized `persist-ingested-battle`.
+
 ### Replay memory and priority
 
 - A body with a trusted `Content-Length` (identity) goes straight into the

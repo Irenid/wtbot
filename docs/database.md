@@ -96,6 +96,9 @@ previous indexes (`start_time`, `session_hex`, dashboard metrics; an empty
 `idx_snapshots_clan_latest (clan_tag, nick, id DESC, rating, seen_at)`;
 `ANALYZE` with `analysis_limit = 1000`.
 
+**Lookups:** `WHERE session_id = ? OR session_hex = ?` is a multi-index OR
+(the primary key and `idx_battles_session_hex`), not a full scan.
+
 **Code:** the `battles` row and the `battle_events` blob in one transaction;
 the blob is zstd-19 instead of gzip (the replay corpus references are SHA-256
 of the events JSON, independent of the codec); the "latest snapshot" is one

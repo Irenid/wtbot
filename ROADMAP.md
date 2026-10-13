@@ -37,6 +37,17 @@ full texts are in Git (commit `46b6950` and earlier).
 
 ## Code
 
+- **Media of an unstored battle stores it past ingest's checks.**
+  `loadBattleRenderSource` (`src/wrpl/battle-media.ts`) serves `/battle` for a
+  battle ingest has not committed yet and `npm run battle`: it runs
+  `loadBattleData` without `withUnlistedReplayParts`, `hasFinalReplayResults`
+  or the item's `listedUserIds`, then `saveBattle` and
+  `markBattleIngest(…, 'ok')` on the main thread. An early-listed battle can
+  be stored with intermediate results or phantom bots and is never read
+  again. Fix: render without storing (or hand the item to ingest); then
+  AGENTS.md can say that only ingest writes a battle. Found by the AGENTS.md
+  audit of 2026-10-13.
+
 - **Bot-played player slots (a8fdc87, DB v22): leftovers.** The independent
   review of a8fdc87 was stopped on 2026-10-12 before it reported (it had read
   every reader and run the tests; no findings). Open: whether the game counts
