@@ -32,7 +32,7 @@ services:
       # reverse proxy с TLS (и WEB_TRUST_PROXY) или замените на "3000:3000".
       - "127.0.0.1:3000:3000"
       # VNC к виртуальному дисплею браузера (нужен WT_VNC_PASSWORD в .env):
-      # - "127.0.0.1:5900:5900"
+      - "127.0.0.1:5900:5900"
     volumes:
       - ./data:/app/data
       # ./data/wt-game: copies of the game files the bot reads, at the game's
