@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { access, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -22,7 +22,16 @@ import {
   staleDuplicateCookies,
   type PageSignals,
 } from './wt-challenge.js'
-import { GAIJIN_ORIGIN, isSignedInSession, isSiteLogout, pageAccountId, sessionToken } from './wt-sign-in.js'
+import {
+  extLoginUrl,
+  GAIJIN_ORIGIN,
+  gseaFetchUrl,
+  gseaSessionFromScript,
+  isSignedInSession,
+  isSiteLogout,
+  pageAccountId,
+  sessionToken,
+} from './wt-sign-in.js'
 import {
   browserExecutableCandidates,
   browserSpawnArgs,
@@ -62,8 +71,8 @@ const CLOSE_WAIT_MS = 5_000
 const ENDPOINT_FILE = 'wtbot-cdp.json'
 /** Попытки одного запроса: две на транспортные сбои плюс одна после проверки. */
 const MAX_REQUEST_ATTEMPTS = 3
-/** A sign-in form shown this long is the answer, not a step of a redirect. */
-const SIGN_IN_FORM_GRACE_MS = 3_000
+/** The GSEA answer is a ~1 KiB script. */
+const GSEA_ANSWER_MAX_BYTES = 64 * 1024
 /**
  * How long the renewal leaves a login.gaijin.net tab of the shared context
  * alone: a visit rotates the Gaijin cookies under a person's form (password,
@@ -700,12 +709,13 @@ export type WtSignInRenewal = 'renewed' | 'signed-out' | 'signing-in' | 'failed'
 
 /**
  * Signs warthunder.com in again through the Gaijin sign-in that the bot's
- * browser keeps (one manual sign-in at login.gaijin.net through VNC). The
- * visit runs in an isolated context with copies of the browser's
+ * browser keeps (one manual sign-in at login.gaijin.net through VNC), the way
+ * the site's gsea.js does (wt-sign-in.ts): the Gaijin session's refresh token,
+ * then /extLogin. It runs in an isolated context with copies of the browser's
  * login.gaijin.net cookies: warthunder.com cookies of the shared context (the
  * jar's copy, a VNC session) take no part, and the new session goes only to
  * the jar. `prepareVisit` reserves a request slot (the visit ends on
- * warthunder.com) and returns the reLogin address. "signed-out" costs no
+ * warthunder.com) and returns the page's queryContext. "signed-out" costs no
  * request while the Gaijin cookies are those a visit already found signed out.
  */
 export function renewWtSessionThroughGaijin(
@@ -755,14 +765,23 @@ async function renewOnce(reason: string, prepareVisit: () => Promise<string>): P
       await (blockedOnSignIn(route.request()) ? route.abort() : route.continue()).catch(() => undefined)
     })
     await isolated.addCookies(gaijin)
-    const page = await isolated.newPage()
-    await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
+    // gsea.js's own request, first-party here: on the site the bot's Chromium hides the Gaijin session from it.
+    const answer = await isolated.request.get(gseaFetchUrl(target, randomUUID()), {
+      headers: { referer: `${WT_ORIGIN}/` },
+      timeout: NAVIGATION_TIMEOUT_MS,
+      maxRedirects: 0,
+    })
+    const body = answer.ok() ? await answer.body() : null
+    const session = body === null || body.length > GSEA_ANSWER_MAX_BYTES ? null : gseaSessionFromScript(body.toString('utf8'))
 
-    let outcome: WtSignInRenewal = 'failed'
-    let note = ''
-    let formSeenAt: number | null = null
+    let outcome: WtSignInRenewal = session?.signedIn === false ? 'signed-out' : 'failed'
+    let note = session === null ? `; GSEA answered HTTP ${answer.status()} without a session` : ''
+    const page = await isolated.newPage()
+    if (session?.signedIn === true) {
+      await page.goto(extLoginUrl(session.refreshToken), { waitUntil: 'domcontentloaded' }).catch(() => undefined)
+    }
     const deadline = started + config.wtBrowserTimeoutMs
-    while (Date.now() < deadline) {
+    while (session?.signedIn === true && Date.now() < deadline) {
       const address = safeUrl(page.url())
       if (
         address?.origin === WT_ORIGIN
@@ -776,15 +795,6 @@ async function renewOnce(reason: string, prepareVisit: () => Promise<string>): P
           break
         }
         note = '; the site page is anonymous'
-      }
-      if (address?.origin === GAIJIN_ORIGIN && (await signInFormShown(page))) {
-        formSeenAt ??= Date.now()
-        if (Date.now() - formSeenAt >= SIGN_IN_FORM_GRACE_MS) {
-          outcome = 'signed-out'
-          break
-        }
-      } else {
-        formSeenAt = null
       }
       await page.waitForTimeout(CLEARANCE_POLL_MS).catch(() => undefined)
     }
@@ -813,7 +823,7 @@ async function renewOnce(reason: string, prepareVisit: () => Promise<string>): P
     if (outcome === 'renewed') {
       console.log(`[wt-browser] Signed in to warthunder.com again through Gaijin in ${elapsed} ms (${reason})`)
     } else if (outcome === 'signed-out') {
-      console.warn(`[wt-browser] login.gaijin.net asks for a sign-in: the browser keeps no Gaijin session (${reason})`)
+      console.warn(`[wt-browser] Gaijin reports no session: the browser keeps no Gaijin sign-in (${reason})`)
     } else {
       console.warn(`[wt-browser] The Gaijin sign-in did not finish in ${elapsed} ms (${reason}); last page: ${lastPage}${note}`)
     }
@@ -881,10 +891,6 @@ function frameOrigin(request: Request): string | null {
     // A service worker's request has no frame.
     return null
   }
-}
-
-async function signInFormShown(page: Page): Promise<boolean> {
-  return await page.locator('input[type="password"]').first().isVisible().catch(() => false)
 }
 
 function safeUrl(value: string): URL | null {

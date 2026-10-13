@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  extLoginUrl,
   GAIJIN_RELOGIN_URL,
+  gseaFetchUrl,
+  gseaSessionFromScript,
   isSignedInSession,
   isSiteLogout,
   pageAccountId,
@@ -65,4 +68,35 @@ test('isSiteLogout matches the site sign-out in every language and nothing else'
   assert.equal(at('https://warthunder.com/en/logout-guide'), false)
   assert.equal(at('https://login.gaijin.net/en/logout'), false)
   assert.equal(at('https://warthunder.com.example.org/en/logout'), false)
+})
+
+/** The shape of login.gaijin.net/api/gsea/fetch's answer on 2026-10-13 (values replaced). */
+const gseaAnswer = (payload: object) =>
+  `window.postMessage(${JSON.stringify({ gsea: true, env: 'gaijin', status: 'OK', payload, $reqID: 'r1' })},"https:\\/\\/warthunder.com");`
+
+test('gseaFetchUrl sends the page context the way gsea.js encodes it', () => {
+  const url = new URL(gseaFetchUrl(GAIJIN_RELOGIN_URL, 'req-1'))
+  assert.equal(url.origin + url.pathname, 'https://login.gaijin.net/api/gsea/fetch')
+  const q = url.searchParams.get('q') ?? ''
+  assert.match(q, /^[\w.-]+$/)
+  const decoded = Buffer.from(q.replaceAll('.', '+').replaceAll('_', '/').replaceAll('-', '='), 'base64').toString('latin1')
+  assert.equal(decoded, GAIJIN_RELOGIN_URL)
+  assert.equal(url.searchParams.get('$reqID'), 'req-1')
+  assert.equal(url.searchParams.get('origin'), 'https://warthunder.com')
+})
+
+test('gseaSessionFromScript reads the refresh token, no session, or nothing it knows', () => {
+  const signedIn = { status: 'ok', secondary: false, uname: 'nick', uid: '42', jwt: 'j.w.t', source: 'session', rt: 'rt_Token-123' }
+  assert.deepEqual(gseaSessionFromScript(gseaAnswer(signedIn)), { signedIn: true, refreshToken: 'rt_Token-123' })
+  assert.deepEqual(gseaSessionFromScript(gseaAnswer({ status: 'unauthorized' })), { signedIn: false })
+  assert.deepEqual(gseaSessionFromScript(gseaAnswer({ status: 'ok', uid: '' })), { signedIn: false })
+  // Signed in without a token, or a token with odd characters: a format change, not "signed out".
+  assert.equal(gseaSessionFromScript(gseaAnswer({ ...signedIn, rt: undefined })), null)
+  assert.equal(gseaSessionFromScript(gseaAnswer({ ...signedIn, rt: 'a b"c<d>e' })), null)
+  assert.equal(gseaSessionFromScript('<html>error</html>'), null)
+  assert.equal(gseaSessionFromScript('window.postMessage({"gsea":false},"x");'), null)
+})
+
+test('extLoginUrl hands the token to the site', () => {
+  assert.equal(extLoginUrl('a+b/c='), 'https://warthunder.com/extLogin?refresh_token=a%2Bb%2Fc%3D')
 })

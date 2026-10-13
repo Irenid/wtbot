@@ -303,14 +303,16 @@ Access:
 - A sign-in lives 14 days (`WT_SESSION_LIFETIME_MS`); use never extends it
   (measurements: `wt-sign-in.ts`). A day after the jar's sign-in (`signedInAt`
   in the jar; unknown counts as due) and on an empty list the bot signs in
-  again through Gaijin's SSO (`renewWtSessionThroughGaijin`): a top-level
-  visit to the site page's reLogin address (`GAIJIN_RELOGIN_URL` if the page
-  has none) in an isolated browser context holding copies of the browser's
-  login.gaijin.net cookies; the new sign-in goes to the jar, Gaijin's rotated
-  cookies back to the browser. It needs one manual sign-in at
-  https://login.gaijin.net in the bot's browser (VNC, README); without it the
-  visit meets the sign-in form, sends nothing more until those cookies
-  change, and the log names the sign-in's end every 6 h. A failure waits
+  again through Gaijin's SSO (`renewWtSessionThroughGaijin`) the way the
+  site's gsea.js does: `api/gsea/fetch` with the page's queryContext
+  (`GAIJIN_RELOGIN_URL` if the page has none) returns the Gaijin session's
+  refresh token, then `/extLogin?refresh_token=` signs in; both run in an
+  isolated browser context holding copies of the browser's login.gaijin.net
+  cookies (the reLogin page itself asks for the password). The new sign-in
+  goes to the jar, Gaijin's rotated cookies back to the browser. It needs one
+  manual sign-in at https://login.gaijin.net in the bot's browser (VNC,
+  README); without it GSEA reports no session, the bot sends nothing more
+  until those cookies change, and the log names the sign-in's end every 6 h. A failure waits
   30 min; while a login.gaijin.net tab is open in the shared context (a
   person signing in) the visit waits up to `SIGN_IN_PAGE_WAIT_MS`, since it
   rotates the Gaijin cookies under their form. State: `/api/stats` → `wtTransport.session`.
@@ -767,7 +769,7 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web`. Baseline on **2026-10-13**: all gates pass,
-**501 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+**504 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).
