@@ -13,8 +13,9 @@ export const LABEL_FONT_FILE = 'pt_sans-web-regular-reducedheight.ttf'
 /**
  * Bumped when the drawing changes: cached maps and specs of older versions are rebuilt.
  * 2: the HQ textures (content.hq, 2048²), air maps, every base kind in the meta.
+ * 3: imports by rank, difficulty and parameter; squadron battles' runway and bomber spawns.
  */
-export const TACTICAL_MAP_VERSION = 2
+export const TACTICAL_MAP_VERSION = 3
 
 /**
  * A map without its texture's pixels: what composeTacticalMap (build.ts) draws

@@ -7,6 +7,7 @@ import { PNG } from 'pngjs'
 import type { RgbaImage } from './dxp.js'
 import { GameFiles, TACTICAL_MAP_SOURCES } from './game-files.js'
 import { buildTacticalMapModel, type MapKind, type SpawnKind, type Team, type WorldRect } from './model.js'
+import { balanceBucketRange } from './perspective.js'
 import { applyHatch, applyTone, sampleFrame } from './raster.js'
 import { GAME_MAP_STYLE, hatchStyle, MAP_SPAWN_KINDS, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
 import { LABEL_FONT_FILE, TACTICAL_MAP_VERSION, tacticalMapSpec, type TacticalMapMeta, type TacticalMapSpec } from './spec.js'
@@ -30,7 +31,7 @@ export interface TacticalMapBuildInput {
   mission: string
   /** The viewer: its bases in the own colour, the hatch of its battle areas. */
   team: Team
-  /** missionGetBalanceLevel: (BR − 1) × 3; picks the air spawns. */
+  /** missionGetBalanceLevel: (BR − 1) × 3; picks the rank's airfields, helipads and UCAV spawns. */
   balanceLevel: number
   size: number
   format: 'png' | 'jpeg'
@@ -93,11 +94,20 @@ function labelFont(files: GameFiles, fontDir: string): string | null {
  */
 export function buildTacticalMapSpec(input: TacticalMapSpecInput): TacticalMapSpec {
   const files = new GameFiles(input.gameDir)
-  const model = buildTacticalMapModel(input.mission, (archive, name) => files.blk(archive, name), {
+  const build = (balanceLevel: number) => buildTacticalMapModel(input.mission, (archive, name) => files.blk(archive, name), {
     difficulty: 'realistic',
-    balanceLevel: input.balanceLevel,
+    balanceLevel,
     kind: input.kind,
   })
+  const model = build(input.balanceLevel)
+  // The map serves its whole bucket: a patch's new rankRange or rank check would draw it right at one end only.
+  const signature = (m: typeof model): string => JSON.stringify([m.view, m.grid, m.areas, m.zones, m.spawns])
+  const [first, last] = balanceBucketRange(input.balanceLevel)
+  for (const level of new Set([first, last])) {
+    if (level !== input.balanceLevel && signature(build(level)) !== signature(model)) {
+      console.warn(`[maps] ${input.mission}: the ${input.kind} map of rank ${level} differs from rank ${input.balanceLevel}; BALANCE_LEVEL_THRESHOLDS lacks a threshold in ${first}–${last}`)
+    }
+  }
   if (!files.hasMapTexture(model.texture.name)) throw new Error(`no texture ${model.texture.name} in ${TACTICAL_MAP_SOURCES.maps}`)
   labelFont(files, input.fontDir)
   return tacticalMapSpec(model, input.balanceLevel, (name) => files.file(TACTICAL_MAP_SOURCES.icons, `gameuiskin/${name}.svg`)?.toString('utf8'))

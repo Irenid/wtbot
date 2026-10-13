@@ -463,7 +463,11 @@ media hands the compressed blob to a worker.
   version into `data/maps/game/`; which replay team stands at which mission
   team's spawn varies, so both are built and the renderer picks by the
   team's first ground positions (the scene's `map.team` → `map.png?team=`).
-  Air spawns follow the battle's season-stage BR cap. The air heatmaps and the
+  Mission imports load by the battle's rank (season-stage BR cap: the rank's
+  airfields, helipads from 20, UCAV from 26), difficulty and parameter, and
+  squadron battles force the airfield spawn (`SQUADRON_BATTLE_DESCRIPTOR`:
+  aircraft start on the runway, bombers at the `_arcade` air spawns); maps are
+  cached per `BALANCE_LEVEL_THRESHOLDS` bucket. The air heatmaps and the
   player's air view draw on the mission's air map (the level's whole air
   texture and grid, every base kind): `build-tactical-map-spec` caches its spec
   (`ensureGameAirMap`), and the worker that renders a view draws it
@@ -818,8 +822,8 @@ npm run build:web
 `verify` = `typecheck` (all of `src/` with tests) + `npm test` (`*.test.ts`,
 `*.spec.ts`) + `verify:workers`, `verify:site-db`, `verify:site-api`,
 `verify:player-stats*`, `verify:player-board*`, `verify:benchmark-corpus`;
-each can run alone for the affected subsystem. Baseline on **2026-10-12**: all
-gates pass, **477 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
+each can run alone for the affected subsystem. Baseline on **2026-10-13**: all
+gates pass, **483 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If
 the test count changes, state the new one; any new failure is a regression.
 
 `npm run maps:build -- --db <copy.db> --compare` (offline, needs the game

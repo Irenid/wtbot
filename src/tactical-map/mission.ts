@@ -18,6 +18,12 @@ import { BLK_ORDER, type BlkMap, type BlkValue } from '../wrpl/blk.js'
  * file order. Conditions on units are false at the start; periodic triggers
  * never run.
  *
+ * An import loads only when its conditions hold (importApplies): rankRange
+ * (the airfields of ranks 0–20 and 21–50, helipads from 20), difficulty (a
+ * battle area per difficulty) and importByParameter (isWorldWar: the
+ * zonedef anti-tank guns). A varSet* action with fromDescriptor takes the
+ * session descriptor's value; the file's is the default.
+ *
  * air_spawn_template marks the helipads (objectGroups t1_helipad,
  * t1_helipad_farspawn) and, from rank 26 (ucav_min_mrank), a UCAV spawn
  * duplicated 6 km ahead of the near helipad, 3 km up.
@@ -146,8 +152,30 @@ function tmOf(value: BlkValue | undefined): AreaShape['tm'] | null {
   return rows.every((row) => row !== null) ? rows as AreaShape['tm'] : null
 }
 
-/** Loads the mission and its imports; the first definition of a name wins. */
-function loadMission(rel: string, load: MissionLoader): LoadedMission {
+/** The files name simulator battles "hardcore" (imports, mission[] overrides) and "simulator" (gameWhenDifficulty). */
+const isDifficulty = (name: string, difficulty: MissionDifficulty): boolean =>
+  name === difficulty || (difficulty === 'simulator' && name === 'hardcore')
+
+export type MissionDescriptor = Readonly<Record<string, BlkValue>>
+
+interface Session {
+  difficulty: MissionDifficulty
+  balanceLevel: number
+  descriptor: MissionDescriptor
+}
+
+/** Whether an import_record loads: rankRange [min, max] holds the balance level, difficulty is the battle's, the importByParameter parameter is true. */
+function importApplies(record: BlkMap, session: Session): boolean {
+  const range = record['rankRange']
+  if (Array.isArray(range) && typeof range[0] === 'number' && typeof range[1] === 'number' && (session.balanceLevel < range[0] || session.balanceLevel > range[1])) return false
+  const difficulty = str(record['difficulty'])
+  if (difficulty && !isDifficulty(difficulty, session.difficulty)) return false
+  const parameter = str(record['importByParameter'])
+  return !parameter || (Object.hasOwn(session.descriptor, parameter) && session.descriptor[parameter] === true)
+}
+
+/** Loads the mission and the imports that apply to the session; the first definition of a name wins. */
+function loadMission(rel: string, load: MissionLoader, session: Session): LoadedMission {
   const result: LoadedMission = { areas: new Map(), squads: new Map(), objects: new Map(), triggers: [], variables: new Map(), settings: {} }
   const visited = new Set<string>()
   const visit = (file: string, parts: { areas: boolean; units: boolean; triggers: boolean }, top: boolean): void => {
@@ -205,7 +233,8 @@ function loadMission(rel: string, load: MissionLoader): LoadedMission {
     }
     for (const record of blocks(isMap(doc['imports']) ? doc['imports']['import_record'] : undefined)) {
       const file = str(record['file'])
-      if (!file) continue
+      // Checked before visit: a skipped import does not mark its file visited (Stalingrad imports one file per difficulty).
+      if (!file || !importApplies(record, session)) continue
       visit(file, {
         areas: parts.areas && record['importAreas'] !== false,
         units: parts.units && record['importUnits'] !== false,
@@ -222,10 +251,8 @@ function missionSettings(settings: BlkMap, difficulty: MissionDifficulty): Recor
   const mission = isMap(settings['mission']) ? settings['mission'] : {}
   const merged: Record<string, BlkValue> = {}
   for (const [key, value] of Object.entries(mission)) if (key !== 'mission') merged[key] = value
-  // The files spell simulator battles "hardcore" here and "simulator" in gameWhenDifficulty.
-  const names = difficulty === 'simulator' ? ['simulator', 'hardcore'] : [difficulty]
   for (const override of blocks(mission['mission'])) {
-    if (!names.includes(String(override['difficulty']))) continue
+    if (!isDifficulty(String(override['difficulty']), difficulty)) continue
     for (const [key, value] of Object.entries(override)) if (key !== 'difficulty') merged[key] = value
   }
   return merged
@@ -235,17 +262,19 @@ export interface MissionOptions {
   difficulty?: MissionDifficulty
   /**
    * The battle's balance level (missionGetBalanceLevel → session_rank): economic rank, (BR − 1) × 3.
-   * air_spawn_template picks the air spawns by it: < 20 arcade fighters and bombers, ≥ 20
-   * "_hardcore", ≥ 32 "_top".
+   * Imports with a rankRange load by it; without a forced airfield spawn air_spawn_template picks
+   * the air spawns by it (< 20 arcade fighters and bombers, ≥ 20 "_hardcore", ≥ 32 "_top").
    */
   balanceLevel?: number
+  /** The session descriptor: the server's mission parameters (fromDescriptor, importByParameter); none by default. */
+  descriptor?: MissionDescriptor
   /** Receives "trigger: actions|else_actions" for every trigger that fires (diagnostics). */
   trace?: string[]
 }
 
 export function interpretMission(rel: string, load: MissionLoader, options: MissionDifficulty | MissionOptions = 'realistic'): MissionMap {
-  const { difficulty = 'realistic', balanceLevel = 0, trace } = typeof options === 'string' ? { difficulty: options } : options
-  const mission = loadMission(rel, load)
+  const { difficulty = 'realistic', balanceLevel = 0, descriptor = {}, trace } = typeof options === 'string' ? { difficulty: options } : options
+  const mission = loadMission(rel, load, { difficulty, balanceLevel, descriptor })
   const settings = missionSettings(mission.settings, difficulty)
   const variables = new Map(mission.variables)
   const enabled = new Map<string, boolean>()
@@ -298,8 +327,7 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
   const condition = (kind: string, c: BlkMap): boolean => {
     switch (kind) {
       case 'gameWhenDifficulty': {
-        const want = String(c['difficulty'])
-        const same = want === difficulty || (difficulty === 'simulator' && want === 'hardcore')
+        const same = isDifficulty(String(c['difficulty']), difficulty)
         return c['is'] === 'notEqual' ? !same : same
       }
       case 'objectExists':
@@ -367,7 +395,10 @@ export function interpretMission(rel: string, load: MissionLoader, options: Miss
       case 'varSetBool':
       case 'varSetInt':
       case 'varSetReal': {
-        const value = kind === 'varSetString' ? (resolve(a['value']) ?? '') : a['value']
+        const key = str(a['fromDescriptor'])
+        const value = key && Object.hasOwn(descriptor, key)
+          ? descriptor[key]
+          : kind === 'varSetString' ? (resolve(a['value']) ?? '') : a['value']
         if (value === undefined) return
         for (const name of asArray(a['var'])) if (typeof name === 'string') variables.set(name, value)
         return

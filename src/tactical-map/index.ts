@@ -11,12 +11,13 @@ import { LABEL_FONT_FILE, TACTICAL_MAP_VERSION, type TacticalMapMeta, type Tacti
 
 /**
  * Tactical maps drawn from the local game client (build.ts in a CPU worker),
- * cached in data/maps/game/: a ground map as <mission>-<team>-r<rank>-<size>-<hash>.jpg
- * plus its .json meta, an air map as its spec <mission>-air-r<rank>-<hash>.json
- * (drawn for each heatmap's view by the worker that renders it). The hash
- * covers the mission, TACTICAL_MAP_VERSION and the size and mtime of every
- * game file the map is built from (the HQ pack's presence too): a game patch or
- * a drawing change rebuilds it, and the older variant is deleted.
+ * cached in data/maps/game/: a ground map as <mission>-<team>-r<bucket>-<size>-<hash>.jpg
+ * plus its .json meta, an air map as its spec <mission>-air-r<bucket>-<hash>.json
+ * (drawn for each heatmap's view by the worker that renders it; bucket:
+ * balanceBucket of the battle's rank). The hash covers the mission,
+ * TACTICAL_MAP_VERSION and the size and mtime of every game file the map is
+ * built from (the HQ pack's presence too): a game patch or a drawing change
+ * rebuilds it, and the mission's files of an older hash are deleted.
  *
  * The ground map shows the respawn screen as a team sees it (its bases blue,
  * the hatch of its battle areas); which replay team stands at which mission
@@ -131,8 +132,8 @@ async function ensureOne(request: MapRequest): Promise<GameTacticalMap | null> {
   const dir = await gameDir()
   if (!dir) return null
   const bucket = balanceBucket(request.balanceLevel)
-  const stem = `${path.basename(mission, '.blk')}-${request.team}-r${bucket}-${request.size}`
-  const file = path.join(CACHE_DIR, `${stem}-${await cacheHash(mission, dir)}.jpg`)
+  const hash = await cacheHash(mission, dir)
+  const file = path.join(CACHE_DIR, `${path.basename(mission, '.blk')}-${request.team}-r${bucket}-${request.size}-${hash}.jpg`)
   const cached = await readCached(file)
   if (cached) return cached
   if ((failures.get(file) ?? 0) > Date.now()) return null
@@ -151,7 +152,7 @@ async function ensureOne(request: MapRequest): Promise<GameTacticalMap | null> {
       const image = Buffer.from(built.image)
       await writeFileAtomic(file.replace(/\.jpg$/, '.json'), `${JSON.stringify(built.meta)}\n`)
       await writeFileAtomic(file, image)
-      await pruneVariants(stem, path.basename(file))
+      await pruneStaleMaps(mission, hash)
       return { image, mime: built.mime, meta: built.meta }
     } catch (error) {
       failures.set(file, Date.now() + FAILURE_TTL_MS)
@@ -165,18 +166,28 @@ async function ensureOne(request: MapRequest): Promise<GameTacticalMap | null> {
   return job
 }
 
-/** Deletes other builds of the same mission, team (or "air"), rank and size: an older game or drawing version. */
-async function pruneVariants(stem: string, keep: string): Promise<void> {
+/** A cache file: <mission>-<A|B|air>-r<bucket>[-<size>]-<hash>.<jpg|json>. */
+const CACHE_FILE = /^(.+)-(?:A|B|air)-r\d+(?:-\d+)?-([0-9a-f]{12})\.(?:jpg|json)$/
+
+/**
+ * Deletes the mission's builds of another hash (an older game or drawing
+ * version) of any team, bucket and size: a bucket BALANCE_LEVEL_THRESHOLDS no
+ * longer has is never rebuilt, so its files would stay.
+ */
+export async function pruneStaleMaps(mission: string, hash: string, dir = CACHE_DIR): Promise<void> {
   let names: string[]
   try {
-    names = await readdir(CACHE_DIR)
+    names = await readdir(dir)
   } catch {
     return
   }
-  const keepStem = keep.replace(/\.(jpg|json)$/, '')
+  const base = path.basename(mission, '.blk')
   await Promise.all(names
-    .filter((name) => name.startsWith(`${stem}-`) && !name.startsWith(keepStem))
-    .map((name) => rm(path.join(CACHE_DIR, name), { force: true }).catch(() => undefined)))
+    .filter((name) => {
+      const match = CACHE_FILE.exec(name)
+      return match !== null && match[1] === base && match[2] !== hash
+    })
+    .map((name) => rm(path.join(dir, name), { force: true }).catch(() => undefined)))
 }
 
 /** One perspective of a mission's ground map; null without the game client or for a mission it cannot build. */
@@ -222,8 +233,8 @@ export async function ensureGameAirMap(
   const dir = await gameDir()
   if (!dir) return null
   const bucket = balanceBucket(options.balanceLevel)
-  const stem = `${path.basename(mission, '.blk')}-air-r${bucket}`
-  const file = path.join(CACHE_DIR, `${stem}-${await cacheHash(mission, dir)}.json`)
+  const hash = await cacheHash(mission, dir)
+  const file = path.join(CACHE_DIR, `${path.basename(mission, '.blk')}-air-r${bucket}-${hash}.json`)
   const fontFile = path.resolve(FONT_DIR, LABEL_FONT_FILE)
   const withFont = async (spec: TacticalMapSpec | null): Promise<GameAirMap | null> =>
     spec ? { spec, gameDir: dir, fontFile: await stat(fontFile).then(() => fontFile, () => null) } : null
@@ -240,7 +251,7 @@ export async function ensureGameAirMap(
           { priority: options.priority ?? 'normal', timeoutMs: BUILD_TIMEOUT_MS },
         )
         await writeFileAtomic(file, `${JSON.stringify(spec)}\n`)
-        await pruneVariants(stem, path.basename(file))
+        await pruneStaleMaps(mission, hash)
         return spec
       } catch (error) {
         failures.set(file, Date.now() + FAILURE_TTL_MS)

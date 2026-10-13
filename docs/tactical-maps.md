@@ -81,9 +81,29 @@ categories (editor folders, `isCategory`) run in place. Comparisons are
 `equal`, `notEqual`, `less`, `more`, `notLess`, `notMore`; `var_value_other`
 compares with another variable.
 
-- Air spawns depend on `missionGetBalanceLevel` (economic rank, (BR − 1)·3):
-  < 20 arcade fighters and bombers, ≥ 20 `_hardcore`, ≥ 32 also `_top`; the
-  bot takes the battle's season stage cap.
+- Imports load only when their conditions hold (`importApplies`):
+  `rankRange` [min, max] holds the balance level (`missionGetBalanceLevel`:
+  economic rank, (BR − 1)·3; the bot takes the battle's season stage cap) —
+  each map's airfields of ranks 0–20 and 21–50, helipads from 20, decor that
+  draws nothing; `difficulty` (`arcade`, `realistic`, `hardcore`: battle and
+  kill areas of 24 missions on 8 maps; the realistic files name their own
+  areas, so the ground maps stay byte-identical); `importByParameter`
+  `isWorldWar` (the zonedef anti-tank guns: 22 templates, 27 missions) only
+  when the descriptor sets it.
+- Squadron battles force the airfield spawn: the server's session descriptor
+  (`fromDescriptor`; neither the client nor the replay has it) sets
+  `force_plane_airfield_spawn`, so `rb_only_bombers_air_spawn` marks the
+  `_arcade` air spawns for bombers (`type_longrange_bomber`, `type_bomber`)
+  and every other aircraft starts on the runway (`t1_airfield`) at any rank;
+  the rank checks (< 20 `_arcade`, ≥ 20 `_hardcore`, ≥ 32 `_top`) never run.
+  First track points of 125,942 aircraft (26,349 battles, BR caps 8.0–10.0)
+  against every candidate object: slow at a runway end (1,633 m from the
+  airfield object, p10–p90 1,631–1,636) or on a helipad (98 m), fast at an
+  `_arcade` spawn (median 128 m), none at `_hardcore` or `_top`.
+  `SQUADRON_BATTLE_DESCRIPTOR` (model.ts) sets it.
+- The maps change at ranks 20 (helipads), 21 (airfields) and 26 (UCAV) and at
+  no other (193 missions built at 0–50): `BALANCE_LEVEL_THRESHOLDS` start the
+  cache buckets, and a build warns when its mission changes inside one.
 - Helipads are `units.objectGroups` (`t1_helipad`, `t1_helipad_farspawn`, …:
   4 per mission), airfields too (`t1_airfield`: 2); from rank 26
   (`ucav_min_mrank`) `duplicateAreaAtPos` copies `spawn_ucav` 6 km ahead of the
@@ -156,13 +176,21 @@ snapshot (same layout, other colours): ardennes, ardennes_snow,
 stalingrad_factory, ireland, karpaty, arctic, aral sea. `--kind air` draws the
 193 air maps in 12 s.
 
+Air bases against the flights (2026-10-13): of 230,242 aircraft in 49,771
+battles (2026-07-15..10-12, BR caps 8.0–10.7), every first track point lies
+within 3 km of a drawn base (98.6% within 2 km; air spawns median 127 m,
+runways 1,633 m: the runway end), against 48.8% (33.6%) with the maps before
+the import conditions and the squadron descriptor (median 3,044 m). The ground
+maps stayed byte-identical.
+
 ## Cache
 
 `data/maps/game/<mission>-<team>-r<rank bucket>-<size>-<hash>.jpg` (JPEG 92,
 ~0.5 MB at 1400 px) plus `.json` meta (view, grid, zones, bases of every kind),
 and `<mission>-air-r<rank bucket>-<hash>.json`, the air map's spec (~50 KB);
 the hash covers `TACTICAL_MAP_VERSION` and the sizes and mtimes of the source
-files (the HQ pack's absence too), so a game patch rebuilds and the older
-variant is deleted. Heatmaps use 1400 px (2800 for HD), the site's battle
-player 1400 px; its air view is `data/battles/<session>-scene-v6-air.json`
+files (the HQ pack's absence too), so a game patch rebuilds and the
+mission's files of an older hash are deleted (`pruneStaleMaps`: any team,
+bucket and size). Heatmaps use 1400 px (2800 for HD), the site's battle
+player 1400 px; its air view is `data/battles/<session>-scene-v8-air.json`
 (the view) and `-air.jpg` (drawn), in the battle cache's LRU.

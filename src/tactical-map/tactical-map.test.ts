@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -8,9 +8,10 @@ import { BLK_ORDER, parseBlk, type BlkMap } from '../wrpl/blk.js'
 import { unpackVromfs, vromfsBlkNames } from '../wrpl/vromfs.js'
 import { decodeDdsxTexture, readDxpPack, unpackDdsxData } from './dxp.js'
 import { GameFiles, TACTICAL_MAP_OPTIONAL_SOURCES, TACTICAL_MAP_SOURCES } from './game-files.js'
-import { interpretMission } from './mission.js'
+import { pruneStaleMaps } from './index.js'
+import { interpretMission, type MissionOptions } from './mission.js'
 import { areaRect, buildTacticalMapModel, gridLabels, gridStep, viewRect, type BlkSource } from './model.js'
-import { balanceBucket, balanceLevelOfBr, pickPerspective } from './perspective.js'
+import { balanceBucket, balanceBucketRange, balanceLevelOfBr, pickPerspective } from './perspective.js'
 import { MAP_SPAWN_KINDS, mapIconNames, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
 import { buildBattleScene, sceneAir, sceneAirView } from '../wrpl/battle-scene-core.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
@@ -358,6 +359,92 @@ test('mission triggers fire depth first: each rank check marks its own air spawn
   assert.deepEqual(names(33), ['air_hardcore', 'air_top'])
 })
 
+/** air_spawn_template's forced airfield spawn and the conditional imports of a squadron mission, in miniature. */
+function squadronMission(): Map<string, BlkMap> {
+  const sphere = (x: number): BlkMap => ({ type: 'Sphere', tm: [[10, 0, 0], [0, 10, 0], [0, 0, 10], [x, 0, 0]] })
+  const record = (file: string, condition: BlkMap = {}): BlkMap => ({ file, importAreas: true, importUnits: true, importTriggers: true, ...condition })
+  const airfield = (x: number): BlkMap => ({ units: { objectGroups: { name: 't1_airfield', tm: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [x, 0, 0]] } } })
+  const mission: BlkMap = {
+    mission_settings: { mission: { level: 'levels/avg_test.bin' } },
+    imports: { import_record: [
+      record('low.blk', { rankRange: [0, 20] }),
+      record('mid.blk', { rankRange: [21, 50] }),
+      record('area.blk', { difficulty: 'arcade' }),
+      record('area_rb.blk', { difficulty: 'realistic' }),
+      record('area.blk', { difficulty: 'hardcore' }),
+      record('ww.blk', { importByParameter: 'isWorldWar' }),
+    ] },
+    variables: { forced: false },
+    areas: { t1_air_spawn_hardcore: sphere(-9000), t1_bombers_spawn_arcade: sphere(-3000) },
+    triggers: {
+      init: {
+        is_enabled: true,
+        events: { initMission: {} },
+        actions: {
+          varSetBool: { value: false, var: 'forced', fromDescriptor: 'force_plane_airfield_spawn' },
+          missionBattleArea: [{ area: 'battle_area', team: 'Both', mapArea: true }, { area: 'at_gun', team: 'Both', mapArea: true }],
+          triggerEnable: { target: 'spawn' },
+        },
+      },
+      spawn: {
+        is_enabled: false,
+        events: { initMission: {} },
+        conditions: { varCompareBool: { var_value: 'forced', value: false, comparasion_func: 'equal' } },
+        actions: { missionMarkAsRespawnPoint: { target: 't1_air_spawn_hardcore', team: 'A', showOnMap: true, tags: {} } },
+        else_actions: { missionMarkAsRespawnPoint: [
+          { target: 't1_bombers_spawn_arcade', team: 'A', showOnMap: true, tags: { type_longrange_bomber: true } },
+          { target: 't1_airfield', team: 'A', isAirfield: true, showOnMap: true, tags: {} },
+        ] },
+      },
+    },
+  }
+  return new Map([
+    ['m.blk', mission],
+    ['low.blk', airfield(1000)],
+    ['mid.blk', airfield(5000)],
+    ['area.blk', { areas: { battle_area: sphere(100) } }],
+    ['area_rb.blk', { areas: { battle_area: sphere(200) } }],
+    ['ww.blk', { areas: { at_gun: sphere(300) } }],
+  ])
+}
+
+test('mission imports load by rank range, difficulty and parameter; fromDescriptor takes the session value', () => {
+  const files = squadronMission()
+  const run = (options: MissionOptions) => interpretMission('m.blk', (rel) => files.get(rel) ?? null, options)
+  const bases = (options: MissionOptions) => run(options).respawnBases.map((base) => [base.name, base.areas[0]!.tm[3][0]])
+  const areas = (options: MissionOptions) => run(options).battleAreas.map((area) => [area.area.name, area.area.tm[3][0]])
+  const squadron = { force_plane_airfield_spawn: true }
+  assert.deepEqual(bases({ balanceLevel: 20 }), [['t1_air_spawn_hardcore', -9000]], 'without a descriptor the file value holds')
+  assert.deepEqual(bases({ balanceLevel: 20, descriptor: squadron }), [['t1_bombers_spawn_arcade', -3000], ['t1_airfield', 1000]])
+  assert.deepEqual(bases({ balanceLevel: 21, descriptor: squadron }), [['t1_bombers_spawn_arcade', -3000], ['t1_airfield', 5000]], 'rankRange is inclusive')
+  assert.deepEqual(areas({}), [['battle_area', 200]], 'realistic')
+  assert.deepEqual(areas({ difficulty: 'arcade' }), [['battle_area', 100]])
+  assert.deepEqual(areas({ difficulty: 'simulator' }), [['battle_area', 100]], 'a skipped import leaves its file to a later one')
+  assert.deepEqual(areas({ descriptor: { isWorldWar: true } }), [['battle_area', 200], ['at_gun', 300]])
+  assert.deepEqual(areas({ descriptor: { isWorldWar: 1 } }), [['battle_area', 200]], 'only true loads it')
+})
+
+test('a map build deletes only its mission\'s files of another hash', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wtbot-maps-'))
+  try {
+    const names = [
+      'poland_dom-A-r21-1400-aaaaaaaaaaaa.jpg', 'poland_dom-A-r21-1400-aaaaaaaaaaaa.json', 'poland_dom-air-r26-aaaaaaaaaaaa.json',
+      'poland_dom-B-r20-2800-bbbbbbbbbbbb.jpg', 'poland_dom-air-r32-bbbbbbbbbbbb.json',
+      'poland_02_dom-A-r20-1400-bbbbbbbbbbbb.jpg', 'poland_dom-A-r21-1400-bbbbbbbbbbbb.jpg.123.tmp',
+    ]
+    for (const name of names) writeFileSync(path.join(dir, name), '')
+    mkdirSync(path.join(dir, 'export'))
+    await pruneStaleMaps('gamedata/missions/cta/tanks/poland/poland_dom.blk', 'aaaaaaaaaaaa', dir)
+    assert.deepEqual(readdirSync(dir).sort(), [
+      'export', 'poland_02_dom-A-r20-1400-bbbbbbbbbbbb.jpg',
+      'poland_dom-A-r21-1400-aaaaaaaaaaaa.jpg', 'poland_dom-A-r21-1400-aaaaaaaaaaaa.json', 'poland_dom-A-r21-1400-bbbbbbbbbbbb.jpg.123.tmp',
+      'poland_dom-air-r26-aaaaaaaaaaaa.json',
+    ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('perspective: the side whose bases are nearest to a team\'s first positions; ranks from the BR cap', () => {
   const map = { spawns: [
     { team: 'A' as const, kind: 'tank', x: 0, z: 0 },
@@ -368,9 +455,11 @@ test('perspective: the side whose bases are nearest to a team\'s first positions
   assert.equal(pickPerspective(map, [{ x: 10, z: 0 }]), 'A')
   assert.equal(pickPerspective(map, [{ x: 0, z: 0 }, { x: 1000, z: 1000 }]), null, 'a tie')
   assert.equal(pickPerspective({ spawns: [] }, [{ x: 0, z: 0 }]), null)
-  // Squadron stage caps: 14.7 → 41 (top), 10.7 → 29 (hardcore), 7.3 → 19 (arcade).
+  // Squadron stage caps: 14.7 → 41, 12.0 → 33, 10.7 → 29, 7.3 → 19.
   assert.deepEqual([14.7, 12.0, 10.7, 7.3].map(balanceLevelOfBr), [41, 33, 29, 19])
-  assert.deepEqual([41, 33, 29, 19, 32, 20].map(balanceBucket), [32, 32, 20, 0, 32, 20])
+  // Buckets start where the maps change: helipads 20, mid-rank airfields 21, UCAV 26.
+  assert.deepEqual([41, 26, 25, 21, 20, 19, 0].map(balanceBucket), [26, 26, 21, 21, 20, 0, 0])
+  assert.deepEqual([41, 23, 20, 7].map(balanceBucketRange), [[26, 50], [21, 25], [20, 20], [0, 19]])
 })
 
 test('the battle scene names the map perspective in which team 1 starts on the blue bases', () => {

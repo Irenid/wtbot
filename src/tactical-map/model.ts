@@ -1,5 +1,5 @@
 import type { BlkMap, BlkValue } from '../wrpl/blk.js'
-import { interpretMission, type AreaShape, type MissionDifficulty, type MissionMap } from './mission.js'
+import { interpretMission, type AreaShape, type MissionDescriptor, type MissionDifficulty, type MissionMap } from './mission.js'
 
 /**
  * What the game's tactical map shows for a mission, in world coordinates
@@ -95,6 +95,18 @@ export interface TacticalMapModel {
 }
 
 export type BlkSource = (archive: 'mis.vromfs.bin' | 'aces.vromfs.bin', name: string) => BlkMap | null
+
+/**
+ * The session descriptor of squadron battles, which the server keeps (neither
+ * the client nor the replay has it): force_plane_airfield_spawn sends every
+ * aircraft but bombers to the runway (t1_airfield) and bombers to the
+ * "_arcade" air spawns at any rank, instead of the rank's air spawns. Of
+ * 230,242 aircraft in 49,771 battles (2026-07-15..10-12, BR caps 8.0–10.7),
+ * every first track point lies within 3 km of the bases this draws: a runway
+ * end (median 1,633 m from the airfield object), a helipad, or an "_arcade"
+ * spawn (median 127 m). Measurements: docs/tactical-maps.md.
+ */
+export const SQUADRON_BATTLE_DESCRIPTOR: MissionDescriptor = { force_plane_airfield_spawn: true }
 
 /** gameplay.blk tacticalMap tables of 2026-10-09: row x is the grid's longer side in metres. */
 const DEFAULT_CELL_COUNT: [number, number][] = [[0, 7], [4999, 7], [5000, 10]]
@@ -243,12 +255,16 @@ const RECORD_KEYS: Record<MapKind, {
 export function buildTacticalMapModel(
   missionRel: string,
   source: BlkSource,
-  options: { difficulty?: MissionDifficulty; balanceLevel?: number; kind?: MapKind } = {},
+  options: { difficulty?: MissionDifficulty; balanceLevel?: number; kind?: MapKind; descriptor?: MissionDescriptor } = {},
 ): TacticalMapModel {
   const difficulty = options.difficulty ?? 'realistic'
   const kind = options.kind ?? 'tank'
   const keys = RECORD_KEYS[kind]
-  const missionMap = interpretMission(missionRel, (rel) => source('mis.vromfs.bin', rel), { difficulty, balanceLevel: options.balanceLevel ?? 0 })
+  const missionMap = interpretMission(missionRel, (rel) => source('mis.vromfs.bin', rel), {
+    difficulty,
+    balanceLevel: options.balanceLevel ?? 0,
+    descriptor: options.descriptor ?? SQUADRON_BATTLE_DESCRIPTOR,
+  })
   const level = missionMap.level.replace(/^.*[/\\]/, '').replace(/\.bin$/i, '')
   const settings = source('aces.vromfs.bin', `levels/${level}.blk`)
   if (!settings) throw new Error(`level ${level} has no settings in aces.vromfs.bin`)
