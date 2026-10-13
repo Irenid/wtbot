@@ -221,7 +221,7 @@ function utcMinute(ms: number): string {
 }
 
 /** Names what to do and when the current sign-in ends; at most every SESSION_WARNING_INTERVAL_MS. */
-async function warnSessionNotRenewed(result: Exclude<WtSignInRenewal, 'renewed'>): Promise<void> {
+async function warnSessionNotRenewed(result: 'signed-out' | 'failed'): Promise<void> {
   const now = transportDeps.now()
   if (now < nextSessionWarningAt) return
   nextSessionWarningAt = now + SESSION_WARNING_INTERVAL_MS
@@ -239,8 +239,8 @@ async function warnSessionNotRenewed(result: Exclude<WtSignInRenewal, 'renewed'>
 /**
  * One Gaijin sign-in at a time, shared by the schedule and refreshWtSession.
  * After a success the next waits SESSION_RENEW_MIN_INTERVAL_MS, after a
- * failure SESSION_RENEW_RETRY_MS; "signed-out" costs no request while
- * nothing changes (renewWtSessionThroughGaijin), so it waits for nothing.
+ * failure SESSION_RENEW_RETRY_MS; "signed-out" and "signing-in" cost no
+ * request (renewWtSessionThroughGaijin), so they wait for nothing.
  */
 function renewSession(reason: string): Promise<WtSignInRenewal | 'skipped'> {
   if (renewalTail !== null) return renewalTail
@@ -260,7 +260,8 @@ function renewSession(reason: string): Promise<WtSignInRenewal | 'skipped'> {
       await refreshSessionStatus().catch(() => null)
     } else {
       if (result === 'failed') nextRenewalAt = at + SESSION_RENEW_RETRY_MS
-      await warnSessionNotRenewed(result)
+      // A person is signing in through VNC: the next attempt finds it done.
+      if (result !== 'signing-in') await warnSessionNotRenewed(result)
     }
     return result
   })().finally(() => {

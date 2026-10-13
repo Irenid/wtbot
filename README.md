@@ -71,8 +71,9 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    (`WT_COOKIE`) lives 14 days, and the bot renews it every day through that
    Gaijin sign-in. Set `WT_VNC_PASSWORD` and `WT_BROWSER_HEADLESS=false`,
    uncomment port `5900` in `docker-compose.yml`, run `docker compose up -d`,
-   connect a VNC client to `127.0.0.1:5900` and sign in at
-   https://login.gaijin.net in the browser window. The log warns when the
+   connect a VNC client to `127.0.0.1:5900`, open a new tab in the browser
+   window and sign in at https://login.gaijin.net (the renewal leaves that
+   tab alone for up to 10 minutes, then renews within 5). The log warns when the
    renewal cannot work (`[wt-cookies] The WT session cannot renew itself`);
    `/api/stats` → `wtTransport.session` shows when the current sign-in ends.
    The same VNC session passes a Cloudflare check by hand.

@@ -64,6 +64,12 @@ const ENDPOINT_FILE = 'wtbot-cdp.json'
 const MAX_REQUEST_ATTEMPTS = 3
 /** A sign-in form shown this long is the answer, not a step of a redirect. */
 const SIGN_IN_FORM_GRACE_MS = 3_000
+/**
+ * How long the renewal leaves a login.gaijin.net tab of the shared context
+ * alone: a visit rotates the Gaijin cookies under a person's form (password,
+ * then an emailed code). A tab left open after the sign-in delays it no more.
+ */
+const SIGN_IN_PAGE_WAIT_MS = 10 * 60_000
 /** Requests of the page after the sign-in may still rotate identity_sid. */
 const SIGN_IN_SETTLE_MS = 10_000
 /** The sign-in visit needs documents and scripts only (blockedOnSignIn). */
@@ -131,6 +137,8 @@ let sessionPrepareTail: Promise<void> = Promise.resolve()
 let renewalTail: Promise<WtSignInRenewal> | null = null
 /** sha256 of the login.gaijin.net cookies a visit found signed out; a sign-in through VNC changes them. */
 let signedOutGaijinCookies: string | null = null
+/** When a login.gaijin.net tab of the shared context was first seen (SIGN_IN_PAGE_WAIT_MS). */
+let gaijinPageSeenAt: number | null = null
 let lastClearanceAt = 0
 let clearanceTail: Promise<void> = Promise.resolve()
 let startupTail: Promise<BrowserState> | null = null
@@ -688,7 +696,7 @@ export async function adoptBrowserSession(): Promise<boolean> {
   return true
 }
 
-export type WtSignInRenewal = 'renewed' | 'signed-out' | 'failed'
+export type WtSignInRenewal = 'renewed' | 'signed-out' | 'signing-in' | 'failed'
 
 /**
  * Signs warthunder.com in again through the Gaijin sign-in that the bot's
@@ -719,6 +727,15 @@ async function renewOnce(reason: string, prepareVisit: () => Promise<string>): P
     current = await ensureBrowser()
   } catch {
     return 'failed'
+  }
+  if (current.context.pages().some((page) => safeUrl(page.url())?.origin === GAIJIN_ORIGIN)) {
+    if (gaijinPageSeenAt === null) {
+      gaijinPageSeenAt = Date.now()
+      console.log(`[wt-browser] A login.gaijin.net tab is open in the bot's browser: the renewal waits up to ${SIGN_IN_PAGE_WAIT_MS / 60_000} min for the sign-in to finish`)
+    }
+    if (Date.now() - gaijinPageSeenAt < SIGN_IN_PAGE_WAIT_MS) return 'signing-in'
+  } else {
+    gaijinPageSeenAt = null
   }
   const gaijin = await current.context.cookies(GAIJIN_ORIGIN).catch(() => null)
   if (gaijin === null) return 'failed'

@@ -296,6 +296,23 @@ test('without a Gaijin sign-in the browser session is adopted, and the warning s
   assert.match(advice, /works until about 2026-10-12 20:52 UTC/)
 })
 
+test('a sign-in in progress through VNC neither warns nor delays the next attempt', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => undefined)
+  const { calls, clock } = sessionTransport({ renewals: ['signing-in', 'renewed'], adopt: true })
+
+  assert.deepEqual(await emptyThenFull(), { empty: false })
+  assert.equal(warn.mock.calls.some((call) => String(call.arguments[0]).includes('login.gaijin.net')), false)
+  assert.equal(wtSessionStatus().lastRenewal, 'signing-in')
+
+  // The next empty list (5 minutes later) renews at once: no 30-minute wait as after a failure.
+  clock.now += 5 * 60_000
+  calls.length = 0
+  t.mock.method(console, 'log', () => undefined)
+  assert.deepEqual(await emptyThenFull(), { empty: false })
+  assert.deepEqual(calls, ['renew', 'slot'])
+  assert.equal(wtSessionStatus().lastRenewal, 'renewed')
+})
+
 test('with no sign-in anywhere the session route moves to the browser', async (t) => {
   t.mock.method(console, 'warn', () => undefined)
   t.mock.method(console, 'log', () => undefined)

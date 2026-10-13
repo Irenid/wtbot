@@ -311,7 +311,9 @@ Access:
   https://login.gaijin.net in the bot's browser (VNC, README); without it the
   visit meets the sign-in form, sends nothing more until those cookies
   change, and the log names the sign-in's end every 6 h. A failure waits
-  30 min. State: `/api/stats` → `wtTransport.session`.
+  30 min; while a login.gaijin.net tab is open in the shared context (a
+  person signing in) the visit waits up to `SIGN_IN_PAGE_WAIT_MS`, since it
+  rotates the Gaijin cookies under their form. State: `/api/stats` → `wtTransport.session`.
 - The bot's Chromium blocks third-party cookies, so the site's own Gaijin
   client (`gsea.js`) never sees the SSO session, and on a signed-in page it
   posts `/<lang>/logout`: the browser never sends that request
@@ -765,7 +767,7 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web`. Baseline on **2026-10-13**: all gates pass,
-**500 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+**501 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).
