@@ -16,7 +16,9 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
   makes it easier or cheaper.
 - Search with targeted tools (`rg`, `git grep`, LSP) instead of reading the
   whole repository, then read what is relevant in full; no MCP server or
-  shell wrapper is required.
+  shell wrapper is required. In Claude Code the `LSP` tool is deferred: load
+  it (ToolSearch `select:LSP`) and use `findReferences`/`incomingCalls` to
+  find callers before an edit; `rg` misses imports and re-exports.
 - Before an edit, find the affected functions and their callers; after it,
   check the impact on neighbouring subsystems. No unrelated refactoring.
 - Other people's changes and untracked files are the owner's work: do not
