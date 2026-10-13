@@ -67,9 +67,15 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links
    redirect to the same page at the root. For network access put a reverse proxy with TLS
    (nginx, caddy) in front of the bot and set `WEB_TRUST_PROXY`.
-5. If Cloudflare wants a manual check or warthunder.com needs a new login,
-   set `WT_VNC_PASSWORD`, uncomment port `5900` in `docker-compose.yml` and
-   connect a VNC client to `127.0.0.1:5900`.
+5. Once, sign the bot's browser in to Gaijin: a warthunder.com sign-in
+   (`WT_COOKIE`) lives 14 days, and the bot renews it every day through that
+   Gaijin sign-in. Set `WT_VNC_PASSWORD` and `WT_BROWSER_HEADLESS=false`,
+   uncomment port `5900` in `docker-compose.yml`, run `docker compose up -d`,
+   connect a VNC client to `127.0.0.1:5900` and sign in at
+   https://login.gaijin.net in the browser window. The log warns when the
+   renewal cannot work (`[wt-cookies] The WT session cannot renew itself`);
+   `/api/stats` → `wtTransport.session` shows when the current sign-in ends.
+   The same VNC session passes a Cloudflare check by hand.
 
 `wtbot` restarts after a crash (`restart: unless-stopped`);
 `docker compose stop` is a clean shutdown (SIGTERM). The `backup` service puts

@@ -81,17 +81,37 @@ test('sameCookieValues сравнивает наборы cookies без учёт
   assert.equal(sameCookieValues([sid], [sid, id]), false)
 })
 
-test('planBrowserSession: браузер получает сессию jar, только когда несёт её сам', () => {
-  const jar = [{ name: 'identity_sid', value: 'jar' }]
-  const own = [{ name: 'identity_sid', value: 'vnc' }]
-  // Браузер несёт сессию: та же — ничего не трогаем, чужая — запоминаем и заменяем.
+test('planBrowserSession: the browser gets the jar session only while it carries it', () => {
+  const signedIn = (token: string, sid: string) => [
+    { name: 'identity_id', value: '42' },
+    { name: 'identity_token', value: token },
+    { name: 'identity_sid', value: sid },
+  ]
+  const jar = signedIn('jar', 'sid-1')
+  const own = signedIn('vnc', 'sid-9')
+  // Carrier: the same session stays; another sign-in is kept, then replaced.
   assert.deepEqual(planBrowserSession(true, jar, jar), { stash: false, clear: false, push: false })
   assert.deepEqual(planBrowserSession(true, [], jar), { stash: false, clear: false, push: true })
   assert.deepEqual(planBrowserSession(true, own, jar), { stash: true, clear: true, push: true })
-  // В jar сессии нет — собственную сессию браузера не стираем.
+  // The jar has no session: the browser's own one is not wiped.
   assert.deepEqual(planBrowserSession(true, own, []), { stash: false, clear: false, push: false })
-  // Сессию несёт прямой путь: браузер анонимен, копия jar убирается без запоминания.
+  // The direct path carries the session: the browser is anonymous, a jar copy goes without being kept.
   assert.deepEqual(planBrowserSession(false, jar, jar), { stash: false, clear: true, push: false })
   assert.deepEqual(planBrowserSession(false, own, jar), { stash: true, clear: true, push: false })
   assert.deepEqual(planBrowserSession(false, [], jar), { stash: false, clear: false, push: false })
+})
+
+test('planBrowserSession keeps only another signed-in session, never an anonymous or stale copy', () => {
+  const jar = [
+    { name: 'identity_id', value: '42' },
+    { name: 'identity_token', value: 'jar' },
+    { name: 'identity_sid', value: 'sid-2' },
+  ]
+  const anonymous = [{ name: 'identity_sid', value: 'anon' }]
+  // The jar's own sign-in with an identity_sid the jar has since rotated.
+  const staleCopy = jar.map((cookie) => (cookie.name === 'identity_sid' ? { ...cookie, value: 'sid-1' } : cookie))
+  assert.deepEqual(planBrowserSession(true, anonymous, jar), { stash: false, clear: true, push: true })
+  assert.deepEqual(planBrowserSession(false, anonymous, jar), { stash: false, clear: true, push: false })
+  assert.deepEqual(planBrowserSession(true, staleCopy, jar), { stash: false, clear: true, push: true })
+  assert.deepEqual(planBrowserSession(false, staleCopy, jar), { stash: false, clear: true, push: false })
 })

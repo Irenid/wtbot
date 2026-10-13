@@ -1,7 +1,9 @@
 /**
- * Чистые правила распознавания проверки Cloudflare и склейки cookies.
- * Вынесены из wt-browser.ts, чтобы их можно было проверять без запуска Edge.
+ * Pure rules that recognize a Cloudflare check and merge cookies, kept apart
+ * from wt-browser.ts so they are testable without starting Edge.
  */
+
+import { isSignedInSession, sessionToken } from './wt-sign-in.js'
 
 const CHALLENGE_TITLE = /just a moment|attention required|verify you are human|checking your browser/i
 export const CHALLENGE_URL = /__cf_chl|\/cdn-cgi\/challenge-platform/i
@@ -74,17 +76,20 @@ export function freshestCookies(
 }
 
 export interface BrowserSessionPlan {
-  /** Сессия браузера отличалась от jar — запомнить её, прежде чем убрать. */
+  /** The browser holds another sign-in than the jar's (a VNC sign-in): keep it before clearing it. */
   stash: boolean
-  /** Убрать cookies авторизации из браузера. */
+  /** Remove the sign-in cookies from the browser. */
   clear: boolean
-  /** Положить в браузер сессию jar. */
+  /** Put the jar's session into the browser. */
   push: boolean
 }
 
 /**
- * Что сделать с cookies авторизации браузера перед запросом. carrier — сессию
- * сейчас несёт браузер: ему нужна сессия jar. Иначе браузер ходит анонимно.
+ * What to do with the browser's sign-in cookies before a request. carrier —
+ * the browser carries the session now and needs the jar's; otherwise it
+ * browses anonymously. Only a signed-in set with its own token is worth
+ * keeping: an anonymous identity_sid or a copy of the jar's session with an
+ * older identity_sid would replace a working session with a dead one.
  */
 export function planBrowserSession(
   carrier: boolean,
@@ -94,7 +99,7 @@ export function planBrowserSession(
   const same = sameCookieValues(browserAuth, jarAuth)
   if (carrier && (same || jarAuth.length === 0)) return { stash: false, clear: false, push: false }
   return {
-    stash: browserAuth.length > 0 && !same,
+    stash: isSignedInSession(browserAuth) && sessionToken(browserAuth) !== sessionToken(jarAuth),
     clear: browserAuth.length > 0,
     push: carrier,
   }

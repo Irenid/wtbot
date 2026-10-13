@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict'
 import test, { afterEach } from 'node:test'
+import type { WtSignInRenewal } from './wt-browser.js'
 import {
   fetchWtResponse,
+  renewWtSessionIfDue,
   resetWtTransportState,
   retryAfterWtSessionRefresh,
+  WT_SESSION_LIFETIME_MS,
   wtRouteOf,
+  wtSessionStatus,
   wtTransportRoutes,
 } from './wt-request.js'
+import { GAIJIN_RELOGIN_URL } from './wt-sign-in.js'
 
 const LEADERBOARD = 'https://warthunder.com/en/community/getclansleaderboard/dif/_hist/page/1/sort/dr_era5'
 const PROFILE = 'https://warthunder.com/en/community/userinfo/?nick=Venukbr'
@@ -20,7 +25,7 @@ interface BrowserCall {
 /** Транспорт без очереди, браузера и jar: тест видит каждый прямой и браузерный запрос. */
 function fakeTransport(options: { now?: () => number } = {}) {
   const browserCalls: BrowserCall[] = []
-  const absorbed: Response[] = []
+  const absorbed: Array<{ response: Response; sentCookie: string }> = []
   resetWtTransportState({
     waitSlot: async () => undefined,
     browserEnabled: () => true,
@@ -29,8 +34,8 @@ function fakeTransport(options: { now?: () => number } = {}) {
       return new Response('browser', { status: 200 })
     },
     sessionHeaders: async () => ({ cookie: 'identity_sid=jar', userAgent: 'BrowserUA/1' }),
-    absorbSessionCookies: async (response) => {
-      absorbed.push(response)
+    absorbSessionCookies: async (response, sentCookie) => {
+      absorbed.push({ response, sentCookie })
     },
     ...(options.now ? { now: options.now } : {}),
   })
@@ -118,7 +123,7 @@ test('через 6 часов адрес снова пробует прямой 
   assert.deepEqual(wtTransportRoutes(), { '/en/community/userinfo': 'direct' })
 })
 
-test('Replay API несёт сессию jar и User-Agent её браузера, ответ обновляет jar', async () => {
+test('the Replay API carries the jar session and its browser User-Agent; the jar learns what was sent', async () => {
   const { absorbed, browserCalls } = fakeTransport()
   const sent: Headers[] = []
   globalThis.fetch = async (_input, init) => {
@@ -131,6 +136,7 @@ test('Replay API несёт сессию jar и User-Agent её браузера
   assert.equal(sent[0]!.get('cookie'), 'identity_sid=jar')
   assert.equal(sent[0]!.get('user-agent'), 'BrowserUA/1')
   assert.equal(absorbed.length, 1)
+  assert.equal(absorbed[0]!.sentCookie, 'identity_sid=jar')
   assert.equal(browserCalls.length, 0)
 })
 
@@ -206,4 +212,162 @@ test('не повторяет запрос, если Edge не смог обно
 
   assert.deepEqual(result, { empty: true })
   assert.equal(requests, 1)
+})
+
+const HOUR = 60 * 60_000
+
+/**
+ * Session recovery with fake browser steps: `calls` records each step,
+ * `renewals` are the Gaijin sign-in results in order (then "failed").
+ */
+function sessionTransport(options: {
+  renewals?: WtSignInRenewal[]
+  adopt?: boolean
+  signedInAt?: number | null
+  configured?: boolean
+  pageUrl?: string | null
+} = {}) {
+  const calls: string[] = []
+  const visited: string[] = []
+  const renewals = [...(options.renewals ?? [])]
+  const clock = { now: Date.parse('2026-10-13T12:00:00Z') }
+  resetWtTransportState({
+    waitSlot: async () => {
+      calls.push('slot')
+    },
+    browserEnabled: () => true,
+    now: () => clock.now,
+    sessionConfigured: () => options.configured ?? true,
+    signedInAt: async () => options.signedInAt ?? null,
+    renewSignIn: async (_reason, prepareVisit) => {
+      calls.push('renew')
+      visited.push(await prepareVisit())
+      return renewals.shift() ?? 'failed'
+    },
+    adoptBrowserSession: async () => {
+      calls.push('adopt')
+      return options.adopt ?? false
+    },
+    refreshClearance: async () => {
+      calls.push('clearance')
+      return true
+    },
+    fetchReLoginUrl: async () => {
+      calls.push('page')
+      return options.pageUrl === undefined ? 'https://login.gaijin.net/en/sso/reLogin/?from=page' : options.pageUrl
+    },
+  })
+  return { calls, visited, clock }
+}
+
+/** One Replay API call that answers an empty list first and a full one after a refresh. */
+async function emptyThenFull(): Promise<{ empty: boolean }> {
+  let requests = 0
+  return retryAfterWtSessionRefresh(
+    async () => ({ empty: requests++ === 0 }),
+    (response) => response.empty,
+    'Replay API returned an empty list',
+  )
+}
+
+test('a lost session is signed in again through Gaijin before anything else', async (t) => {
+  t.mock.method(console, 'log', () => undefined)
+  const { calls, visited } = sessionTransport({ renewals: ['renewed'] })
+
+  assert.deepEqual(await emptyThenFull(), { empty: false })
+
+  // The visit gets the page's reLogin address and a request slot (it ends on warthunder.com).
+  assert.deepEqual(calls, ['renew', 'page', 'slot'])
+  assert.deepEqual(visited, ['https://login.gaijin.net/en/sso/reLogin/?from=page'])
+  assert.equal(wtSessionStatus().lastRenewal, 'renewed')
+})
+
+test('without a Gaijin sign-in the browser session is adopted, and the warning says what to do', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => undefined)
+  const signedInAt = Date.parse('2026-09-28T20:52:00Z')
+  const { calls } = sessionTransport({ renewals: ['signed-out'], adopt: true, signedInAt })
+
+  assert.deepEqual(await emptyThenFull(), { empty: false })
+
+  assert.deepEqual(calls, ['renew', 'page', 'slot', 'adopt'])
+  const warnings = warn.mock.calls.map((call) => String(call.arguments[0]))
+  const advice = warnings.find((line) => line.includes('https://login.gaijin.net in the bot\'s browser'))
+  assert.ok(advice, warnings.join('\n'))
+  assert.match(advice, /works until about 2026-10-12 20:52 UTC/)
+})
+
+test('with no sign-in anywhere the session route moves to the browser', async (t) => {
+  t.mock.method(console, 'warn', () => undefined)
+  t.mock.method(console, 'log', () => undefined)
+  const { calls } = sessionTransport({ renewals: ['signed-out'] })
+
+  assert.deepEqual(await emptyThenFull(), { empty: false })
+
+  assert.deepEqual(calls, ['renew', 'page', 'slot', 'adopt'])
+  assert.deepEqual(wtTransportRoutes(), { '/en/api/replay': 'browser' })
+})
+
+test('a request that raced a renewal is retried with the new session, without another sign-in', async (t) => {
+  t.mock.method(console, 'log', () => undefined)
+  const { calls, clock } = sessionTransport({ renewals: ['renewed', 'renewed'] })
+  await emptyThenFull()
+  clock.now += 60_000
+
+  assert.deepEqual(await emptyThenFull(), { empty: false })
+
+  assert.equal(calls.filter((call) => call === 'renew').length, 1)
+})
+
+test('a failed sign-in is not repeated for 30 minutes', async (t) => {
+  t.mock.method(console, 'warn', () => undefined)
+  t.mock.method(console, 'log', () => undefined)
+  const { calls, clock } = sessionTransport({ renewals: ['failed', 'renewed'] })
+  await emptyThenFull()
+  calls.length = 0
+
+  // Past the 5-minute refresh pause: the other steps run, the sign-in does not.
+  clock.now += 6 * 60_000
+  await emptyThenFull()
+  assert.deepEqual(calls, ['adopt', 'slot', 'clearance'])
+
+  calls.length = 0
+  clock.now += 25 * 60_000
+  await emptyThenFull()
+  // The reLogin address read for the first attempt is still fresh.
+  assert.deepEqual(calls, ['renew', 'slot'])
+})
+
+test('the schedule renews a sign-in a day after it happened, or one of unknown age', async (t) => {
+  t.mock.method(console, 'warn', () => undefined)
+  t.mock.method(console, 'log', () => undefined)
+  const now = Date.parse('2026-10-13T12:00:00Z')
+
+  sessionTransport({ signedInAt: now - 2 * HOUR })
+  assert.equal(await renewWtSessionIfDue(), 'skipped')
+  assert.equal(wtSessionStatus().expiresAt, Math.floor((now - 2 * HOUR + WT_SESSION_LIFETIME_MS) / 1_000))
+
+  sessionTransport({ signedInAt: now - 25 * HOUR, renewals: ['renewed'] })
+  assert.equal(await renewWtSessionIfDue(), 'renewed')
+
+  sessionTransport({ signedInAt: null, renewals: ['signed-out'] })
+  assert.equal(await renewWtSessionIfDue(), 'signed-out')
+
+  const unconfigured = sessionTransport({ signedInAt: null, configured: false })
+  assert.equal(await renewWtSessionIfDue(), 'skipped')
+  assert.deepEqual(unconfigured.calls, [])
+})
+
+test('the built-in reLogin address stands in for an unreadable page, read once a day', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => undefined)
+  const { calls, visited, clock } = sessionTransport({ renewals: ['signed-out', 'signed-out'], pageUrl: null })
+
+  await renewWtSessionIfDue()
+  clock.now += HOUR
+  await renewWtSessionIfDue()
+
+  assert.deepEqual(visited, [GAIJIN_RELOGIN_URL, GAIJIN_RELOGIN_URL])
+  assert.equal(calls.filter((call) => call === 'page').length, 1)
+  // The sign-in advice is not repeated within 6 hours.
+  const advice = warn.mock.calls.filter((call) => String(call.arguments[0]).includes('cannot renew itself'))
+  assert.equal(advice.length, 1)
 })

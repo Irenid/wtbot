@@ -10,28 +10,21 @@ import {
 } from './wt-request.js'
 
 /**
- * Реплеи клановых боёв War Thunder (warthunder.com/en/tournament/replay/).
+ * War Thunder squadron battle replays (warthunder.com/en/tournament/replay/).
  *
- * POST /en/api/replay отдаёт страницы последних боёв (20 на страницу),
- * GET /en/api/replay/{sessionId} — ссылки на файлы реплея (.wrpl).
+ * POST /en/api/replay returns pages of recent battles (20 a page),
+ * GET /en/api/replay/{sessionId} the links to the replay files (.wrpl).
  *
- * Анонимам API отвечает 200, но с пустым списком, поэтому нужна кука
- * залогиненной сессии — WT_COOKIE в .env. Сессия скользящая: каждый ответ
- * сервера несёт Set-Cookie с новым сроком (+14 дней), их подхватывает
- * wt-cookies.ts — так что куку достаточно вставить один раз, дальше она
- * продлевается сама, пока бот запускается хотя бы раз в 14 дней.
- * Если сессия всё же истечёт (долгий простой, смена пароля), источник
- * упадёт с понятной ошибкой — её видно на дашборде и в /stats,
- * после обновления WT_COOKIE в .env всё продолжится само.
+ * The API answers an anonymous visitor HTTP 200 with an empty list, so it
+ * needs a signed-in session: WT_COOKIE seeds the jar (wt-cookies.ts). A
+ * sign-in lives 14 days however often it is used (identity_sid rotates in
+ * responses, the sign-in does not slide); wt-request.ts renews it through
+ * Gaijin (wt-sign-in.ts). When that fails the source fails with the advice in
+ * collectFreshReplays, on the dashboard and in /stats.
  */
 
 const LIST_URL = 'https://warthunder.com/en/api/replay'
-/**
- * Предел страниц догона за один цикл (20 реплеев на странице). Пока
- * страницы целиком новые — бот продолжает листать до первого уже сохранённого
- * боя. Запросы последовательны и ограничены паузой, поэтому долгий догон не
- * создаёт параллельную нагрузку на API.
- */
+
 interface WtPlayer {
   userId: string
   name: string
@@ -219,50 +212,55 @@ export interface CollectResult {
   hitCap: boolean
 }
 
+/**
+ * Catch-up pages per cycle (20 replays a page): while pages are entirely new
+ * the walk goes on to the first stored battle. Requests run one after another
+ * through the shared queue, so a long catch-up adds no parallel load.
+ */
 export const PLANNED_REPLAYS_MAX_PAGES = 50
 
 /**
- * Листает список боёв и собирает те, которых ещё нет в БД. Пока страница
- * целиком новая — листает дальше (догон после простоя), пределы — maxPages,
- * первый известный бой (в инкрементальном режиме) и дата sinceTs.
+ * Pages through the battle list and collects battles the database lacks.
+ * While a page is entirely new it goes on (catching up after downtime); the
+ * limits are maxPages, the first known battle (incremental mode) and sinceTs.
  */
 export async function collectFreshReplays(
   opts: CollectOpts,
   deps: ReplayCollectionDeps = DEFAULT_COLLECTION_DEPS,
 ): Promise<CollectResult> {
   if (opts.maxPages !== undefined && (!Number.isInteger(opts.maxPages) || opts.maxPages < 1)) {
-    throw new RangeError('maxPages должен быть положительным целым числом')
+    throw new RangeError('maxPages must be a positive integer')
   }
   if (opts.sinceTs !== undefined && (!Number.isSafeInteger(opts.sinceTs) || opts.sinceTs < 0)) {
-    throw new RangeError('sinceTs должен быть неотрицательным Unix-временем')
+    throw new RangeError('sinceTs must be a non-negative Unix time')
   }
   if (!deps.hasCookie()) {
-    throw new Error('WT_COOKIE не задан в .env — скопируй куки identity_* из браузера (см. .env.example)')
+    throw new Error('WT_COOKIE is not set in .env: copy the identity_* cookies from a browser (see .env.example)')
   }
 
   const fresh: WtReplay[] = []
   let totalOnSite = 0
   let pagesRead = 0
   let rejected = 0
-  let hitCap = true // сбросится, если выйдем по нормальной границе, а не по пределу
-  // Страницы зависимы: каждая может остановить обход по known/cutoff/cap,
-  // а внешний transport всё равно пропускает запросы через общую очередь.
+  let hitCap = true // cleared when the walk stops at a normal boundary, not at the cap
+  // Pages depend on each other: each may stop the walk (known, cutoff, cap),
+  // and the transport sends requests through the shared queue anyway.
   for (let page = 1; opts.maxPages === undefined || page <= opts.maxPages; page++) {
     opts.signal?.throwIfAborted()
     const data = page === 1
       ? await deps.retryFirstPage(
           () => deps.fetchPage(page),
           (response) => response.total_count === 0 && response.items.length === 0,
-          'Replay API вернул пустой список',
+          'Replay API returned an empty list',
         )
       : await deps.fetchPage(page)
-    assertListResponse(data, `список replay, страница ${page}`)
+    assertListResponse(data, `replay list, page ${page}`)
     totalOnSite = data.total_count
     pagesRead = page
     if (page === 1 && data.total_count === 0 && data.items.length === 0) {
       throw new Error(
-        'API вернул пустой список — автоматическое обновление cookies через Edge '
-        + 'не восстановило сессию: войди на warthunder.com и обнови WT_COOKIE в .env',
+        'API returned an empty list: the WT session expired and renewing it failed; sign in once at '
+        + 'https://login.gaijin.net in the bot\'s browser (VNC, README) or update WT_COOKIE in .env',
       )
     }
 
@@ -281,15 +279,15 @@ export async function collectFreshReplays(
       }
     }
 
-    if (reachedCutoff) { hitCap = false; break } // дошли до даты-границы
-    if (data.items.length < 20) { hitCap = false; break } // последняя страница списка
-    // встретили известный бой — дальше только уже собранное (инкрементально)
+    if (reachedCutoff) { hitCap = false; break } // reached the date boundary
+    if (data.items.length < 20) { hitCap = false; break } // the list's last page
+    // a known battle: everything after it is collected already (incremental)
     if (opts.stopAtKnown && unseenOnPage < wellFormed.length) { hitCap = false; break }
   }
 
   const items: ParsedItem[] = []
-  // Детали также идут через общий rate-limited transport; fan-out только
-  // накопит ожидающие promises, не увеличив фактическую пропускную способность.
+  // Details go through the shared rate-limited transport too: a fan-out would
+  // only pile up waiting promises without more throughput.
   for (const replay of fresh) {
     let parts: string[] | null = null
     if (opts.fetchDetails !== false) {
@@ -299,7 +297,7 @@ export async function collectFreshReplays(
     items.push({
       externalId: replay.sessionId,
       title: `[${replay.gameMode}] ${replay.missionName.trim()}`,
-      // parts === null → ссылки построит replayPartUrls из url+partsCount
+      // parts === null: replayPartUrls builds the links from url + partsCount
       data: { ...replay, replayParts: parts },
     })
   }

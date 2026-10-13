@@ -297,10 +297,26 @@ items yields `unchanged`.
 
 Access:
 
-- `wt-replays` and `wt-players` need an authorized session; HTTP 200 with an
+- `wt-replays` and `wt-players` need a signed-in session; HTTP 200 with an
   empty list does not prove it works (source status
-  `API вернул пустой список` — "API returned an empty list": `WT_COOKIE`
-  expired, log in by hand).
+  `API returned an empty list`).
+- A sign-in lives 14 days (`WT_SESSION_LIFETIME_MS`); use never extends it
+  (measurements: `wt-sign-in.ts`). A day after the jar's sign-in (`signedInAt`
+  in the jar; unknown counts as due) and on an empty list the bot signs in
+  again through Gaijin's SSO (`renewWtSessionThroughGaijin`): a top-level
+  visit to the site page's reLogin address (`GAIJIN_RELOGIN_URL` if the page
+  has none) in an isolated browser context holding copies of the browser's
+  login.gaijin.net cookies; the new sign-in goes to the jar, Gaijin's rotated
+  cookies back to the browser. It needs one manual sign-in at
+  https://login.gaijin.net in the bot's browser (VNC, README); without it the
+  visit meets the sign-in form, sends nothing more until those cookies
+  change, and the log names the sign-in's end every 6 h. A failure waits
+  30 min. State: `/api/stats` → `wtTransport.session`.
+- The bot's Chromium blocks third-party cookies, so the site's own Gaijin
+  client (`gsea.js`) never sees the SSO session, and on a signed-in page it
+  posts `/<lang>/logout`: the browser never sends that request
+  (`isSiteLogout`), and the renewal visit loads no Gaijin script on
+  warthunder.com pages.
 - Every request to the warthunder.com site and API goes through
   `fetchWtResponse()` or `waitForRequestSlot()`: one queue per process,
   1,500 ms spacing, `Retry-After`. A direct `fetch()` to the site's HTML or
@@ -324,12 +340,18 @@ Access:
   requests never send Cloudflare cookies. The browser gets the jar session
   only while the Replay API goes through it, and writes it back then;
   otherwise it browses anonymously: the server rotates `identity_sid`, and two
-  live copies of one session would diverge. On an empty list (at most every
-  5 min) the browser's own session (a VNC login) is adopted into the jar;
-  without one a browser carrying the session refreshes clearance and session,
-  and a direct one moves the Replay API to the browser until the 6 h
-  re-probe. Never seed host-only cookie copies next to the domain ones
-  (`removeDuplicateCookies`: the server read the stale `identity_sid`).
+  live copies of one session would diverge. The jar takes `identity_*` only
+  from a response to a request that carried its own `identity_token` and
+  from browser copies of that sign-in, so a late response to a replaced
+  session never undoes a renewal. Never seed host-only cookie copies next to
+  the domain ones (`removeDuplicateCookies`: the server read the stale
+  `identity_sid`).
+- On an empty list (one attempt at a time, at most every 5 min;
+  `refreshWtSession`) the order is: the Gaijin renewal; the browser's own
+  sign-in (`identity_id` + `identity_token` of another sign-in, e.g. a VNC
+  sign-in at warthunder.com; never an anonymous `identity_sid`); a refresh
+  through a browser carrying the session; else the Replay API route moves to
+  the browser until the 6 h re-probe.
 - claninfo (`src/wrpl/clan-info.ts`) uses its own direct `fetch` without
   cookies, but after `waitForRequestSlot()`; a 429 delays the whole queue. If
   it starts answering 403 `cf-mitigated: challenge`, switch it to

@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:net'
 import { access, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
+import { chromium, type Browser, type BrowserContext, type Cookie, type Page, type Request } from 'playwright-core'
 import { writeFileAtomic } from '../../atomic-file.js'
 import { config } from '../../config.js'
 import {
@@ -10,6 +11,7 @@ import {
   cookieValues,
   isWtAuthCookie,
   rememberCookieUserAgent,
+  replaceWtSession,
   type WtCookieValue,
 } from './wt-cookies.js'
 import {
@@ -17,10 +19,10 @@ import {
   isChallengeResponse,
   looksCleared,
   planBrowserSession,
-  sameCookieValues,
   staleDuplicateCookies,
   type PageSignals,
 } from './wt-challenge.js'
+import { GAIJIN_ORIGIN, isSignedInSession, isSiteLogout, pageAccountId, sessionToken } from './wt-sign-in.js'
 import {
   browserExecutableCandidates,
   browserSpawnArgs,
@@ -60,6 +62,12 @@ const CLOSE_WAIT_MS = 5_000
 const ENDPOINT_FILE = 'wtbot-cdp.json'
 /** Попытки одного запроса: две на транспортные сбои плюс одна после проверки. */
 const MAX_REQUEST_ATTEMPTS = 3
+/** A sign-in form shown this long is the answer, not a step of a redirect. */
+const SIGN_IN_FORM_GRACE_MS = 3_000
+/** Requests of the page after the sign-in may still rotate identity_sid. */
+const SIGN_IN_SETTLE_MS = 10_000
+/** The sign-in visit needs documents and scripts only (blockedOnSignIn). */
+const SIGN_IN_SKIPPED_RESOURCES: ReadonlySet<string> = new Set(['image', 'media', 'font'])
 
 interface PoolEntry {
   page: Page
@@ -120,6 +128,9 @@ let sessionCarrierProbe: () => boolean = () => true
  */
 let stashedBrowserSession: WtCookieValue[] | null = null
 let sessionPrepareTail: Promise<void> = Promise.resolve()
+let renewalTail: Promise<WtSignInRenewal> | null = null
+/** sha256 of the login.gaijin.net cookies a visit found signed out; a sign-in through VNC changes them. */
+let signedOutGaijinCookies: string | null = null
 let lastClearanceAt = 0
 let clearanceTail: Promise<void> = Promise.resolve()
 let startupTail: Promise<BrowserState> | null = null
@@ -356,9 +367,12 @@ async function connectBrowser(): Promise<BrowserState> {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
     const context = browser.contexts()[0]
     if (context === undefined) {
-      throw new WtBrowserError('в Edge нет доступного browser context')
+      throw new WtBrowserError('the browser has no browser context')
     }
     context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS)
+    // A signed-in page would sign itself out (isSiteLogout); a manual sign-out
+    // through VNC does nothing either: clear the cookies instead.
+    await context.route(isSiteLogout, (route) => route.abort().catch(() => undefined))
     const probe = context.pages()[0] ?? await context.newPage()
     const userAgent = await probe
       .evaluate(() => navigator.userAgent)
@@ -575,14 +589,14 @@ async function jarAuthCookies(): Promise<WtCookieValue[]> {
 }
 
 /**
- * Готовит cookies авторизации браузера к запросу. Сессию WT ведёт jar: сервер
- * ротирует identity_sid в ответах, и две копии одной сессии в jar и в браузере
- * разошлись бы.
- * - carrier (Replay API идёт через браузер) — в браузер кладётся сессия jar;
- *   ответы сохраняются обратно (saveSessionIfCarrier).
- * - иначе браузер ходит анонимно: публичным страницам сессия не нужна.
- * Сессия браузера, отличная от jar (вход через VNC), не теряется: она
- * запоминается и берётся adoptBrowserSession, если сессия jar умрёт.
+ * Prepares the browser's sign-in cookies for a request. The jar owns the WT
+ * session: the server rotates identity_sid in responses, and two copies of
+ * one session in the jar and the browser would diverge.
+ * - carrier (the Replay API goes through the browser): the browser gets the
+ *   jar's session, and its responses are saved back (saveSessionIfCarrier);
+ * - otherwise the browser browses anonymously: public pages need no session.
+ * The browser's own sign-in (VNC) is not lost: it is kept and taken by
+ * adoptBrowserSession if the jar's session dies.
  */
 async function prepareBrowserSession(context: BrowserContext, carrier: boolean): Promise<void> {
   const run = sessionPrepareTail.then(async () => {
@@ -611,9 +625,10 @@ async function prepareBrowserSession(context: BrowserContext, carrier: boolean):
 }
 
 /**
- * Переносит cookies браузера в общий jar, пока сессию несёт браузер: так jar
- * видит ротацию identity_sid. Анонимные ответы в jar не попадают.
- * cf_clearance сохраняется намеренно: jar отражает состояние сессии.
+ * Copies the browser's cookies into the jar while the browser carries the
+ * session, so the jar sees identity_sid rotate; the jar ignores identity_*
+ * of another sign-in (absorbCookieValues). Requests without the session leave
+ * the jar alone. cf_clearance is kept on purpose: the jar mirrors the session.
  */
 async function saveSessionIfCarrier(context: BrowserContext, carrier: boolean): Promise<void> {
   if (!carrier) return
@@ -623,9 +638,37 @@ async function saveSessionIfCarrier(context: BrowserContext, carrier: boolean): 
 }
 
 /**
- * Берёт в jar сессию браузера, отличную от сессии jar: текущую или убранную
- * prepareBrowserSession (вход через VNC). Вызывается, когда сервер не принял
- * сессию jar.
+ * Puts another sign-in into the jar. The browser's copy of the replaced one
+ * goes, and is never kept for adoption: it is the session that just died or
+ * was replaced. Runs in the prepareBrowserSession chain, so a request between
+ * the two steps cannot stash that copy.
+ */
+async function installSession(
+  context: BrowserContext,
+  auth: readonly WtCookieValue[],
+  userAgent: string,
+  signedInAt: number | null,
+): Promise<void> {
+  const run = sessionPrepareTail.then(async () => {
+    const retired = sessionToken(await jarAuthCookies())
+    await replaceWtSession(auth, userAgent, signedInAt)
+    if (retired === null || retired === sessionToken(auth)) return
+    if (stashedBrowserSession !== null && sessionToken(stashedBrowserSession) === retired) {
+      stashedBrowserSession = null
+    }
+    if (sessionToken(await browserAuthCookies(context)) === retired) {
+      await context.clearCookies({ name: /^identity_/, domain: WT_COOKIE_DOMAIN }).catch(() => undefined)
+    }
+  })
+  sessionPrepareTail = run.catch(() => undefined)
+  await run
+}
+
+/**
+ * Takes into the jar the browser's own sign-in (a VNC sign-in at
+ * warthunder.com): the current one or the one prepareBrowserSession kept.
+ * Called when the server refused the jar's session; an anonymous set or a
+ * copy of the jar's own sign-in is no candidate.
  */
 export async function adoptBrowserSession(): Promise<boolean> {
   if (!config.wtBrowserEnabled) return false
@@ -635,13 +678,210 @@ export async function adoptBrowserSession(): Promise<boolean> {
   } catch {
     return false
   }
-  const jarAuth = await jarAuthCookies()
+  const jarToken = sessionToken(await jarAuthCookies())
   const candidates = [await browserAuthCookies(current.context), stashedBrowserSession ?? []]
-  const adopted = candidates.find((auth) => auth.length > 0 && !sameCookieValues(auth, jarAuth))
+  const adopted = candidates.find((auth) => isSignedInSession(auth) && sessionToken(auth) !== jarToken)
   stashedBrowserSession = null
   if (adopted === undefined) return false
-  await absorbCookieValues(adopted)
+  // When that sign-in happened is unknown: the next scheduled check renews it.
+  await installSession(current.context, adopted, current.userAgent, null)
   return true
+}
+
+export type WtSignInRenewal = 'renewed' | 'signed-out' | 'failed'
+
+/**
+ * Signs warthunder.com in again through the Gaijin sign-in that the bot's
+ * browser keeps (one manual sign-in at login.gaijin.net through VNC). The
+ * visit runs in an isolated context with copies of the browser's
+ * login.gaijin.net cookies: warthunder.com cookies of the shared context (the
+ * jar's copy, a VNC session) take no part, and the new session goes only to
+ * the jar. `prepareVisit` reserves a request slot (the visit ends on
+ * warthunder.com) and returns the reLogin address. "signed-out" costs no
+ * request while the Gaijin cookies are those a visit already found signed out.
+ */
+export function renewWtSessionThroughGaijin(
+  reason: string,
+  prepareVisit: () => Promise<string>,
+): Promise<WtSignInRenewal> {
+  if (!config.wtBrowserEnabled) return Promise.resolve('failed')
+  if (renewalTail !== null) return renewalTail
+  const run = renewOnce(reason, prepareVisit).finally(() => {
+    renewalTail = null
+  })
+  renewalTail = run
+  return run
+}
+
+async function renewOnce(reason: string, prepareVisit: () => Promise<string>): Promise<WtSignInRenewal> {
+  let current: BrowserState
+  try {
+    current = await ensureBrowser()
+  } catch {
+    return 'failed'
+  }
+  const gaijin = await current.context.cookies(GAIJIN_ORIGIN).catch(() => null)
+  if (gaijin === null) return 'failed'
+  // Nobody has opened login.gaijin.net in this browser yet.
+  if (gaijin.length === 0) return 'signed-out'
+  const fingerprint = cookieFingerprint(gaijin)
+  if (fingerprint === signedOutGaijinCookies) return 'signed-out'
+
+  let isolated: BrowserContext | null = null
+  try {
+    const target = await prepareVisit()
+    // The deadline starts with the visit: the request slot may wait out a 429.
+    const started = Date.now()
+    isolated = await current.browser.newContext()
+    isolated.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS)
+    await isolated.route('**/*', async (route) => {
+      await (blockedOnSignIn(route.request()) ? route.abort() : route.continue()).catch(() => undefined)
+    })
+    await isolated.addCookies(gaijin)
+    const page = await isolated.newPage()
+    await page.goto(target, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
+
+    let outcome: WtSignInRenewal = 'failed'
+    let note = ''
+    let formSeenAt: number | null = null
+    const deadline = started + config.wtBrowserTimeoutMs
+    while (Date.now() < deadline) {
+      const address = safeUrl(page.url())
+      if (
+        address?.origin === WT_ORIGIN
+        && !address.pathname.toLowerCase().includes('extlogin')
+        && isSignedInSession(await browserAuthCookies(isolated))
+      ) {
+        // The page served after the sign-in tells whether the server took it.
+        await page.waitForLoadState('domcontentloaded', { timeout: NAVIGATION_TIMEOUT_MS }).catch(() => undefined)
+        if (pageAccountId(await page.content().catch(() => '')) !== '') {
+          outcome = 'renewed'
+          break
+        }
+        note = '; the site page is anonymous'
+      }
+      if (address?.origin === GAIJIN_ORIGIN && (await signInFormShown(page))) {
+        formSeenAt ??= Date.now()
+        if (Date.now() - formSeenAt >= SIGN_IN_FORM_GRACE_MS) {
+          outcome = 'signed-out'
+          break
+        }
+      } else {
+        formSeenAt = null
+      }
+      await page.waitForTimeout(CLEARANCE_POLL_MS).catch(() => undefined)
+    }
+    if (outcome === 'renewed') {
+      await page.waitForLoadState('networkidle', { timeout: SIGN_IN_SETTLE_MS }).catch(() => undefined)
+    }
+    const lastPage = pageAddress(page.url())
+    await page.goto('about:blank').catch(() => undefined)
+
+    if (outcome === 'renewed') {
+      const auth = await browserAuthCookies(isolated)
+      if (isSignedInSession(auth)) {
+        await installSession(current.context, auth, current.userAgent, Date.now())
+      } else {
+        outcome = 'failed'
+        note = '; the sign-in cookies vanished'
+      }
+    }
+    // Gaijin rotates its cookies on every visit: the shared copies may stop working.
+    const mirrored = await mirrorGaijinCookies(current.context, isolated, fingerprint)
+    signedOutGaijinCookies = outcome === 'signed-out' && mirrored
+      ? cookieFingerprint(await current.context.cookies(GAIJIN_ORIGIN).catch(() => []))
+      : null
+
+    const elapsed = Date.now() - started
+    if (outcome === 'renewed') {
+      console.log(`[wt-browser] Signed in to warthunder.com again through Gaijin in ${elapsed} ms (${reason})`)
+    } else if (outcome === 'signed-out') {
+      console.warn(`[wt-browser] login.gaijin.net asks for a sign-in: the browser keeps no Gaijin session (${reason})`)
+    } else {
+      console.warn(`[wt-browser] The Gaijin sign-in did not finish in ${elapsed} ms (${reason}); last page: ${lastPage}${note}`)
+    }
+    return outcome
+  } catch (error) {
+    console.warn(`[wt-browser] The Gaijin sign-in failed (${safeErrorMessage(error)})`)
+    return 'failed'
+  } finally {
+    await isolated?.close().catch(() => undefined)
+  }
+}
+
+/** Fingerprint of a cookie set: only the hash stays in memory. */
+function cookieFingerprint(cookies: readonly Cookie[]): string {
+  const lines = cookies.map((cookie) => [cookie.domain, cookie.path, cookie.name, cookie.value].join('\t')).sort()
+  return createHash('sha256').update(lines.join('\n')).digest('hex')
+}
+
+/**
+ * Copies the visit's login.gaijin.net cookies back to the shared context,
+ * deletions included. A change there during the visit (a sign-in through VNC)
+ * wins. false — nothing copied.
+ */
+async function mirrorGaijinCookies(
+  shared: BrowserContext,
+  isolated: BrowserContext,
+  before: string,
+): Promise<boolean> {
+  try {
+    const now = await shared.cookies(GAIJIN_ORIGIN)
+    const after = await isolated.cookies(GAIJIN_ORIGIN)
+    if (cookieFingerprint(now) !== before || after.length === 0) return false
+    for (const old of now) {
+      if (after.some((cookie) => cookie.name === old.name && cookie.domain === old.domain && cookie.path === old.path)) {
+        continue
+      }
+      await shared.clearCookies({ name: old.name, domain: old.domain, path: old.path })
+    }
+    await shared.addCookies(after)
+    return true
+  } catch (error) {
+    console.warn(`[wt-browser] Could not copy the Gaijin cookies back (${safeErrorMessage(error)})`)
+    return false
+  }
+}
+
+/**
+ * The visit loads no Gaijin script on a warthunder.com page: the site's
+ * Gaijin client would find no Gaijin session there and sign the new one out
+ * (wt-sign-in.ts); the sign-out request itself never leaves either.
+ */
+function blockedOnSignIn(request: Request): boolean {
+  const type = request.resourceType()
+  if (SIGN_IN_SKIPPED_RESOURCES.has(type)) return true
+  const url = safeUrl(request.url())
+  if (url === null) return false
+  if (isSiteLogout(url)) return true
+  return type === 'script' && url.hostname.endsWith('.gaijin.net') && frameOrigin(request) === WT_ORIGIN
+}
+
+function frameOrigin(request: Request): string | null {
+  try {
+    return safeUrl(request.frame().url())?.origin ?? null
+  } catch {
+    // A service worker's request has no frame.
+    return null
+  }
+}
+
+async function signInFormShown(page: Page): Promise<boolean> {
+  return await page.locator('input[type="password"]').first().isVisible().catch(() => false)
+}
+
+function safeUrl(value: string): URL | null {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
+/** Origin and path only: the query of a sign-in address carries tokens. */
+function pageAddress(value: string): string {
+  const url = safeUrl(value)
+  return url === null || url.origin === 'null' ? value.split(/[?#]/)[0] || 'none' : `${url.origin}${url.pathname}`
 }
 
 function browserHeaders(init: RequestInit): Record<string, string> {
@@ -958,10 +1198,10 @@ export function wtBrowserUserAgent(): string | null {
   return state?.userAgent.trim() || null
 }
 
-/** Закрывает браузер при штатном завершении процесса. */
+/** Closes the browser on a normal shutdown, after a running check or sign-in (at most CLOSE_WAIT_MS). */
 export async function closeWtBrowser(): Promise<void> {
   await Promise.race([
-    clearanceTail.catch(() => undefined),
+    Promise.all([clearanceTail.catch(() => undefined), renewalTail?.catch(() => undefined)]),
     new Promise<void>((resolvePromise) => {
       const timer = setTimeout(resolvePromise, CLOSE_WAIT_MS)
       timer.unref()
@@ -971,13 +1211,13 @@ export async function closeWtBrowser(): Promise<void> {
   state = null
   startupTail = null
   lastClearanceAt = 0
-  rejectPageWaiters(new WtBrowserError('Browser pool остановлен'))
+  rejectPageWaiters(new WtBrowserError('the browser pool stopped'))
   if (current === null) return
 
   await Promise.all(current.pool.map((entry) => entry.page.close().catch(() => undefined)))
   await current.browser.close().catch(() => undefined)
   if (current.child !== null && !current.child.killed) current.child.kill()
-  // connectOverCDP закрывает соединение, но не сам Edge, а kill() по pid
-  // родителя не снимает дерево процессов браузера.
+  // connectOverCDP closes the connection, not the browser, and kill() of the
+  // parent pid leaves the browser's process tree.
   await killStaleProfileBrowsers()
 }

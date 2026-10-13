@@ -69,10 +69,10 @@ full texts are in Git (commit `46b6950` and earlier).
   `frontend/src/i18n/en.ts` (squadron, PSR, AB/RB/SB); `en.ts` becomes the
   canonical UI dictionary (today `ru.ts` is, and `en.ts` lacks 4 keys).
   Server-side `ru`/`ru-RU` formatting → `en-GB`, `pluralRu` → English plurals.
-  Logs quoted in docs (`[ingest] бой …`, `API вернул пустой список`, the verify
-  skill) change together with the code. Slash-command descriptions reach
-  Discord only after `npm run deploy:commands`. Also remove `.cbmignore`
-  (codebase-memory-mcp is not configured).
+  Logs quoted in docs (`[ingest] бой …`, the verify skill) change together
+  with the code. Slash-command descriptions reach Discord only after
+  `npm run deploy:commands`. Also remove `.cbmignore` (codebase-memory-mcp is
+  not configured).
 - **Tactical map: arrows to bases outside the view.** The game draws
   `arrow_mark.svg` (hud.blk `outOfMapArrow`, 15×18 UI px) at the frame's edge
   for every base outside it; `src/tactical-map/render.ts` draws none yet. The
