@@ -82,6 +82,20 @@ function useNowSec(): number {
   return now
 }
 
+/**
+ * The schedule time whose stage plays at now: a stage's max BR plays from switchDelaySec after its
+ * UTC start (14:00 UTC of its first day: that day's night window keeps the previous cap), and
+ * nothing plays once the season has ended.
+ */
+function scheduleTime(now: number, switchDelaySec: number, seasonEndsAt: number): number {
+  return now >= seasonEndsAt ? seasonEndsAt : now - switchDelaySec
+}
+
+/** The stage holding a schedule time; -1 — none (before the first stage, from the season's end). */
+function stageIndexAt(stages: readonly ClanSeasonStage[], at: number): number {
+  return stages.findIndex((stage) => at >= stage.startsAt && at < stage.endsAt)
+}
+
 /** Whether a battle window is open now, and when it closes or the next one opens. */
 function battleState(now: number): { open: boolean; at: number } {
   const today = Math.floor(now / DAY_SEC) * DAY_SEC
@@ -143,22 +157,26 @@ function ProgressIcon({ share }: { share: number }) {
   )
 }
 
-/** The next max BR and when it starts (br null — the season's end, from its last stage), over the stage at index. */
+/** The next max BR and when it first plays (br null — the season's end, from its last stage), over the stage at index. */
 interface StageChange { index: number; at: number; br: number | null }
 
-/** Counted from the current stage, between stages from the next one; null — nothing ahead. */
-function nextChange(stages: readonly ClanSeasonStage[], seasonEndsAt: number, now: number): StageChange | null {
-  const currentIndex = stages.findIndex((stage) => now >= stage.startsAt && now < stage.endsAt)
+/** Counted from the stage that plays now, between stages from the next one; null — nothing ahead. */
+function nextChange(stages: readonly ClanSeasonStage[], seasonEndsAt: number, switchDelaySec: number, now: number): StageChange | null {
+  const at = scheduleTime(now, switchDelaySec, seasonEndsAt)
+  const currentIndex = stageIndexAt(stages, at)
   const current = stages[currentIndex]
   if (current !== undefined && current.endsAt >= seasonEndsAt) return { index: currentIndex, at: current.endsAt, br: null }
-  const nextIndex = stages.findIndex((stage) => stage.startsAt > now)
+  const nextIndex = stages.findIndex((stage) => stage.startsAt > at)
   const next = stages[nextIndex]
-  return next === undefined ? null : { index: current !== undefined ? currentIndex : nextIndex, at: next.startsAt, br: next.maxBr }
+  return next === undefined
+    ? null
+    : { index: current !== undefined ? currentIndex : nextIndex, at: next.startsAt + switchDelaySec, br: next.maxBr }
 }
 
 /**
  * The countdown in a gold bubble over its stage's max BR, centred on the stage's column (--x of the
- * track's width). Hover: the exact moment in the viewer's time zone (stage dates are UTC days).
+ * track's width). Hover: the moment in the viewer's time zone — for a new cap the opening of its
+ * first battle window (stage dates are the schedule's UTC days).
  */
 function SeasonCountdown({ change, stageCount, now }: { change: StageChange; stageCount: number; now: number }) {
   const time = <b>{duration(change.at - now)}</b>
@@ -200,23 +218,29 @@ function SeasonDay({ startsAt, endsAt, now }: { startsAt: number; endsAt: number
   )
 }
 
-/** Every stage's max BR on one rail, its start date under it; the current stage is gold. */
-function SeasonTrack({ stages, seasonEndsAt, now }: { stages: ClanSeasonStage[]; seasonEndsAt: number; now: number }) {
-  const currentIndex = stages.findIndex((stage) => now >= stage.startsAt && now < stage.endsAt)
+/** Every stage's max BR on one rail, its start date under it; the stage that plays now is gold. */
+function SeasonTrack({ stages, seasonEndsAt, switchDelaySec, now }: {
+  stages: ClanSeasonStage[]
+  seasonEndsAt: number
+  switchDelaySec: number
+  now: number
+}) {
+  const at = scheduleTime(now, switchDelaySec, seasonEndsAt)
+  const currentIndex = stageIndexAt(stages, at)
   const current = currentIndex >= 0 ? stages[currentIndex] : undefined
   // The gold part of the rail ends at the current stage, or at the last one begun.
-  const reached = currentIndex >= 0 ? currentIndex : Math.max(0, stages.filter((stage) => stage.startsAt <= now).length - 1)
-  // A node is its stage's start, so the gold runs on to this moment: the elapsed share of
+  const reached = currentIndex >= 0 ? currentIndex : Math.max(0, stages.filter((stage) => stage.startsAt <= at).length - 1)
+  // A node is its stage's switch, so the gold runs on to this moment: the elapsed share of
   // the way to the next node (the last stage has none).
   const elapsed = current !== undefined && currentIndex < stages.length - 1
-    ? (now - current.startsAt) / (current.endsAt - current.startsAt)
+    ? (at - current.startsAt) / (current.endsAt - current.startsAt)
     : 0
   const style = { '--n': stages.length, '--i': (reached + elapsed).toFixed(4) } as CSSProperties
 
   return (
     <ol className="season-track" style={style} aria-label={t('a11y.seasonStages')}>
       {stages.map((stage, index) => {
-        const state = index === currentIndex ? 'current' : stage.endsAt <= now ? 'past' : 'next'
+        const state = index === currentIndex ? 'current' : stage.endsAt <= at ? 'past' : 'next'
         return (
           <li
             key={stage.week}
@@ -248,20 +272,23 @@ export function seasonHeading(context: ClanSeasonContext, official: OfficialClan
     : t('season.title')
 }
 
-/** The season's dates ("Sep 1 – Oct 31, 2026") and its current stage ("week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
-export function seasonParts(context: ClanSeasonContext): { range: string; stage: string } | null {
+/**
+ * The season's dates ("Sep 1 – Oct 31, 2026") and the stage that plays at now ("week 5 · max BR 9.0 ·
+ * Sep 29 – Oct 5"), on the client's clock like the panel.
+ */
+export function seasonParts(context: ClanSeasonContext, now = Date.now() / 1_000): { range: string; stage: string } | null {
   const season = context.season
   if (!season) return null
-  const current = context.currentStage
+  const current = context.stages[stageIndexAt(context.stages, scheduleTime(now, context.stageSwitchDelaySec, season.endsAt))]
   const stage = current
     ? `${stageLabel(current, season.endsAt)} · ${stageRange(current)}`
-    : season.active ? t('season.waiting') : t('season.ended')
+    : season.active && now < season.endsAt ? t('season.waiting') : t('season.ended')
   return { range: dayRange(season.startsAt, season.endsAt), stage }
 }
 
-/** One line: the season's dates and its current stage ("Sep 1 – Oct 31, 2026 · week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
-export function seasonLine(context: ClanSeasonContext): string | null {
-  const parts = seasonParts(context)
+/** One line: the season's dates and the stage that plays ("Sep 1 – Oct 31, 2026 · week 5 · max BR 9.0 · Sep 29 – Oct 5"). */
+export function seasonLine(context: ClanSeasonContext, now?: number): string | null {
+  const parts = seasonParts(context, now)
   return parts === null ? null : `${parts.range} · ${parts.stage}`
 }
 
@@ -288,7 +315,7 @@ export function SeasonPanel({ context, official = null, compact = false }: {
     return (
       <div className="notice" style={{ marginBottom: 16 }}>
         <strong>{heading}</strong>
-        <span className="muted" style={{ marginLeft: 8 }}>{seasonLine(context)}</span>
+        <span className="muted" style={{ marginLeft: 8 }}>{seasonLine(context, now)}</span>
         {mismatch && <div className="small" style={{ marginTop: 4 }}>{mismatch}</div>}
       </div>
     )
@@ -296,7 +323,7 @@ export function SeasonPanel({ context, official = null, compact = false }: {
 
   // The client's clock, not the API's answer: an open page follows the season's end.
   const live = season.active && now < season.endsAt
-  const change = live ? nextChange(context.stages, season.endsAt, now) : null
+  const change = live ? nextChange(context.stages, season.endsAt, context.stageSwitchDelaySec, now) : null
 
   return (
     <section className="card season-panel" aria-label={heading}>
@@ -320,7 +347,9 @@ export function SeasonPanel({ context, official = null, compact = false }: {
         {live && <BattleStatus now={now} />}
       </div>
       {change !== null && <SeasonCountdown change={change} stageCount={context.stages.length} now={now} />}
-      {context.stages.length > 0 && <SeasonTrack stages={context.stages} seasonEndsAt={season.endsAt} now={now} />}
+      {context.stages.length > 0 && (
+        <SeasonTrack stages={context.stages} seasonEndsAt={season.endsAt} switchDelaySec={context.stageSwitchDelaySec} now={now} />
+      )}
       {mismatch && <div className="notice small">{mismatch}</div>}
     </section>
   )

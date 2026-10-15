@@ -113,7 +113,8 @@ on 2026-10-01 – 2026-10-08. 16.5 s on 26 threads.
   01:00–07:00 UTC spawns are above the new cap, 0% from 14:00 UTC (datamine
   BR: `economicRankTankHistorical` for aircraft in ground battles, else
   `economicRankHistorical`; BR = rank / 3 + 1). The model shifts stages by
-  `STAGE_SWITCH_DELAY_SEC` (10 h).
+  `STAGE_SWITCH_DELAY_SEC` (`src/clan-season.ts`; 14 h since 2026-10-15, 10 h
+  before: no battle starts 07:00–14:00 UTC, so both sort every battle alike).
 - **Cost:** a squadron's two weeks are ≤ 12,000 rows (the busiest: 4,752 rows
   in 26 ms with the model on a copy), read in worker task
   `read-scout-history`.

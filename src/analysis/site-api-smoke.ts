@@ -131,13 +131,17 @@ function aggregateTotals(battles: number, victories: number) {
 async function main(): Promise<void> {
   initDb(':memory:')
   const nowSec = Math.floor(Date.now() / 1_000)
-  const seasonAtStart = getClanSeasonContext(Date.parse('2026-07-01T00:00:00Z') / 1_000)
-  assert.equal(seasonAtStart.currentStage?.week, 1)
-  assert.equal(seasonAtStart.currentStage?.maxBr, 14.7)
-  const seasonAtFourthWeek = getClanSeasonContext(Date.parse('2026-07-22T12:00:00Z') / 1_000)
+  // A stage's cap plays from 14:00 UTC of its first day (STAGE_SWITCH_DELAY_SEC); the season keeps UTC days.
+  const seasonAt = (iso: string) => getClanSeasonContext(Date.parse(iso) / 1_000)
+  const seasonFirstNight = seasonAt('2026-07-01T03:00:00Z')
+  assert.equal(seasonFirstNight.season?.active, true)
+  assert.equal(seasonFirstNight.currentStage, null)
+  assert.equal(seasonAt('2026-07-01T14:00:00Z').currentStage?.maxBr, 14.7)
+  assert.equal(seasonAt('2026-07-22T03:00:00Z').currentStage?.week, 3)
+  const seasonAtFourthWeek = seasonAt('2026-07-22T15:00:00Z')
   assert.equal(seasonAtFourthWeek.currentStage?.week, 4)
   assert.equal(seasonAtFourthWeek.currentStage?.maxBr, 9.7)
-  const seasonAtEnd = getClanSeasonContext(Date.parse('2026-09-01T00:00:00Z') / 1_000)
+  const seasonAtEnd = seasonAt('2026-09-01T00:00:00Z')
   assert.equal(seasonAtEnd.currentStage, null)
   assert.equal(seasonAtEnd.season?.active, false)
 
@@ -578,12 +582,13 @@ async function main(): Promise<void> {
     const siteStats = await app.inject({ method: 'GET', url: '/api/site-stats' })
     assert.equal(siteStats.statusCode, 200)
     const siteStatsBody = siteStats.json() as {
-      season: { currentStage: { week: number; maxBr: number } | null }
+      season: { currentStage: { week: number; maxBr: number } | null; stageSwitchDelaySec: number }
       players: number; clans: number; battlesTotal: number; battlesWeek: number; byDay: { battles: number }[]
     }
     const expectedSeason = getClanSeasonContext()
     assert.equal(siteStatsBody.season.currentStage?.week, expectedSeason.currentStage?.week)
     assert.equal(siteStatsBody.season.currentStage?.maxBr, expectedSeason.currentStage?.maxBr)
+    assert.equal(siteStatsBody.season.stageSwitchDelaySec, expectedSeason.stageSwitchDelaySec, 'the SPA counts down with it')
     assert.equal(siteStatsBody.battlesTotal, 5)
     assert.equal(siteStatsBody.battlesWeek, 5)
     // Distinct user ids of battle_players: with the bot slot, the team-0 row and the AI's slot of 100200304

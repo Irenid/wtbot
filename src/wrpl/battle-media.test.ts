@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { closeDb, initDb } from '../db/index.js'
-import { battleBalanceLevel } from './battle-media.js'
+import { battleBalanceLevel, battleMaxBr } from './battle-media.js'
 
 test('battleBalanceLevel: the night window of a stage\'s first day still plays the previous cap', () => {
   initDb(':memory:')
@@ -12,6 +12,8 @@ test('battleBalanceLevel: the night window of a stage\'s first day still plays t
     assert.equal(battleBalanceLevel(day + 3 * 3600), 23, 'the 01:00–07:00 UTC window')
     assert.equal(battleBalanceLevel(day + 15 * 3600), 19, 'the 14:00 UTC window')
     assert.equal(battleBalanceLevel(Date.parse('2030-01-01T00:00:00Z') / 1_000), 32, 'outside the known stages')
+    assert.equal(battleMaxBr(day + 3 * 3600), 8.7, 'the battle post\'s max BR')
+    assert.equal(battleMaxBr(Date.parse('2030-01-01T00:00:00Z') / 1_000), null)
   } finally {
     closeDb()
   }

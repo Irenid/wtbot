@@ -15,23 +15,10 @@ const payload = (content: string): BattlePostPayload => ({
   components: [],
 })
 
-test('анонс добавляет рядом с Match ID только максимальный БР', () => {
-  assert.equal(
-    seasonMaxBrSuffix({
-      season: { id: '2026', name: 'Сезон 2026', startsAt: 0, endsAt: 10_000, active: true },
-      stages: [],
-      currentStage: { week: 5, startsAt: 0, endsAt: 1, maxBr: 8.7 },
-    }),
-    ' · Макс. БР 8.7',
-  )
-  assert.equal(
-    seasonMaxBrSuffix({
-      season: { id: '2026', name: 'Сезон 2026', startsAt: 0, endsAt: 10_000, active: false },
-      stages: [],
-      currentStage: null,
-    }),
-    '',
-  )
+test('the post adds only the max BR the battle played next to its Match ID', () => {
+  assert.equal(seasonMaxBrSuffix(8.7), ' · Max BR 8.7')
+  assert.equal(seasonMaxBrSuffix(7), ' · Max BR 7.0')
+  assert.equal(seasonMaxBrSuffix(null), '', 'outside the known stages')
 })
 
 test('PSR applies at once; the winner and then the squadron lookup follow in order', async () => {

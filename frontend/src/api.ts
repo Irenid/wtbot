@@ -62,7 +62,10 @@ export interface ClanSeasonContext {
     active: boolean
   } | null
   stages: ClanSeasonStage[]
+  /** The stage whose max BR plays at the response's moment; the panel recounts it on the client's clock. */
   currentStage: ClanSeasonStage | null
+  /** A stage's max BR plays from this long after its startsAt (the server's STAGE_SWITCH_DELAY_SEC: 14:00 UTC). */
+  stageSwitchDelaySec: number
 }
 
 export function searchPlayers(query: string, limit = 20): Promise<{ ok: true; players: PlayerSearchEntry[] }> {

@@ -204,7 +204,7 @@ const dashboardHtml = `<!doctype html>
     </div>
     <div class="card full">
       <h2 class="head-row">В голосовых каналах <button id="voice-refresh" class="btn">Обновить</button></h2>
-      <div id="season-status" class="muted small">Сезон: загрузка…</div>
+      <div id="season-status" class="muted small">Season: loading…</div>
       <div id="voice-list" class="muted">Загрузка…</div>
     </div>
     <div class="card full">
@@ -860,19 +860,22 @@ async function beginPlayerLookup(player) {
   if (token === playerLookupToken) button.disabled = false;
 }
 
+// currentStage is the cap that plays now (it switches at 14:00 UTC of a stage's first day); the dates are the stage's UTC days.
 function renderSeason(season) {
   const status = document.getElementById('season-status');
+  const day = (sec) => new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   if (!season || !season.season) {
-    status.textContent = 'Сезон: расписание не задано';
-  } else if (season.currentStage) {
+    status.textContent = 'Season: no schedule';
+  } else if (!season.season.active) {
+    status.textContent = season.season.name + ' · season ended';
+  } else if (!season.currentStage) {
+    status.textContent = season.season.name + ' · between stages';
+  } else {
+    const stage = season.currentStage;
     status.textContent =
       season.season.name + ' · ' +
-      (season.currentStage.endsAt === season.season.endsAt ? 'до конца сезона' : season.currentStage.week + ' неделя') +
-      ' · макс. БР ' + Number(season.currentStage.maxBr).toFixed(1) + ' · ' +
-      new Date(season.currentStage.startsAt * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' }) + '–' +
-      new Date((season.currentStage.endsAt - 1) * 1000).toLocaleDateString('ru-RU', { timeZone: 'UTC' });
-  } else {
-    status.textContent = season.season.name + ' · сезон завершён';
+      (stage.endsAt === season.season.endsAt ? 'until the end of the season' : 'week ' + stage.week) +
+      ' · max BR ' + Number(stage.maxBr).toFixed(1) + ' · ' + day(stage.startsAt) + '–' + day(stage.endsAt - 1);
   }
 }
 

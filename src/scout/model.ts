@@ -11,8 +11,12 @@
  * and the backtest feed the same code.
  */
 
+import { STAGE_SWITCH_DELAY_SEC, stageAt } from '../clan-season.js'
 import type { VehicleClass } from '../wrpl/vehicles.js'
 import { conditionOnFlags, IN_VEHICLE_WITHOUT_ICON, type FlagEvidence } from './flag-evidence.js'
+
+/** The cap's switch time and stage lookup live in clan-season.ts; re-exported for the scout callers. */
+export { STAGE_SWITCH_DELAY_SEC, stageAt }
 
 export interface ScoutPlayerRow {
   userId: string
@@ -39,13 +43,6 @@ export interface ScoutStage {
   maxBr: number
 }
 
-/**
- * The cap changes on the stage's first day between the two windows, not at the
- * schedule's 00:00 UTC: battles of 01:00–07:00 UTC still play the previous cap
- * (70–96% of spawns above the new one on four stage changes), those from
- * 14:00 UTC the new one (0%). Measured 2026-10-08.
- */
-export const STAGE_SWITCH_DELAY_SEC = 10 * 3600
 /** Battles less than this apart are one session (93.4% of a squadron's next battles start within it). */
 export const SESSION_GAP_SEC = 1800
 /** Roster candidates: everyone who played for the squadron in this window. */
@@ -95,11 +92,6 @@ export const DEFAULT_CLASS_SHARES: Readonly<Record<ScoutClass, number>> = { T: 0
 
 export type ScoutClass = Exclude<VehicleClass, '?'>
 export const SCOUT_CLASSES: readonly ScoutClass[] = ['F', 'H', 'T', 'L', 'AA']
-
-export function stageAt(stages: readonly ScoutStage[], ts: number): ScoutStage | null {
-  const shifted = ts - STAGE_SWITCH_DELAY_SEC
-  return stages.find((stage) => shifted >= stage.startsAt && shifted < stage.endsAt) ?? null
-}
 
 /** The BR period's bounds as battle start times: [startsAt, endsAt) shifted by the switch delay. */
 export function periodBounds(stage: ScoutStage): { from: number; to: number } {

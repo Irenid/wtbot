@@ -5,7 +5,7 @@ import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { mapConcurrent } from '../concurrency.js'
 import { getBattleWeaponIds, getScoutStages, markBattleIngest, saveBattle } from '../db/index.js'
-import { stageAt } from '../scout/model.js'
+import { stageAt } from '../clan-season.js'
 import { balanceLevelOfBr, ensureGameAirMap, ensureGameTacticalMaps, type GameAirMap, type GameTacticalMaps } from '../tactical-map/index.js'
 import {
   runWorkerTask,
@@ -393,11 +393,11 @@ async function loadBattleRenderSource(
 let stagesCache: { at: number; stages: { startsAt: number; endsAt: number; maxBr: number }[] } | null = null
 
 /**
- * The battle's balance level (the air spawns of the mission depend on it): the
- * BR cap it played, by stageAt (the night window of a stage's first day still
- * plays the previous cap); outside the known stages the top tier.
+ * The BR cap the battle played, by stageAt over every season's stages (the
+ * night window of a stage's first day still plays the previous cap, also
+ * across seasons); null outside the known stages.
  */
-export function battleBalanceLevel(startTimeSec: number): number {
+export function battleMaxBr(startTimeSec: number): number | null {
   if (!stagesCache || Date.now() - stagesCache.at > 10 * 60_000) {
     try {
       stagesCache = { at: Date.now(), stages: getScoutStages() }
@@ -405,8 +405,13 @@ export function battleBalanceLevel(startTimeSec: number): number {
       stagesCache = { at: Date.now(), stages: [] }
     }
   }
-  const stage = stageAt(stagesCache.stages, startTimeSec)
-  return stage ? balanceLevelOfBr(stage.maxBr) : 32
+  return stageAt(stagesCache.stages, startTimeSec)?.maxBr ?? null
+}
+
+/** The battle's balance level (the air spawns of the mission depend on it): its cap's, outside the known stages the top tier. */
+export function battleBalanceLevel(startTimeSec: number): number {
+  const maxBr = battleMaxBr(startTimeSec)
+  return maxBr === null ? 32 : balanceLevelOfBr(maxBr)
 }
 
 /** The game-file maps of a battle (both perspectives) and the mission area they cover. */

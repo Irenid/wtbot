@@ -207,14 +207,6 @@ Open: prove or disprove the RSS plateau for
   previous 3 h) add ~0.1 point to the first vehicle in an offline replica of
   the model (2026-10-09): worth it only with a cheap query for the opposing
   team of each enemy's last battle (`read-scout-players`).
-- **Stage switch time.** The BR cap changes on a stage's first day between
-  07:00 and 14:00 UTC, while `clan_season_stages` (forum dates, built-in
-  schedule) starts stages at 00:00 UTC: during the 01:00–07:00 UTC window of
-  that day `/stats`, the site's season panel and anything reading the stage
-  show the new cap while the game plays the old one (measured 2026-10-08,
-  `docs/opponent-scouting.md`; `/scout` shifts by `STAGE_SWITCH_DELAY_SEC`).
-  Decide whether stage times move (reconciliation or a data migration) or
-  readers shift like `/scout`.
 - **StatShark: what is not shown.** The player page shows level, rank, dates,
   clan and nickname history and WT leaderboard places (`account_json`), but
   not `ratingsNeo` (StatShark's own scale, meaning undocumented) and

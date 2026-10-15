@@ -84,7 +84,7 @@ compares with another variable.
 - Imports load only when their conditions hold (`importApplies`):
   `rankRange` [min, max] holds the balance level (`missionGetBalanceLevel`:
   economic rank, (BR − 1)·3; the bot takes the cap the battle played:
-  `battleBalanceLevel` by `stageAt` of `src/scout/model.ts`, whose
+  `battleBalanceLevel` by `stageAt` of `src/clan-season.ts`, whose
   `STAGE_SWITCH_DELAY_SEC` keeps a stage's first 01:00–07:00 UTC window on
   the previous cap) —
   each map's airfields of ranks 0–20 and 21–50, helipads from 20, decor that

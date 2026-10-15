@@ -15,7 +15,9 @@ file keeps the stored fields, the reasons and the measurements.
   kept `CLAN_CRAWL_KEEP_SEC` (3 days): change points cannot tell an unchanged
   squadron from one the crawl missed. The leaderboard's season goes to
   `bot_state` `wt-clans:season`; a mismatch with the forum's season
-  (`wt-clan-season`) shows in the source status.
+  (`wt-clan-season`) shows in the source status. Both run on UTC days
+  (season 62: [2026-09-01, 11-01) 00:00 UTC); only a stage's max BR switches
+  later, at 14:00 UTC (`STAGE_SWITCH_DELAY_SEC`, AGENTS.md section 8).
 - Region, type, slogan and rewards arrive HTML-escaped with game markup
   (`<color=#…>`, `<b>`): plain text is stored. Tag and name stay as they are:
   they key battles and claninfo.

@@ -51,7 +51,7 @@ function battle(id: string, startTime: number, vehicles: readonly string[], ids 
   }
 }
 
-test('the cap switches 10 hours after the schedule: the first night window plays the previous cap', () => {
+test('the cap switches at 14:00 UTC of the stage\'s first day: its night window plays the previous cap', () => {
   assert.equal(stageAt(stages, STAGE_START + 3 * 3600)?.maxBr, 9)
   assert.equal(stageAt(stages, STAGE_START + STAGE_SWITCH_DELAY_SEC)?.maxBr, 8)
   assert.equal(stageAt(stages, STAGE_START + 15 * 3600)?.maxBr, 8)

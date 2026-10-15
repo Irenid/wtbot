@@ -17,7 +17,6 @@ import {
 } from '../battle-post-policy.js'
 import {
   getBattlePostSummary,
-  getClanSeasonContext,
   getItemByExternalId,
   getLatestItems,
   hasBattle,
@@ -25,6 +24,7 @@ import {
   type StoredItem,
 } from '../../db/index.js'
 import {
+  battleMaxBr,
   buildBattleHeatmap2x,
   buildBattleMediaKind,
   cachedBattleHeatmap2x,
@@ -198,7 +198,7 @@ export async function renderBattlePost(
   // The text next to the image: Match ID, then each team's clan, composition and players
   const buildContent = (): string => {
     const text =
-      `Match ID: \`${header.sessionId}\`${seasonMaxBrSuffix(getClanSeasonContext(header.startTime))}\n` +
+      `Match ID: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime))}\n` +
       teams
         .map((t, i) => {
           const clan = escapeMarkdown(t.clan ?? `Team ${i + 1}`)
@@ -354,10 +354,9 @@ export async function renderBattlePost(
   }
 }
 
-export function seasonMaxBrSuffix(context: ReturnType<typeof getClanSeasonContext>): string {
-  if (!context.season?.active) return ''
-  const stage = context.currentStage
-  return stage ? ` · Макс. БР ${stage.maxBr.toFixed(1)}` : ''
+/** The cap the battle played (battleMaxBr) after its Match ID; nothing outside the known stages. */
+export function seasonMaxBrSuffix(maxBr: number | null): string {
+  return maxBr === null ? '' : ` · Max BR ${maxBr.toFixed(1)}`
 }
 
 /** Applies the post's PSR, then the stored winner and flags, then the squadron lookup, in order. */

@@ -31,7 +31,7 @@ import {
   statSharkAccount,
   type PlayerAccount,
 } from '../player-stats/account.js'
-import { CLAN_SEASON_SCHEDULES, stageAt, type ClanSeasonSchedule } from '../clan-season.js'
+import { CLAN_SEASON_SCHEDULES, STAGE_SWITCH_DELAY_SEC, stageAt, type ClanSeasonSchedule } from '../clan-season.js'
 import { FORUM_SEASON_ID_PREFIX } from '../clan-season-forum.js'
 import { fillSquadronTags, type SquadronTagPlayer } from '../wrpl/squadron-tags.js'
 import {
@@ -2301,15 +2301,18 @@ export interface ClanSeasonContext {
     endsAt: number
     maxBr: number
   }[]
+  /** The stage whose max BR plays at the context's moment (stageAt); null between stages or once the season has ended. */
   currentStage: {
     week: number
     startsAt: number
     endsAt: number
     maxBr: number
   } | null
+  /** STAGE_SWITCH_DELAY_SEC: a stage's max BR plays from this long after its startsAt (the SPA's countdown). */
+  stageSwitchDelaySec: number
 }
 
-/** Расписание сезона хранится в SQLite, чтобы границы не зависели от часов процесса. */
+/** The season begun last by nowSec, its stages and the cap then, from the schedule in SQLite. */
 export function getClanSeasonContext(nowSec = Math.floor(Date.now() / 1_000)): ClanSeasonContext {
   const database = getDb()
   const seasonRow = database.prepare(`
@@ -2324,7 +2327,7 @@ export function getClanSeasonContext(nowSec = Math.floor(Date.now() / 1_000)): C
     starts_at: number
     ends_at: number
   } | undefined
-  if (!seasonRow) return { season: null, stages: [], currentStage: null }
+  if (!seasonRow) return { season: null, stages: [], currentStage: null, stageSwitchDelaySec: STAGE_SWITCH_DELAY_SEC }
 
   const stages = database.prepare(`
     SELECT week, starts_at, ends_at, max_br
@@ -2343,17 +2346,18 @@ export function getClanSeasonContext(nowSec = Math.floor(Date.now() / 1_000)): C
     endsAt: stage.ends_at,
     maxBr: stage.max_br,
   }))
-  const schedule = { stages: mappedStages }
+  const active = nowSec < seasonRow.ends_at
   return {
     season: {
       id: seasonRow.season_id,
       name: seasonRow.name,
       startsAt: seasonRow.starts_at,
       endsAt: seasonRow.ends_at,
-      active: nowSec < seasonRow.ends_at,
+      active,
     },
     stages: mappedStages,
-    currentStage: stageAt(schedule, nowSec),
+    currentStage: active ? stageAt(mappedStages, nowSec) : null,
+    stageSwitchDelaySec: STAGE_SWITCH_DELAY_SEC,
   }
 }
 

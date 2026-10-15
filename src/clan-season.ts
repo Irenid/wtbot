@@ -83,11 +83,19 @@ export const CLAN_SEASON_SCHEDULES: readonly ClanSeasonSchedule[] = [
   },
 ]
 
-export function stageAt(
-  season: Pick<ClanSeasonSchedule, 'stages'>,
-  atSec: number,
-): ClanSeasonStage | null {
-  return season.stages.find((stage) => atSec >= stage.startsAt && atSec < stage.endsAt) ?? null
+/**
+ * A stage's max BR plays from 14:00 UTC of its first day, not the schedule's 00:00: that day's
+ * 01:00–07:00 UTC window still plays the previous cap, the 14:00 window the new one (5 of 5
+ * switches, 2026-07-22…10-13). No battle starts 07:00–14:00 UTC (57,682 battles to 2026-10-15),
+ * so any delay in that gap sorts battles alike; 14 h is when the new cap becomes playable. The
+ * rating season (leaderboard, PSR) keeps the UTC days: season 62 is [09-01, 11-01) 00:00 UTC.
+ */
+export const STAGE_SWITCH_DELAY_SEC = 14 * 3600
+
+/** The stage whose max BR plays at atSec: stages shifted by STAGE_SWITCH_DELAY_SEC. */
+export function stageAt<T extends Pick<ClanSeasonStage, 'startsAt' | 'endsAt'>>(stages: readonly T[], atSec: number): T | null {
+  const scheduleTime = atSec - STAGE_SWITCH_DELAY_SEC
+  return stages.find((stage) => scheduleTime >= stage.startsAt && scheduleTime < stage.endsAt) ?? null
 }
 
 validateClanSeasonSchedules(CLAN_SEASON_SCHEDULES)

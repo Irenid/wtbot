@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { stageAt } from './clan-season.js'
 import { parseForumSeasonPost } from './clan-season-forum.js'
 import { closeDb, getClanSeasonContext, initDb, syncForumClanSeasons } from './db/index.js'
 
@@ -30,7 +29,7 @@ const POST_2026_AUTUMN = `В этой теме публикуется распи
 
 const utc = (iso: string) => Date.parse(`${iso}T00:00:00Z`) / 1_000
 
-test('пост форума превращается в сезон с включительными датами форума', () => {
+test('a forum post becomes a season of UTC days from the forum\'s inclusive dates', () => {
   const [season, ...rest] = parseForumSeasonPost(POST_2026_AUTUMN)
   assert.equal(rest.length, 0)
   assert.equal(season!.id, 'forum-2026-09-01')
@@ -38,10 +37,11 @@ test('пост форума превращается в сезон с включ
   assert.equal(season!.startsAt, utc('2026-09-01'))
   assert.equal(season!.endsAt, utc('2026-11-01'))
   assert.deepEqual(season!.stages.map((stage) => stage.maxBr), [14.7, 12, 11, 10, 9, 8, 7, 6, 5])
-  // 28.09 — последний день 4-й недели, 29.09 — уже 5-я.
-  assert.equal(stageAt(season!, utc('2026-09-29') - 1)?.maxBr, 10)
-  assert.equal(stageAt(season!, utc('2026-09-29'))?.week, 5)
-  assert.equal(stageAt(season!, season!.endsAt), null)
+  // 28.09 is week 4's last day, 29.09 week 5's first.
+  const [fourth, fifth] = [season!.stages[3]!, season!.stages[4]!]
+  assert.deepEqual([fourth.week, fourth.maxBr, fourth.endsAt], [4, 10, utc('2026-09-29')])
+  assert.deepEqual([fifth.week, fifth.startsAt], [5, utc('2026-09-29')])
+  assert.equal(season!.stages[season!.stages.length - 1]!.endsAt, season!.endsAt)
 })
 
 test('сезон через Новый год получает правильный год у январских этапов', () => {
