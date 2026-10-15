@@ -34,6 +34,16 @@ full texts are in Git (commit `46b6950` and earlier).
    rebuild without cache (README, "Production in Docker"): decide whether it is
    manual or a systemd timer, and when (a restart briefly pauses
    announcements).
+6. **Cap at a season boundary.** `stageAt` treats a season's first day like
+   a week's: its 01:00–07:00 UTC window keeps the previous cap (battle posts
+   and maps take the old season's last stage; the site and `/stats` count
+   down to 14:00 UTC). Only weekly switches are measured
+   (`docs/opponent-scouting.md`, "Cap switch"): the database has no battles
+   from 2026-08-03 to 09-22 (the bot was off). After 2026-11-01 count that
+   window's spawns above the old cap (5.0) the same way: many — the new
+   season plays from 00:00 UTC and `stageAt` needs a season-start case;
+   none — the assumption holds; no battles — a break between seasons,
+   nothing to change.
 
 ## Code
 
