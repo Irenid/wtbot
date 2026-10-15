@@ -5945,11 +5945,14 @@ export const SITE_SQL = {
   `,
   // /scout by picture: players to match OCR'd nicks against, their latest nick and tag (one row per player).
   // CROSS JOIN keeps battles (time index) outside: an empty database's plan scans every player first.
+  // A slot the AI drove is named `coop/Bot…` on the player's own id: its slot_nick is the player's nick, a row
+  // without one is skipped (a player's last battle ending as a bot made him unmatchable, 69 of 21,095 on 2026-10-15).
   scoutRecentPlayers: `
-    SELECT bp.user_id, bp.nick, bp.clan_tag, MAX(b.start_time) AS last_seen
+    SELECT bp.user_id, COALESCE(bp.slot_nick, bp.nick) AS nick, bp.clan_tag, MAX(b.start_time) AS last_seen
     FROM battles b
     CROSS JOIN battle_players bp ON bp.session_id = b.session_id
     WHERE b.start_time >= ? AND bp.user_id NOT LIKE '-%'
+      AND (bp.slot_nick IS NOT NULL OR bp.nick NOT LIKE 'coop/%')
     GROUP BY bp.user_id
   `,
   // /scout by picture: spawns per vehicle at the current cap so far, every squadron's (the new-vehicle

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   closeDb,
+  getScoutRecentPlayers,
   getScoutTeamRows,
   initDb,
   saveBattle,
@@ -64,6 +65,22 @@ test('squadron lookup by tag or name, decorations ignored; the history reader re
     assert.equal(rows.length, 5)
     assert.equal(rows[0]!.vehicle, 'tank_a')
     assert.throws(() => getScoutTeamRows(wlily.tags, 5, 5), RangeError)
+  } finally {
+    closeDb()
+  }
+})
+
+test('screenshot candidates keep the player\'s nick when the AI drove his last slot', () => {
+  initDb(':memory:')
+  try {
+    saveBattle(battle('1', 1_000_000, [player('7', 'Jerrykuk', 2, '-BLOB1-', ['tank_a'])]))
+    saveBattle(battle('2', 1_000_600, [
+      { ...player('7', 'coop/Bot191', 2, '-BLOB1-', ['tank_a']), slotNick: 'Jerrykuk' },
+      player('8', 'Other', 2, '-BLOB1-', ['tank_a']),
+    ]))
+    saveBattle(battle('3', 1_001_200, [player('8', 'coop/Bot5', 2, '-BLOB1-', ['tank_a'])]))
+    const nicks = new Map(getScoutRecentPlayers(999_000).map((p) => [p.userId, p.nick]))
+    assert.deepEqual(Object.fromEntries(nicks), { '7': 'Jerrykuk', '8': 'Other' })
   } finally {
     closeDb()
   }
