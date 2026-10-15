@@ -110,6 +110,9 @@ export const ru: BotText = {
     matchId: 'ID боя',
     team: (number) => `Команда ${number}`,
     maxBr: (br) => `Макс. БР ${br}`,
+    place: (place) => `${place}-е место в рейтинге`,
+    dayRecord: (wins, losses) =>
+      `${count(wins, 'победа', 'победы', 'побед')} и ${count(losses, 'поражение', 'поражения', 'поражений')} за день`,
     buttons: {
       replay: 'Реплей',
       chat: 'Чат',

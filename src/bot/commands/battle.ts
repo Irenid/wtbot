@@ -21,8 +21,11 @@ import {
   getBattlePostSummary,
   getItemByExternalId,
   getLatestItems,
+  getSquadronLeaderboardPlace,
+  getSquadronResults,
   hasBattle,
   hasBattleChat,
+  type SquadronResults,
   type StoredItem,
 } from '../../db/index.js'
 import {
@@ -201,7 +204,8 @@ export async function renderBattlePost(
       ? battlePsr({ sessionId, startTime: header.startTime, duration: results.timePlayed, players: results.players, winnerTeam })
       : new Map()
 
-  // The text next to the image: Match ID, then each team's squadron, composition and players
+  // The text next to the image: Match ID, then each team's squadron, composition and players,
+  // and under them, in Discord's small grey subtext (-#), its place and the day's record.
   const buildContent = (): string => {
     const text =
       `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}\n` +
@@ -209,12 +213,15 @@ export async function renderBattlePost(
         .map((team, i) => {
           const clan = escapeMarkdown(team.clan ?? t.battle.team(i + 1))
           const players = team.players.map((n) => escapeMarkdown(n)).join(', ')
-          return `**${clan}** (${team.composition}): ${players}`
+          const line = `**${clan}** (${team.composition}): ${players}`
+          const standing = team.rawTag ? squadronStanding(team.rawTag, header.startTime, t) : null
+          return standing === null ? line : `${line}\n-# ${standing}`
         })
         .join('\n')
     return text.length > 1990 ? text.slice(0, 1990) + '…' : text
   }
-  let content = buildContent()
+  // Built with every payload: the day's record counts this battle once its winner is stored.
+  let content = ''
 
   const buildComponents = (hasChat: boolean): ActionRowBuilder<ButtonBuilder>[] => {
     const overviewButtons = [
@@ -273,6 +280,7 @@ export async function renderBattlePost(
       renderPriority,
     )
     shownPsr = psr
+    content = buildContent()
     return {
       content,
       files: [new AttachmentBuilder(png, { name: `battle-${header.sessionIdHex}.png` })],
@@ -336,7 +344,6 @@ export async function renderBattlePost(
         if (stored) {
           results = stored.results
           teams = summarizeTeams(results, dict)
-          content = buildContent()
         }
         const freshHasAir = fresh.airUnitCount === null ? initialHasAir : fresh.airUnitCount > 0
         const freshHasChat = fresh.chatCount === null ? hasBattleChat(sessionId) : fresh.chatCount > 0
@@ -366,6 +373,35 @@ export async function renderBattlePost(
 /** The cap the battle played (battleMaxBr) after its Match ID; nothing outside the known stages. */
 export function seasonMaxBrSuffix(maxBr: number | null, t: BotText): string {
   return maxBr === null ? '' : ` · ${t.battle.maxBr(maxBr.toFixed(1))}`
+}
+
+/**
+ * How far the leaderboard read may lie from the battle's start for its place to show: the full
+ * crawl's cadence (FULL_CRAWL_INTERVAL_SEC in wt-clans.ts), so a squadron below the top 100 keeps
+ * its place, while /battle on an older battle shows none: today's place says nothing about it.
+ */
+const PLACE_MAX_SHIFT_SEC = 12 * 60 * 60
+const DAY_SEC = 86_400
+
+/**
+ * The line under a squadron's players: its leaderboard place and its battles won and lost on the
+ * battle's UTC day up to this one (both squadron-battle windows, 01–07 and 14–22 UTC, lie within
+ * one UTC day). Two indexed reads on the main thread, 1–2 ms on the 2026-10-14 copy.
+ */
+export function squadronStanding(tag: string, startTime: number, t: BotText): string | null {
+  const leaderboard = getSquadronLeaderboardPlace(tag)
+  const place = leaderboard !== null && Math.abs(leaderboard.readAt - startTime) <= PLACE_MAX_SHIFT_SEC
+    ? leaderboard.place
+    : null
+  return standingText(place, getSquadronResults(tag, startTime - (startTime % DAY_SEC), startTime), t)
+}
+
+/** The standing line: the place, then the day's record once a battle of it has a winner; null — neither. */
+export function standingText(place: number | null, results: SquadronResults, t: BotText): string | null {
+  const parts: string[] = []
+  if (place !== null) parts.push(t.battle.place(place))
+  if (results.wins + results.losses > 0) parts.push(t.battle.dayRecord(results.wins, results.losses))
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 /** Applies the post's PSR, then the stored winner and flags, then the squadron lookup, in order. */

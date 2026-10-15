@@ -105,6 +105,8 @@ export const en: BotText = {
     matchId: 'Match ID',
     team: (number) => `Team ${number}`,
     maxBr: (br) => `Max BR ${br}`,
+    place: (place) => `Place ${place} in the ranking`,
+    dayRecord: (wins, losses) => `${count(wins, 'win', 'wins')} and ${count(losses, 'loss', 'losses')} that day`,
     buttons: {
       replay: 'View Replay',
       chat: 'View Chat',

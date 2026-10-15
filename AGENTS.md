@@ -609,6 +609,15 @@ Data:
   there stays indexed or moves to a worker. A falling `psrFormulaCheck()`
   (`/api/stats` → `psrFormula`; a log warning under 90% once 300 of the last
   1,000 checks exist) means Gaijin changed the rule.
+- Under each squadron's players the post's text has a subtext line
+  (`squadronStanding()`, `commands/battle.ts`): the leaderboard's own place
+  (`clans.position` by the replay's decorated tag; only a row read since the
+  last full crawl and within `PLACE_MAX_SHIFT_SEC`, 12 h, of the battle) and
+  the wins and losses of the battle's UTC day up to it (`getSquadronResults`;
+  both squadron-battle windows lie in one UTC day). It is rebuilt with every
+  payload, so the record counts the battle once its winner is stored. Two more
+  main-thread reads, 1–2 ms a team: the day's battles drive the join
+  (`CROSS JOIN`); from the tag's index a busy squadron reads its whole history.
 - Announcer: attempts and message state in `announce_state`, the baseline in
   `bot_state`; the first start does not publish history; battles older than
   `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()`. A
@@ -802,7 +811,7 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web`. Baseline on **2026-10-15**: all gates pass,
-**508 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+**534 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).

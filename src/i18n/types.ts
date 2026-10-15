@@ -86,6 +86,10 @@ export interface BotText {
     team(number: number): string
     /** The cap the battle played, after its Match ID. */
     maxBr(br: string): string
+    /** Under a squadron's players: its place in the warthunder.com squadron ranking. */
+    place(place: number): string
+    /** Under a squadron's players: its battles won and lost on the battle's UTC day, up to this one. */
+    dayRecord(wins: number, losses: number): string
     buttons: {
       replay: string
       chat: string

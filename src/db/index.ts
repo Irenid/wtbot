@@ -65,6 +65,8 @@ let selectItemBreakdownStatement: StatementSync | null = null
 let selectLatestItemSummariesStatement: StatementSync | null = null
 let selectIngestStatsStatement: StatementSync | null = null
 let selectBattlePostSummaryStatement: StatementSync | null = null
+let selectSquadronPlaceStatement: StatementSync | null = null
+let selectSquadronResultsStatement: StatementSync | null = null
 let selectPsrSnapshotsStatement: StatementSync | null = null
 let selectPsrRosterReadStatement: StatementSync | null = null
 let selectPlayerBattleResultsStatement: StatementSync | null = null
@@ -105,6 +107,8 @@ function resetPreparedStatements(): void {
   selectLatestItemSummariesStatement = null
   selectIngestStatsStatement = null
   selectBattlePostSummaryStatement = null
+  selectSquadronPlaceStatement = null
+  selectSquadronResultsStatement = null
   selectPsrSnapshotsStatement = null
   selectPsrRosterReadStatement = null
   selectPlayerBattleResultsStatement = null
@@ -2793,6 +2797,55 @@ export function upsertClans(entries: { tag: string; name: string }[]): void {
 export function getClanNameByTag(tag: string): string | null {
   const row = getDb().prepare('SELECT name FROM clans WHERE tag = ?').get(tag) as { name: string } | undefined
   return row?.name ?? null
+}
+
+/** A squadron's official place and the crawl that read it (Unix seconds). */
+export interface SquadronPlace {
+  place: number
+  readAt: number
+}
+
+/**
+ * A squadron's place in the warthunder.com leaderboard by its tag as decorated in replays (the
+ * clans key): the leaderboard's own number, not a recount. The top 100 are reread every 20 min,
+ * the rest at full crawls. null — never read, or the last full crawl missed it (disbanded or
+ * fallen to zero: its place is stale).
+ */
+export function getSquadronLeaderboardPlace(tag: string): SquadronPlace | null {
+  selectSquadronPlaceStatement ??= getDb().prepare(`
+    SELECT position, rating_at FROM clans
+    WHERE tag = ? AND position IS NOT NULL AND rating_at IS NOT NULL
+  `)
+  const row = selectSquadronPlaceStatement.get(tag) as { position: number; rating_at: number } | undefined
+  if (!row || row.position <= 0) return null
+  const fullCrawlAt = getLastFullClanCrawlAt()
+  if (fullCrawlAt !== null && row.rating_at < fullCrawlAt) return null
+  return { place: row.position, readAt: row.rating_at }
+}
+
+/** A squadron's battles with a stored winner. */
+export interface SquadronResults {
+  wins: number
+  losses: number
+}
+
+/**
+ * A squadron's battles started in [fromTs, toTs] by its tag as decorated in replays, counted once
+ * each. Rows of a player without a team (≤ 0) are left out. The period's battles drive the join:
+ * from the tag's index a busy squadron reads its whole history (6–8 ms against 0.9–2 ms for a
+ * day of 1,165 battles, 2026-10-14 copy).
+ */
+export function getSquadronResults(tag: string, fromTs: number, toTs: number): SquadronResults {
+  selectSquadronResultsStatement ??= getDb().prepare(`
+    SELECT
+      COUNT(DISTINCT CASE WHEN b.team_won = bp.team THEN b.session_id END) AS wins,
+      COUNT(DISTINCT CASE WHEN b.team_won > 0 AND b.team_won <> bp.team THEN b.session_id END) AS losses
+    FROM battles b CROSS JOIN battle_players bp
+    WHERE b.start_time >= ? AND b.start_time <= ?
+      AND bp.clan_tag = ? AND bp.session_id = b.session_id AND bp.team > 0
+  `)
+  const row = selectSquadronResultsStatement.get(fromTs, toTs, tag) as { wins: number; losses: number } | undefined
+  return { wins: row?.wins ?? 0, losses: row?.losses ?? 0 }
 }
 
 /** Награды клана за прошлые сезоны: [номер сезона, звание вида «place1@historical»]. */
