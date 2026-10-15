@@ -46,9 +46,11 @@ WebAssembly (`tools/oodle-wasm`); npm `ooz-wasm` 2.0.0 fails on Leviathan (403 o
 - `missionBattleArea` (`0x1d80440`): every ground + mapArea area, any team,
   joins one XZ box (`0x266ef00`): grid zero = its north-west corner, size =
   its extent; air + airMapArea areas (flags `0x401`) do the same for the air
-  map. The parser sets `air` unless the action says `air: false`. Box areas
-  scale the unit cube (half extent 0.5·Σ|axis|), cylinders and spheres the
-  unit radius (finland, breslau conq, northern india). Five squadron missions
+  map. The parser sets `air` unless the action says `air: false`. The loader
+  keeps an area's tm axes a, b, c; its XZ bounds (`0x1e3f1f0`): a box or
+  cylinder spans the rotated unit cube (half extent 0.5·Σ|axis|), a cylinder
+  at least its radius |a| (finland, breslau conq, northern india), a sphere
+  ±0.5·max(|a|, |b|, |c|). Five squadron missions
   set no ground area (krymsk conq1–3, karelia dom and conq3) and keep the
   level grid; no squadron mission marks an air area (`air: false`), so its air
   map is the level's.
@@ -114,7 +116,17 @@ compares with another variable.
   following mark reads the copy's name: the template alternates the two
   actions, which only file order keeps apart.
 - `battlearea_exclude_template` marks a squad of boxes as kill areas for both
-  teams; `team_killareas_template` adds per-team detection areas.
+  teams; `team_killareas_template` adds per-team detection areas around the
+  spawns: `t1_killarea`, team A's spawn zone, belongs to team B, which shows
+  on A's minimap inside it (`HUD_IS_VISIBLE_BY_ZONE`); simulator battles make
+  them kill areas. Every squadron mission has them: 518 areas, 28 boxes, the
+  rest cylinders and spheres; the shapes of 25 teams' zones overlap.
+- An area's footprint is the game's point test in the area's frame
+  (`0x1e3f3a0`, y ignored on the ground): a box |x|, |z| ≤ 0.5, a cylinder
+  x² + z² < 1, a sphere |p|² ≤ 0.25. So a cylinder covers the ellipse
+  p + cos t·a + sin t·c and a sphere half of it: 67 kill cylinders and the 54
+  sphere detection areas of 28 missions are ellipses (american_valley:
+  |a| 777, |c| 1388 → semi-axes 389 and 694 m).
 - Which replay team starts at which mission team's spawn varies (40 battles:
   18 and 22), so both perspectives are built and the renderer picks by the
   team's first ground positions (in the air heatmaps too).
@@ -129,6 +141,7 @@ UI sizes are 1080p pixels; the 1153 px map is 864.75 of them (scale 4/3 at
 | Tone | out = 0.94·texel − 3.5 per channel (berlin_conq1, 428k pixels; a 108-map fit scored worse) |
 | Hatch | outside the team's allowed areas or inside its kill areas (ground areas on the tank map, air areas on the air map: none in squadron missions): stripes along x − y, period 16 texels of screen height / 1000 px (23.03 px along x at 1440p on every snapshot), on-stripes blend RGB (255, 75, 0) at 30/255 (`battleAreaColorPresets.battleArea`) |
 | Grid | black at 80/255 (`gridColor`), 1.3 UI px, on pixel centres |
+| Detection zones | not the game's drawing (it outlines a zone only near a player): each team's spawn zone, the other team's detection areas, as one dashed outline of their union in the spawning team's colour, 1.5 UI px, dash 6/4, 80%; tank map only |
 | Labels | PT Sans 18 UI px, black; column baseline 18.75 UI px; row letters centred at 10.6 UI px, baseline 7.6 below the cell centre |
 | Zones | `basezone_small_mark_<letter>.svg` 21 UI px |
 | Bases | the hud.blk icon of the kind (`objective_tank`, `_fighter`, `_bomber`, `_helicopter`, `_ucav` 36 UI px with a black outline icon at 45%; `objective_airfield` 45×25) at the mean of the base's areas merged within 200 m (`minDistBetweenZonesOnRespawnBases`; aircraft 2000 m), own #054AFB, enemy #F61914 (the yellow brackets are the respawn screen's selection). The tank map draws tank bases, the air map every kind: a base without tags is a fighter, `isAirfield` a runway or, with helicopter tags, a helipad |
@@ -178,6 +191,12 @@ installed, as the game does. The largest errors are maps repainted since their
 snapshot (same layout, other colours): ardennes, ardennes_snow,
 stalingrad_factory, ireland, karpaty, arctic, aral sea. `--kind air` draws the
 193 air maps in 12 s.
+
+On 2026-10-15 (`TACTICAL_MAP_VERSION` 4, HQ textures, baseline median 12.68,
+≤ 12 for 68): the footprints as the game tests them move 9 snapshots closer
+(arctic, sinai, eastern_europe, karpaty: 0.01–0.10) and none further; the
+detection zone outlines, absent from the game's map, raise the median to 12.92
+(≤ 12 for 66).
 
 Air bases against the flights (2026-10-13): of 230,242 aircraft in 49,771
 battles (2026-07-15..10-12, BR caps 8.0–10.7), every first track point lies

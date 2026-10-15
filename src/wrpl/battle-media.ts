@@ -155,7 +155,8 @@ export async function cachedBattleHeatmap2x(
 // 47: player slots the AI drove (DB v22 slot_nick) and bots that filled an empty place get rows.
 // 48: air heatmaps show the bases where squadron battles spawn (runways, bombers' air spawns, the rank's airfields).
 // 49: a stage's first night window keeps the previous cap's maps (battleBalanceLevel by stageAt).
-const BATTLE_MEDIA_VERSION = 49
+// 50: ground maps outline the spawn detection zones (TACTICAL_MAP_VERSION 4).
+const BATTLE_MEDIA_VERSION = 50
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)

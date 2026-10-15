@@ -62,7 +62,7 @@ export interface MapSpawn {
   kind: SpawnKind
 }
 
-/** A battle-area shape on the ground plane: a (rotated) rectangle or a circle. */
+/** A battle-area shape on the ground plane: a convex polygon (a box, an ellipse's outline) or a circle. */
 export type GroundShape =
   | { kind: 'polygon'; points: [number, number][] }
   | { kind: 'circle'; x: number; z: number; r: number }
@@ -72,6 +72,11 @@ export interface MapBattleAreas {
   allowed: GroundShape[]
   /** Kill areas (exclusions): out of bounds although inside the allowed areas. */
   kill: GroundShape[]
+  /**
+   * The tank map's detection areas: where the team shows on the enemy's minimap, the enemy's spawn
+   * zones (team_killareas_template t1/t2_killarea; kill areas in simulator battles only).
+   */
+  detection: GroundShape[]
 }
 
 export interface TacticalMapModel {
@@ -156,19 +161,32 @@ export function gridStep(sizeX: number, sizeZ: number, cells: number, current: n
   return Math.floor(m / (lerpTable(cellCount, m) * unit)) * unit
 }
 
-/** 0x1e3f200: a box scales the unit cube [-0.5, 0.5]³, a cylinder or sphere the unit radius. */
+/**
+ * An area's XZ bounds as the game computes them (0x1e3f1f0; the loader stores the tm's axes a, b, c
+ * unchanged, 0x1e03712): a box or cylinder spans the rotated unit cube [-0.5, 0.5]³, a cylinder at
+ * least its radius |a| on each axis; a sphere ±0.5·max(|a|, |b|, |c|).
+ */
 export function areaRect(area: AreaShape): WorldRect {
   const [a, b, c, p] = area.tm
-  if (area.type === 'Box') {
-    const hx = 0.5 * (Math.abs(a[0]!) + Math.abs(b[0]!) + Math.abs(c[0]!))
-    const hz = 0.5 * (Math.abs(a[2]!) + Math.abs(b[2]!) + Math.abs(c[2]!))
-    return { x0: p[0]! - hx, z0: p[2]! - hz, x1: p[0]! + hx, z1: p[2]! + hz }
+  if (area.type === 'Point') return { x0: p[0]!, z0: p[2]!, x1: p[0]!, z1: p[2]! }
+  if (area.type === 'Sphere') {
+    const r = 0.5 * Math.max(Math.hypot(...a), Math.hypot(...b), Math.hypot(...c))
+    return { x0: p[0]! - r, z0: p[2]! - r, x1: p[0]! + r, z1: p[2]! + r }
   }
-  const r = area.type === 'Point' ? 0 : Math.max(Math.hypot(...a), Math.hypot(...c))
-  return { x0: p[0]! - r, z0: p[2]! - r, x1: p[0]! + r, z1: p[2]! + r }
+  const min = area.type === 'Cylinder' ? Math.hypot(...a) : 0
+  const hx = Math.max(0.5 * (Math.abs(a[0]!) + Math.abs(b[0]!) + Math.abs(c[0]!)), min)
+  const hz = Math.max(0.5 * (Math.abs(a[2]!) + Math.abs(b[2]!) + Math.abs(c[2]!)), min)
+  return { x0: p[0]! - hx, z0: p[2]! - hz, x1: p[0]! + hx, z1: p[2]! + hz }
 }
 
-/** The area's footprint: a box's corners in order, a cylinder or sphere as a circle. */
+/** Outline vertices of an elliptic footprint: 0.2 m off a 700 m semi-axis. */
+const ELLIPSE_SEGMENTS = 128
+
+/**
+ * The area's footprint as the game tests a point in the area's frame (0x1e3f3a0): a box's corners
+ * in order; a cylinder the unit circle, a sphere the circle of radius 0.5, so the ellipse
+ * p + k·(cos t·a + sin t·c), k = 1 or 0.5: a circle when a and c are equal and orthogonal.
+ */
 export function groundShape(area: AreaShape): GroundShape | null {
   const [a, , c, p] = area.tm
   if (area.type === 'Box') {
@@ -176,7 +194,17 @@ export function groundShape(area: AreaShape): GroundShape | null {
     return { kind: 'polygon', points: [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)] }
   }
   if (area.type === 'Point') return null
-  return { kind: 'circle', x: p[0]!, z: p[2]!, r: Math.max(Math.hypot(...a), Math.hypot(...c)) }
+  const k = area.type === 'Sphere' ? 0.5 : 1
+  const ra = k * Math.hypot(a[0]!, a[2]!)
+  const rc = k * Math.hypot(c[0]!, c[2]!)
+  const cos = (a[0]! * c[0]! + a[2]! * c[2]!) / (Math.hypot(a[0]!, a[2]!) * Math.hypot(c[0]!, c[2]!) || 1)
+  if (Math.abs(ra - rc) <= 1e-3 * Math.max(ra, rc) && Math.abs(cos) <= 1e-3) return { kind: 'circle', x: p[0]!, z: p[2]!, r: Math.max(ra, rc) }
+  const points: [number, number][] = []
+  for (let i = 0; i < ELLIPSE_SEGMENTS; i++) {
+    const t = (2 * Math.PI * i) / ELLIPSE_SEGMENTS
+    points.push([p[0]! + k * (Math.cos(t) * a[0]! + Math.sin(t) * c[0]!), p[2]! + k * (Math.cos(t) * a[2]! + Math.sin(t) * c[2]!)])
+  }
+  return { kind: 'polygon', points }
 }
 
 /** The view: a square of the grid's longer side around its centre, moved back inside `bounds`. */
@@ -322,6 +350,8 @@ export function buildTacticalMapModel(
     return {
       allowed: shapes(mine.filter((area) => !area.killArea && !area.detectionArea)),
       kill: shapes(mine.filter((area) => area.killArea)),
+      // The air map's own detection areas (air_spawn_template ada__*) are not drawn.
+      detection: kind === 'tank' ? shapes(mine.filter((area) => area.detectionArea && !area.killArea)) : [],
     }
   }
 

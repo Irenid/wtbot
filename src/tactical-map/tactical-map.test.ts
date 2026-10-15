@@ -10,9 +10,9 @@ import { decodeDdsxTexture, readDxpPack, unpackDdsxData } from './dxp.js'
 import { GameFiles, TACTICAL_MAP_OPTIONAL_SOURCES, TACTICAL_MAP_SOURCES } from './game-files.js'
 import { pruneStaleMaps } from './index.js'
 import { interpretMission, type MissionOptions } from './mission.js'
-import { areaRect, buildTacticalMapModel, gridLabels, gridStep, viewRect, type BlkSource } from './model.js'
+import { areaRect, buildTacticalMapModel, gridLabels, gridStep, viewRect, type BlkSource, type GroundShape } from './model.js'
 import { balanceBucket, balanceBucketRange, balanceLevelOfBr, pickPerspective } from './perspective.js'
-import { MAP_SPAWN_KINDS, mapIconNames, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
+import { GAME_MAP_STYLE, MAP_SPAWN_KINDS, mapIconNames, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
 import { buildBattleScene, sceneAir, sceneAirView } from '../wrpl/battle-scene-core.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
 import { oodleDecompress } from './oodle.js'
@@ -286,6 +286,9 @@ test('map grid: area extents, step tables, the view moved inside the texture, la
   assert.ok(Math.abs(box.x0 - 1848.6) < 1e-9 && Math.abs(box.z1 - 1789.7) < 1e-9)
   const cylinder = areaRect({ name: 'c', type: 'Cylinder', tm: [[850, 0, 0], [0, 10, 0], [0, 0, 850], [1036, 42, 1054]] })
   assert.equal(cylinder.x1 - cylinder.x0, 1700)
+  // A sphere: half its longest axis each way (american_valley's spawn zones, |a| 777, |c| 1388).
+  const sphere = areaRect({ name: 's', type: 'Sphere', tm: [[777, 0, 0], [0, 10, 0], [0, 0, 1388], [0, 0, 0]] })
+  assert.deepEqual([sphere.x0, sphere.z0, sphere.x1, sphere.z1], [-694, -694, 694, 694])
   // The 158 snapshots: 1300 m → 180, 1400 → 200, krymsk's level grid 1680 → 225, the 8111 air map 65536 → 6500.
   assert.equal(gridStep(1300, 1300, 0, 204), 180)
   assert.equal(gridStep(1400, 1400, 0, 205), 200)
@@ -584,6 +587,77 @@ test('the air map: mapCoord frame, the level grid over the whole rect, every bas
   // A gridZeroPoint at or below the rect's south edge falls back to the north-west corner.
   const low = buildTacticalMapModel('m.blk', airSource({ ...level, gridZeroPoint: [0, -32768] }), { kind: 'air' })
   assert.deepEqual([low.grid.zeroX, low.grid.zeroZ], [-32768, 32768])
+})
+
+/** team_killareas_template in miniature: each team's spawn zone is the other team's detection area. */
+function detectionMission(): BlkMap {
+  return {
+    mission_settings: { mission: { level: 'levels/avg_test.bin' } },
+    areas: {
+      battle_area: { type: 'Box', tm: [[2000, 0, 0], [0, 100, 0], [0, 0, 2000], [2048, 0, 2048]] },
+      // A sphere's footprint is the circle of radius 0.5 in its frame: semi-axes 400 and 700 m.
+      t1_killarea: { type: 'Sphere', tm: [[800, 0, 0], [0, 50, 0], [0, 0, 1400], [1500, 0, 1500]] },
+      t2_killarea: { type: 'Cylinder', tm: [[300, 0, 0], [0, 50, 0], [0, 0, 300], [2500, 0, 2500]] },
+      sim_killarea: { type: 'Cylinder', tm: [[100, 0, 0], [0, 50, 0], [0, 0, 100], [2500, 0, 2500]] },
+    },
+    triggers: {
+      init: {
+        is_enabled: true,
+        events: { initMission: {} },
+        actions: {
+          missionBattleArea: [
+            { area: 'battle_area', mapArea: true, ground: true, air: false },
+            { area: 't1_killarea', team: 'B', detectionArea: true },
+            { area: 't2_killarea', team: 'A', detectionArea: true },
+            { area: 'sim_killarea', team: 'A', killArea: true, detectionArea: true },
+          ],
+        },
+      },
+    },
+  }
+}
+
+test('detection areas: the tank map\'s per team, cylinders and spheres as the game tests them', () => {
+  const level: BlkMap = { mapCoord0: [-32768, -32768], mapCoord1: [32768, 32768], gridSteps: [2048, 2048], tankMapCoord0: [0, 0], tankMapCoord1: [4096, 4096], tankGridSteps: [410, 410] }
+  const source: BlkSource = (archive, name) => (archive === 'mis.vromfs.bin' ? (name === 'm.blk' ? detectionMission() : null) : name === 'levels/avg_test.blk' ? level : null)
+  const tank = buildTacticalMapModel('m.blk', source, { kind: 'tank' })
+  assert.deepEqual(tank.areas.A.detection, [{ kind: 'circle', x: 2500, z: 2500, r: 300 }])
+  assert.deepEqual(tank.areas.A.kill, [{ kind: 'circle', x: 2500, z: 2500, r: 100 }], 'a kill area that also detects is a kill area')
+  const [ellipse] = tank.areas.B.detection
+  assert.ok(ellipse?.kind === 'polygon')
+  const xs = ellipse.points.map(([x]) => x)
+  const zs = ellipse.points.map(([, z]) => z)
+  assert.deepEqual([Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)].map(Math.round), [1100, 1900, 800, 2200])
+  for (const [x, z] of ellipse.points) assert.ok(Math.abs(((x - 1500) / 400) ** 2 + ((z - 1500) / 700) ** 2 - 1) < 1e-9)
+  assert.equal(tank.areas.B.allowed.length, 1, 'detection areas are no battle areas')
+  const air = buildTacticalMapModel('m.blk', source, { kind: 'air' })
+  assert.deepEqual([air.areas.A.detection, air.areas.B.detection], [[], []], 'the air map draws none')
+})
+
+test('the overlay outlines detection areas in the spawning team\'s colour, overlapping ones as one outline', () => {
+  const view = { x0: 0, z0: 0, x1: 1000, z1: 1000 }
+  const geometry = renderGeometry({ view }, 1000)
+  const circle = (x: number, z: number) => ({ kind: 'circle' as const, x, z, r: 100 })
+  const box = { kind: 'polygon' as const, points: [[600, 100], [900, 100], [900, 300], [600, 300]] as [number, number][] }
+  const overlay = (areas?: Record<'A' | 'B', { detection: GroundShape[] }>) => tacticalMapOverlaySvg(
+    { grid: { zeroX: 0, zeroZ: 1000, step: 200 }, view, zones: [], spawns: [], showCellSize: false, ...(areas ? { areas } : {}) },
+    geometry, null, { get: () => undefined }, { team: 'A' })
+  const outlines = (svg: string) => [...svg.matchAll(/<path d="([^"]+)" fill="none" stroke="(#[0-9a-f]+)"[^>]*stroke-dasharray="([^"]+)"/g)]
+    .map((m) => ({ d: m[1]!, color: m[2]!, dash: m[3]!.split(' ').map(Number) }))
+  // Team A's detection areas surround team B's spawn: the enemy's colour for viewer A.
+  const [a, b] = outlines(overlay({ A: { detection: [circle(300, 500), circle(450, 500)] }, B: { detection: [box] } }))
+  assert.deepEqual([a?.color, b?.color], [GAME_MAP_STYLE.enemyColor, GAME_MAP_STYLE.ownColor])
+  assert.deepEqual(a!.dash, GAME_MAP_STYLE.detection.dash.map((n) => Math.round(n * geometry.k * 100) / 100))
+  const points = [...a!.d.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])] as const)
+  for (const [x, y] of points) {
+    for (const cx of [300, 450]) assert.ok(Math.hypot(x - geometry.px(cx), y - geometry.py(500)) > 100 - 0.5, `${x} ${y} lies inside a circle`)
+  }
+  assert.ok(Math.min(...points.map(([x]) => x)) < 200.5 && Math.max(...points.map(([x]) => x)) > 549.5, 'both outer arcs drawn')
+  assert.doesNotMatch(a!.d, /Z/, 'two open arcs')
+  assert.match(b!.d, /^M[^M]*Z$/, 'a lone box: one closed ring')
+  // Equal shapes keep their outline; no areas, no outline.
+  assert.match(outlines(overlay({ A: { detection: [circle(300, 500), circle(300, 500)] }, B: { detection: [] } }))[0]!.d, /^M[^M]*Z$/)
+  assert.equal(outlines(overlay()).length, 0)
 })
 
 test('a crop of a map keeps the whole map\'s cell names and draws its icons at UI size', () => {

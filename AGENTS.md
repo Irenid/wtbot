@@ -501,7 +501,9 @@ reads, the events do not:
 - Heatmaps and the site's battle player draw the mission's tactical map as
   the game's respawn screen shows it, built from the game client
   (`src/tactical-map/`; drawing, mission objects, air maps and cache —
-  `docs/tactical-maps.md`). Both perspectives are built, and the renderer
+  `docs/tactical-maps.md`), plus one addition: the dashed outlines of the
+  spawn detection zones, which the game shows only near a player. Both
+  perspectives are built, and the renderer
   picks by the team's first ground positions (the scene's `map.team` →
   `map.png?team=`); squadron battles force the airfield spawn
   (`SQUADRON_BATTLE_DESCRIPTOR`); maps are cached per
@@ -773,7 +775,7 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web`. Baseline on **2026-10-15**: all gates pass,
-**506 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+**508 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).

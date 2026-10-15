@@ -1,4 +1,4 @@
-import { gridLabels, type MapSpawn, type SpawnKind, type Team, type TacticalMapModel, type WorldRect } from './model.js'
+import { gridLabels, type GroundShape, type MapBattleAreas, type MapSpawn, type SpawnKind, type Team, type TacticalMapModel, type WorldRect } from './model.js'
 import type { HatchStyle, MapTone } from './raster.js'
 
 /**
@@ -8,8 +8,8 @@ import type { HatchStyle, MapTone } from './raster.js'
  * pixels; at an output size of S px one UI pixel is S / UI_MAP_WIDTH px.
  *
  * Layers, bottom to top: the texture (tone ≈7% darker), the out-of-bounds
- * hatch, grid lines, grid labels, capture zones, respawn bases, the cell size
- * bar. Icons are the game's white SVGs (ui/atlases.vromfs.bin
+ * hatch, grid lines, spawn detection zones, grid labels, capture zones, respawn
+ * bases, the cell size bar. Icons are the game's white SVGs (ui/atlases.vromfs.bin
  * gameuiskin/<name>.svg, sizes from hud.blk tacticalMap:
  * "basezone_small_mark_a.svg:21:21", "objective_tank.svg:36:36",
  * "objective_airfield.svg:45:25") multiplied by the draw colour. The tank map
@@ -45,6 +45,8 @@ export interface TacticalMapStyle {
   rowBaseline: number
   ownColor: string
   enemyColor: string
+  /** Spawn detection zones: a dashed outline in the spawning team's colour (not the game's style: it outlines them only near a player). */
+  detection: { width: number; dash: [number, number]; opacity: number }
   zoneIcon: number
   spawnIcons: Record<Exclude<SpawnKind, 'other'>, SpawnIconStyle>
   spawnOutlineOpacity: number
@@ -74,6 +76,7 @@ export const GAME_MAP_STYLE: TacticalMapStyle = {
   rowBaseline: 7.6,
   ownColor: '#054afb',
   enemyColor: '#f61914',
+  detection: { width: 1.5, dash: [6, 4], opacity: 0.8 },
   zoneIcon: 21,
   spawnIcons: {
     tank: { icon: 'objective_tank', outline: 'objective_tank_outline', width: 36, height: 36 },
@@ -207,9 +210,101 @@ export function hatchStyle(style: TacticalMapStyle, k: number): HatchStyle {
   }
 }
 
-/** What the overlay draws: the map's lattice and own view (it names the cells), zones, bases, the cell size bar. */
+/** A ground shape in output pixels. */
+type PixelShape = { kind: 'polygon'; points: [number, number][] } | { kind: 'circle'; x: number; y: number; r: number }
+
+/** The part [t0, t1] of segment p→q inside a convex shape, or null. */
+function insideInterval(shape: PixelShape, p: [number, number], q: [number, number]): [number, number] | null {
+  const dx = q[0] - p[0]
+  const dy = q[1] - p[1]
+  if (shape.kind === 'circle') {
+    const fx = p[0] - shape.x
+    const fy = p[1] - shape.y
+    const a = dx * dx + dy * dy
+    const b = fx * dx + fy * dy
+    const disc = b * b - a * (fx * fx + fy * fy - shape.r * shape.r)
+    if (a === 0 || disc <= 0) return null
+    const t0 = Math.max(0, (-b - Math.sqrt(disc)) / a)
+    const t1 = Math.min(1, (-b + Math.sqrt(disc)) / a)
+    return t0 < t1 ? [t0, t1] : null
+  }
+  // Cyrus–Beck: the segment against each edge's inner half-plane (the centroid's side, either winding).
+  const points = shape.points
+  const cx = points.reduce((sum, point) => sum + point[0], 0) / points.length
+  const cy = points.reduce((sum, point) => sum + point[1], 0) / points.length
+  let t0 = 0
+  let t1 = 1
+  for (let i = 0; i < points.length; i++) {
+    const [ax, ay] = points[i]!
+    const [bx, by] = points[(i + 1) % points.length]!
+    const flip = (ay - by) * (cx - ax) + (bx - ax) * (cy - ay) < 0 ? -1 : 1
+    const nx = flip * (ay - by)
+    const ny = flip * (bx - ax)
+    const start = nx * (p[0] - ax) + ny * (p[1] - ay)
+    const along = nx * dx + ny * dy
+    if (along === 0) {
+      if (start < 0) return null
+    } else if (along > 0) t0 = Math.max(t0, -start / along)
+    else t1 = Math.min(t1, -start / along)
+    if (t0 >= t1) return null
+  }
+  return [t0, t1]
+}
+
+/**
+ * SVG path data of the outline of a union of convex shapes: each shape's boundary
+ * without its parts inside another (overlapping circles of one spawn zone draw
+ * as one outline). Circles become polygons within `tolerance` px.
+ */
+function unionOutline(shapes: PixelShape[], tolerance: number): string {
+  const ring = (shape: PixelShape): [number, number][] => {
+    if (shape.kind === 'polygon') return shape.points
+    const n = Math.min(720, Math.max(24, Math.ceil(Math.PI / Math.acos(Math.max(-1, 1 - tolerance / shape.r)))))
+    return Array.from({ length: n }, (_, i): [number, number] =>
+      [shape.x + shape.r * Math.cos((2 * Math.PI * i) / n), shape.y + shape.r * Math.sin((2 * Math.PI * i) / n)])
+  }
+  const at = (a: [number, number], b: [number, number], t: number): string =>
+    `${r2(a[0] + (b[0] - a[0]) * t)} ${r2(a[1] + (b[1] - a[1]) * t)}`
+  // Two equal shapes would hide each other's whole boundary.
+  const unique = [...new Map(shapes.map((shape) => [JSON.stringify(shape), shape])).values()]
+  let d = ''
+  unique.forEach((shape, index) => {
+    const points = ring(shape)
+    let path = ''
+    let joined = false
+    let whole = true
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i]!
+      const b = points[(i + 1) % points.length]!
+      const hidden = unique
+        .map((other, j) => (j === index ? null : insideInterval(other, a, b)))
+        .filter((part): part is [number, number] => part !== null)
+        .sort((x, y) => x[0] - y[0])
+      let t = 0
+      const visible: [number, number][] = []
+      for (const [h0, h1] of hidden) {
+        if (h0 > t) visible.push([t, h0])
+        t = Math.max(t, h1)
+      }
+      if (t < 1) visible.push([t, 1])
+      if (visible.length !== 1 || visible[0]![0] > 0 || visible[0]![1] < 1) whole = false
+      for (const [v0, v1] of visible) {
+        if (!joined || v0 > 0) path += `M${at(a, b, v0)}`
+        path += `L${at(a, b, v1)}`
+        joined = v1 === 1
+      }
+      if (visible.length === 0) joined = false
+    }
+    d += whole ? `${path}Z` : path
+  })
+  return d
+}
+
+/** What the overlay draws: the map's lattice and own view (it names the cells), detection zones, zones, bases, the cell size bar. */
 export interface MapOverlaySpec extends Pick<TacticalMapModel, 'view' | 'zones' | 'spawns' | 'showCellSize'> {
   grid: { zeroX: number; zeroZ: number; step: number }
+  /** Each team's detection areas (tank maps); none drawn without. */
+  areas?: Record<Team, Pick<MapBattleAreas, 'detection'>>
 }
 
 export interface OverlayOptions {
@@ -246,6 +341,20 @@ export function tacticalMapOverlaySvg(spec: MapOverlaySpec, geometry: RenderGeom
   }
   if (lines.length > 0) {
     parts.push(`<path d="${lines.join('')}" fill="none" stroke="${style.gridColor}" stroke-opacity="${r2(style.gridOpacity)}" stroke-width="${r2(style.gridWidth * k)}"/>`)
+  }
+
+  // A team's detection areas surround the other team's spawns: each outline takes the spawning team's colour.
+  const metres = size / (v.x1 - v.x0)
+  const toPixels = (shape: GroundShape): PixelShape => shape.kind === 'circle'
+    ? { kind: 'circle', x: px(shape.x), y: py(shape.z), r: shape.r * metres }
+    : { kind: 'polygon', points: shape.points.map(([x, z]): [number, number] => [px(x), py(z)]) }
+  for (const revealed of ['A', 'B'] as const) {
+    const shapes = spec.areas?.[revealed].detection ?? []
+    const d = shapes.length > 0 ? unionOutline(shapes.map(toPixels), 0.25) : ''
+    if (!d) continue
+    const { width, dash, opacity } = style.detection
+    parts.push(`<path d="${d}" fill="none" stroke="${colorOf(revealed === 'A' ? 'B' : 'A')}" stroke-opacity="${r2(opacity)}" ` +
+      `stroke-width="${r2(width * k)}" stroke-dasharray="${dash.map((n) => r2(n * k)).join(' ')}"/>`)
   }
 
   const text = (x: number, y: number, label: string, anchor: 'middle' | 'start' = 'middle'): string =>
