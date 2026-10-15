@@ -15,6 +15,7 @@ import type { TacticalMapMeta, TacticalMapSpec } from '../tactical-map/spec.js'
 /** FlagTemplatePack (src/scout/flags.ts) with its pixels as a transferable buffer. */
 export interface WireFlagTemplates { icons: string[]; width: number; height: number; rgb: ArrayBuffer }
 import type { ScoreboardReadResult } from '../scout/scoreboard-read.js'
+import type { AnonymousGuess } from '../scout/anonymous.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -245,11 +246,22 @@ export interface WorkerTaskMap {
   /**
    * /scout by picture: the recognised players' rows and the season stages, the
    * cap's spawns so far (every squadron), the players' StatShark battles and
-   * the own squadron's rows (allyTags; its air habit).
+   * the own squadron's rows (allyTags; its air habit). With `anonymous` (the
+   * enemy squadron's tags and the unread rows' text) it first guesses who hides
+   * behind an anonymiser name (src/scout/anonymous.ts) and reads that player too.
    */
   'read-scout-players': {
-    input: { dbPath: string; userIds: string[]; fromTs: number; toTs: number; allyTags: string[]; allyFromTs: number }
+    input: {
+      dbPath: string
+      userIds: string[]
+      fromTs: number
+      toTs: number
+      allyTags: string[]
+      allyFromTs: number
+      anonymous?: { tags: string[]; unread: string[] } | undefined
+    }
     output: {
+      anonymous: AnonymousGuess | null
       rows: ScoutTeamRow[]
       stages: { startsAt: number; endsAt: number; maxBr: number }[]
       capSpawns: [string, number][]

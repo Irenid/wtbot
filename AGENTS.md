@@ -594,7 +594,10 @@ Data:
   keeps every image, its reading and the prediction (`scoutPredictionRecord`;
   Discord IDs inside: never publish); with `truth.json` the days are the test
   set (`npm run scout:images`), and `npm run scout:outcomes -- <copy.db>`
-  scores the replies against their stored battles.
+  scores the replies against their stored battles. A lone unread enemy row
+  shaped like the game's anonymiser name is guessed as the enemy squadron's
+  only player who recently hid their nick (`src/scout/anonymous.ts`,
+  `battle_players.fake_name`); the reply says "probably".
 - The image's PSR column (`src/wrpl/battle-psr.ts`; method and accuracy in its
   header): the battle's points by the guides' formula (`src/psr.ts`) above,
   PSR after the battle below (before it while the winner is unknown).

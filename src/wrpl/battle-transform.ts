@@ -77,6 +77,12 @@ export async function parseBattleParts(
   // ingest.ts isIncompleteReplayParse matches this text: the replay is not fully uploaded yet.
   if (!results) throw new Error('no replay part holds a results-BLK')
   applyRealNames(results, realNames)
+  // realNames holds exactly the anonymised players (realNamesFromItem); their fake by the real name.
+  const fakeOf = new Map((meta.fakeNames ?? []).map(([fake, real]) => [real, fake]))
+  for (const player of results.players) {
+    const real = realNames.get(player.userId)
+    player.fakeName = real === undefined ? null : fakeOf.get(real) ?? null
+  }
   const headerResultsMs = performance.now() - phaseStarted
 
   phaseStarted = performance.now()
@@ -232,6 +238,7 @@ function buildBattleInput(
       playedVehicles: player.playedVehicles ?? null,
       botUserId: player.botUserId ?? null,
       slotNick: player.slotNick ?? null,
+      fakeName: player.fakeName ?? null,
       disconnected,
       slot: slot?.slot ?? player.slot ?? null,
       title: slot?.title || player.title || null,

@@ -391,6 +391,18 @@ battles from the ECS slots with the ingest rule (`player-events.ts`).
   played by a bot. New cache versions: `BATTLE_MEDIA_VERSION` 47,
   `BATTLE_SCENE_VERSION` 7.
 
+## Anonymiser names (15 October, migration v23)
+
+The game's anonymiser shows a player under a made-up "Name1234", new every
+battle; the Replay API item lists it as `fakeName` next to the real nick, and
+ingest already stored the real one. Migration v23 adds the nullable
+`battle_players.fake_name` (NULL — the nick was shown) and fills stored
+battles from their items: 4,227 rows of 211 players in 0.9 s on a copy of
+2026-10-15 (a GLOB on the item text skips the JSON parse of the 93% of items
+without a fake). The partial covering index `idx_bp_fake_name`
+`(clan_tag, session_id, fake_name) WHERE fake_name IS NOT NULL` holds only
+those rows; `/scout` pictures read it (`opponent-scouting.md`, "By picture").
+
 ## Page usage (2 October, evening)
 
 Copy: a one-step `backup` of production at 16:55 UTC — 1,387 MiB, 354,997
@@ -518,6 +530,11 @@ the CDN while their parts are there (~2 weeks).
   `slot_nick`; back on v22, delete the `bot_state` keys
   `db-maintenance:battle-repair-v3-after` and `-v3-done`, and pass v3 fills
   them.
+- **v23** only adds the nullable `battle_players.fake_name` and its partial
+  index: the v22 image runs on a v23 database after `PRAGMA user_version = 22`
+  with the bot stopped and ignores both; battles it ingests get no
+  `fake_name`; back on v23 the migration runs again and fills them from
+  their items.
 
 ## Should we move to PostgreSQL
 

@@ -116,6 +116,8 @@ export interface ReplayPlayerResult {
    * the bot's name. undefined: unknown (no events read).
    */
   slotNick?: string | null | undefined
+  /** The game's anonymiser name this player showed in the battle (fakeName of the Replay API item); null/absent — none. */
+  fakeName?: string | null | undefined
 }
 
 export interface ReplayResults {

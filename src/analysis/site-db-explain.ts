@@ -24,6 +24,8 @@ const ALLOWED_BIG_SCANS: Readonly<Record<string, readonly string[]>> = {
   clanBaselineSumsAll: ['SCAN clan_rating_snapshots USING COVERING INDEX idx_snapshots_clan_latest'],
   // The typo-tolerant search's index: the worker task search-player-nicks only, once per NICK_INDEX_TTL_MS.
   playerSearchKeys: ['SCAN battle_players USING COVERING INDEX idx_bp_nick_search'],
+  // The partial idx_bp_fake_name holds only anonymised rows (4,227 on 2026-10-15): /scout pictures' worker task.
+  scoutFakeNames: ['SCAN battle_players USING COVERING INDEX idx_bp_fake_name'],
   namedPlayerSearchKeys: [
     'SCAN player_identities USING COVERING INDEX idx_player_identities_nick_search',
     'SCAN player_identity_aliases USING COVERING INDEX idx_player_aliases_nick_search',

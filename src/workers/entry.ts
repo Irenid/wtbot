@@ -614,10 +614,11 @@ async function readScoutPlayers(
   input: Extract<AnyWorkerTask, { kind: 'read-scout-players' }>['input'],
 ): Promise<{ value: WorkerTaskResult<'read-scout-players'>; transfer: [] }> {
   if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
-  const [{ DatabaseSync }, db, { periodBounds, stageAt }] = await Promise.all([
+  const [{ DatabaseSync }, db, { periodBounds, stageAt }, { ANONYMOUS_WINDOWS_SEC, fakeFirstNames, guessAnonymous }] = await Promise.all([
     import('node:sqlite'),
     import('../db/index.js'),
     import('../scout/model.js'),
+    import('../scout/anonymous.js'),
   ])
   const database = new DatabaseSync(input.dbPath, { readOnly: true })
   try {
@@ -626,12 +627,24 @@ async function readScoutPlayers(
     const stages = db.getScoutStages(database)
     const stage = stageAt(stages, input.toTs)
     const capFrom = stage ? periodBounds(stage).from : input.toTs - 7 * 86_400
+    const hidden = input.anonymous
+    const anonymous = hidden && hidden.unread.length > 0 && hidden.tags.length > 0
+      ? guessAnonymous(
+          hidden.unread,
+          fakeFirstNames(db.getScoutFakeNames(database)),
+          db.getScoutAnonymousPlayers(hidden.tags.slice(0, 8), input.toTs - ANONYMOUS_WINDOWS_SEC.at(-1)!, database),
+          new Set(input.userIds),
+          input.toTs,
+        )
+      : null
+    const userIds = anonymous ? [...input.userIds, anonymous.userId] : input.userIds
     return {
       value: {
-        rows: db.getScoutPlayerRows(input.userIds, input.fromTs, input.toTs, database),
+        anonymous,
+        rows: db.getScoutPlayerRows(userIds, input.fromTs, input.toTs, database),
         stages,
         capSpawns: capFrom < input.toTs ? db.getScoutCapSpawns(capFrom, input.toTs, database) : [],
-        statShark: db.getScoutStatSharkBattles(input.userIds, database),
+        statShark: db.getScoutStatSharkBattles(userIds, database),
         allyRows: input.allyTags.length > 0 ? db.getScoutTeamRows(input.allyTags, input.allyFromTs, input.toTs, database) : [],
       },
       transfer: [],

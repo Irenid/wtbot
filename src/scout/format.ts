@@ -78,10 +78,11 @@ const byChance = (a: VehicleChance, b: VehicleChance): number => b.chance - a.ch
  * vehicle is the bold part. A vehicle not seen from the player at this BR
  * (the guess from what squadrons take at it) is marked "new".
  */
-function playerLine(player: ScoutPlayerPrediction, vehicles: VehicleDict, t: BotText): string {
+function playerLine(player: ScoutPlayerPrediction, vehicles: VehicleDict, t: BotText, fakeName: string | null = null): string {
   const name = (id: string) => escapeMarkdown(plainVehicleName(vehicleInfo(vehicles, id).name))
   const plays = player.playChance < SHOW_PLAY_CHANCE_BELOW ? ` (${t.scout.plays(percent(player.playChance))})` : ''
-  const who = `${escapeMarkdown(player.nick)}${plays}`
+  const nick = escapeMarkdown(player.nick)
+  const who = `${fakeName === null ? nick : t.scout.anonymousGuess(nick, escapeMarkdown(fakeName))}${plays}`
   const fresh = new Set(player.newVehicles.map((vehicle) => vehicle.vehicleId))
   const [best, ...rest] = [...player.vehicles, ...player.newVehicles].sort(byChance)
   const others = rest.slice(0, 2).filter((vehicle) => vehicle.chance >= MIN_ALTERNATIVE_CHANCE)
@@ -173,15 +174,20 @@ function setupLines(setup: ScoutSetup, t: BotText): string[] {
   return lines
 }
 
-/** Players grouped by the class of their most likely vehicle, one line each. */
-function classFields(players: readonly ScoutPlayerPrediction[], vehicles: VehicleDict, t: BotText): { name: string; value: string }[] {
+/** Players grouped by the class of their most likely vehicle, one line each; `anonymous` — the one guessed behind a fake name. */
+function classFields(
+  players: readonly ScoutPlayerPrediction[],
+  vehicles: VehicleDict,
+  t: BotText,
+  anonymous: { userId: string; fakeName: string } | null = null,
+): { name: string; value: string }[] {
   const fields: { name: string; value: string }[] = []
   for (const cls of [...CLASS_ORDER, 'unknown'] as const) {
     const members = players.filter((player) => likelyClass(player, vehicles) === cls)
     if (members.length === 0) continue
     fields.push({
       name: `${t.scout.groups[cls]} · ${members.length}`,
-      value: clip(members.map((player) => playerLine(player, vehicles, t)).join('\n'), MAX_FIELD),
+      value: clip(members.map((player) => playerLine(player, vehicles, t, player.userId === anonymous?.userId ? anonymous.fakeName : null)).join('\n'), MAX_FIELD),
     })
   }
   return fields
@@ -191,7 +197,7 @@ function classFields(players: readonly ScoutPlayerPrediction[], vehicles: Vehicl
 export function formatScoutImageReport(report: ScoutImageReport, t: BotText = botText()): ScoutEmbedText {
   const title = clip(report.squadron ? squadronLabel(report.squadron.displayTag, report.squadron.name) : t.scout.enemyTeam, 256)
   const { prediction } = report
-  const total = report.recognised + report.unread.length
+  const total = report.recognised + (report.anonymous ? 1 : 0) + report.unread.length
   const lines = [t.scout.readFromScreenshot(report.recognised, total)]
   if (prediction.lastTogether) lines.push(t.scout.lastTogether(`<t:${prediction.lastTogether.endTime}:R>`))
   const br = brText(prediction.maxBr)
@@ -213,7 +219,7 @@ export function formatScoutImageReport(report: ScoutImageReport, t: BotText = bo
   if (guessed) lines.push(t.scout.newGuessed(report.statShark.players))
   if (report.statShark.pending) lines.push(t.scout.statSharkPending)
   lines.push('', ...setupLines(prediction.setup, t))
-  const fields = classFields(prediction.players, report.vehicles, t)
+  const fields = classFields(prediction.players, report.vehicles, t, report.anonymous)
   if (report.unread.length > 0) {
     fields.push({
       name: t.scout.notRecognised(report.unread.length),

@@ -833,6 +833,57 @@ test('migration v21 gives stored squadron-battle players without a tag their tea
   }
 })
 
+test('migration v23 takes stored players\' anonymiser names from their Replay API items', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v23-'))
+  const dbPath = path.join(root, 'v23.db')
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    const database = new DatabaseSync(dbPath)
+    database.exec('DROP INDEX idx_bp_fake_name; ALTER TABLE battle_players DROP COLUMN fake_name')
+    const row = database.prepare('INSERT INTO battle_players (session_id, user_id, nick, nick_base, team) VALUES (?, ?, ?, ?3, 1)')
+    row.run('1', '11', 'Otamanchikk')
+    row.run('1', '12', 'Plain')
+    row.run('1', '13', 'Same')
+    row.run('2', '11', 'Otamanchikk')
+    const item = database.prepare("INSERT INTO items (source, external_id, title, data, content_hash) VALUES (?, ?, 't', ?, 'h')")
+    item.run('wt-replays', '1', JSON.stringify({ players: {
+      team_1: [
+        { userId: '11', name: 'Otamanchikk', fakeName: 'Abraham5625' },
+        { userId: '12', name: 'Plain', fakeName: '' },
+        { userId: '13', name: 'Same', fakeName: 'Same' },
+      ],
+      team_2: 'not a list',
+    } }))
+    // Not JSON, another source, a players list of another shape: skipped.
+    item.run('wt-replays', '2', '{"fakeName":"Broken')
+    item.run('wt-players', '1', JSON.stringify({ players: { team_1: [{ userId: '12', name: 'Plain', fakeName: 'Kodey9559' }] } }))
+    database.exec('PRAGMA user_version = 22')
+    database.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      assert.deepEqual(
+        migrated.prepare('SELECT session_id, user_id, fake_name FROM battle_players ORDER BY session_id, user_id').all().map((r) => ({ ...r })),
+        [
+          { session_id: '1', user_id: '11', fake_name: 'Abraham5625' },
+          { session_id: '1', user_id: '12', fake_name: null },
+          { session_id: '1', user_id: '13', fake_name: null },
+          { session_id: '2', user_id: '11', fake_name: null },
+        ],
+      )
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('повторный разбор записанного боя, ушедшего с CDN, оставляет статус ok и строки', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'wtbot-ingest-status-'))
   const dbPath = path.join(root, 'status.db')

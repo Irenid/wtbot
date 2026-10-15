@@ -917,6 +917,34 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       addColumnIfMissing(database, 'battle_players', 'slot_nick', 'TEXT')
     },
   },
+  {
+    version: 23,
+    apply(database) {
+      // The anonymiser name a player showed instead of the nick (a new
+      // "Name1234" every battle): /scout guesses who hides behind one from
+      // the squadron's recent anonymous players (src/scout/anonymous.ts).
+      // Ingest writes it; stored battles take it from their Replay API item.
+      // The partial index holds only these rows (~0.5% of players) and covers the names.
+      addColumnIfMissing(database, 'battle_players', 'fake_name', 'TEXT')
+      database.exec(`
+        UPDATE battle_players SET fake_name = f.fake
+        FROM (
+          SELECT i.external_id AS session_id, json_extract(p.value, '$.userId') AS user_id,
+                 json_extract(p.value, '$.fakeName') AS fake
+          -- The guards sit inside json_each: the planner may read it before the WHERE, and bad JSON throws.
+          FROM items i,
+               json_each(CASE WHEN json_valid(i.data) THEN i.data END, '$.players') t,
+               json_each(CASE WHEN t.type = 'array' THEN t.value END) p
+          -- GLOB first: 93% of items name no fake and skip the JSON parse.
+          WHERE i.source = 'wt-replays' AND i.data GLOB '*"fakeName":"[^"]*' AND p.type = 'object'
+            AND json_type(p.value, '$.fakeName') = 'text' AND json_extract(p.value, '$.fakeName') <> ''
+            AND json_extract(p.value, '$.fakeName') IS NOT json_extract(p.value, '$.name')
+        ) AS f
+        WHERE battle_players.session_id = f.session_id AND battle_players.user_id = f.user_id;
+        CREATE INDEX IF NOT EXISTS idx_bp_fake_name ON battle_players (clan_tag, session_id, fake_name) WHERE fake_name IS NOT NULL;
+      `)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -1401,6 +1429,8 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
       -- The player's nick from the ECS slot when the AI drove their own slot:
       -- nick then holds the bot's name, coop/Bot… (v22).
       slot_nick       TEXT,
+      -- The game's anonymiser name shown instead of the nick, new every battle (v23).
+      fake_name       TEXT,
       PRIMARY KEY (session_id, user_id)
     );
 
@@ -5035,6 +5065,8 @@ export interface BattlePlayerInput {
   botUserId?: string | null | undefined
   /** The player's nick from the ECS slot when the AI drove their own slot (nick is the bot's). */
   slotNick?: string | null | undefined
+  /** The game's anonymiser name shown in the battle instead of the nick; null/absent — none. */
+  fakeName?: string | null | undefined
   disconnected: boolean
   slot: number | null
   title: string | null
@@ -5165,8 +5197,8 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
         session_id, user_id, nick, nick_search, nick_base, clan_tag, team, kills, ground_kills, naval_kills,
         ai_kills, ai_ground_kills, assists, deaths, capture_zone, damage_zone, score,
         award_damage, team_kills, squad_id, vehicle, vehicles, disconnected, slot, title, auto_squad,
-        played_vehicles, bot_user_id, slot_nick
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        played_vehicles, bot_user_id, slot_nick, fake_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const p of b.players) {
       pStmt.run(
@@ -5176,6 +5208,7 @@ function saveBattleRows(database: DatabaseSync, b: BattleInput): void {
         p.awardDamage, p.teamKills, p.squadId, p.vehicle, JSON.stringify(p.vehicles), p.disconnected ? 1 : 0,
         p.slot, p.title, p.autoSquad === null ? null : (p.autoSquad ? 1 : 0),
         p.playedVehicles == null ? null : JSON.stringify(p.playedVehicles), p.botUserId ?? null, p.slotNick ?? null,
+        p.fakeName ?? null,
       )
     }
 
@@ -5954,6 +5987,20 @@ export const SITE_SQL = {
     WHERE b.start_time >= ? AND bp.user_id NOT LIKE '-%'
       AND (bp.slot_nick IS NOT NULL OR bp.nick NOT LIKE 'coop/%')
     GROUP BY bp.user_id
+  `,
+  // /scout by picture: a squadron's players who hid their nick (src/scout/anonymous.ts), each with the nick and
+  // last start of their latest anonymous battle; the partial idx_bp_fake_name holds only such rows.
+  scoutAnonymousPlayers: `
+    SELECT bp.user_id, COALESCE(bp.slot_nick, bp.nick) AS nick, MAX(b.start_time) AS last_seen
+    FROM battle_players bp INDEXED BY idx_bp_fake_name
+    JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.clan_tag IN (${siteInSlots(SITE_IN_SLOTS)}) AND bp.fake_name IS NOT NULL
+      AND bp.user_id NOT LIKE '-%' AND b.start_time >= ?
+    GROUP BY bp.user_id
+  `,
+  // The anonymiser names seen (~4,200 rows on 2026-10-15): the first names the game picks from.
+  scoutFakeNames: `
+    SELECT DISTINCT fake_name FROM battle_players INDEXED BY idx_bp_fake_name WHERE fake_name IS NOT NULL
   `,
   // /scout by picture: spawns per vehicle at the current cap so far, every squadron's (the new-vehicle
   // guess). CROSS JOIN keeps battles (time index) outside, as scoutRecentPlayers.
@@ -7150,6 +7197,25 @@ export interface ScoutStatSharkBattles {
   fetchedAt: number
   /** Battles per vehicle outside squadron battles (StatShark leaves those out). */
   vehicles: [string, number][]
+}
+
+/** Players of up to 8 squadron tags who hid their nick in a battle since fromTs (src/scout/anonymous.ts). */
+export function getScoutAnonymousPlayers(
+  tags: readonly string[],
+  fromTs: number,
+  database?: DatabaseSync,
+): { userId: string; nick: string; lastSeen: number }[] {
+  const list = [...new Set(tags)].slice(0, SITE_IN_SLOTS)
+  if (list.length === 0) return []
+  const statement = database ? database.prepare(SITE_SQL.scoutAnonymousPlayers) : siteStatement('scoutAnonymousPlayers')
+  return (statement.all(...padSiteList(list, SITE_IN_SLOTS), fromTs) as { user_id: string; nick: string; last_seen: number }[])
+    .map((row) => ({ userId: row.user_id, nick: row.nick, lastSeen: row.last_seen }))
+}
+
+/** Every anonymiser name stored (battle_players.fake_name). */
+export function getScoutFakeNames(database?: DatabaseSync): string[] {
+  const statement = database ? database.prepare(SITE_SQL.scoutFakeNames) : siteStatement('scoutFakeNames')
+  return (statement.all() as { fake_name: string }[]).map((row) => row.fake_name)
 }
 
 /** StatShark battles per vehicle of up to 16 players (WT user ids), from each one's latest successful snapshot. */

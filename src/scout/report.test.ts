@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   closeDb,
+  getScoutAnonymousPlayers,
+  getScoutFakeNames,
   getScoutRecentPlayers,
   getScoutTeamRows,
   initDb,
@@ -81,6 +83,24 @@ test('screenshot candidates keep the player\'s nick when the AI drove his last s
     saveBattle(battle('3', 1_001_200, [player('8', 'coop/Bot5', 2, '-BLOB1-', ['tank_a'])]))
     const nicks = new Map(getScoutRecentPlayers(999_000).map((p) => [p.userId, p.nick]))
     assert.deepEqual(Object.fromEntries(nicks), { '7': 'Jerrykuk', '8': 'Other' })
+  } finally {
+    closeDb()
+  }
+})
+
+test('anonymous players: a squadron\'s players stored with a fake name, their latest real nick and start', () => {
+  initDb(':memory:')
+  try {
+    saveBattle(battle('1', 1_000_000, [
+      { ...player('7', 'Otamanchikk', 2, '-BLOB1-', ['tank_a']), fakeName: 'Abraham5625' },
+      player('8', 'Plain', 2, '-BLOB1-', ['tank_a']),
+      { ...player('9', 'Elsewhere', 1, '=OTHER=', ['tank_a']), fakeName: 'Cassidy35' },
+    ]))
+    saveBattle(battle('2', 1_000_600, [{ ...player('7', 'Otamanchikk', 2, '-BLOB1-', ['tank_a']), fakeName: 'Kodey9559' }]))
+    assert.deepEqual(getScoutAnonymousPlayers(['-BLOB1-'], 999_000), [{ userId: '7', nick: 'Otamanchikk', lastSeen: 1_000_600 }])
+    assert.deepEqual(getScoutAnonymousPlayers(['-BLOB1-'], 1_000_601), [])
+    assert.deepEqual(getScoutAnonymousPlayers([], 0), [])
+    assert.deepEqual(getScoutFakeNames().sort(), ['Abraham5625', 'Cassidy35', 'Kodey9559'])
   } finally {
     closeDb()
   }
@@ -171,7 +191,7 @@ test('a screenshot reply names the flags it used and who shows none, or asks for
     flags: { icons: ['germany_modern', 'usa', 'usa_modern', 'south_africa'], operatorChance: 1 },
   }
   const report: ScoutImageReport = {
-    squadron: null, allySquadron: null, prediction, recognised: 1, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, killsShown: 0, vehicles, now: 0,
+    squadron: null, allySquadron: null, prediction, recognised: 1, anonymous: null, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, killsShown: 0, vehicles, now: 0,
   }
   const used = formatScoutImageReport(report).description
   assert.match(used, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
@@ -187,6 +207,10 @@ test('a screenshot reply names the flags it used and who shows none, or asks for
   assert.match(lineMissed, /The flags above their team were not read/)
   const before = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: null } }).description
   assert.match(before, /A screenshot after they spawn shows their flags and sharpens the guess\./)
+  // A player guessed behind a fake name: counted as read, marked in their line.
+  const hidden = formatScoutImageReport({ ...report, recognised: 0, anonymous: { userId: 'a', nick: 'A', fakeName: 'Abraham5625' } })
+  assert.match(hidden.description, /Read from the screenshot: 0 of 2 enemy players\./)
+  assert.match(hidden.fields.map((field) => field.value).join('\n'), /^A \(probably: hidden as Abraham5625\) — \*\*Leopard 2K 90%\*\*/m)
   assert.equal(flagName('republic_china'), 'Republic of China')
   assert.equal(flagName('italy_kingdom'), 'Italy')
   assert.equal(flagName('new_zealand'), 'New Zealand')
@@ -225,7 +249,7 @@ test('a screenshot reply names a new player\'s likely vehicle, marks new ones an
     flags: null,
   }
   const report: ScoutImageReport = {
-    squadron: null, allySquadron: null, prediction, recognised: 2, unread: [], enemyFlags: { read: 0, rowsWithout: null },
+    squadron: null, allySquadron: null, prediction, recognised: 2, anonymous: null, unread: [], enemyFlags: { read: 0, rowsWithout: null },
     statShark: { players: 0, pending: true }, killsShown: 0, vehicles, now: 0,
   }
   const text = formatScoutImageReport(report)

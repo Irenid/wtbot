@@ -278,6 +278,7 @@ export const ru: BotText = {
       }.`,
     statSharkPending: 'Проверяю их бои на StatShark: ответ обновится через минуту-две.',
     notRecognised: (value) => `Не распознано · ${value}`,
+    anonymousGuess: (nick, fakeName) => `${nick} (вероятно: скрыт как ${fakeName})`,
     choicePlace: (place) => `место ${place}`,
     choiceNoBattles: 'боёв не сохранено',
     squadronNotFound: (query) => `Полк «${query}» не найден. Введите тег так, как его показывает игра, например WLILY.`,

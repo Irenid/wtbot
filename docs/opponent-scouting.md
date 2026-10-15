@@ -177,11 +177,36 @@ downscaled to 2000 px), 51 enemies the bot has battles of. Reading, rewritten
   nicks drawn on synthetic tables (their squadrons mixed, so only tag-confirmed
   finds count): 19 without the jpn pass, 35 with it and the letters rule.
 
+Candidates take each player's nick from their latest stored battle; a battle
+whose slot the AI drove gives the row's `slot_nick` (the row is named
+`coop/Bot…`), and a bot-named row without one is skipped. Before 5e59d4e such
+a player was matched as the bot (Jerrykuk of -BLOB1-, 2026-10-15; 69 of
+21,095 candidates).
+
+**Anonymous players** (`src/scout/anonymous.ts`): the game's anonymiser
+shows a player as a first name and 1–4 digits ("Abraham5625"), new every
+battle (none of 199 players kept one twice); the Replay API item gives the
+real nick only after the battle, stored as `battle_players.fake_name` (v23).
+211 players hid their nick in 3,827 of 58,145 squadron battles (6.6%), 71 of
+them always. A lone unread enemy row shaped like one, its first name on the
+list stored fakes show (544 names; 98% of later fakes reuse an earlier one;
+15 of 968 real nicks shaped "Name1234" start with a listed name), is taken
+for the enemy squadron's only player who hid their nick in the last 6 h, else
+in the last 3 days, players recognised on the screenshot aside; the reply
+marks the line "probably: hidden as …". Backtest on 1,737 teams with one
+anonymous player, battles started within 15 min before unknown (ingest lag at
+a screenshot): fires for 1,409 (81%), right 1,368 (97%); 6 h alone 1,227,
+right 1,215 (99%); 3 days alone 1,176, right 1,139. Shorter windows win: one
+session's anonymous player is the squadron's usual one. When two candidates
+remain, the one with more anonymous battles is right in 336 of 539 (62%):
+not used.
+
 Where it runs: worker task `read-scoreboard-image`
 (`src/scout/scoreboard-read.ts`) reads the picture with one Tesseract child
 process per model of `OCR_PASSES` (the `Dockerfile` installs them: change both
 together), `read-scout-players` loads the recognised players' battles, and
-`render-flag-templates` draws the flag templates once. Every image, its
+`render-flag-templates` draws the flag templates once; `read-scout-players`
+also makes the anonymous guess and loads that player. Every image, its
 reading and the prediction (`scoutPredictionRecord`, again after the StatShark
 update, with a hash of the model's constants) stay in
 `data/scout-images/<day>/`; they hold Discord IDs: never publish them.

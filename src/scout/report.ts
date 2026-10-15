@@ -268,6 +268,8 @@ export interface ScoutImageReport {
   allySquadron: ScoutSquadron | null
   prediction: KnownTeamPrediction
   recognised: number
+  /** The player guessed behind an anonymiser name (src/scout/anonymous.ts), as the text read there; in prediction.players. */
+  anonymous: { userId: string; nick: string; fakeName: string } | null
   unread: string[]
   /**
    * Flags read above the enemy team (the chances use them when they fit:
@@ -372,14 +374,8 @@ export async function scoutFromImage(
   let flagsOf = vehicleFlags.get(vehicles)
   if (!flagsOf) vehicleFlags.set(vehicles, (flagsOf = dictionaryFlags(vehicles)))
   const enemyFlags = read.flags?.enemies ?? []
-  const flags: FlagEvidence | undefined = enemyFlags.length > 0
-    ? {
-        flags: enemyFlags.map((flag) => flag.candidates.map(({ icon, likelihood }) => ({ icon, likelihood }))),
-        seats: enemySeats(read.enemies, read.unreadRows, read.enemyIcons),
-        flagsOf,
-      }
-    : undefined
   const enemyRows = [...read.enemies.map((match) => match.row), ...read.unreadRows]
+  const enemySquadron = majoritySquadron(read.enemies)
   const allySquadron = majoritySquadron(read.allies)
   const info = (id: string) => {
     const vehicle = vehicleInfo(vehicles, id)
@@ -387,7 +383,7 @@ export async function scoutFromImage(
   }
   // The players' rows (any cap) and StatShark battles are read again for the update.
   const build = async (): Promise<ScoutImageReport> => {
-    const { rows, stages, capSpawns, statShark: shark, allyRows } = await runWorkerTask(
+    const { anonymous, rows, stages, capSpawns, statShark: shark, allyRows } = await runWorkerTask(
       {
         kind: 'read-scout-players',
         input: {
@@ -397,10 +393,23 @@ export async function scoutFromImage(
           toTs: nowSec + 1,
           allyTags: allySquadron?.tags.slice(0, 8) ?? [],
           allyFromTs: nowSec - ALLY_AIR_WINDOW_SEC,
+          anonymous: { tags: enemySquadron?.tags.slice(0, 8) ?? [], unread: read.unread },
         },
       },
       { priority: 'interactive', timeoutMs: 20_000 },
     )
+    // The player guessed behind an anonymiser name takes that unread row's place.
+    const enemies: { userId: string; nick: string; row: number }[] = [...read.enemies]
+    if (anonymous) enemies.push({ userId: anonymous.userId, nick: anonymous.nick, row: read.unreadRows[anonymous.index]! })
+    const unread = read.unread.filter((_, index) => index !== anonymous?.index)
+    const unreadRows = read.unreadRows.filter((_, index) => index !== anonymous?.index)
+    const flags: FlagEvidence | undefined = enemyFlags.length > 0
+      ? {
+          flags: enemyFlags.map((flag) => flag.candidates.map(({ icon, likelihood }) => ({ icon, likelihood }))),
+          seats: enemySeats(enemies, unreadRows, read.enemyIcons),
+          flagsOf,
+        }
+      : undefined
     const rowsOf = new Map<string, { vehicle: string | null; lineup: string[] }[]>()
     for (const row of rows) {
       const list = rowsOf.get(row.userId) ?? []
@@ -409,37 +418,38 @@ export async function scoutFromImage(
     }
     const sharkOf = new Map(shark.map((entry) => [entry.userId, { battles: new Map(entry.vehicles), fresh: nowSec - entry.fetchedAt <= STATSHARK_FRESH_SEC }]))
     const prediction = predictKnownTeam({
-      players: read.enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
-      unknownPlayers: read.unread.length,
+      players: enemies.map((m) => ({ userId: m.userId, nick: displayedNick(m.nick) })),
+      unknownPlayers: unread.length,
       battles: scoutBattlesFromRows(rows.filter((row) => row.startTime >= nowSec - IMAGE_HISTORY_WINDOW_SEC), 1),
       now: nowSec,
       stages,
       classOf: (id) => vehicleInfo(vehicles, id).cls,
       flags,
       capSpawns: new Map(capSpawns),
-      backgrounds: new Map(read.enemies.map((m) => {
+      backgrounds: new Map(enemies.map((m) => {
         const snapshot = sharkOf.get(m.userId)
         return [m.userId, playerBackground(rowsOf.get(m.userId) ?? [], info, snapshot?.battles ?? null, snapshot?.fresh ?? false)]
       })),
       nationOf: (id) => vehicleInfo(vehicles, id).country,
       opponentAir: allyAir(allyRows, vehicles),
-      kills: read.enemyColumns === null ? undefined : read.enemies.map((m) => {
+      kills: read.enemyColumns === null ? undefined : enemies.map((m) => {
         const columns = read.enemyColumns![m.row]
         return columns ? { air: columns.air, ground: columns.ground, captures: columns.captures } : null
       }),
     })
     return {
-      squadron: majoritySquadron(read.enemies),
+      squadron: enemySquadron,
       allySquadron,
       prediction,
       recognised: read.enemies.length,
-      unread: read.unread,
+      anonymous: anonymous && { userId: anonymous.userId, nick: anonymous.nick, fakeName: read.unread[anonymous.index]! },
+      unread,
       enemyFlags: {
         read: enemyFlags.length,
         rowsWithout: read.enemyIcons && enemyRows.filter((row) => read.enemyIcons![row]).length,
       },
       statShark: { players: shark.length, pending: false },
-      killsShown: read.enemyColumns === null ? 0 : read.enemies.filter((m) => {
+      killsShown: read.enemyColumns === null ? 0 : enemies.filter((m) => {
         const columns = read.enemyColumns![m.row]
         return columns ? killEvidenceShown({ air: columns.air, ground: columns.ground, captures: columns.captures }) : false
       }).length,
@@ -522,6 +532,7 @@ export function scoutPredictionRecord(report: ScoutImageReport): Record<string, 
       unseenChance: round4(player.unseenChance),
     })),
     unread: report.unread.length,
+    anonymous: report.anonymous && { userId: report.anonymous.userId, fakeName: report.anonymous.fakeName },
     setup: {
       expected: Object.fromEntries(Object.entries(prediction.setup.expected).map(([cls, value]) => [cls, round4(value)])),
       compositions: prediction.setup.compositions.map((composition) => ({ counts: composition.counts, chance: round4(composition.chance) })),

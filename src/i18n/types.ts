@@ -225,6 +225,8 @@ export interface BotText {
     newGuessed(statSharkPlayers: number): string
     statSharkPending: string
     notRecognised(count: number): string
+    /** A player guessed behind the game's anonymiser name; both Markdown-escaped. */
+    anonymousGuess(nick: string, fakeName: string): string
     choicePlace(place: number): string
     choiceNoBattles: string
     squadronNotFound(query: string): string

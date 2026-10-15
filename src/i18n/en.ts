@@ -269,6 +269,7 @@ export const en: BotText = {
       }.`,
     statSharkPending: 'Checking their battles on StatShark: this reply updates in a minute or two.',
     notRecognised: (value) => `Not recognised · ${value}`,
+    anonymousGuess: (nick, fakeName) => `${nick} (probably: hidden as ${fakeName})`,
     choicePlace: (place) => `place ${place}`,
     choiceNoBattles: 'no battles stored',
     squadronNotFound: (query) => `No squadron matches "${query}". Type the tag as the game shows it, for example WLILY.`,
