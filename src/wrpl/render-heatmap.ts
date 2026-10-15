@@ -8,14 +8,17 @@ import { vehicleInfo, type VehicleDict } from './vehicles.js'
 
 /**
  * A battle heatmap in the style of Boris Stats: the players' tracks over the
- * map; skulls in the victim's colour with a cause-of-death badge (the killer's
- * class silhouette: tank, plane, helicopter, AA; for aircraft the missile's
- * seeker: IR, SARH, ARH, SAM; a star is a crash; the ring is the killer's
- * colour); dashed kill lines from killer to victim; long stops with their
- * duration; dots at the survivors' last positions; minute marks along the
- * tracks. On the right an information panel: map, mode and date, the teams in
- * the order of their sides on the map (winner, players with kills and deaths,
- * vehicles, score and time of death) and the legend.
+ * map, each life's track named beside it; skulls in the victim's colour with a
+ * cause-of-death badge (the killer's class silhouette: tank, plane, helicopter,
+ * AA; for aircraft the missile's seeker: IR, SARH, ARH, SAM; a star is a
+ * crash; the ring is the killer's colour; a tank's kill on the ground map has
+ * none: its kill line shows it); dashed kill lines from killer to victim; long
+ * stops with their duration; dots at the survivors' last positions; minute
+ * marks along the tracks where they collide with nothing. Colours come in two
+ * families (TEAM_ROUTE_COLORS), so a track's team reads from its hue, over a
+ * muted map (MAP_SATURATION). On the right an information panel: map, mode and
+ * date, the teams in the order of their sides on the map (winner, players with
+ * kills and deaths, vehicles, score and time of death) and the legend.
  *
  * mode='ground': ground vehicles (GMSync); mode='air': aircraft (flight-model
  * packets). The ground map fills the frame (exactly the battle area); the air
@@ -25,8 +28,8 @@ import { vehicleInfo, type VehicleDict } from './vehicles.js'
  * Strict layers, bottom to top: base → image → fallback grid → shade → battle
  * area border → spawn labels → routes → stops → stop durations → minute marks →
  * shot lines → shooter dots → marker callouts → survivor dots → skulls → causes
- * of death → vehicle labels. Element types never share a layer; instances of
- * one type are sorted by time, later ones on top.
+ * of death → vehicle labels → track names. Element types never share a layer;
+ * instances of one type are sorted by time, later ones on top.
  *
  * Background: the mission's tactical map as the game draws it, built from the
  * game client (src/tactical-map; mission.area is then its view), else the
@@ -45,56 +48,20 @@ const MAP_W = HEATMAP_MAP_SIZE
 const PANEL_W = 480
 
 /**
- * Палитра траекторий: 16 уникальных цветов, подобраны жадным max-min
- * поиском по OKLab ΔE (обычное зрение + протан/дейтан-симуляция Machado)
- * на фоне хаки-карты; разбиение на команды максимизирует различимость
- * внутри команды — межкомандные пары дополнительно разводит легенда.
+ * Track colours, one family per team, so a track's team reads from its hue:
+ * the image's own team (teamIndex ?? 0, whose spawn the game map draws blue)
+ * takes the cool family, the other team the warm one. Picked by greedy max-min
+ * OKLab ΔE within a family (the labels name the players) while every
+ * cool/warm pair keeps ΔE ≥ 0.12 also under protan and deutan simulation
+ * (Machado 2009); olive yellows and dark teals vanish on the khaki map. The
+ * most distinct come first: they go to the top scorers.
  */
-const PATH_COLORS = [
-  [
-    '#FF003C', // красный
-    '#FF7A00', // оранжевый
-    '#FFE600', // жёлтый
-    '#00ff52', // зелёный
-    '#00ffa6', // мятный
-    '#00D9FF', // циан
-    '#006BFF', // синий
-    '#ffffff', // белый
-  ],
-  [
-    '#5A00FF', // фиолетовый
-    '#E000FF', // маджента
-    '#FF0095', // розовый
-    '#FF5C5C', // коралловый
-    '#FFB000', // янтарный
-    '#C8FF00', // жёлто-зелёный
-    '#009878', // бирюзовый
-    '#FFFFFF', // белый
-  ],
-];
-
-// const PATH_COLORS = [
-//   [
-//     '#FF003C', // красный
-//     '#FF7A00', // оранжевый
-//     '#FFE600', // жёлтый
-//     '#00E84A', // зелёный
-//     '#00ffa6', // мятный
-//     '#00D9FF', // циан
-//     '#006BFF', // синий
-//     '#ffffff', // белый
-//   ],
-//   [
-//     '#5A00FF', // фиолетовый
-//     '#E000FF', // маджента
-//     '#FF0095', // розовый
-//     '#FF5C5C', // коралловый
-//     '#FFB000', // янтарный
-//     '#C8FF00', // жёлто-зелёный
-//     '#009878', // бирюзовый
-//     '#FFFFFF', // белый
-//   ],
-// ];
+const TEAM_ROUTE_COLORS = [
+  ['#457CFD', '#32D3EE', '#A57AFE', '#1C98A0', '#E1CDFE', '#93ADFE', '#05A3E9', '#A94BFC'],
+  ['#FD2B33', '#FFD404', '#FD8706', '#FFE7C7', '#AD7C1D', '#FDAD97', '#DC631A', '#F3B01D'],
+] as const
+/** The saturation left to the map image: muted, it stays behind the tracks. */
+const MAP_SATURATION = 0.5
 const TEAM_SPAWN_COLORS = ['#17e6ec', '#fa2028'] as const
 /** Временный переключатель точного crop/grid из capture:map. */
 const CAPTURED_MAP_RENDERING_ENABLED = false
@@ -148,7 +115,8 @@ interface PlayerPaths {
   userId: string
   name: string
   clanTag: string
-  color: string
+  /** The player's place among the team's players drawn in this mode: picks the colour. */
+  slot: number
   models: string[]
   paths: ReplayUnitPath[]
   team: number
@@ -177,6 +145,7 @@ interface RouteGeometry {
   baseOrder: number
   playerId: string
   color: string
+  life: number
   points: PixelRoutePoint[]
   sourcePoints: PixelRoutePoint[]
   distances: number[]
@@ -212,6 +181,8 @@ interface RouteCrossing {
 }
 
 interface PreparedRoutePart {
+  /** The unit's index in PlayerPaths.paths: one name label per life. */
+  life: number
   points: PixelRoutePoint[]
   sourcePoints: PixelRoutePoint[]
   distances: number[]
@@ -332,19 +303,22 @@ export function prepareHeatmapScene(
   const playersByTeam: [PlayerPaths[], PlayerPaths[]] = [[], []]
   const allPoints: SpaceTime[] = []
   let latestPointTime = 1
+  const slots = new Map<number, number>()
   rosters.forEach((roster, ti) => {
-    roster.forEach((player, pi) => {
+    roster.forEach((player) => {
       const candidates = unitsByPlayer.get(`${mode}\u0000${player.userId}`) ?? []
       const paths = (mode === 'air'
         ? candidates.map((unit) => truncateAtDeath(unit, killsByVictim.get(player.userId) ?? []))
         : candidates
       ).filter((unit) => unit.path.length >= 2)
       if (paths.length === 0) return
+      const slot = slots.get(ti) ?? 0
+      slots.set(ti, slot + 1)
       const preparedPlayer: PlayerPaths = {
         userId: player.userId,
         name: shownName(player, botText(input.locale).image.bot).replace(/@(psn|live|epic)$/i, ''),
         clanTag: player.clanTag,
-        color: PATH_COLORS[Math.min(ti, 1)]![pi % 8]!,
+        slot,
         models: [...new Set(paths.map((unit) => modelId(unit.model)))],
         paths,
         team: ti,
@@ -397,7 +371,7 @@ export function prepareHeatmapScene(
     const camps: PreparedCamp[] = []
     const minuteMarks: PreparedMinuteMark[] = []
     const playerDeaths = killsByVictim.get(player.userId) ?? []
-    for (const unit of player.paths) {
+    for (const [life, unit] of player.paths.entries()) {
       ranges.push({
         from: unit.path[0]!.t - 5000,
         to: unit.path[unit.path.length - 1]!.t + 45000,
@@ -413,6 +387,7 @@ export function prepareHeatmapScene(
         const points = simplifyRoutePoints(sourcePoints, 1)
         const distances = routeDistances(points)
         routeParts.push({
+          life,
           points,
           sourcePoints,
           distances,
@@ -564,6 +539,11 @@ export function buildHeatmapSvg(
     endTime,
   } = scene
   const players = teamIndex === undefined ? allPlayers : (playersByTeam[teamIndex] ?? [])
+  const ownTeam = teamIndex ?? 0
+  const colorOf = (player: PlayerPaths): string => {
+    const family = TEAM_ROUTE_COLORS[player.team === ownTeam ? 0 : 1]
+    return family[player.slot % family.length]!
+  }
   const clanUavs = mode === 'ground' && teamIndex !== undefined
     ? (clanUavsByTeam[teamIndex] ?? [])
     : []
@@ -580,13 +560,15 @@ export function buildHeatmapSvg(
 
   const parts: string[] = []
   parts.push(`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">`)
-  if (renderScale === 2) {
-    parts.push(
-      `<defs><filter id="hd-map-sharpen" x="-2%" y="-2%" width="104%" height="104%" color-interpolation-filters="sRGB">` +
-        `<feConvolveMatrix order="3" kernelMatrix="0 -0.12 0 -0.12 1.48 -0.12 0 -0.12 0" divisor="1" edgeMode="duplicate" preserveAlpha="true"/>` +
-        `</filter></defs>`,
-    )
-  }
+  // The map image is muted, so the tracks keep the strongest colours; at 2× it is also sharpened.
+  parts.push(
+    `<defs><filter id="map-tone" x="-2%" y="-2%" width="104%" height="104%" color-interpolation-filters="sRGB">` +
+      (renderScale === 2
+        ? `<feConvolveMatrix order="3" kernelMatrix="0 -0.12 0 -0.12 1.48 -0.12 0 -0.12 0" divisor="1" edgeMode="duplicate" preserveAlpha="true"/>`
+        : '') +
+      `<feColorMatrix type="saturate" values="${MAP_SATURATION}"/>` +
+      `</filter></defs>`,
+  )
   let temporalSequence = 0
   const timed = (time: number, svg: string): TimedSvg => ({ time, sequence: temporalSequence++, svg })
   const chronological = (items: TimedSvg[]): string[] =>
@@ -602,8 +584,8 @@ export function buildHeatmapSvg(
   // game's, drawn for this view, else the level map captured from port 8111), and the ground map
   // stays inset at the battle area.
   const mapImageAttrs = renderScale === 2
-    ? ` image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"`
-    : ''
+    ? ` image-rendering="optimizeQuality" filter="url(#map-tone)"`
+    : ` filter="url(#map-tone)"`
   pushMapLayer(1, 'base', [`<rect width="${MAP_W}" height="${MAP_W}" fill="#3c4034"/>`])
   const mapImages: string[] = []
   const shades: string[] = []
@@ -800,7 +782,7 @@ export function buildHeatmapSvg(
         index: routeIndex++,
         baseOrder: 0,
         playerId: p.userId,
-        color: p.color,
+        color: colorOf(p),
         ...route,
       })
     }
@@ -828,19 +810,20 @@ export function buildHeatmapSvg(
     const start = points[0]!
     const last = points[points.length - 1]!
     const d = routePath(points)
+    const color = colorOf(owner)
     uavAreas.push(timed(
       last.time,
-      `<circle data-uav-observation="1" cx="${r1(last.x)}" cy="${r1(last.y)}" r="22" fill="${owner.color}" fill-opacity="0.1" stroke="${owner.color}" stroke-opacity="0.56" stroke-width="1.5" stroke-dasharray="5 4"/>`,
+      `<circle data-uav-observation="1" cx="${r1(last.x)}" cy="${r1(last.y)}" r="22" fill="${color}" fill-opacity="0.1" stroke="${color}" stroke-opacity="0.56" stroke-width="1.5" stroke-dasharray="5 4"/>`,
     ))
     uavPaths.push(timed(
       start.time,
-      `<path data-uav-route="1" data-uav-owner="${esc(owner.userId)}" d="${d}" fill="none" stroke="${owner.color}" stroke-width="2" stroke-opacity="0.82" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5"/>`,
+      `<path data-uav-route="1" data-uav-owner="${esc(owner.userId)}" d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-opacity="0.82" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5"/>`,
     ))
     uavStarts.push(timed(
       start.time,
       `<g data-uav-start="1" transform="translate(${r1(start.x)} ${r1(start.y)})">` +
-        `<circle r="6" fill="#10130d" fill-opacity="0.82" stroke="${owner.color}" stroke-width="2"/>` +
-        `<path d="M-3 0H3M0-3V3" stroke="${owner.color}" stroke-width="1.5" stroke-linecap="round"/>` +
+        `<circle r="6" fill="#10130d" fill-opacity="0.82" stroke="${color}" stroke-width="2"/>` +
+        `<path d="M-3 0H3M0-3V3" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/>` +
         `</g>`,
     ))
   }
@@ -866,82 +849,85 @@ export function buildHeatmapSvg(
   })
   pushMapLayer(13, 'routes', [...routeParts, ...chronological(crossingParts)])
 
-  // Стоянки (только наземка): где юнит простоял дольше минуты — пятно
-  // в цвете игрока (размер растёт с длительностью) с подписью «м:сс»
+  // Stops (ground only): where a unit stood over a minute, a disc in the
+  // player's colour growing with the stop's length; its "m:ss" label is placed
+  // once the markers it must avoid are known.
   const campAreas: TimedSvg[] = []
-  const campLabels: TimedSvg[] = []
+  const camps: { x: number; y: number; r: number; text: string; time: number }[] = []
   if (mode === 'ground') {
     for (const p of players) {
+      const color = colorOf(p)
       for (const camp of campsByPlayer.get(p) ?? []) {
         const r = campMarkerRadius(camp.durMs)
-        const mm = Math.floor(camp.durMs / 60000)
-        const ss = String(Math.floor((camp.durMs % 60000) / 1000)).padStart(2, '0')
-        const x = r1(camp.x)
         campAreas.push(timed(
           camp.time,
-          `<circle data-camp-time="${Math.round(camp.time)}" cx="${x}" cy="${r1(camp.y)}" r="${r1(r)}" fill="${p.color}" fill-opacity="0.26" stroke="${p.color}" stroke-opacity="0.85" stroke-width="1.8"/>`,
+          `<circle data-camp-time="${Math.round(camp.time)}" cx="${r1(camp.x)}" cy="${r1(camp.y)}" r="${r1(r)}" fill="${color}" fill-opacity="0.26" stroke="${color}" stroke-opacity="0.85" stroke-width="1.8"/>`,
         ))
-        campLabels.push(timed(
-          camp.time,
-          `<g data-camp-label-time="${Math.round(camp.time)}">` +
-            `<text x="${x}" y="${r1(camp.y + r + 17)}" font-family="${FONTS}" font-size="14.5" font-weight="700" text-anchor="middle" fill="none" stroke="#10130d" stroke-width="3.4">${mm}:${ss}</text>` +
-            `<text x="${x}" y="${r1(camp.y + r + 17)}" font-family="${FONTS}" font-size="14.5" font-weight="700" text-anchor="middle" fill="#f2f4f7">${mm}:${ss}</text>` +
-            `</g>`,
-        ))
+        camps.push({ x: camp.x, y: camp.y, r, text: fmtTime(camp.durMs), time: camp.time })
       }
     }
   }
-  pushMapLayer(14, 'camp-areas', chronological(campAreas))
-  pushMapLayer(15, 'camp-labels', chronological(campLabels))
 
-  // Метки времени: кружок с номером минуты раз в tickStep минут вдоль
-  // каждой траектории; у стоящего юнита слипшиеся метки пропускаются —
-  // остаётся время прибытия в точку
-  const minuteMarks: TimedSvg[] = []
-  for (const p of players) {
-    for (const tick of minuteMarksByPlayer.get(p) ?? []) {
-      minuteMarks.push(timed(
-        tick.time,
-        `<g data-minute-time="${Math.round(tick.time)}" transform="translate(${r1(tick.x)} ${r1(tick.y)})">` +
-          `<circle r="11" fill="#10130d" fill-opacity="0.74" stroke="${p.color}" stroke-width="2.4"/>` +
-          `<text y="4.6" font-family="${FONTS}" font-size="13" font-weight="700" fill="#f2f4f7" text-anchor="middle">${tick.minute}</text>` +
-          `</g>`,
-      ))
-    }
-  }
-  pushMapLayer(16, 'minute-marks', chronological(minuteMarks))
-
-  // Смерти: череп на месте каждого убийства этого игрока (в рамках путей
-  // данного режима, в цвете погибшего), значок и подпись причины,
-  // пунктирная линия фрага от позиции убийцы; точка — конец пути юнита,
-  // дожившего до конца боя. Подслои снизу вверх: линии фрагов → точки
-  // выживших → черепа → значки → подписи, чтобы соседний череп в свалке
-  // не накрывал чужой значок, а значки — подписи.
+  // Deaths: a skull where each death on this mode's paths happened, in the
+  // victim's colour, with the cause's badge and label and a dashed kill line
+  // from the killer's position; a dot ends the path of a unit alive at the
+  // end. Sublayers bottom to top: kill lines → survivor dots → skulls → badges
+  // → labels, so a skull in a crowd never covers another's badge, nor a badge
+  // a label. markerBoxes keeps every marker's footprint for the labels placed
+  // after them.
   const killLines: TimedSvg[] = []
+  const killLineSegments: PixelSegment[] = []
   const killOriginDots: TimedSvg[] = []
   const markerLeaders: TimedSvg[] = []
   const survivorDots: TimedSvg[] = []
   const skulls: TimedSvg[] = []
   const causeBadges: TimedSvg[] = []
   const causeLabels: TimedSvg[] = []
+  const markerBoxes: PixelBox[] = []
+  const pushKillLine = (time: number, fx: number, fy: number, tx: number, ty: number, clipped: boolean, color: string): void => {
+    killLines.push(timed(
+      time,
+      `<line x1="${r1(fx)}" y1="${r1(fy)}" x2="${r1(tx)}" y2="${r1(ty)}" stroke="${color}" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"/>`,
+    ))
+    killLineSegments.push({ x1: fx, y1: fy, x2: tx, y2: ty })
+    if (clipped) return
+    killOriginDots.push(timed(
+      time,
+      `<circle cx="${r1(fx)}" cy="${r1(fy)}" r="4.5" fill="${color}" stroke="#10130d" stroke-width="1.6"/>`,
+    ))
+    markerBoxes.push(boxAround(fx, fy, 6))
+  }
+  const pushCauseBadge = (time: number, marker: { x: number; y: number }, cause: DeathCause, ring: string): void => {
+    // On the ground map a tank's kill is the rule, and its kill line already says it.
+    if (mode === 'ground' && 'icon' in cause && cause.icon === 'tank') return
+    const x = marker.x + SKULL_BADGE_DX
+    const y = marker.y + SKULL_BADGE_DY
+    causeBadges.push(timed(time, causeBadge(x, y, cause, ring)))
+    markerBoxes.push(causeBadgeBox(x, y, cause))
+  }
+  const pushKillerLabel = (time: number, marker: { x: number; y: number }, text: string): void => {
+    causeLabels.push(timed(time, killerLabel(marker.x, marker.y + KILLER_LABEL_DY, text)))
+    markerBoxes.push(textBox(marker.x, marker.y + KILLER_LABEL_DY, text, 13.5, 'middle'))
+  }
   const occupiedDeathMarkers: { x: number; y: number }[] = []
   const placeDeathMarker = (trueX: number, trueY: number, time: number): { x: number; y: number } => {
     const offsets: [number, number][] = [
-      [0, 0], [0, -48], [48, 0], [0, 48], [-48, 0],
-      [42, -42], [42, 42], [-42, 42], [-42, -42],
-      [0, -72], [72, 0], [0, 72], [-72, 0],
+      [0, 0], [0, -38], [38, 0], [0, 38], [-38, 0],
+      [34, -34], [34, 34], [-34, 34], [-34, -34],
+      [0, -58], [58, 0], [0, 58], [-58, 0],
     ]
     const candidates = offsets.map(([dx, dy]) => ({
-      x: Math.max(28, Math.min(MAP_W - 28, trueX + dx)),
-      y: Math.max(28, Math.min(MAP_W - 44, trueY + dy)),
+      x: Math.max(24, Math.min(MAP_W - 24, trueX + dx)),
+      y: Math.max(24, Math.min(MAP_W - KILLER_LABEL_DY - 10, trueY + dy)),
     }))
     const distance = (candidate: { x: number; y: number }): number =>
       occupiedDeathMarkers.length === 0
         ? Infinity
         : Math.min(...occupiedDeathMarkers.map((placed) => Math.hypot(candidate.x - placed.x, candidate.y - placed.y)))
-    const placed = candidates.find((candidate) => distance(candidate) >= 50) ??
+    const placed = candidates.find((candidate) => distance(candidate) >= 40) ??
       candidates.reduce((best, candidate) => distance(candidate) > distance(best) ? candidate : best)
     occupiedDeathMarkers.push(placed)
+    markerBoxes.push(boxAround(placed.x, placed.y, 14))
     if (Math.hypot(placed.x - trueX, placed.y - trueY) > 2) {
       markerLeaders.push(timed(
         time,
@@ -961,21 +947,18 @@ export function buildHeatmapSvg(
       const tx = px(pos.x)
       const ty = pz(pos.z)
       const marker = placeDeathMarker(tx, ty, k.time)
-      skulls.push(timed(k.time, skullIcon(marker.x, marker.y, p.color)))
+      skulls.push(timed(k.time, skullIcon(marker.x, marker.y, colorOf(p))))
       if (!k.killerId || k.killerId === p.userId) {
-        causeBadges.push(timed(k.time, causeBadge(marker.x + 15, marker.y + 14, { icon: 'crash' }, '#8a919e')))
+        pushCauseBadge(k.time, marker, { icon: 'crash' }, '#8a919e')
         continue
       }
       const killer = playerById.get(k.killerId)
       const cause = deathCause(k, mode, dict, seekers, t.heatmap.causes)
-      if (cause) {
-        causeBadges.push(timed(k.time, causeBadge(marker.x + 15, marker.y + 14, cause, killer?.color ?? '#8a919e')))
-      }
+      if (cause) pushCauseBadge(k.time, marker, cause, killer ? colorOf(killer) : '#8a919e')
       if (!killer) {
-        // убийцы нет на этой карте (зенитка на воздушной, самолёт на
-        // наземной) — цветом его не опознать, подписываем его технику
-        const who = vehicleInfo(dict, modelId(k.killerModel)).name
-        causeLabels.push(timed(k.time, killerLabel(marker.x, marker.y + 34, trimTo(who, 18))))
+        // The killer is not on this map (AA on the air map, a plane on the
+        // ground one): no colour names it, so its vehicle is written.
+        pushKillerLabel(k.time, marker, trimTo(vehicleInfo(dict, modelId(k.killerModel)).name, 18))
       }
       // Позиция убийцы: точка его пути в момент фрага; если пути на этой
       // карте нет (авиация на наземной, зенитка на воздушной) — позиция
@@ -998,17 +981,7 @@ export function buildHeatmapSvg(
         fy += (ty - fy) * t
         clipped = true
       }
-      const lineColor = killer?.color ?? '#8a919e'
-      killLines.push(timed(
-        k.time,
-        `<line x1="${r1(fx)}" y1="${r1(fy)}" x2="${r1(tx)}" y2="${r1(ty)}" stroke="${lineColor}" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"/>`,
-      ))
-      if (!clipped) {
-        killOriginDots.push(timed(
-          k.time,
-          `<circle cx="${r1(fx)}" cy="${r1(fy)}" r="4.5" fill="${lineColor}" stroke="#10130d" stroke-width="1.6"/>`,
-        ))
-      }
+      pushKillLine(k.time, fx, fy, tx, ty, clipped, killer ? colorOf(killer) : '#8a919e')
     }
     for (const unit of p.paths) {
       const last = unit.path[unit.path.length - 1]!
@@ -1021,8 +994,9 @@ export function buildHeatmapSvg(
       if (!diedHere && events.endTime - last.t < 90000) {
         survivorDots.push(timed(
           last.t,
-          `<circle cx="${r1(px(last.x))}" cy="${r1(pz(last.z))}" r="8" fill="${p.color}" stroke="#10130d" stroke-width="2"/>`,
+          `<circle cx="${r1(px(last.x))}" cy="${r1(pz(last.z))}" r="8" fill="${colorOf(p)}" stroke="#10130d" stroke-width="2"/>`,
         ))
+        markerBoxes.push(boxAround(px(last.x), pz(last.z), 9))
       }
     }
   }
@@ -1053,11 +1027,11 @@ export function buildHeatmapSvg(
         const tx = px(pos.x)
         const ty = pz(pos.z)
         const marker = placeDeathMarker(tx, ty, k.time)
-        skulls.push(timed(k.time, skullIcon(marker.x, marker.y, victim.color)))
+        skulls.push(timed(k.time, skullIcon(marker.x, marker.y, colorOf(victim))))
         const cause = deathCause(k, mode, dict, seekers, t.heatmap.causes)
-        if (cause) causeBadges.push(timed(k.time, causeBadge(marker.x + 15, marker.y + 14, cause, killer.color)))
+        if (cause) pushCauseBadge(k.time, marker, cause, colorOf(killer))
 
-        // Пунктир повторяет обозначение общей карты: цветом убийцы клана.
+        // The dashed line as on the overview: in the squadron killer's colour.
         const from = pointAtTime(killer.paths, k.time) ?? nearestPoint(killer.paths, k.time) ?? k.killerPos
         if (!from) continue
         let fx = px(from.x)
@@ -1073,19 +1047,75 @@ export function buildHeatmapSvg(
           fy += (ty - fy) * t
           clipped = true
         }
-        killLines.push(timed(
-          k.time,
-          `<line x1="${r1(fx)}" y1="${r1(fy)}" x2="${r1(tx)}" y2="${r1(ty)}" stroke="${killer.color}" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"/>`,
-        ))
-        if (!clipped) {
-          killOriginDots.push(timed(
-            k.time,
-            `<circle cx="${r1(fx)}" cy="${r1(fy)}" r="4.5" fill="${killer.color}" stroke="#10130d" stroke-width="1.6"/>`,
-          ))
-        }
+        pushKillLine(k.time, fx, fy, tx, ty, clipped, colorOf(killer))
       }
     }
   }
+
+  // Stop lengths, clear of the markers (placeCampLabel).
+  const campLabels: TimedSvg[] = []
+  const campLabelBoxes: PixelBox[] = []
+  for (const camp of camps.sort((a, b) => a.time - b.time)) {
+    const label = placeCampLabel(camp, markerBoxes.concat(campLabelBoxes))
+    if (!label) continue
+    campLabelBoxes.push(label.box)
+    const attrs = `x="${r1(label.x)}" y="${r1(label.y)}" font-family="${FONTS}" font-size="${CAMP_LABEL_FONT_SIZE}" font-weight="700" text-anchor="${label.anchor}"`
+    campLabels.push(timed(
+      camp.time,
+      `<g data-camp-label-time="${Math.round(camp.time)}">` +
+        `<text ${attrs} fill="none" stroke="#10130d" stroke-width="3.4">${camp.text}</text>` +
+        `<text ${attrs} fill="#f2f4f7">${camp.text}</text>` +
+        `</g>`,
+    ))
+  }
+
+  // A name beside each life's longest track part, placed last so it can avoid
+  // every marker (placeRouteLabels).
+  const longestByLife = new Map<string, RouteGeometry>()
+  for (const route of routes) {
+    const key = `${route.playerId}\u0000${route.life}`
+    const longest = longestByLife.get(key)
+    if (!longest || route.totalLength > longest.totalLength) longestByLife.set(key, route)
+  }
+  const routeLabels = placeRouteLabels(
+    [...longestByLife.values()]
+      .map((route) => ({ route, text: trimTo(playerById.get(route.playerId)?.name ?? '', ROUTE_LABEL_MAX_CHARS) }))
+      .filter((target) => target.text !== ''),
+    routes,
+    killLineSegments,
+    markerBoxes.concat(
+      campLabelBoxes,
+      camps.map((camp) => boxAround(camp.x, camp.y, camp.r)),
+      (mission?.zones ?? []).map((zone) => boxAround(px(zone.x), pz(zone.z), 22)),
+    ),
+    [...occupiedSpawnLabels],
+  )
+
+  // Minute marks: a numbered disc every tickStep minutes along each track,
+  // left out where it would cover a marker, a label or another track's mark.
+  const minuteMarks: TimedSvg[] = []
+  const minuteBlockers = markerBoxes.concat(campLabelBoxes, routeLabels.map((label) => label.box))
+  const placedMinuteMarks: PreparedMinuteMark[] = []
+  for (const p of players) {
+    const color = colorOf(p)
+    for (const tick of minuteMarksByPlayer.get(p) ?? []) {
+      const box = boxAround(tick.x, tick.y, MINUTE_MARK_RADIUS)
+      if (minuteBlockers.some((blocker) => boxesOverlap(box, blocker))) continue
+      if (placedMinuteMarks.some((mark) => Math.hypot(mark.x - tick.x, mark.y - tick.y) < MINUTE_MARK_RADIUS * 2 + 2)) continue
+      placedMinuteMarks.push(tick)
+      minuteMarks.push(timed(
+        tick.time,
+        `<g data-minute-time="${Math.round(tick.time)}" transform="translate(${r1(tick.x)} ${r1(tick.y)})">` +
+          `<circle r="${MINUTE_MARK_RADIUS}" fill="#10130d" fill-opacity="0.74" stroke="${color}" stroke-width="2"/>` +
+          `<text y="3.9" font-family="${FONTS}" font-size="11" font-weight="700" fill="#f2f4f7" text-anchor="middle">${tick.minute}</text>` +
+          `</g>`,
+      ))
+    }
+  }
+
+  pushMapLayer(14, 'camp-areas', chronological(campAreas))
+  pushMapLayer(15, 'camp-labels', chronological(campLabels))
+  pushMapLayer(16, 'minute-marks', chronological(minuteMarks))
   pushMapLayer(17, 'kill-lines', chronological(killLines))
   pushMapLayer(18, 'kill-origins', chronological(killOriginDots))
   pushMapLayer(19, 'marker-leaders', chronological(markerLeaders))
@@ -1093,6 +1123,9 @@ export function buildHeatmapSvg(
   pushMapLayer(21, 'death-skulls', chronological(skulls))
   pushMapLayer(22, 'death-causes', chronological(causeBadges))
   pushMapLayer(23, 'killer-labels', chronological(causeLabels))
+  pushMapLayer(24, 'route-labels', routeLabels.map((label) =>
+    `<text data-route-label="${esc(label.playerId)}" x="${r1(label.x)}" y="${r1(label.y)}" font-family="${FONTS}" font-size="${ROUTE_LABEL_FONT_SIZE}" font-weight="700" text-anchor="${label.anchor}" fill="${label.color}" stroke="#10130d" stroke-width="3.6" stroke-linejoin="round" paint-order="stroke">${esc(label.text)}</text>`,
+  ))
 
   // ---------- the right panel: title, teams, legend ----------
   parts.push(
@@ -1174,7 +1207,7 @@ export function buildHeatmapSvg(
       const fate = esc(deathsAt.length > 0 ? t.heatmap.died(fmtTime(Math.max(...deathsAt))) : t.heatmap.alive)
       const fateColor = deathsAt.length > 0 ? '#d98c8c' : '#9fd6a4'
       parts.push(
-        `<rect x="${PX}" y="${py + 6}" width="20" height="20" rx="4" fill="${p.color}"/>`,
+        `<rect x="${PX}" y="${py + 6}" width="20" height="20" rx="4" fill="${colorOf(p)}"/>`,
         `<text x="${PX + 32}" y="${py + 23}" font-family="${FONTS}" font-size="23" fill="#f2f4f7">${esc(trimTo(p.name, 18))}</text>`,
         `<text x="${PR}" y="${py + 23}" font-family="${FONTS}" font-size="21" font-weight="700" text-anchor="end" fill="#d7dce4">${kills}/${deaths}</text>`,
         `<text x="${PX + 32}" y="${py + playerSecondLineY}" font-family="${FONTS}" font-size="17" fill="#8f97a6">${esc(trimTo(vehicles, 27))}</text>`,
@@ -1210,7 +1243,9 @@ export function buildHeatmapSvg(
         `<rect x="-3.4" y="4.4" width="6.8" height="3.6" rx="1.4" fill="${glyphColor}" stroke="#15181c" stroke-width="1"/>`,
       t.heatmap.legend.death,
     ],
-    [causeBadge(0, 0, { icon: 'tank' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), t.heatmap.legend.cause],
+    mode === 'ground'
+      ? [causeBadge(0, 0, { icon: 'plane' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), t.heatmap.legend.causeNotTank]
+      : [causeBadge(0, 0, { icon: 'tank' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), t.heatmap.legend.cause],
     [`<circle r="6.5" fill="${glyphColor}" stroke="#10130d" stroke-width="1.8"/>`, t.heatmap.legend.survivor],
   ]
   if (clanUavs.length > 0) {
@@ -1439,6 +1474,201 @@ function segmentIntersectsBox(segment: PixelSegment, box: PixelBox): boolean {
     if (from > to) return false
   }
   return true
+}
+
+function boxAround(x: number, y: number, radius: number): PixelBox {
+  return { x0: x - radius, y0: y - radius, x1: x + radius, y1: y + radius }
+}
+
+/** Characters a UI font draws a whole em wide: CJK, kana, Hangul, fullwidth forms, emoji. */
+function isWideChar(code: number): boolean {
+  return (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    code >= 0x1f300
+}
+
+/**
+ * A bold text's width by character class, fitted to Noto Sans Bold (the
+ * Docker image's UI font) on 9,515 stored nicknames and raised 6%: the
+ * estimate falls short by over 1% for 5% of them, by 18% at most.
+ */
+function labelWidth(text: string, fontSize: number): number {
+  let em = 0
+  for (const char of text) {
+    em += isWideChar(char.codePointAt(0)!) ? 1
+      : /[ijlI.,:;'!|]/.test(char) ? 0.32
+      : /[_-]/.test(char) ? 0.45
+      : /[A-Z]/.test(char) ? 0.74
+      : /[а-яё]/.test(char) ? 0.7
+      : /[А-ЯЁ]/.test(char) ? 0.8
+      : 0.64
+  }
+  return em * fontSize
+}
+
+/** A text line's box around its baseline: 0.8 em above, 0.25 em below. */
+function textBox(x: number, baseline: number, text: string, fontSize: number, anchor: 'start' | 'middle' | 'end'): PixelBox {
+  const width = labelWidth(text, fontSize)
+  const x0 = anchor === 'start' ? x : anchor === 'end' ? x - width : x - width / 2
+  return { x0, y0: baseline - fontSize * 0.8, x1: x0 + width, y1: baseline + fontSize * 0.25 }
+}
+
+/**
+ * A stop's length: below its disc, else above, beside or at a corner, the
+ * first place clear of the markers and other labels; null where none is (the
+ * disc stays).
+ */
+function placeCampLabel(
+  camp: { x: number; y: number; r: number; text: string },
+  blockers: readonly PixelBox[],
+): { x: number; y: number; anchor: 'start' | 'middle' | 'end'; box: PixelBox } | null {
+  const corner = camp.r * 0.75
+  const candidates = [
+    { x: camp.x, y: camp.y + camp.r + 17, anchor: 'middle' },
+    { x: camp.x, y: camp.y - camp.r - 6, anchor: 'middle' },
+    { x: camp.x + camp.r + 5, y: camp.y + 5, anchor: 'start' },
+    { x: camp.x - camp.r - 5, y: camp.y + 5, anchor: 'end' },
+    { x: camp.x + corner + 3, y: camp.y + corner + 14, anchor: 'start' },
+    { x: camp.x - corner - 3, y: camp.y + corner + 14, anchor: 'end' },
+    { x: camp.x + corner + 3, y: camp.y - corner - 3, anchor: 'start' },
+    { x: camp.x - corner - 3, y: camp.y - corner - 3, anchor: 'end' },
+  ] as const
+  for (const candidate of candidates) {
+    const box = textBox(candidate.x, candidate.y, camp.text, CAMP_LABEL_FONT_SIZE, candidate.anchor)
+    if (box.x0 < 2 || box.y0 < 2 || box.x1 > MAP_W - 2 || box.y1 > MAP_W - 2) continue
+    if (!blockers.some((blocker) => boxesOverlap(box, blocker))) return { ...candidate, box }
+  }
+  return null
+}
+
+interface RouteLabel {
+  playerId: string
+  text: string
+  color: string
+  /** The anchor point on the baseline: the side facing the track, so the estimate's error falls on the far side. */
+  x: number
+  y: number
+  anchor: 'start' | 'middle' | 'end'
+  box: PixelBox
+}
+
+/**
+ * Track names: each target takes the cheapest place beside its track, scanned
+ * along it every few pixels in eight positions. Costs: another player's track
+ * through the label 10, within ROUTE_LABEL_NEAR of it 3 (the label could be
+ * read as its name), its own track through it 4, a kill line 2, a marker 30, a
+ * placed label 1000 (labels overlap only where nothing else is left); the
+ * first 80 px, where a team's tracks leave the spawn bundled, up to 16; up to
+ * 2 off the track's middle. Short tracks go first: they have the fewest places.
+ */
+function placeRouteLabels(
+  targets: readonly { route: RouteGeometry; text: string }[],
+  routes: readonly RouteGeometry[],
+  killLines: readonly PixelSegment[],
+  markers: readonly PixelBox[],
+  occupied: PixelBox[],
+): RouteLabel[] {
+  const cellSize = 64
+  const lines: { segment: PixelSegment; owner: string }[] = []
+  const cells = new Map<string, number[]>()
+  const cellRange = (from: number, to: number): [number, number] => [
+    Math.floor(Math.max(0, from) / cellSize),
+    Math.floor(Math.min(MAP_W, to) / cellSize),
+  ]
+  const addLine = (segment: PixelSegment, owner: string): void => {
+    const index = lines.push({ segment, owner }) - 1
+    const [fromX, toX] = cellRange(Math.min(segment.x1, segment.x2), Math.max(segment.x1, segment.x2))
+    const [fromY, toY] = cellRange(Math.min(segment.y1, segment.y2), Math.max(segment.y1, segment.y2))
+    for (let x = fromX; x <= toX; x++) {
+      for (let y = fromY; y <= toY; y++) {
+        const bucket = cells.get(`${x}:${y}`)
+        if (bucket) bucket.push(index)
+        else cells.set(`${x}:${y}`, [index])
+      }
+    }
+  }
+  for (const route of routes) {
+    for (let i = 1; i < route.points.length; i++) {
+      const from = route.points[i - 1]!
+      const to = route.points[i]!
+      addLine({ x1: from.x, y1: from.y, x2: to.x, y2: to.y }, route.playerId)
+    }
+  }
+  for (const line of killLines) addLine(line, '')
+  const seen = new Uint32Array(lines.length)
+  let visit = 0
+  const lineCost = (box: PixelBox, playerId: string): number => {
+    visit++
+    let cost = 0
+    const near = {
+      x0: box.x0 - ROUTE_LABEL_NEAR,
+      y0: box.y0 - ROUTE_LABEL_NEAR,
+      x1: box.x1 + ROUTE_LABEL_NEAR,
+      y1: box.y1 + ROUTE_LABEL_NEAR,
+    }
+    const [fromX, toX] = cellRange(near.x0, near.x1)
+    const [fromY, toY] = cellRange(near.y0, near.y1)
+    for (let x = fromX; x <= toX; x++) {
+      for (let y = fromY; y <= toY; y++) {
+        for (const index of cells.get(`${x}:${y}`) ?? []) {
+          if (seen[index] === visit) continue
+          seen[index] = visit
+          const line = lines[index]!
+          const foreign = line.owner !== '' && line.owner !== playerId
+          if (segmentIntersectsBox(line.segment, box)) cost += line.owner === '' ? 2 : foreign ? 10 : 4
+          else if (foreign && segmentIntersectsBox(line.segment, near)) cost += 3
+        }
+      }
+    }
+    return cost
+  }
+
+  const labels: RouteLabel[] = []
+  for (const { route, text } of [...targets].sort((a, b) => a.route.totalLength - b.route.totalLength)) {
+    const width = labelWidth(text, ROUTE_LABEL_FONT_SIZE)
+    const height = ROUTE_LABEL_HEIGHT
+    const gap = ROUTE_LABEL_GAP
+    // The box's top left from the track point, its cost (above, below and beside first) and the text's anchor.
+    const offsets: readonly (readonly [number, number, number, RouteLabel['anchor']])[] = [
+      [-width / 2, -gap - height, 0, 'middle'],
+      [-width / 2, gap, 0, 'middle'],
+      [gap + 2, -height / 2, 0, 'start'],
+      [-gap - 2 - width, -height / 2, 0, 'end'],
+      [gap, -gap - height, 1, 'start'],
+      [-gap - width, -gap - height, 1, 'end'],
+      [gap, gap, 1, 'start'],
+      [-gap - width, gap, 1, 'end'],
+    ]
+    const step = Math.max(6, route.totalLength / 80)
+    let best: { box: PixelBox; cost: number; anchor: RouteLabel['anchor'] } | null = null
+    for (let distance = 0; distance <= route.totalLength; distance += step) {
+      const point = routePointAtDistance(route, distance)
+      const offMiddle = route.totalLength > 0 ? Math.abs(distance / route.totalLength - 0.5) * 4 : 0
+      const place = Math.max(0, 80 - distance) * 0.2 + offMiddle
+      for (const [dx, dy, offsetCost, anchor] of offsets) {
+        const box = { x0: point.x + dx, y0: point.y + dy, x1: point.x + dx + width, y1: point.y + dy + height }
+        if (box.x0 < 6 || box.y0 < 6 || box.x1 > MAP_W - 6 || box.y1 > MAP_W - 6) continue
+        let cost = place + offsetCost
+        for (const other of occupied) if (boxesOverlap(box, other)) cost += 1000
+        if (best && cost >= best.cost) continue
+        for (const marker of markers) if (boxesOverlap(box, marker)) cost += 30
+        if (best && cost >= best.cost) continue
+        cost += lineCost(box, route.playerId)
+        if (!best || cost < best.cost) best = { box, cost, anchor }
+      }
+    }
+    if (!best) continue
+    occupied.push(best.box)
+    const { box, anchor } = best
+    const x = anchor === 'start' ? box.x0 : anchor === 'end' ? box.x1 : (box.x0 + box.x1) / 2
+    labels.push({ playerId: route.playerId, text, color: route.color, x, y: box.y1 - 4, anchor, box })
+  }
+  return labels
 }
 
 /** Один или два спавна команды по началам всех её жизней в текущем режиме. */
@@ -2137,10 +2367,25 @@ export function mergeNearbyCamps(camps: readonly PreparedCamp[]): PreparedCamp[]
   return merged.sort((a, b) => a.time - b.time)
 }
 
-/** Череп в цвете погибшего */
+/** The skull's scale (24 px drawing, ≈28 px on the map) and its cause badge's offset from the skull's centre, px. */
+const SKULL_SCALE = 1.15
+const SKULL_BADGE_DX = 12
+const SKULL_BADGE_DY = 11
+/** The killer's vehicle label's baseline below the skull's centre, px. */
+const KILLER_LABEL_DY = 28
+const MINUTE_MARK_RADIUS = 9
+const CAMP_LABEL_FONT_SIZE = 14.5
+/** Track names: bold text with a dark halo, kept clear of its track's outline by the gap; px. */
+const ROUTE_LABEL_FONT_SIZE = 15
+const ROUTE_LABEL_HEIGHT = 17
+const ROUTE_LABEL_GAP = 5
+const ROUTE_LABEL_NEAR = 10
+const ROUTE_LABEL_MAX_CHARS = 16
+
+/** A skull in the victim's colour. */
 function skullIcon(x: number, y: number, color: string): string {
   return (
-    `<g transform="translate(${r1(x - 17)} ${r1(y - 17)}) scale(1.45)">` +
+    `<g transform="translate(${r1(x - 12 * SKULL_SCALE)} ${r1(y - 12 * SKULL_SCALE)}) scale(${SKULL_SCALE})">` +
     `<circle cx="12" cy="11.5" r="11" fill="#15181c" fill-opacity="0.55"/>` +
     `<circle cx="12" cy="10" r="8.2" fill="${color}" stroke="#15181c" stroke-width="1.6"/>` +
     `<rect x="8" y="14.5" width="8" height="7" rx="2" fill="${color}" stroke="#15181c" stroke-width="1.2"/>` +
@@ -2227,6 +2472,12 @@ function killerLabel(x: number, y: number, text: string): string {
     `<text ${attrs} fill="none" stroke="#10130d" stroke-width="3.2">${t}</text>` +
     `<text ${attrs} fill="#e8ebf0">${t}</text>`
   )
+}
+
+/** causeBadge's footprint: a 10.5 px disc or a pill as wide as its label. */
+function causeBadgeBox(x: number, y: number, cause: DeathCause): PixelBox {
+  const half = 'icon' in cause ? 11.5 : (12 + cause.label.length * 7.2) / 2 + 1
+  return { x0: x - half, y0: y - 11.5, x1: x + half, y1: y + 11.5 }
 }
 
 /** Значок причины смерти у черепа; ободок — цвет убийцы */

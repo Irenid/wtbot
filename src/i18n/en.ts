@@ -185,6 +185,7 @@ export const en: BotText = {
       shot: 'killer\'s shot',
       death: 'death (route colour)',
       cause: 'killed by',
+      causeNotTank: 'killer if not a tank',
       survivor: 'alive at the end',
       uav: 'drone and its view',
     },

@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, WrplHeader } from './replay.js'
 import type { MapImageViewport } from './battle-assets.js'
+import type { VehicleDict } from './vehicles.js'
 import { clanDisplayName, stripClanDecorators } from './render-battle.js'
 import { buildHeatmapSvg, prepareHeatmapScene, type HeatmapRenderOptions } from './render-heatmap.js'
 
@@ -238,14 +239,20 @@ test('the heatmap keeps the old layout and the new text labels', () => {
   assert.ok(svg.includes('data-team-spawn="0"'))
 })
 
-test('режим 2× повышает резкость только растровой подложки', () => {
+test('the raster map is muted at both scales and sharpened only at 2×', () => {
   const map = 'data:image/png;base64,AA=='
   const standard = renderAt(-800, 0, 1, map)
   const hd = renderAt(-800, 0, 2, map)
 
-  assert.ok(!standard.includes('hd-map-sharpen'))
-  assert.ok(hd.includes('<filter id="hd-map-sharpen"'))
-  assert.ok(hd.includes('image-rendering="optimizeQuality" filter="url(#hd-map-sharpen)"'))
+  for (const svg of [standard, hd]) {
+    assert.ok(svg.includes('<filter id="map-tone"'))
+    assert.ok(svg.includes('<feColorMatrix type="saturate" values="0.5"/>'))
+    assert.ok(svg.includes(`filter="url(#map-tone)" href="${map}"`))
+  }
+  assert.ok(!standard.includes('feConvolveMatrix'))
+  assert.ok(!standard.includes('image-rendering="optimizeQuality"'))
+  assert.ok(hd.includes('<feConvolveMatrix '))
+  assert.ok(hd.includes('image-rendering="optimizeQuality" filter="url(#map-tone)"'))
 })
 
 test('наземная heatmap предпочитает тактическую карту авиационной подложке', () => {
@@ -536,10 +543,10 @@ test('a squadron map keeps the overview colours and hides the other team\'s rout
   const clanAir = buildHeatmapSvg({ ...input, mode: 'air', teamIndex: 0 })
   const russian = buildHeatmapSvg({ ...input, teamIndex: 0, locale: 'ru' })
 
-  assert.ok(overview.includes('stroke="#FF003C"'))
-  assert.ok(clan.includes('stroke="#FF003C"'))
-  assert.ok(overview.includes('stroke="#5A00FF"'))
-  assert.ok(!clan.includes('stroke="#5A00FF"'))
+  assert.ok(overview.includes('stroke="#457CFD"'))
+  assert.ok(clan.includes('stroke="#457CFD"'))
+  assert.ok(overview.includes('stroke="#FD2B33"'))
+  assert.ok(!clan.includes('stroke="#FD2B33"'))
   assert.ok(clan.includes('>Player</text>'))
   assert.ok(clan.includes('>Enemy</text>'))
   assert.ok(clan.includes('routes: AAA'))
@@ -554,8 +561,8 @@ test('a squadron map keeps the overview colours and hides the other team\'s rout
   assert.ok(clan.includes('data-route-layer="color"'))
   assert.match(clan, /data-direction-arrows="[1-9]/)
   assert.ok(clan.includes('stroke="#10130d" stroke-opacity="0.55" stroke-width="5.4"'))
-  assert.ok(clan.includes('stroke="#FF003C" stroke-width="3"'))
-  assert.ok(!clan.includes('stroke="#FF003C" stroke-opacity="0.72"'))
+  assert.ok(clan.includes('stroke="#457CFD" stroke-width="3"'))
+  assert.ok(!clan.includes('stroke="#457CFD" stroke-opacity="0.72"'))
   const outline = /<path data-route-layer="outline" data-direction-arrows="([1-9]\d*)" d="([^"]+)"/.exec(clan)
   const color = /<path data-route-layer="color" data-direction-arrows="([1-9]\d*)" d="([^"]+)"/.exec(clan)
   assert.ok(outline && color)
@@ -564,13 +571,103 @@ test('a squadron map keeps the overview colours and hides the other team\'s rout
   assert.ok((outline[2]!.match(/M/g)?.length ?? 0) > 1)
   assert.ok(clan.lastIndexOf('data-spawn-label=') < clan.indexOf('data-route-layer="outline"'))
   assert.ok(clan.includes('data-marker-leader="1"'))
-  assert.ok(clan.includes('fill="#5A00FF" stroke="#15181c"'))
-  assert.ok(clan.includes('stroke="#FF003C" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"'))
+  assert.ok(clan.includes('fill="#FD2B33" stroke="#15181c"'))
+  assert.ok(clan.includes('stroke="#457CFD" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"'))
   assert.ok(!clan.includes('target: vehicles'))
-  assert.ok(overviewAir.includes('stroke="#FF003C"'))
-  assert.ok(clanAir.includes('stroke="#FF003C"'))
-  assert.ok(overviewAir.includes('stroke="#5A00FF"'))
-  assert.ok(!clanAir.includes('stroke="#5A00FF"'))
+  assert.ok(overviewAir.includes('stroke="#457CFD"'))
+  assert.ok(clanAir.includes('stroke="#457CFD"'))
+  assert.ok(overviewAir.includes('stroke="#FD2B33"'))
+  assert.ok(!clanAir.includes('stroke="#FD2B33"'))
+  // The other squadron's map draws that squadron cool, as the game draws its own spawn blue.
+  const otherClan = buildHeatmapSvg({ ...input, teamIndex: 1 })
+  assert.ok(otherClan.includes('stroke="#457CFD" stroke-width="3"'))
+  assert.ok(otherClan.includes('fill="#457CFD" stroke="#15181c"'))
+  assert.ok(otherClan.includes('stroke="#FD2B33" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"'))
+})
+
+test('each life\'s track is named, and the ground map badges only kills not made by a tank', () => {
+  // The overview draws its first roster (the higher team score) cool.
+  const enemy: ReplayPlayerResult = { ...player, userId: '2', name: 'Enemy', clanTag: 'BBB', team: 2, score: 200 }
+  const pilot: ReplayPlayerResult = { ...player, userId: '3', name: 'LongNickname_1234567', clanTag: 'BBB', team: 2, score: 200 }
+  const events: ReplayEvents = {
+    teamWon: 2,
+    players: [],
+    kills: [
+      {
+        time: 30_000,
+        killerId: '2',
+        killerModel: 'test_tank',
+        killerPos: { t: 30_000, x: 600, y: 0, z: 0 },
+        victimId: '1',
+        victimModel: 'test_tank',
+        victimPos: { t: 30_000, x: -500, y: 0, z: 0 },
+        weapon: 'test_shell',
+      },
+      {
+        time: 90_000,
+        killerId: '3',
+        killerModel: 'test_plane',
+        killerPos: { t: 90_000, x: -300, y: 300, z: 400 },
+        victimId: '1',
+        victimModel: 'test_tank',
+        victimPos: { t: 90_000, x: -500, y: 0, z: 400 },
+        weapon: 'test_bomb',
+      },
+    ],
+    damage: [],
+    chat: [],
+    units: [
+      { userId: '1', model: 'test_tank', source: 'ground', path: [{ t: 0, x: -800, y: 0, z: 0 }, { t: 30_000, x: -500, y: 0, z: 0 }] },
+      { userId: '1', model: 'test_tank', source: 'ground', path: [{ t: 40_000, x: -800, y: 0, z: 400 }, { t: 90_000, x: -500, y: 0, z: 400 }] },
+      { userId: '2', model: 'test_tank', source: 'ground', path: [{ t: 0, x: 800, y: 0, z: 0 }, { t: 50_000, x: 600, y: 0, z: 0 }] },
+      {
+        userId: '3',
+        model: 'test_plane',
+        source: 'air',
+        path: Array.from({ length: 7 }, (_, i) => ({ t: 60_000 + i * 5_000, x: 0, y: 300, z: -900 + i * 300 })),
+      },
+    ],
+    zones: [],
+    endTime: 120_000,
+    errors: [],
+  }
+  const input = {
+    missionName: '[Domination] Test map',
+    header,
+    results: { status: 'ok', timePlayed: 120, players: [player, enemy, pilot] },
+    events,
+    dict: {
+      test_tank: { name: 'Test Tank', cls: 'T', country: 'ussr' },
+      test_plane: { name: 'Test Plane', cls: 'F', country: 'usa' },
+    } satisfies VehicleDict,
+    mission: { area: { x0: -1000, z0: -1000, x1: 1000, z1: 1000 }, zones: [] },
+    mode: 'ground' as const,
+  }
+  const layer = (svg: string, name: string): string => {
+    const start = svg.indexOf(`<g data-map-layer="${name}">`)
+    if (start < 0) return ''
+    const end = svg.indexOf('<g data-map-layer="', start + 1)
+    return svg.slice(start, end >= 0 ? end : undefined)
+  }
+  const ground = buildHeatmapSvg(input)
+  const air = buildHeatmapSvg({ ...input, mode: 'air' })
+
+  // One name per life, in the track's colour, drawn above every marker.
+  assert.equal(ground.match(/data-route-label="1"/g)?.length, 2)
+  assert.equal(ground.match(/data-route-label="2"/g)?.length, 1)
+  assert.ok(!ground.includes('data-route-label="3"'))
+  assert.match(ground, /data-route-label="1"[^>]* fill="#457CFD"[^>]*>Player<\/text>/)
+  assert.match(ground, /data-route-label="2"[^>]* fill="#FD2B33"[^>]*>Enemy<\/text>/)
+  assert.ok(ground.indexOf('<g data-map-layer="24-route-labels">') > ground.indexOf('<g data-map-layer="23-killer-labels">'))
+  assert.match(air, /data-route-label="3"[^>]*>LongNickname_12…<\/text>/)
+
+  const groundCauses = layer(ground, '22-death-causes')
+  assert.equal(groundCauses.match(/<g transform="translate\(/g)?.length, 1)
+  assert.ok(groundCauses.includes('<path d="M0 -9.5 L2.3 -2.8'))
+  assert.ok(!groundCauses.includes('<rect x="-8.5" y="0.5" width="17"'))
+  assert.ok(layer(ground, '23-killer-labels').includes('>Test Plane</text>'))
+  assert.ok(ground.includes('>killer if not a tank</text>'))
+  assert.ok(air.includes('>killed by</text>'))
 })
 
 test('the legend stays visible with sixteen players', () => {
@@ -626,7 +723,7 @@ test('подпись клана на карте убирает внешнюю р
   assert.equal(clanDisplayName('+GFR-2S+'), 'GFR-2S')
 })
 
-test('БПЛА показывается только на наземной карте своего клана и использует цвет владельца', () => {
+test('a drone shows only on its squadron\'s ground map, in its owner\'s colour', () => {
   const enemy: ReplayPlayerResult = { ...player, userId: '2', name: 'Enemy', clanTag: 'BBB', team: 2 }
   const events: ReplayEvents = {
     teamWon: 0,
@@ -677,7 +774,7 @@ test('БПЛА показывается только на наземной ка�
   assert.ok(ownClan.includes('<g data-map-layer="11-uav-routes">'))
   assert.ok(ownClan.includes('<g data-map-layer="12-uav-starts">'))
   assert.ok(ownClan.includes('data-uav-owner="1"'))
-  assert.ok(ownClan.includes('stroke="#FF003C" stroke-width="2"'))
+  assert.ok(ownClan.includes('stroke="#457CFD" stroke-width="2"'))
   assert.ok(ownClan.includes('data-uav-observation="1"'))
   assert.ok(!enemyClan.includes('data-uav-route='))
   assert.ok(!airClan.includes('data-uav-route='))

@@ -191,6 +191,7 @@ export const ru: BotText = {
       shot: 'выстрел убийцы',
       death: 'гибель (цвет — чей)',
       cause: 'чем убит',
+      causeNotTank: 'убийца, если не танк',
       survivor: 'жив в конце боя',
       uav: 'БПЛА и зона обзора',
     },

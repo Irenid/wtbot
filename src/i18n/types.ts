@@ -172,6 +172,8 @@ export interface BotText {
       shot: string
       death: string
       cause: string
+      /** The ground map's badge: tank kills have none. */
+      causeNotTank: string
       survivor: string
       uav: string
     }
