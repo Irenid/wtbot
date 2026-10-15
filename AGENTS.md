@@ -768,8 +768,8 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `verify:player-board-voice`, `verify:benchmark-corpus` (needs
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
-frontend change run `build:web`. Baseline on **2026-10-13**: all gates pass,
-**504 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+frontend change run `build:web`. Baseline on **2026-10-15**: all gates pass,
+**505 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).

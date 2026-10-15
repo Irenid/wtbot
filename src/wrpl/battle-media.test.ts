@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { closeDb, initDb } from '../db/index.js'
+import { battleBalanceLevel } from './battle-media.js'
+
+test('battleBalanceLevel: the night window of a stage\'s first day still plays the previous cap', () => {
+  initDb(':memory:')
+  try {
+    // The built-in season: BR 8.7 until 2026-08-05, then 7.3 (balance levels 23 and 19: other airfields).
+    const day = Date.parse('2026-08-05T00:00:00Z') / 1_000
+    assert.equal(battleBalanceLevel(day - 6 * 3600), 23)
+    assert.equal(battleBalanceLevel(day + 3 * 3600), 23, 'the 01:00–07:00 UTC window')
+    assert.equal(battleBalanceLevel(day + 15 * 3600), 19, 'the 14:00 UTC window')
+    assert.equal(battleBalanceLevel(Date.parse('2030-01-01T00:00:00Z') / 1_000), 32, 'outside the known stages')
+  } finally {
+    closeDb()
+  }
+})

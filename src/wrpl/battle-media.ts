@@ -5,6 +5,7 @@ import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { mapConcurrent } from '../concurrency.js'
 import { getBattleWeaponIds, getScoutStages, markBattleIngest, saveBattle } from '../db/index.js'
+import { stageAt } from '../scout/model.js'
 import { balanceLevelOfBr, ensureGameAirMap, ensureGameTacticalMaps, type GameAirMap, type GameTacticalMaps } from '../tactical-map/index.js'
 import {
   runWorkerTask,
@@ -153,7 +154,8 @@ export async function cachedBattleHeatmap2x(
 // 46: maps from the HQ textures; air heatmaps on the game's air map (src/tactical-map).
 // 47: player slots the AI drove (DB v22 slot_nick) and bots that filled an empty place get rows.
 // 48: air heatmaps show the bases where squadron battles spawn (runways, bombers' air spawns, the rank's airfields).
-const BATTLE_MEDIA_VERSION = 48
+// 49: a stage's first night window keeps the previous cap's maps (battleBalanceLevel by stageAt).
+const BATTLE_MEDIA_VERSION = 49
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)
@@ -391,8 +393,9 @@ async function loadBattleRenderSource(
 let stagesCache: { at: number; stages: { startsAt: number; endsAt: number; maxBr: number }[] } | null = null
 
 /**
- * The battle's balance level (the air spawns of the mission depend on it): its
- * season stage's BR cap; outside the known stages the top tier.
+ * The battle's balance level (the air spawns of the mission depend on it): the
+ * BR cap it played, by stageAt (the night window of a stage's first day still
+ * plays the previous cap); outside the known stages the top tier.
  */
 export function battleBalanceLevel(startTimeSec: number): number {
   if (!stagesCache || Date.now() - stagesCache.at > 10 * 60_000) {
@@ -402,7 +405,7 @@ export function battleBalanceLevel(startTimeSec: number): number {
       stagesCache = { at: Date.now(), stages: [] }
     }
   }
-  const stage = stagesCache.stages.find((s) => startTimeSec >= s.startsAt && startTimeSec < s.endsAt)
+  const stage = stageAt(stagesCache.stages, startTimeSec)
   return stage ? balanceLevelOfBr(stage.maxBr) : 32
 }
 

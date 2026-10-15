@@ -14,7 +14,8 @@ import type { ReplayEvents, SpaceTime } from './replay-events.js'
 // 6: the HQ map textures and the air view (map.air: the game's air map around the air tracks).
 // 7: a player slot the AI drove carries the player's nick (DB v22 slot_nick), not the bot's.
 // 8: the air view's bases where squadron battles spawn (runways, bombers' air spawns, the rank's airfields).
-export const BATTLE_SCENE_VERSION = 8
+// 9: a stage's first night window keeps the previous cap's maps (battleBalanceLevel by stageAt).
+export const BATTLE_SCENE_VERSION = 9
 
 /** Прореживание по времени: точка не чаще, чем раз в секунду. */
 const TIME_STEP_MS = 1_000

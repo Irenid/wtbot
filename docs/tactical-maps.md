@@ -83,7 +83,10 @@ compares with another variable.
 
 - Imports load only when their conditions hold (`importApplies`):
   `rankRange` [min, max] holds the balance level (`missionGetBalanceLevel`:
-  economic rank, (BR − 1)·3; the bot takes the battle's season stage cap) —
+  economic rank, (BR − 1)·3; the bot takes the cap the battle played:
+  `battleBalanceLevel` by `stageAt` of `src/scout/model.ts`, whose
+  `STAGE_SWITCH_DELAY_SEC` keeps a stage's first 01:00–07:00 UTC window on
+  the previous cap) —
   each map's airfields of ranks 0–20 and 21–50, helipads from 20, decor that
   draws nothing; `difficulty` (`arcade`, `realistic`, `hardcore`: battle and
   kill areas of 24 missions on 8 maps; the realistic files name their own
@@ -181,7 +184,13 @@ battles (2026-07-15..10-12, BR caps 8.0–10.7), every first track point lies
 within 3 km of a drawn base (98.6% within 2 km; air spawns median 127 m,
 runways 1,633 m: the runway end), against 48.8% (33.6%) with the maps before
 the import conditions and the squadron descriptor (median 3,044 m). The ground
-maps stayed byte-identical.
+maps stayed byte-identical. At cap 7.0 (balance level 18, bucket 0; 2,449
+battles 2026-10-13..15, 13,981 aircraft): 99.99% within 3 km (runways median
+721 m: the low-rank airfields' shorter runways; air spawns 127 m), every
+ground vehicle within 150 m of a tank base. The stage's first 01:00–07:00 UTC
+window (59 battles) still played cap 8.0 (A-4H, L-39ZA, Mi-8TB) from the
+rank-21 airfields and helipads; drawn by the unshifted stage, 0.6% of the
+week's aircraft started 5–11 km from a drawn base.
 
 ## Cache
 
@@ -192,5 +201,6 @@ the hash covers `TACTICAL_MAP_VERSION` and the sizes and mtimes of the source
 files (the HQ pack's absence too), so a game patch rebuilds and the
 mission's files of an older hash are deleted (`pruneStaleMaps`: any team,
 bucket and size). Heatmaps use 1400 px (2800 for HD), the site's battle
-player 1400 px; its air view is `data/battles/<session>-scene-v8-air.json`
-(the view) and `-air.jpg` (drawn), in the battle cache's LRU.
+player 1400 px; its air view is `data/battles/<session>-scene-v<N>-air.json`
+(the view; N = `BATTLE_SCENE_VERSION`) and `-air.jpg` (drawn), in the battle
+cache's LRU.
