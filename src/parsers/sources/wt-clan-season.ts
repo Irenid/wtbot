@@ -4,11 +4,12 @@ import { readResponseText } from '../../http-response.js'
 import type { ParserSource } from '../types.js'
 
 /**
- * Расписание полковых боёв (сезоны и ротация БР по неделям) с официального
- * форума. Первый пост темы 2509 переписывается к каждому сезону, Discourse
- * отдаёт его исходный текст по /raw/<topic>/<post>. Форум не за Cloudflare и
- * не на warthunder.com, поэтому идёт обычным fetch, а не через общую очередь
- * fetchWtResponse(). Пишем не в items, а в clan_seasons/clan_season_stages.
+ * The squadron battles schedule (seasons and the weekly BR rotation) from
+ * the official forum. Topic 2509's first post is rewritten for every season;
+ * Discourse serves its source text at /raw/<topic>/<post>. The forum is not
+ * behind Cloudflare nor on warthunder.com, so a plain fetch reads it, not the
+ * shared fetchWtResponse() queue. It writes clan_seasons/clan_season_stages,
+ * not items.
  */
 
 export const FORUM_SEASON_URL = 'https://forum.warthunder.ru/raw/2509/1'
@@ -24,14 +25,14 @@ export async function fetchForumSeasonPost(signal: AbortSignal): Promise<string>
   })
   if (!res.ok) {
     await res.body?.cancel().catch(() => undefined)
-    throw new Error(`форум: HTTP ${res.status} на посте с расписанием сезона`)
+    throw new Error(`forum: HTTP ${res.status} on the season schedule post`)
   }
   const contentType = res.headers.get('content-type')?.toLowerCase() ?? ''
   if (!contentType.startsWith('text/plain')) {
     await res.body?.cancel().catch(() => undefined)
-    throw new Error(`форум: вместо текста поста пришло «${contentType || 'без типа'}»`)
+    throw new Error(`forum: "${contentType || 'no type'}" instead of the post text`)
   }
-  return await readResponseText(res, MAX_RESPONSE_BYTES, 'пост с расписанием сезона')
+  return await readResponseText(res, MAX_RESPONSE_BYTES, 'season schedule post')
 }
 
 export const wtClanSeason: ParserSource = {
@@ -41,12 +42,16 @@ export const wtClanSeason: ParserSource = {
     const schedules = parseForumSeasonPost(await fetchForumSeasonPost(signal))
     signal.throwIfAborted()
     const result = syncForumClanSeasons(schedules)
-    const names = schedules.map((season) => `${season.name} (${season.stages.length} этапов)`).join('; ')
+    // Seasons by their UTC days: the stored name is the forum's Russian text
+    const day = (sec: number): string => new Date(sec * 1_000).toISOString().slice(0, 10)
+    const names = schedules
+      .map((season) => `${day(season.startsAt)}…${day(season.endsAt - 86_400)} (${season.stages.length} stages)`)
+      .join('; ')
     const changes = [
-      result.inserted.length > 0 ? `новых ${result.inserted.length}` : '',
-      result.updated.length > 0 ? `обновлено ${result.updated.length}` : '',
-      result.replaced.length > 0 ? `заменено прежних ${result.replaced.length}` : '',
+      result.inserted.length > 0 ? `new ${result.inserted.length}` : '',
+      result.updated.length > 0 ? `updated ${result.updated.length}` : '',
+      result.replaced.length > 0 ? `replaced ${result.replaced.length}` : '',
     ].filter(Boolean)
-    return { summary: `${names}: ${changes.length > 0 ? changes.join(', ') : 'без изменений'}` }
+    return { summary: `${names}: ${changes.length > 0 ? changes.join(', ') : 'unchanged'}` }
   },
 }

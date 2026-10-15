@@ -94,11 +94,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-/** Неотрицательное целое поле лидерборда; отсутствие — null, иной тип — ошибка схемы. */
+/** A non-negative integer leaderboard field; missing — null, another type — a schema error. */
 function optionalCount(value: unknown, field: string, page: number, index: number): number | null {
   if (value === undefined || value === null) return null
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверное поле ${field}`)
+    throw new Error(`leaderboard, page ${page}: item ${index} has an invalid ${field}`)
   }
   return value
 }
@@ -227,10 +227,10 @@ export function parseLeaderboardPage(raw: string, page: number): LeaderboardPage
   try {
     value = JSON.parse(raw)
   } catch {
-    throw new Error(`лидерборд, страница ${page}: некорректный JSON`)
+    throw new Error(`leaderboard, page ${page}: invalid JSON`)
   }
   if (!isRecord(value) || typeof value['status'] !== 'string' || !Array.isArray(value['data'])) {
-    throw new Error(`лидерборд, страница ${page}: неожиданная схема ответа`)
+    throw new Error(`leaderboard, page ${page}: unexpected response schema`)
   }
 
   const clans: ClanLeaderboardEntry[] = []
@@ -238,25 +238,25 @@ export function parseLeaderboardPage(raw: string, page: number): LeaderboardPage
   let season: OfficialClanSeason | null = null
   for (const [index, rawClan] of value['data'].entries()) {
     if (!isRecord(rawClan)) {
-      throw new Error(`лидерборд, страница ${page}: элемент ${index} не является объектом`)
+      throw new Error(`leaderboard, page ${page}: item ${index} is not an object`)
     }
     const tag = rawClan['tag']
     const name = rawClan['name']
     const astat = rawClan['astat']
     if (tag !== undefined && typeof tag !== 'string') {
-      throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный tag`)
+      throw new Error(`leaderboard, page ${page}: item ${index} has an invalid tag`)
     }
     if (name !== undefined && typeof name !== 'string') {
-      throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный name`)
+      throw new Error(`leaderboard, page ${page}: item ${index} has an invalid name`)
     }
     if (astat !== undefined && !isRecord(astat)) {
-      throw new Error(`лидерборд, страница ${page}: у элемента ${index} неверный astat`)
+      throw new Error(`leaderboard, page ${page}: item ${index} has an invalid astat`)
     }
     const rating = optionalCount(astat?.['dr_era5_hist'], 'dr_era5_hist', page, index)
     if (rating !== null && rating > 0) hasActive = true
     season ??= parseSeason(rawClan['clanSeasonRatingRewards'])
     if (!tag || !name) continue
-    // pos считается с нуля; без него место восстанавливается по странице.
+    // pos counts from zero; without it the place comes from the page.
     const pos = optionalCount(rawClan['pos'], 'pos', page, index)
     clans.push({
       tag,

@@ -107,7 +107,7 @@ class PlayerHttpError extends Error {
 function throwPlayerRequestError(error: unknown, nickname: string): never {
   if (!(error instanceof WtRequestError)) throw error
   if (error.status === 404) {
-    throw new PlayerNotFoundError(`профиль ${nickname}: игрок не найден`)
+    throw new PlayerNotFoundError(`profile ${nickname}: player not found`)
   }
   if (error.status === 401 || error.status === 403) {
     throw new PlayerSessionError(`${nickname}: ${error.message}`)
@@ -316,20 +316,20 @@ function requiredStringField(
   ...names: string[]
 ): string {
   const value = stringField(record, ...names)
-  if (value === null) throw new PlayerSchemaError(`${label}: отсутствует поле ${names.join('/')}`)
+  if (value === null) throw new PlayerSchemaError(`${label}: no ${names.join('/')} field`)
   return value
 }
 
 function requiredTimestamp(record: Record<string, unknown>, label: string): number {
   const value = numberField(record, 'startTime', 'start_time', 'timestamp')
   if (value === null || !Number.isSafeInteger(value) || value < 0) {
-    throw new PlayerSchemaError(`${label}: неверный startTime`)
+    throw new PlayerSchemaError(`${label}: invalid startTime`)
   }
   return value
 }
 
 function parseReplayPlayer(value: unknown, team: string, label: string): ReplayPlayer {
-  if (!isRecord(value)) throw new PlayerSchemaError(`${label}: участник не является объектом`)
+  if (!isRecord(value)) throw new PlayerSchemaError(`${label}: the player is not an object`)
   return {
     userId: requiredStringField(value, label, 'userId', 'user_id', 'userid'),
     name: stringField(value, 'name') ?? '',
@@ -339,23 +339,23 @@ function parseReplayPlayer(value: unknown, team: string, label: string): ReplayP
 }
 
 function parseReplayPlayers(value: unknown, label: string): ReplayPlayer[] {
-  if (!isRecord(value)) throw new PlayerSchemaError(`${label}: players не является объектом`)
+  if (!isRecord(value)) throw new PlayerSchemaError(`${label}: players is not an object`)
   const players: ReplayPlayer[] = []
   for (const [team, rawPlayers] of Object.entries(value)) {
-    if (!Array.isArray(rawPlayers)) throw new PlayerSchemaError(`${label}: команда ${team} не является массивом`)
+    if (!Array.isArray(rawPlayers)) throw new PlayerSchemaError(`${label}: team ${team} is not an array`)
     if (rawPlayers.length > MAX_PLAYERS_PER_REPLAY) {
-      throw new PlayerSchemaError(`${label}: слишком много участников в команде ${team}`)
+      throw new PlayerSchemaError(`${label}: too many players in team ${team}`)
     }
     rawPlayers.forEach((player, index) => {
-      players.push(parseReplayPlayer(player, team, `${label}, команда ${team}, участник ${index + 1}`))
+      players.push(parseReplayPlayer(player, team, `${label}, team ${team}, player ${index + 1}`))
     })
   }
   return players
 }
 
-/** Проверяет и нормализует ответ POST /en/api/replay. */
+/** Checks and normalizes a POST /en/api/replay response. */
 export function parseReplayPage(value: unknown): ReplayPage {
-  if (!isRecord(value)) throw new PlayerSchemaError('replay API: ответ не является JSON-объектом')
+  if (!isRecord(value)) throw new PlayerSchemaError('replay API: the response is not a JSON object')
   const statusCode = numberField(value, 'statusCode', 'status_code', 'code')
   const statusText = [
     stringField(value, 'status', 'result'),
@@ -366,15 +366,15 @@ export function parseReplayPage(value: unknown): ReplayPage {
     statusCode === 403 ||
     /authentication|authorization|forbidden|login|session|unauthori[sz]ed|истекла|сесс/i.test(statusText)
   ) {
-    throw new PlayerSessionError('replay API: сервер сообщил об истёкшей или недействительной сессии WT')
+    throw new PlayerSessionError('replay API: the server reports an expired or invalid WT session')
   }
   const rawItems = value['items'] ?? value['replays']
-  if (!Array.isArray(rawItems)) throw new PlayerSchemaError('replay API: отсутствует массив items')
-  if (rawItems.length > MAX_REPLAY_ITEMS) throw new PlayerSchemaError('replay API: слишком много реплеев в ответе')
+  if (!Array.isArray(rawItems)) throw new PlayerSchemaError('replay API: no items array')
+  if (rawItems.length > MAX_REPLAY_ITEMS) throw new PlayerSchemaError('replay API: too many replays in the response')
 
   const replays = rawItems.map((rawReplay, index) => {
-    const label = `replay API, реплей ${index + 1}`
-    if (!isRecord(rawReplay)) throw new PlayerSchemaError(`${label}: запись не является объектом`)
+    const label = `replay API, replay ${index + 1}`
+    if (!isRecord(rawReplay)) throw new PlayerSchemaError(`${label}: the item is not an object`)
     return {
       replayId: requiredStringField(rawReplay, label, 'sessionId', 'session_id', 'replayId', 'id'),
       mission: requiredStringField(rawReplay, label, 'missionName', 'mission', 'title'),
@@ -424,9 +424,9 @@ export function replayDataForPlayer(page: ReplayPage, nickname: string): {
 }
 
 /**
- * Загружает HTML профиля тем же транспортом, cookie jar и rate-limit, что и
- * плановый источник wt-players. Отдельно от разбора — страница нужна и
- * player-stats провайдеру, который читает с неё все блоки статистики.
+ * Loads the profile HTML through the same transport, cookie jar and rate
+ * limit as the scheduled wt-players source. Separate from parsing: the
+ * player-stats provider reads every statistics block of the same page.
  */
 export async function fetchPlayerProfileHtml(
   nickname: string,
@@ -457,21 +457,21 @@ export async function fetchPlayerProfileHtml(
         'user-agent': WT_USER_AGENT,
         referer: `https://warthunder.com/en/community/searchplayers?name=${encodeURIComponent(nickname.toLowerCase())}`,
       },
-    }, `профиль ${nickname}`)
+    }, `profile ${nickname}`)
   } catch (error) {
     throwPlayerRequestError(error, nickname)
   }
   if (/login\.gaijin\.net|\/login(?:[/?]|$)/i.test(response.url)) {
     await response.body?.cancel().catch(() => undefined)
-    throw new PlayerSessionError(`профиль ${nickname}: перенаправление на страницу входа — обнови WT_COOKIE`)
+    throw new PlayerSessionError(`profile ${nickname}: redirected to the sign-in page, renew WT_COOKIE`)
   }
   const profileContentType = response.headers.get('content-type')?.toLowerCase() ?? ''
   const contentType = profileContentType
   if (!contentType.includes('html')) {
     await response.body?.cancel().catch(() => undefined)
-    throw new PlayerSchemaError(`профиль ${nickname}: сервер вернул не HTML (Content-Type: ${contentType || 'отсутствует'})`)
+    throw new PlayerSchemaError(`profile ${nickname}: the server returned no HTML (Content-Type: ${contentType || 'missing'})`)
   }
-  const html = await readResponseText(response, MAX_PROFILE_BYTES, `профиль ${nickname}`)
+  const html = await readResponseText(response, MAX_PROFILE_BYTES, `profile ${nickname}`)
   return { html, url: response.url || url.toString() }
 }
 
@@ -559,24 +559,22 @@ async function collectPlayer(nickname: string): Promise<PlayerData> {
 }
 
 /**
- * Собирает один профиль тем же transport/cookie jar/rate-limit, что и
- * плановый источник wt-players. Вызов экспортирован для voice-табло: игрок,
- * впервые появившийся в голосовом канале, не обязан заранее находиться в
- * WT_PLAYER_NAMES.
+ * Collects one profile through the same transport, cookie jar and rate limit
+ * as the scheduled wt-players source. Exported for the voice player board: a
+ * player who first joins a voice channel need not be in WT_PLAYER_NAMES.
  *
- * Все сборы игроков проходят через одну очередь. Это не даёт планировщику и
- * табло одновременно запрашивать один и тот же профиль и сохраняет общий
- * порядок HTTP-запросов (между самими запросами интервал держит
- * fetchWtResponse).
+ * Every player collection runs through one queue, so the scheduler and the
+ * board never request the same profile at once and HTTP requests keep one
+ * order (fetchWtResponse spaces the requests themselves).
  */
 const playerCollectionTail: { current: Promise<void> } = { current: Promise.resolve() }
 const playerCollections = new Map<string, Promise<ParsedItem>>()
 
 async function collectPlayerItemUnsafe(nickname: string): Promise<ParsedItem> {
   const requested = nickname.trim()
-  if (requested === '') throw new Error('Ник игрока не может быть пустым')
+  if (requested === '') throw new Error('the player nick is empty')
   if (config.wtCookie.trim() === '') {
-    throw new PlayerSessionError(`${requested}: WT_COOKIE не задан в .env — запрос профиля пропущен`)
+    throw new PlayerSessionError(`${requested}: WT_COOKIE is not set, the profile request is skipped`)
   }
   const player = await collectPlayer(requested)
   return {
@@ -588,7 +586,7 @@ async function collectPlayerItemUnsafe(nickname: string): Promise<ParsedItem> {
 
 export function collectPlayerItem(nickname: string): Promise<ParsedItem> {
   const key = normalizeNickname(nickname)
-  if (key === '') return Promise.reject(new Error('Ник игрока не может быть пустым'))
+  if (key === '') return Promise.reject(new Error('the player nick is empty'))
   const existing = playerCollections.get(key)
   if (existing !== undefined) return existing
 
@@ -616,15 +614,15 @@ export const wtPlayers: ParserSource = {
   intervalMs: 30 * 60_000,
   async run(signal) {
     const nicknames = config.playerNames
-    if (nicknames.length === 0) return { summary: 'Список WT-игроков пуст — сбор пропущен', items: [] }
+    if (nicknames.length === 0) return { summary: 'WT_PLAYER_NAMES is empty, nothing to collect', items: [] }
     if (config.wtCookie.trim() === '') {
-      throw new Error('WT_COOKIE не задан в .env — источник wt-players требует залогиненную сессию WT')
+      throw new Error('WT_COOKIE is not set: wt-players needs a signed-in WT session')
     }
 
     const items: ParsedItem[] = []
     const errors: string[] = []
-    // Игроки намеренно идут последовательно через общую очередь: 429 или
-    // потеря сессии должны остановить batch без лишних запросов.
+    // Players go one by one through the shared queue on purpose: a 429 or a
+    // lost session must stop the batch without further requests.
     for (const nickname of nicknames) {
       signal.throwIfAborted()
       try {
@@ -640,10 +638,11 @@ export const wtPlayers: ParserSource = {
     }
 
     if (items.length === 0 && errors.length > 0) {
-      throw new Error(`Не удалось собрать ни одного игрока: ${errors.join(' | ')}`)
+      throw new Error(`no player could be collected: ${errors.join(' | ')}`)
     }
-    let summary = `Игроков собрано: ${items.length}/${nicknames.length}`
-    if (errors.length > 0) summary += `; ошибки: ${errors.join(' | ')}`
+    // The player board reads "errors:" as a partial update (parserState)
+    let summary = `Players collected: ${items.length}/${nicknames.length}`
+    if (errors.length > 0) summary += `; errors: ${errors.join(' | ')}`
     return { summary, items }
   },
 }

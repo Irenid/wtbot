@@ -52,20 +52,20 @@ test('сезон через Новый год получает правильн�
   assert.equal(season!.stages[1]!.maxBr, 9.7)
 })
 
-test('странный пост отклоняется целиком, а не превращается в частичный сезон', () => {
+test('an odd post is rejected whole instead of becoming a partial season', () => {
   const week = (n: number, br: string, from: string, to: string) => `${n} неделя мах БР ${br} (${from} — ${to})`
   const post = (...lines: string[]) => ['Сезон 01.09.2026 — 14.09.2026', ...lines].join('\n')
-  assert.throws(() => parseForumSeasonPost('расписание скоро'), /не найдено строки/)
-  assert.throws(() => parseForumSeasonPost('Сезон 01.09.2026 — 14.09.2026\nподробности позже'), /ни одного этапа/)
-  assert.throws(() => parseForumSeasonPost(post(week(1, '14.7', '01.09', '06.09'), week(2, '12.0', '08.09', '14.09'))), /дыра/)
-  assert.throws(() => parseForumSeasonPost(post(week(1, '14.7', '01.09', '07.09'), week(3, '12.0', '08.09', '14.09'))), /неделя 3/)
-  assert.throws(() => parseForumSeasonPost(post(week(1, '14.7', '01.09', '07.09'), week(2, '12.0', '08.09', '20.09'))), /вне сезона/)
-  assert.throws(() => parseForumSeasonPost(post(week(1, '0.5', '01.09', '14.09'))), /вне диапазона/)
-  assert.throws(() => parseForumSeasonPost('Сезон 31.02.2026 — 14.03.2026\n1 неделя мах БР 5.0 (01.03 — 14.03)'), /несуществующая/)
-  assert.throws(() => parseForumSeasonPost('x'.repeat(70_000)), /слишком большой/)
+  assert.throws(() => parseForumSeasonPost('расписание скоро'), /has no "Сезон/)
+  assert.throws(() => parseForumSeasonPost('Сезон 01.09.2026 — 14.09.2026\nподробности позже'), /no stage found/)
+  assert.throws(() => parseForumSeasonPost(post(week(1, '14.7', '01.09', '06.09'), week(2, '12.0', '08.09', '14.09'))), /gap/)
+  assert.throws(() => parseForumSeasonPost(post(week(1, '14.7', '01.09', '07.09'), week(3, '12.0', '08.09', '14.09'))), /says week 3/)
+  assert.throws(() => parseForumSeasonPost(post(week(1, '14.7', '01.09', '07.09'), week(2, '12.0', '08.09', '20.09'))), /outside the season/)
+  assert.throws(() => parseForumSeasonPost(post(week(1, '0.5', '01.09', '14.09'))), /out of range/)
+  assert.throws(() => parseForumSeasonPost('Сезон 31.02.2026 — 14.03.2026\n1 неделя мах БР 5.0 (01.03 — 14.03)'), /no such date/)
+  assert.throws(() => parseForumSeasonPost('x'.repeat(70_000)), /too large/)
 })
 
-test('синхронизация с форумом: вставка, повтор без изменений, правка и сдвиг начала', () => {
+test('forum sync: insert, unchanged repeat, edit and a shifted start', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'wtbot-forum-season-'))
   try {
     initDb(path.join(dir, 'season.db'), { allowCreate: true })
@@ -92,9 +92,9 @@ test('синхронизация с форумом: вставка, повтор
     assert.deepEqual(result.replaced, ['forum-2026-09-01'])
     assert.equal(getClanSeasonContext(utc('2026-09-28')).season?.id, 'forum-2026-09-02')
 
-    // Встроенный летний сезон из кода не перетирается данными форума.
+    // The code's built-in summer season is never overwritten by forum data.
     const clash = parseForumSeasonPost('Сезон 20.08.2026 — 31.08.2026\n1 неделя мах БР 5.0 (20.08 — 31.08)')
-    assert.throws(() => syncForumClanSeasons(clash), /встроенным сезоном 2026-summer/)
+    assert.throws(() => syncForumClanSeasons(clash), /overlaps the built-in season 2026-summer/)
     assert.equal(getClanSeasonContext(utc('2026-08-25')).season?.id, '2026-summer')
   } finally {
     closeDb()

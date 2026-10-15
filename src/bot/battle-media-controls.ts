@@ -1,9 +1,11 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js'
+import { config } from '../config.js'
+import { botText } from '../i18n/index.js'
 import type { BattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 
 export type HeatmapScale = 1 | 2
 
-/** Возвращает масштаб, который помещается в лимит вложения текущего Discord-взаимодействия. */
+/** The scale whose file fits the attachment limit of the current Discord interaction. */
 export function heatmapScaleForUpload(
   requestedScale: HeatmapScale,
   byteLength: number,
@@ -16,12 +18,13 @@ export function heatmapQualityRow(
   kind: BattleHeatmapKind,
   sessionId: string,
   currentScale: HeatmapScale,
+  t = botText(config.botLocale),
 ): ActionRowBuilder<ButtonBuilder> {
   const nextScale: HeatmapScale = currentScale === 1 ? 2 : 1
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`battle:${kind}:${sessionId}:${nextScale}`)
-      .setLabel(currentScale === 1 ? 'Открыть в 2×' : 'Вернуть 1×')
+      .setLabel(currentScale === 1 ? t.battle.buttons.scaleUp : t.battle.buttons.scaleDown)
       .setStyle(ButtonStyle.Secondary),
   )
 }

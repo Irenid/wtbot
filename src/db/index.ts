@@ -2374,10 +2374,10 @@ export interface ForumClanSeasonSyncResult {
 }
 
 /**
- * Записывает сезоны, разобранные с форума (id `forum-…`). Если модераторы
- * сдвинули начало сезона, у него новый id: прежняя forum-запись с пересекающимся
- * интервалом удаляется. Пересечение со встроенным сезоном из кода — ошибка:
- * значит, форум противоречит проверенному расписанию, и молча выбирать нельзя.
+ * Writes the seasons parsed from the forum (ids `forum-…`). When moderators
+ * shift a season's start, it gets a new id and the old overlapping forum row
+ * is deleted. Overlapping a built-in season of the code is an error: the
+ * forum contradicts a checked schedule, and nothing may pick one silently.
  */
 export function syncForumClanSeasons(schedules: readonly ClanSeasonSchedule[]): ForumClanSeasonSyncResult {
   const database = getDb()
@@ -2410,13 +2410,13 @@ export function syncForumClanSeasons(schedules: readonly ClanSeasonSchedule[]): 
   try {
     for (const season of schedules) {
       if (!season.id.startsWith(FORUM_SEASON_ID_PREFIX)) {
-        throw new Error(`сезон ${season.id}: с форума принимаются только id ${FORUM_SEASON_ID_PREFIX}…`)
+        throw new Error(`season ${season.id}: the forum may write only ids ${FORUM_SEASON_ID_PREFIX}…`)
       }
       const overlapping = (overlapStmt.all(season.id, season.endsAt, season.startsAt) as { season_id: string }[])
         .map((row) => row.season_id)
       const builtIn = overlapping.filter((id) => !id.startsWith(FORUM_SEASON_ID_PREFIX))
       if (builtIn.length > 0) {
-        throw new Error(`сезон ${season.id} с форума пересекается со встроенным сезоном ${builtIn.join(', ')}`)
+        throw new Error(`forum season ${season.id} overlaps the built-in season ${builtIn.join(', ')}`)
       }
       for (const id of overlapping) {
         deleteStagesStmt.run(id)

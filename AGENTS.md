@@ -124,6 +124,7 @@ worker-task producers have stopped.
 | `WEB_TRUST_PROXY` | `false`/`true`, or a list of IP/CIDR and `loopback`/`linklocal`/`uniquelocal`, for `X-Forwarded-For`; Fastify 5.12 has no hop count |
 | `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer, POSTs included; the bot does not read them, the token never reaches the bundle |
 | `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — all channels; a battles channel without a clan tag announces every clan (~1,500 battles a day, 869–2,466 over 2026-09-24…10-11); the tag filters publishing, not collection |
+| `WT_BOT_LOCALE=en` | the one language of the bot's Discord text and battle images (`src/i18n`: `en`, `ru`; any other value fails startup); keys the media cache; after a change rerun `deploy:commands` for the command descriptions |
 | `WT_SCOUT_CHANNEL` | channels where a scoreboard screenshot is read and answered (`src/bot/scout-images.ts`); adds the `GuildMessages` intent, and `MessageContent` only when the application has it (asking without it fails the login, 4014) |
 | `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
 | `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) or Edge/Chrome/Chromium (Linux) for addresses behind Cloudflare; `NO_SANDBOX=true` only in Docker; `WT_VNC_PASSWORD` opens VNC to its Xvfb display in Docker for a manual login or Cloudflare check |
@@ -547,6 +548,15 @@ Data:
 - Slash command: a file in `src/bot/commands/` (autocomplete:
   `Command.autocomplete`), registration in `src/bot/commands/index.ts`, then
   `npm run deploy:commands` — only with permission.
+- Bot text — replies, posts, embeds, buttons, command descriptions, image
+  labels — lives only in the `BotText` catalogs of `src/i18n/` (`en`
+  canonical): code reads `botText(config.botLocale)`, a worker gets `locale`
+  in its input, a pure renderer defaults to English. A new text goes into
+  `types.ts` and every catalog (a missing one is a type error); a new language
+  is one catalog file plus its `CATALOGS` entry; `i18n.test.ts` holds the
+  length limits. Internal errors never reach Discord (the catalog's generic
+  reply; details go to the log); parser summaries in `/stats` are English
+  operator text, not translated.
 - `/battle` and the announcer share `renderBattlePost()`; `battle:*` buttons
   are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral. A
   post's updates run in order — ratings, winner, unknown-tag lookup
@@ -743,9 +753,9 @@ analysis per item.
   Cyrillic only as data: patterns matching Russian external content (the
   forum.warthunder.ru season post), test fixtures exercising UTF-8, varint
   lengths, nicknames or chat, the Russian UI dictionary
-  `frontend/src/i18n/ru.ts` (values) and guide text
-  `frontend/src/i18n/guide/ru.ts`, and old stored Russian text the code must
-  still recognize. Russian code text remains (ROADMAP, "English
+  `frontend/src/i18n/ru.ts` (values), the bot catalog `src/i18n/ru.ts`, guide
+  text `frontend/src/i18n/guide/ru.ts`, and old stored Russian text the code
+  must still recognize. Russian code text remains (ROADMAP, "English
   everywhere"): when you change a function, translate its comments and strings
   in the same change and check whether the code is still needed — review
   happens on touch, not as a whole-repo sweep.

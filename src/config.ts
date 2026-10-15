@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { isIP } from 'node:net'
+import { DEFAULT_LOCALE, isLocale, LOCALES, type Locale } from './i18n/index.js'
 import { workerResourcePlan } from './runtime-options.js'
 
 function required(name: string): string {
@@ -49,6 +50,13 @@ function envTrustProxy(name: string): boolean | string[] {
     }
   }
   return entries
+}
+
+function envLocale(name: string): Locale {
+  const value = process.env[name]?.trim().toLowerCase() ?? ''
+  if (value === '') return DEFAULT_LOCALE
+  if (!isLocale(value)) throw new Error(`${name} must be one of: ${LOCALES.join(', ')}`)
+  return value
 }
 
 function envCsvUnique(name: string): string[] {
@@ -145,6 +153,12 @@ export const config = {
    * запрещает namespace-песочницу Chromium. Вне контейнера оставляйте false.
    */
   wtBrowserNoSandbox: envBoolean('WT_BROWSER_NO_SANDBOX', false),
+  /**
+   * The language of everything the bot writes to Discord and draws on battle
+   * images (src/i18n); slash-command descriptions change after
+   * `npm run deploy:commands`.
+   */
+  botLocale: envLocale('WT_BOT_LOCALE'),
   /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
   voiceChannelIds: (process.env['WT_VOICE_CHANNELS'] ?? '')
     .split(',')

@@ -1,0 +1,366 @@
+import { pluralizer } from './plural.js'
+import type { BotText } from './types.js'
+
+/**
+ * The canonical language: plain English for players who do not know the
+ * bot's internals (no jargon, abbreviations or emojis beyond the game's own
+ * terms: squadron, PSR, BR, AB/RB/SB).
+ */
+const plural = pluralizer('en-GB')
+const numberFormat = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 0 })
+const dateFormat = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+const timeFormat = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' })
+
+const count = (value: number, one: string, other: string): string => `${value} ${plural(value, { one, other })}`
+const atBr = (br: string | null): string => (br === null ? '' : ` at BR ${br}`)
+
+const FLAGS: Record<string, string> = {
+  usa: 'USA',
+  ussr: 'USSR',
+  britain: 'Great Britain',
+  gdr: 'East Germany',
+  republic_china: 'Republic of China',
+  uae: 'UAE',
+}
+
+export const en: BotText = {
+  intl: 'en-GB',
+  number: (value) => numberFormat.format(value),
+
+  commands: {
+    battle: {
+      description: 'Results of a War Thunder battle as an image',
+      id: 'The battle\'s session id (the latest battle by default)',
+    },
+    ping: { description: 'Check that the bot is alive' },
+    stats: { description: 'Bot and data collection statistics' },
+    playerBoard: {
+      description: 'Statistics board of the players in voice channels',
+      setup: 'Create the board or move it to another channel',
+      channel: 'The channel for the self-updating board',
+      status: 'Show where the board is',
+      refresh: 'Redraw the board from the stored data',
+      disable: 'Stop updating the board',
+    },
+    scout: {
+      description: 'Predict an enemy squadron\'s players and vehicles from its recent battles',
+      squadron: 'Squadron tag or name, as the game shows it',
+      player: 'A nick you see on the enemy team: picks the right group when two play at once',
+    },
+  },
+
+  failure: {
+    command: 'Something went wrong while running the command.',
+    battleMedia: 'Something went wrong while building the battle images.',
+  },
+
+  ping: (milliseconds) => `🏓 Pong! WebSocket: ${milliseconds === null ? 'n/a' : `${milliseconds} ms`}`,
+
+  stats: {
+    title: '📊 Statistics',
+    fields: {
+      uptime: 'Uptime',
+      servers: 'Servers',
+      commandsRun: 'Commands run',
+      itemsCollected: 'Items collected',
+      season: 'Squadron battles season',
+      topCommands: 'Top commands',
+      parsers: 'Parsers',
+    },
+    noCommands: 'none yet',
+    noParsers: 'not run yet',
+    uptime: (days, hours, minutes, seconds) =>
+      [days > 0 ? `${days}d` : '', hours > 0 ? `${hours}h` : '', minutes > 0 ? `${minutes}m` : '', `${seconds}s`]
+        .filter((part) => part !== '')
+        .join(' '),
+    season: {
+      noSchedule: 'no schedule',
+      ended: (time) => `season ended ${time}`,
+      betweenStages: 'between stages',
+      untilEnd: 'until the end of the season',
+      week: (week) => `week ${week}`,
+      maxBr: (br) => `max BR ${br}`,
+      nextMaxBr: (br, time) => `max BR ${br} ${time}`,
+      ends: (time) => `season ends ${time}`,
+    },
+  },
+
+  battle: {
+    notFound: (id) => `No stored replay \`${id}\`.`,
+    noReplays: 'No replays stored yet: the parser has not brought any.',
+    noParts: 'This item has no links to the replay files.',
+    matchId: 'Match ID',
+    team: (number) => `Team ${number}`,
+    maxBr: (br) => `Max BR ${br}`,
+    buttons: {
+      replay: 'View Replay',
+      chat: 'View Chat',
+      log: 'Battle Log',
+      heatmapGround: 'Heatmap (gnd)',
+      heatmapAir: 'Heatmap (air)',
+      teamGround: (squadron) => `${squadron} (gnd)`,
+      teamAir: (squadron) => `${squadron} (air)`,
+      scaleUp: 'Open at 2×',
+      scaleDown: 'Back to 1×',
+    },
+    media: {
+      log: 'the battle log',
+      'heatmap-ground': 'the ground vehicles map',
+      'heatmap-air': 'the aircraft map',
+      'heatmap-team-0': 'the first squadron\'s map',
+      'heatmap-team-1': 'the second squadron\'s map',
+      'heatmap-team-air-0': 'the first squadron\'s air map',
+      'heatmap-team-air-1': 'the second squadron\'s air map',
+      chat: 'the chat',
+    },
+    noReplayForHd: 'This battle\'s replay is not stored, so there is nothing to build the 2× map from.',
+    noReplayForMedia: 'This battle\'s replay is not stored, so there is nothing to build from.',
+    buildFailed: (media, scale) =>
+      `Could not build ${media} at ${scale}×.\nThe replay files may have expired on the CDN (they last about two weeks).`,
+    buildBusy: (media, scale) => `The bot is busy and could not build ${media} at ${scale}×. Try again in a minute.`,
+    hdOverLimitNoCache: 'The 2× version is over Discord\'s attachment limit, and the 1× version is not cached. Open the map again.',
+    hdOverLimit: (mebibytes) => `The 2× version is ${mebibytes} MiB, over Discord's limit; showing the 1× version.`,
+    chatTitle: 'Match Chat',
+    unparsed: 'The replay could not be parsed.',
+  },
+
+  image: {
+    duration: (time) => `duration ${time}`,
+    bot: 'Bot',
+  },
+
+  scoreboard: {
+    victory: 'Victory',
+    unknownPlayer: 'Unknown Player',
+    disconnected: 'Disconnected',
+    botDriven: 'bot',
+  },
+
+  battleLog: {
+    title: 'Battle Log',
+    versus: 'vs',
+    empty: 'No events found',
+    more: (more) => `… ${count(more, 'more event', 'more events')}`,
+    verbs: {
+      kill: ['destroyed', 'crashed'],
+      fire: ['set fire to', 'caught fire'],
+      severe: ['badly damaged', 'badly damaged'],
+    },
+    legend: { kill: 'destroyed', fire: 'set on fire', severe: 'severe damage' },
+    distance: (metres) => `${metres} m`,
+  },
+
+  heatmap: {
+    battle: 'Battle',
+    ground: 'ground vehicles',
+    air: 'aircraft',
+    routes: (squadron) => `routes: ${squadron}`,
+    date: (start) => `${dateFormat.format(start)}, ${timeFormat.format(start)}`,
+    duration: (time) => `Duration: ${time}`,
+    teamSummary: (players, kills, survivors) =>
+      `${count(players, 'player', 'players')} · ${count(kills, 'kill', 'kills')} · ${survivors} survived`,
+    victory: 'victory',
+    died: (time) => `died ${time}`,
+    alive: 'alive',
+    points: (score) => `${score} pts`,
+    noPaths: 'no paths in this mode',
+    legendTitle: 'Legend',
+    legend: {
+      path: 'path',
+      minute: 'battle minute',
+      stop: 'stop and its length',
+      shot: 'killer\'s shot',
+      death: 'death (route colour)',
+      cause: 'killed by',
+      survivor: 'alive at the end',
+      uav: 'drone and its view',
+    },
+    spawn: {
+      centre: 'spawn in the centre',
+      right: 'spawn on the right',
+      topRight: 'spawn top right',
+      top: 'spawn at the top',
+      topLeft: 'spawn top left',
+      left: 'spawn on the left',
+      bottomLeft: 'spawn bottom left',
+      bottom: 'spawn at the bottom',
+      bottomRight: 'spawn bottom right',
+    },
+    causes: { ir: 'IR', sarh: 'SARH', arh: 'ARH', sam: 'SAM' },
+  },
+
+  chat: {
+    empty: 'Nobody wrote in the chat in this battle.',
+    channels: ['TEAM', 'ALL', 'SQUAD', 'DM'],
+    unknownChannel: (channel) => `UNKNOWN(${channel})`,
+  },
+
+  scout: {
+    classCount: (cls, value) => {
+      switch (cls) {
+        case 'F': return `${value} aircraft`
+        case 'H': return count(value, 'helicopter', 'helicopters')
+        case 'T': return count(value, 'tank', 'tanks')
+        case 'L': return count(value, 'light tank', 'light tanks')
+        case 'AA': return `${value} anti-air`
+      }
+    },
+    nobody: 'nobody',
+    groups: {
+      F: 'Aircraft',
+      H: 'Helicopters',
+      T: 'Tanks',
+      L: 'Light tanks',
+      AA: 'Anti-air',
+      unknown: 'Vehicle unknown',
+    },
+    flag: (base) => FLAGS[base] ?? base.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
+    plays: (chance) => `plays ${chance}`,
+    noBattlesAtBr: 'no battles at this BR yet',
+    likely: (vehicles) => `no battles at this BR yet, likely ${vehicles}`,
+    newMark: 'new',
+    newVehicle: (chance) => `new vehicle ${chance}`,
+    otherNewVehicle: (chance) => `other new vehicle ${chance}`,
+    nothingStored: 'No battles stored in the last two weeks, so there is nothing to predict from.',
+    lastBattleSession: (time) => `Last battle ${time}, mid-session: the same players will most likely play.`,
+    lastBattleGuess: (time, minutes) =>
+      `Last battle ${time}, nothing in the last ${minutes} minutes: the players are a guess from who played recently at this time of day.`,
+    hintMatched: (nick) => `Showing the group of **${nick}**.`,
+    hintMissed: (nick) => `**${nick}** is not in their recent battles, so this is their latest group.`,
+    basedOn: (battles, br) => `Based on ${battles} of their battles${atBr(br)}.`,
+    otherGroupTitle: 'Another group is playing at the same time',
+    otherGroup: (time, nicks) =>
+      `Last battle ${time}: ${nicks}.\nIf you face them, run /scout again with one of these nicks in \`player\`.`,
+    setupTitle: 'Most likely setup',
+    air: (expected, chance) => `**Air:** ${expected} expected, at least one ${chance}`,
+    enemyTeam: 'Enemy team',
+    readFromScreenshot: (read, total) => `Read from the screenshot: ${read} of ${total} enemy players.`,
+    lastTogether: (time) => `Last played together ${time}.`,
+    chancesWithFlags: (br, countries) =>
+      `Vehicle chances come from each player's own battles${atBr(br)} and the flags above their team: ${countries}.`,
+    withoutFlag: (value) =>
+      `${value === 1 ? '1 enemy shows' : `${value} enemies show`} no flag (not spawned yet or destroyed): their chances rest on their battles alone.`,
+    chancesOwn: (br) => `Vehicle chances come from each player's own battles${atBr(br)}.`,
+    noneSpawned: (br) =>
+      `Vehicle chances come from each player's own battles${atBr(br)}. No enemy is in a vehicle yet: a screenshot after they spawn shows their flags and sharpens the guess.`,
+    flagsUnread: (br) =>
+      `Vehicle chances come from each player's own battles${atBr(br)}. The flags above their team were not read: a screenshot showing them sharpens the guess.`,
+    spawnFirst: (br) =>
+      `Vehicle chances come from each player's own battles${atBr(br)}. A screenshot after they spawn shows their flags and sharpens the guess.`,
+    killsNarrow: (value) =>
+      `What ${value === 1 ? '1 enemy has' : `${value} enemies have`} already destroyed or captured narrows their vehicles too.`,
+    newGuessed: (players) =>
+      `A vehicle not seen from a player at this BR (new) is guessed from what squadrons take at it${
+        players > 0 ? ` and their battles on StatShark (${count(players, 'player', 'players')})` : ''
+      }.`,
+    statSharkPending: 'Checking their battles on StatShark: this reply updates in a minute or two.',
+    notRecognised: (value) => `Not recognised · ${value}`,
+    choicePlace: (place) => `place ${place}`,
+    choiceNoBattles: 'no battles stored',
+    squadronNotFound: (query) => `No squadron matches "${query}". Type the tag as the game shows it, for example WLILY.`,
+    images: {
+      tooMany: 'Too many screenshots at once, try again in a minute.',
+      tooLarge: 'The image is over 25 MB.',
+      noOcr: 'Reading screenshots is not available on this bot (no OCR installed).',
+      unreadable: 'Could not read this screenshot.',
+      noTable: 'No scoreboard found. Send a screenshot of the Tab table with both teams.',
+      noPlayers: 'No known players found on the scoreboard. A sharper, uncropped screenshot helps; or use /scout with the enemy tag.',
+      oneSide: (squadron) =>
+        `Only one team could be read (${squadron ?? 'one squadron'}). Enemies are on the right half of the scoreboard: send a screenshot with both teams.`,
+    },
+  },
+
+  playerBoard: {
+    title: '📊 War Thunder players',
+    footer: 'Δ24h compares with the latest snapshot at least a day old',
+    unknownPlayer: 'Unknown player',
+    unknownFormat: 'The stored data has an unknown format.',
+    squadron: (name) => `squadron ${name}`,
+    noSquadron: 'no squadron',
+    level: (level) => `level ${level}`,
+    registered: (date) => `registered ${date}`,
+    replaysFound: (value) => `replays found: ${value}`,
+    modes: { arcade: 'AB', realistic: 'RB', simulation: 'SB' },
+    battles: (value) => `${value} battles`,
+    victories: (value) => `${value} victories`,
+    deaths: (value) => `deaths ${value}`,
+    targets: (value) => `targets ${value}`,
+    delta: (change) => ` (${change}/24h)`,
+    accountStates: {
+      fresh: 'account up to date',
+      stale: 'account out of date',
+      pending: 'account being requested',
+      empty: 'account not received yet',
+      disabled: 'external source off',
+      disabled_cached: 'external source cache',
+      private: 'profile is private',
+      not_found: 'external profile not found',
+      rate_limited: 'external source limit',
+      schema_error: 'external source format error',
+      error: 'external source error',
+    },
+    accountBattles: (value) => `${value} account battles`,
+    accountVictories: (value) => `${value} victories`,
+    replayStats: (battles, winRate) => `replays: ${battles} battles · ${winRate}`,
+    lookup: {
+      ambiguous: 'the nick matches several known players',
+      unknown: 'the player is not known yet',
+      error: 'could not be read',
+    },
+    statistics: (text) => `🌐 Statistics: ${text}`,
+    profileLoading: '⏳ Requesting the WT profile…',
+    profileUnavailable: '⚪ WT profile not requested: no WT session is set',
+    profileError: {
+      notFound: '🔴 WT profile: player not found',
+      session: '🔴 WT profile: the WT session needs renewing',
+      schema: '🔴 WT profile: the site returned an unexpected page',
+      other: '🔴 WT profile: the request failed',
+    },
+    firstDay: 'Δ24h: the first day of history is still building up',
+    parser: {
+      never: '⚪ The parser has not run yet',
+      failed: (time) => `🔴 The last update failed ${time}; showing the latest data`,
+      partial: (time) => `🟡 Partial update (${time}); some nicks were not found`,
+      stale: (time) => `🟡 The data has not been checked for a while (${time})`,
+      fresh: (time) => `🟢 Data checked ${time}`,
+    },
+    voiceIntro: 'Only players in the watched voice channels are shown; fresh profiles load in the background.',
+    configuredIntro: 'The War Thunder source updates by itself about every 30 minutes.',
+    voiceLoaded: (inVoice, loaded) => `In voice now: ${inVoice}; loaded on the board: ${loaded}.`,
+    collected: (collected, configured) => `Collected ${collected} of ${configured} configured players.`,
+    missing: (nicks) => `No current snapshot: ${nicks}.`,
+    omitted: (shown, total) => `Showing ${shown} of ${total} players because of Discord's limits.`,
+    emptyVoice: {
+      name: 'Nobody is in the voice channels',
+      value: 'When a player joins a watched voice channel, the board updates by itself.',
+    },
+    emptyConfigured: {
+      name: 'No data',
+      value: 'Add nicks to WT_PLAYER_NAMES and wait for a successful wt-players run.',
+    },
+    moved: (channel) => `The board moved to ${channel}. This message no longer updates.`,
+    replies: {
+      guildOnly: 'This command works only on a Discord server.',
+      needManageGuild: 'Setting up the board needs the Manage Server permission.',
+      badChannel: 'The chosen channel is unavailable or is not a text channel of this server.',
+      permissions: {
+        view: 'View Channel',
+        send: 'Send Messages',
+        embed: 'Embed Links',
+        history: 'Read Message History',
+      },
+      missingPermissions: (channel, permissions) => `The bot lacks permissions in ${channel}: ${permissions}.`,
+      allVoiceChannels: 'all the bot can see',
+      configured: (channel, url, players, voiceChannels) =>
+        `The board is set up in ${channel}: ${url}\nPlayers in the current snapshot: ${players}.\nVoice channels: ${voiceChannels}.`,
+      notConfigured: 'The player board is not set up on this server or is disabled.',
+      status: (channel, url, voiceChannels) => `The board is on in ${channel}: ${url}\nVoice channels: ${voiceChannels}.`,
+      refreshed: (recreated, url) =>
+        `The board was ${recreated ? 'restored' : 'updated'} from the stored data: ${url}\nPlayers without fresh data are queued for a WT request without blocking the command.`,
+      disabled: 'The board no longer updates. Its last message stays in the channel.',
+      alreadyDisabled: 'The player board is already disabled or was never set up.',
+      unknownAction: 'Unknown command action.',
+      failed: 'Could not complete the board action. The details are in the bot log.',
+    },
+  },
+}

@@ -25,11 +25,11 @@ process would get the same Discord token and the same database.
 - `/api/stats` (`bot.online`, status of every parser), `/api/items?limit=3`,
   `/api/voice` — with `Authorization: Bearer`: read `WEB_TOKEN` from `.env`
   into a shell variable, never print it.
-- Logs (the code still prints Russian): `[bot] Готов! Вошёл как …` (ready,
-  logged in as); `[parser:*] OK — …` with `сохранено: N, без изменений: M`
-  (saved, unchanged; a rerun saves 0); `[ingest] бой …: убийств N, победитель …`
-  (battle: kills, winner; a run of `убийств 0, победитель ?` means a game patch
-  broke parsing); `[watchdog]` — event-loop stalls.
+- Logs (some lines still print Russian): `[bot] Ready, logged in as …`;
+  `[parser:*] OK — …` with `saved: N, unchanged: M` (a rerun saves 0);
+  `[ingest] бой …: убийств N, победитель …` (battle: kills, winner; a run of
+  `убийств 0, победитель ?` means a game patch broke parsing); `[watchdog]` —
+  event-loop stalls.
 - New code reaches the bot only through an image rebuild and restart — that is
   a deploy, only with permission (order — AGENTS.md, section 3).
 

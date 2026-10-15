@@ -158,7 +158,7 @@ test('parseLeaderboardPage: страница из нулевых рейтинг�
   assert.equal(parsed.clans.length, 1)
 })
 
-test('parseLeaderboardPage отклоняет нечисловую статистику и чужую схему', () => {
+test('parseLeaderboardPage rejects non-numeric statistics and a foreign schema', () => {
   assert.throws(
     () => parseLeaderboardPage(page([{ tag: '[A]', name: 'A', astat: { dr_era5_hist: '48307' } }]), 1),
     /dr_era5_hist/,
@@ -169,7 +169,7 @@ test('parseLeaderboardPage отклоняет нечисловую статис�
     () => parseLeaderboardPage(page([{ tag: '[A]', name: 'A', astat: { dr_era5_hist: 1, akills_hist: 'x' } }]), 1),
     /akills_hist/,
   )
-  assert.throws(() => parseLeaderboardPage('{"status":"ok"}', 1), /схема/)
+  assert.throws(() => parseLeaderboardPage('{"status":"ok"}', 1), /schema/)
   assert.throws(() => parseLeaderboardPage('<html>', 1), /JSON/)
 })
 

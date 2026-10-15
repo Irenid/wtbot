@@ -17,15 +17,15 @@ function schedule(stages: [number, number][], startsAt = 0, endsAt = 20): ClanSe
   }
 }
 
-test('расписание сезонов отклоняет дыры, перекрытия и неполные этапы', () => {
+test('the season schedule rejects gaps, overlaps and incomplete stages', () => {
   assert.doesNotThrow(() => validateClanSeasonSchedules(CLAN_SEASON_SCHEDULES))
   assert.doesNotThrow(() => validateClanSeasonSchedules([schedule([[0, 10], [10, 20]])]))
-  assert.throws(() => validateClanSeasonSchedules([schedule([[0, 9], [10, 20]])]), /дыра или перекрытие/)
-  assert.throws(() => validateClanSeasonSchedules([schedule([[0, 10], [10, 15]])]), /последний этап/)
-  assert.throws(() => validateClanSeasonSchedules([schedule([[5, 20]])]), /дыра или перекрытие/)
+  assert.throws(() => validateClanSeasonSchedules([schedule([[0, 9], [10, 20]])]), /gap or overlap/)
+  assert.throws(() => validateClanSeasonSchedules([schedule([[0, 10], [10, 15]])]), /last stage/)
+  assert.throws(() => validateClanSeasonSchedules([schedule([[5, 20]])]), /gap or overlap/)
   assert.throws(
     () => validateClanSeasonSchedules([schedule([[0, 20]]), { ...schedule([[10, 30]], 10, 30), id: 'next' }]),
-    /пересекается/,
+    /overlaps season/,
   )
 })
 

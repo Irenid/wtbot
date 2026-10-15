@@ -124,10 +124,10 @@ test('wt-replays отбрасывает записи API, не прошедши�
   assert.equal(result.rejected, 4)
 })
 
-test('wt-replays отклоняет ответ API неожиданного формата', async () => {
+test('wt-replays rejects an API response of an unexpected format', async () => {
   const fixture = collectionDeps([{ items: 'nope', count: 0, total_count: 1 } as unknown as WtListResponse])
   await assert.rejects(
     collectFreshReplays({ maxPages: 50, stopAtKnown: true, fetchDetails: false }, fixture.deps),
-    /неожиданный формат ответа Replay API/,
+    /unexpected Replay API response format/,
   )
 })

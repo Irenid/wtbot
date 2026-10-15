@@ -45,7 +45,7 @@ test('флаги браузера: Linux-контейнер получает shm
   assert.ok(!windows.some((arg) => arg.startsWith('--window-position=')))
 })
 
-test('без X-дисплея на Linux браузер не запускается с понятной причиной', () => {
+test('without an X display on Linux the browser does not start, with a clear reason', () => {
   assert.match(displayProblem('linux', {}) ?? '', /DISPLAY/)
   assert.equal(displayProblem('linux', { DISPLAY: ':99' }), null)
   assert.equal(displayProblem('linux', { WAYLAND_DISPLAY: 'wayland-0' }), null)

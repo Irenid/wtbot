@@ -9,6 +9,8 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { config } from '../../config.js'
+import { botText } from '../../i18n/index.js'
 import type { Command } from '../types.js'
 import { heatmapQualityRow, heatmapScaleForUpload, type HeatmapScale } from '../battle-media-controls.js'
 import {
@@ -46,17 +48,17 @@ import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSession
 import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { fillSquadronTags } from '../../wrpl/squadron-tags.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
-import type { WorkerPriority } from '../../workers/pool.js'
+import { isWorkerPoolSchedulingError, type WorkerPriority } from '../../workers/pool.js'
 
 /**
- * /battle [id] — картинка с таблицей результатов боя из реплея.
- * Без id берётся последний собранный парсером реплей. Скачивание частей
- * и рендер занимают пару секунд, поэтому сначала deferReply.
+ * /battle [id] — the battle's results table as an image, from the replay.
+ * Without an id, the latest replay the parser collected. Downloading parts
+ * and rendering take a couple of seconds, hence deferReply first.
  *
- * Под сообщением — кнопки как у Boris Stats: ссылка на реплей, battle log,
- * хитмапы наземки/авиации и чат матча. Материалы собираются из пакетного
- * потока реплея при первом нажатии (все части, ~20 МБ) и кэшируются в
- * data/battles/ — дальше кнопки отвечают мгновенно.
+ * Under the message, buttons as in Boris Stats: the replay link, the battle
+ * log, ground/air heatmaps and the match chat. The media is built from the
+ * replay's packet stream on the first press (all parts, ~20 MB) and cached
+ * in data/battles/, so later presses answer at once.
  */
 
 interface ReplayItemData {
@@ -66,19 +68,20 @@ interface ReplayItemData {
   replayParts?: string[] | null
   url?: string
   partsCount?: number
-  /** Списки игроков сайта с userId/name/fakeName (см. realNamesFromItem) */
+  /** The site's player lists with userId/name/fakeName (see realNamesFromItem) */
   players?: unknown
 }
 
 export const battle: Command = {
   data: new SlashCommandBuilder()
     .setName('battle')
-    .setDescription('Результаты боя из реплея War Thunder (картинкой)')
+    .setDescription(botText(config.botLocale).commands.battle.description)
     .addStringOption((o) =>
-      o.setName('id').setDescription('sessionId боя из /api/items (по умолчанию — последний бой)'),
+      o.setName('id').setDescription(botText(config.botLocale).commands.battle.id),
     ),
   async execute(interaction) {
     await interaction.deferReply()
+    const t = botText(config.botLocale).battle
 
     const rawId = interaction.options.getString('id')
     const item = rawId
@@ -86,14 +89,14 @@ export const battle: Command = {
       : getLatestItems(1, 'wt-replays')[0]
     if (!item) {
       await interaction.editReply(
-        rawId ? `Реплей \`${rawId}\` не найден в базе.` : 'В базе пока нет реплеев — парсер ещё не принёс данные.',
+        rawId ? t.notFound(rawId.slice(0, 64)) : t.noReplays,
       )
       return
     }
 
     const post = await renderBattlePost(item)
     if (!post) {
-      await interaction.editReply('У этой записи нет ссылок на файлы реплея.')
+      await interaction.editReply(t.noParts)
       return
     }
     await interaction.editReply(post.payload)
@@ -151,6 +154,7 @@ export async function renderBattlePost(
   const data = item.data as ReplayItemData
   const sessionId = item.externalId
   const realNames = realNamesFromItem(data)
+  const t = botText(config.botLocale)
 
   // A parsed battle comes from the database without downloading the replay.
   // Otherwise the results-BLK of the last part (parts are needed only here).
@@ -195,15 +199,15 @@ export async function renderBattlePost(
       ? battlePsr({ sessionId, startTime: header.startTime, duration: results.timePlayed, players: results.players, winnerTeam })
       : new Map()
 
-  // The text next to the image: Match ID, then each team's clan, composition and players
+  // The text next to the image: Match ID, then each team's squadron, composition and players
   const buildContent = (): string => {
     const text =
-      `Match ID: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime))}\n` +
+      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime))}\n` +
       teams
-        .map((t, i) => {
-          const clan = escapeMarkdown(t.clan ?? `Team ${i + 1}`)
-          const players = t.players.map((n) => escapeMarkdown(n)).join(', ')
-          return `**${clan}** (${t.composition}): ${players}`
+        .map((team, i) => {
+          const clan = escapeMarkdown(team.clan ?? t.battle.team(i + 1))
+          const players = team.players.map((n) => escapeMarkdown(n)).join(', ')
+          return `**${clan}** (${team.composition}): ${players}`
         })
         .join('\n')
     return text.length > 1990 ? text.slice(0, 1990) + '…' : text
@@ -213,38 +217,38 @@ export async function renderBattlePost(
   const buildComponents = (hasChat: boolean): ActionRowBuilder<ButtonBuilder>[] => {
     const overviewButtons = [
       new ButtonBuilder()
-        .setLabel('View Replay')
+        .setLabel(t.battle.buttons.replay)
         .setStyle(ButtonStyle.Link)
         .setURL(`https://warthunder.com/en/tournament/replay/${header.sessionId}`),
       ...(hasChat
-        ? [new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel('View Chat').setStyle(ButtonStyle.Secondary)]
+        ? [new ButtonBuilder().setCustomId(`battle:chat:${header.sessionId}`).setLabel(t.battle.buttons.chat).setStyle(ButtonStyle.Secondary)]
         : []),
-      new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel('Battle Log').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`battle:log:${header.sessionId}`).setLabel(t.battle.buttons.log).setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`battle:heatmap-ground:${header.sessionId}`)
-        .setLabel('Heatmap (gnd)')
+        .setLabel(t.battle.buttons.heatmapGround)
         .setStyle(ButtonStyle.Secondary),
       ...(hasAir
         ? [
             new ButtonBuilder()
               .setCustomId(`battle:heatmap-air:${header.sessionId}`)
-              .setLabel('Heatmap (air)')
+              .setLabel(t.battle.buttons.heatmapAir)
               .setStyle(ButtonStyle.Secondary),
           ]
         : []),
     ]
     const clanButtons = teams.slice(0, 2).flatMap((team, teamIndex) => {
-      const clan = stripClanDecorators(team.rawTag ?? team.clan ?? `Team ${teamIndex + 1}`)
+      const clan = stripClanDecorators(team.rawTag ?? team.clan ?? t.battle.team(teamIndex + 1))
       return [
         new ButtonBuilder()
           .setCustomId(`battle:heatmap-team-${teamIndex}:${header.sessionId}`)
-          .setLabel(`${clan} (gnd)`)
+          .setLabel(t.battle.buttons.teamGround(clan).slice(0, 80))
           .setStyle(ButtonStyle.Secondary),
         ...(hasAir
           ? [
               new ButtonBuilder()
                 .setCustomId(`battle:heatmap-team-air-${teamIndex}:${header.sessionId}`)
-                .setLabel(`${clan} (air)`)
+                .setLabel(t.battle.buttons.teamAir(clan).slice(0, 80))
                 .setStyle(ButtonStyle.Secondary),
             ]
           : []),
@@ -262,7 +266,10 @@ export async function renderBattlePost(
     psr: Map<string, BattlePsr>,
     renderPriority: WorkerPriority = priority,
   ): Promise<BattlePostPayload> => {
-    const png = await renderBattleImage({ missionName, header, results, dict, psr, winnerTeam }, renderPriority)
+    const png = await renderBattleImage(
+      { missionName, header, results, dict, psr, winnerTeam, locale: config.botLocale },
+      renderPriority,
+    )
     shownPsr = psr
     return {
       content,
@@ -355,8 +362,8 @@ export async function renderBattlePost(
 }
 
 /** The cap the battle played (battleMaxBr) after its Match ID; nothing outside the known stages. */
-export function seasonMaxBrSuffix(maxBr: number | null): string {
-  return maxBr === null ? '' : ` · Max BR ${maxBr.toFixed(1)}`
+export function seasonMaxBrSuffix(maxBr: number | null, t = botText(config.botLocale)): string {
+  return maxBr === null ? '' : ` · ${t.battle.maxBr(maxBr.toFixed(1))}`
 }
 
 /** Applies the post's PSR, then the stored winner and flags, then the squadron lookup, in order. */
@@ -526,30 +533,20 @@ function samePsr(left: ReadonlyMap<string, BattlePsr>, right: ReadonlyMap<string
   return true
 }
 
-const KIND_NAMES: Record<BattleMediaKind, string> = {
-  log: 'battle log',
-  'heatmap-ground': 'карту наземной техники',
-  'heatmap-air': 'карту авиации',
-  'heatmap-team-0': 'карту первого полка',
-  'heatmap-team-1': 'карту второго полка',
-  'heatmap-team-air-0': 'воздушную карту первого полка',
-  'heatmap-team-air-1': 'воздушную карту второго полка',
-  chat: 'чат',
-}
-
-/** Нажатия battle:<kind>:<sessionId>[:<scale>]; scale есть только у ephemeral-переключателя heatmap. */
+/** Presses of battle:<kind>:<sessionId>[:<scale>]; only the ephemeral heatmap toggle carries a scale. */
 export async function handleBattleButton(interaction: ButtonInteraction): Promise<void> {
+  const t = botText(config.botLocale).battle
   const [, rawKind, sessionId, rawScale] = interaction.customId.split(':')
   const kind = rawKind as BattleMediaKind
-  if (!KIND_NAMES[kind] || !sessionId) return
+  if (!Object.hasOwn(t.media, kind) || !sessionId) return
   if (rawScale !== undefined && rawScale !== '1' && rawScale !== '2') return
   if (rawScale !== undefined && !isBattleHeatmapKind(kind)) return
   const scale: HeatmapScale = rawScale === '2' ? 2 : 1
   const isQualityToggle = rawScale !== undefined
 
-  // Ответы видны только нажавшему — иначе кнопки быстро замусорят канал.
-  // Подтверждаем до любых cache/worker/network операций: Discord даёт 3 с.
-  // Протухший токен 10062 централизованно обрабатывает bot/index.ts.
+  // Replies are seen only by the presser: otherwise the buttons clutter the channel.
+  // Acknowledge before any cache, worker or network work: Discord gives 3 s.
+  // An expired token (10062) is handled centrally in bot/index.ts.
   if (isQualityToggle) await interaction.deferUpdate()
   else await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
@@ -569,11 +566,11 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     if (scale === 2 && isBattleHeatmapKind(kind)) {
       media = await cachedBattleHeatmap2x(sessionIdHex, kind)
       if (!media) {
-        // Первый обычный рендер сохраняет нормализованный бой в БД. HD-задача
-        // затем получает из неё blob и строит только одну выбранную карту.
+        // The first ordinary render stores the normalized battle; the HD task
+        // then takes its blob and builds only the one chosen map.
         if (!hasBattle(sessionId)) {
           if (!item || parts.length === 0) {
-            await interaction.editReply('Реплей этого боя не найден в базе — собрать HD-карту не из чего.')
+            await interaction.editReply(t.noReplayForHd)
             return
           }
           await buildBattleMediaKind(
@@ -590,9 +587,9 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     } else {
       media = await cachedBattleMedia(sessionIdHex, kind)
       if (!media) {
-        // Бой в БД собирается из неё (реплей не нужен); иначе нужны части реплея.
+        // A stored battle builds from the database (no replay needed); otherwise the replay parts are.
         if (!hasBattle(sessionId) && (!item || parts.length === 0)) {
-          await interaction.editReply('Реплей этого боя не найден в базе — собрать материалы не из чего.')
+          await interaction.editReply(t.noReplayForMedia)
           return
         }
         media = await buildBattleMediaKind(
@@ -606,10 +603,9 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
       }
     }
   } catch (err) {
-    console.error(`[bot] сборка ${kind} ${scale}× для ${sessionId}:`, err)
+    console.error(`[bot] building ${kind} at ${scale}× for ${sessionId}:`, err)
     await interaction.editReply(
-      `Не получилось собрать ${KIND_NAMES[kind]} в ${scale}×: ${(err as Error).message}\n` +
-        'Части реплея могли уже протухнуть на CDN (живут около двух недель).',
+      isWorkerPoolSchedulingError(err) ? t.buildBusy(t.media[kind], scale) : t.buildFailed(t.media[kind], scale),
     )
     return
   }
@@ -619,7 +615,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
   if (kind === 'chat') {
     let text = media.toString('utf8')
     if (text.length > 1900) text = text.slice(0, 1900) + '\n…'
-    await interaction.editReply({ content: `**Match Chat**\n\`\`\`\n${text}\n\`\`\`\nMatch ID: \`${sessionId}\`` })
+    await interaction.editReply({ content: `**${t.chatTitle}**\n\`\`\`\n${text}\n\`\`\`\n${t.matchId}: \`${sessionId}\`` })
     return
   }
 
@@ -633,15 +629,12 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     const hdByteLength = media.byteLength
     const standard = await cachedBattleMedia(sessionIdHex, kind)
     if (!standard) {
-      await interaction.editReply(
-        'Версия 2× превышает лимит вложения Discord, а версия 1× отсутствует в кэше. Откройте карту заново.',
-      )
+      await interaction.editReply(t.hdOverLimitNoCache)
       return
     }
     media = standard
     responseScale = 1
-    qualityNotice =
-      `Версия 2× весит ${(hdByteLength / 1024 / 1024).toFixed(1)} МиБ и превышает лимит Discord; показана версия 1×.`
+    qualityNotice = t.hdOverLimit((hdByteLength / 1024 / 1024).toFixed(1))
   }
 
   await interaction.editReply({

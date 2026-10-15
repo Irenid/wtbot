@@ -7,6 +7,7 @@ import {
   type BattlePost,
   type BattlePostPayload,
 } from './commands/battle.js'
+import { botText } from '../i18n/index.js'
 import { PSR_RECHECK_STORE_WAIT_SEC } from '../wrpl/battle-psr.js'
 
 const payload = (content: string): BattlePostPayload => ({
@@ -16,9 +17,10 @@ const payload = (content: string): BattlePostPayload => ({
 })
 
 test('the post adds only the max BR the battle played next to its Match ID', () => {
-  assert.equal(seasonMaxBrSuffix(8.7), ' · Max BR 8.7')
-  assert.equal(seasonMaxBrSuffix(7), ' · Max BR 7.0')
-  assert.equal(seasonMaxBrSuffix(null), '', 'outside the known stages')
+  assert.equal(seasonMaxBrSuffix(8.7, botText('en')), ' · Max BR 8.7')
+  assert.equal(seasonMaxBrSuffix(7, botText('en')), ' · Max BR 7.0')
+  assert.equal(seasonMaxBrSuffix(7, botText('ru')), ' · Макс. БР 7.0')
+  assert.equal(seasonMaxBrSuffix(null, botText('en')), '', 'outside the known stages')
 })
 
 test('PSR applies at once; the winner and then the squadron lookup follow in order', async () => {

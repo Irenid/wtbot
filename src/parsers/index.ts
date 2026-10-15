@@ -51,14 +51,14 @@ async function persistParseResult(
 async function runOnce(source: ParserSource, runGeneration: number, signal: AbortSignal): Promise<boolean> {
   try {
     const output = await source.run(signal)
-    // После stop или перезапуска результат не сохраняем: БД и worker pool
-    // могут уже закрываться, а несохранённые записи источник соберёт снова.
+    // After stop or restart nothing is saved: the database and the worker pool
+    // may be closing, and the source collects the unsaved items again.
     if (!isCurrent(runGeneration)) return true
     let summary = output.summary
     const gotItems = output.items !== undefined && output.items.length > 0
     if (gotItems) {
       const saved = saveItems(source.name, output.items!)
-      summary += ` · сохранено: ${saved.changed}, без изменений: ${saved.unchanged}`
+      summary += ` · saved: ${saved.changed}, unchanged: ${saved.unchanged}`
       if (source.name === 'wt-replays' && saved.changed > 0) {
         emitBattleLifecycle({
           kind: 'discovered',
@@ -67,18 +67,18 @@ async function runOnce(source: ParserSource, runGeneration: number, signal: Abor
         })
       }
     } else if (source.name === 'wt-replays') {
-      summary += ' · сохранено: 0'
+      summary += ' · saved: 0'
     }
     await persistParseResult(source.name, true, summary, null)
-    // Для replay показываем и нулевой результат: так видна исправность частого опроса.
+    // wt-replays logs empty runs too: they show the frequent poll is alive.
     if (gotItems || source.name === 'wt-replays') console.log(`[parser:${source.name}] OK — ${summary}`)
     return true
   } catch (err) {
-    // Отмена при остановке — не ошибка источника и не повод для backoff.
+    // A cancel on stop is neither a source error nor a reason to back off.
     if (!isCurrent(runGeneration)) return true
     const message = err instanceof Error ? err.message : String(err)
     await persistParseResult(source.name, false, null, message)
-    console.error(`[parser:${source.name}] Ошибка — ${message}`)
+    console.error(`[parser:${source.name}] Error — ${message}`)
     return false
   }
 }

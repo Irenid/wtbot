@@ -6,6 +6,7 @@ import {
   type GuildTextBasedChannel,
 } from 'discord.js'
 import { config } from '../../config.js'
+import { botText } from '../../i18n/index.js'
 import {
   disablePlayerStatBoard,
   getPlayerStatBoard,
@@ -17,11 +18,21 @@ import {
 import type { Command } from '../types.js'
 
 const REQUIRED_BOT_PERMISSIONS = [
-  [PermissionFlagsBits.ViewChannel, 'просмотр канала'],
-  [PermissionFlagsBits.SendMessages, 'отправка сообщений'],
-  [PermissionFlagsBits.EmbedLinks, 'встраивание ссылок'],
-  [PermissionFlagsBits.ReadMessageHistory, 'чтение истории сообщений'],
+  [PermissionFlagsBits.ViewChannel, 'view'],
+  [PermissionFlagsBits.SendMessages, 'send'],
+  [PermissionFlagsBits.EmbedLinks, 'embed'],
+  [PermissionFlagsBits.ReadMessageHistory, 'history'],
 ] as const
+
+const text = botText(config.botLocale).playerBoard
+const descriptions = botText(config.botLocale).commands.playerBoard
+
+/** The watched voice channels as mentions, or the catalog's "all" when WT_VOICE_CHANNELS is empty. */
+function voiceChannelList(): string {
+  return config.voiceChannelIds.length === 0
+    ? text.replies.allVoiceChannels
+    : config.voiceChannelIds.map((id) => `<#${id}>`).join(', ')
+}
 
 function guildTextChannel(value: unknown): GuildTextBasedChannel | null {
   if (
@@ -37,39 +48,39 @@ function guildTextChannel(value: unknown): GuildTextBasedChannel | null {
 export const playerBoard: Command = {
   data: new SlashCommandBuilder()
     .setName('playerboard')
-    .setDescription('Табло статистики игроков в голосовых каналах')
+    .setDescription(descriptions.description)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false)
     .addSubcommand((subcommand) =>
       subcommand
         .setName('setup')
-        .setDescription('Создать или перенести voice-табло в выбранный канал')
+        .setDescription(descriptions.setup)
         .addChannelOption((option) =>
           option
             .setName('channel')
-            .setDescription('Канал для постоянно обновляемого табло')
+            .setDescription(descriptions.channel)
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
             .setRequired(true),
         ),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('status').setDescription('Показать текущую настройку табло'),
+      subcommand.setName('status').setDescription(descriptions.status),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('refresh').setDescription('Перерисовать табло из сохранённых данных'),
+      subcommand.setName('refresh').setDescription(descriptions.refresh),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('disable').setDescription('Отключить автоматическое обновление табло'),
+      subcommand.setName('disable').setDescription(descriptions.disable),
     ),
 
   async execute(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral })
     if (!interaction.inGuild() || interaction.guildId === null) {
-      await interaction.editReply('Эта команда доступна только на Discord-сервере.')
+      await interaction.editReply(text.replies.guildOnly)
       return
     }
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.editReply('Для настройки табло требуется право «Управлять сервером».')
+      await interaction.editReply(text.replies.needManageGuild)
       return
     }
 
@@ -80,7 +91,7 @@ export const playerBoard: Command = {
         const fetched = await interaction.client.channels.fetch(selected.id)
         const channel = guildTextChannel(fetched)
         if (channel === null || channel.guildId !== interaction.guildId) {
-          await interaction.editReply('Выбранный канал недоступен или не является текстовым каналом этого сервера.')
+          await interaction.editReply(text.replies.badChannel)
           return
         }
         const permissions = interaction.client.user === null
@@ -88,16 +99,14 @@ export const playerBoard: Command = {
           : channel.permissionsFor(interaction.client.user)
         const missing = REQUIRED_BOT_PERMISSIONS
           .filter(([permission]) => permissions === null || !permissions.has(permission))
-          .map(([, label]) => label)
+          .map(([, key]) => text.replies.permissions[key])
         if (missing.length > 0) {
-          await interaction.editReply(`Боту не хватает прав в <#${channel.id}>: ${missing.join(', ')}.`)
+          await interaction.editReply(text.replies.missingPermissions(`<#${channel.id}>`, missing.join(', ')))
           return
         }
         const result = await configurePlayerStatBoard(interaction.client, interaction.guildId, channel.id)
         await interaction.editReply(
-          `Табло настроено в <#${channel.id}>: ${result.messageUrl}\n` +
-          `Игроков в текущем снимке: ${result.playerCount}.\n` +
-          `Голосовые каналы: ${config.voiceChannelIds.length === 0 ? 'все доступные боту' : config.voiceChannelIds.map((id) => `<#${id}>`).join(', ')}.`,
+          text.replies.configured(`<#${channel.id}>`, result.messageUrl, result.playerCount, voiceChannelList()),
         )
         return
       }
@@ -105,41 +114,31 @@ export const playerBoard: Command = {
       if (subcommand === 'status') {
         const board = getPlayerStatBoard(interaction.guildId)
         if (board === null || !board.enabled) {
-          await interaction.editReply('Табло игроков на этом сервере не настроено или отключено.')
+          await interaction.editReply(text.replies.notConfigured)
           return
         }
         const url = `https://discord.com/channels/${board.guildId}/${board.channelId}/${board.messageId}`
-        await interaction.editReply(
-          `Табло включено в <#${board.channelId}>: ${url}\n` +
-          `Голосовые каналы: ${config.voiceChannelIds.length === 0 ? 'все доступные боту' : config.voiceChannelIds.map((id) => `<#${id}>`).join(', ')}.`,
-        )
+        await interaction.editReply(text.replies.status(`<#${board.channelId}>`, url, voiceChannelList()))
         return
       }
 
       if (subcommand === 'refresh') {
         const result = await refreshPlayerStatBoard(interaction.client, interaction.guildId, true)
-        await interaction.editReply(
-          `Табло ${result.recreated ? 'восстановлено' : 'обновлено'} из сохранённых данных: ${result.messageUrl}\n` +
-          'Для игроков без свежего кэша запрос WT ставится в общую последовательную очередь и не блокирует команду.',
-        )
+        await interaction.editReply(text.replies.refreshed(result.recreated, result.messageUrl))
         return
       }
 
       if (subcommand === 'disable') {
         const disabled = disablePlayerStatBoard(interaction.guildId)
-        await interaction.editReply(
-          disabled
-            ? 'Автоматическое обновление табло отключено. Последнее сообщение оставлено в канале.'
-            : 'Табло игроков уже отключено или ещё не было настроено.',
-        )
+        await interaction.editReply(disabled ? text.replies.disabled : text.replies.alreadyDisabled)
         return
       }
 
-      await interaction.editReply('Неизвестное действие команды.')
+      await interaction.editReply(text.replies.unknownAction)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error(`[player-board] команда ${subcommand} на сервере ${interaction.guildId}: ${message}`)
-      await interaction.editReply(`Не удалось выполнить действие с табло: ${message}`)
+      console.error(`[player-board] command ${subcommand} on server ${interaction.guildId}: ${message}`)
+      await interaction.editReply(text.replies.failed)
     }
   },
 }

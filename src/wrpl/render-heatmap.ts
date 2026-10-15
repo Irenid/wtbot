@@ -1,3 +1,4 @@
+import { botText, type BotText, type Locale, type SpawnDirection } from '../i18n/index.js'
 import type { MapImageViewport, MissileSeeker } from './battle-assets.js'
 import type { MissionInfo } from './mission-info.js'
 import type { ReplayEvents, ReplayKill, ReplayUnitPath, SpaceTime } from './replay-events.js'
@@ -123,6 +124,8 @@ export interface HeatmapInput {
    * level map, and the ground map stays inset at the battle area.
    */
   airMap?: { href: string; rect: { x0: number; z0: number; x1: number; z1: number } } | null
+  /** The language of the image's text; English without it. */
+  locale?: Locale
 }
 
 export interface HeatmapRenderOptions {
@@ -339,7 +342,7 @@ export function prepareHeatmapScene(
       if (paths.length === 0) return
       const preparedPlayer: PlayerPaths = {
         userId: player.userId,
-        name: shownName(player).replace(/@(psn|live|epic)$/i, ''),
+        name: shownName(player, botText(input.locale).image.bot).replace(/@(psn|live|epic)$/i, ''),
         clanTag: player.clanTag,
         color: PATH_COLORS[Math.min(ti, 1)]![pi % 8]!,
         models: [...new Set(paths.map((unit) => modelId(unit.model)))],
@@ -533,8 +536,9 @@ export function buildHeatmapSvg(
   preparedScene?: PreparedHeatmapScene,
 ): string {
   const { events, dict, mission, mode, seekers, teamIndex } = input
+  const t = botText(input.locale)
   const scene = preparedScene ?? prepareHeatmapScene(input, tacticalMap, fallbackMapViewport)
-  if (scene.mode !== mode) throw new Error(`PreparedHeatmapScene ${scene.mode} нельзя использовать для ${mode}`)
+  if (scene.mode !== mode) throw new Error(`a ${scene.mode} PreparedHeatmapScene cannot draw the ${mode} map`)
   const {
     heatmapOptions,
     rosters,
@@ -772,7 +776,7 @@ export function buildHeatmapSvg(
     const roster = rosters[ti]
     if (!roster) continue
     const rawClan = mostCommonTag(roster.map((player) => player.clanTag))
-    const clan = rawClan ? clanDisplayName(rawClan) : `Команда ${roster[0]?.team ?? ti + 1}`
+    const clan = rawClan ? clanDisplayName(rawClan) : t.battle.team(roster[0]?.team ?? ti + 1)
     for (const spawn of teamSpawnClustersByTeam[ti] ?? []) {
       const placement = placeSpawnLabel(px(spawn.x), pz(spawn.z), clan, visibleRouteSegments, occupiedSpawnLabels)
       occupiedSpawnLabels.push(placement.box)
@@ -963,7 +967,7 @@ export function buildHeatmapSvg(
         continue
       }
       const killer = playerById.get(k.killerId)
-      const cause = deathCause(k, mode, dict, seekers)
+      const cause = deathCause(k, mode, dict, seekers, t.heatmap.causes)
       if (cause) {
         causeBadges.push(timed(k.time, causeBadge(marker.x + 15, marker.y + 14, cause, killer?.color ?? '#8a919e')))
       }
@@ -1050,7 +1054,7 @@ export function buildHeatmapSvg(
         const ty = pz(pos.z)
         const marker = placeDeathMarker(tx, ty, k.time)
         skulls.push(timed(k.time, skullIcon(marker.x, marker.y, victim.color)))
-        const cause = deathCause(k, mode, dict, seekers)
+        const cause = deathCause(k, mode, dict, seekers, t.heatmap.causes)
         if (cause) causeBadges.push(timed(k.time, causeBadge(marker.x + 15, marker.y + 14, cause, killer.color)))
 
         // Пунктир повторяет обозначение общей карты: цветом убийцы клана.
@@ -1090,7 +1094,7 @@ export function buildHeatmapSvg(
   pushMapLayer(22, 'death-causes', chronological(causeBadges))
   pushMapLayer(23, 'killer-labels', chronological(causeLabels))
 
-  // ---------- панель справа: заголовок, команды, обозначения ----------
+  // ---------- the right panel: title, teams, legend ----------
   parts.push(
     `<rect x="${MAP_W}" width="${PANEL_W}" height="${H}" fill="#0c0d0f"/>`,
     `<line x1="${MAP_W + 1}" y1="0" x2="${MAP_W + 1}" y2="${H}" stroke="#2a2e35" stroke-width="2"/>`,
@@ -1098,31 +1102,28 @@ export function buildHeatmapSvg(
   const PX = MAP_W + 30
   const PR = MAP_W + PANEL_W - 30
 
-  // Заголовок: карта, режим, дата и длительность боя
+  // Title: the map, mode, date and the battle's length
   const title = /^\s*(?:\[(?:arcade|realistic|simulation|hardcore)\]\s*)?(?:\[([^\]]+)\]\s*)?(.+)$/i.exec(
     input.missionName.trim(),
   )
-  const gameMode = title?.[1] ?? 'Бой'
+  const gameMode = title?.[1] ?? t.heatmap.battle
   const mapName = title?.[2] ?? input.missionName
   const selectedRoster = teamIndex === undefined ? undefined : rosters[teamIndex]
   const selectedRawClan = selectedRoster ? mostCommonTag(selectedRoster.map((player) => player.clanTag)) : null
   const selectedClan = selectedRawClan ? clanDisplayName(selectedRawClan) : null
-  const selectedText = selectedClan ? ` · маршруты: ${trimTo(selectedClan, 12)}` : ''
+  const selectedText = selectedClan ? ` · ${t.heatmap.routes(trimTo(selectedClan, 12))}` : ''
   const modeFontSize = selectedText ? 16 : 19
-  const when = new Date(input.header.startTime * 1000)
-  const dateText =
-    `${when.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}, ` +
-    when.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-  const durText = endTime > 60000 ? ` · Длительность: ${fmtTime(endTime)}` : ''
+  const dateText = t.heatmap.date(new Date(input.header.startTime * 1000))
+  const durText = endTime > 60000 ? ` · ${t.heatmap.duration(fmtTime(endTime))}` : ''
   parts.push(
     `<text x="${PX}" y="66" font-family="${FONTS}" font-size="33" font-weight="700" fill="#ffffff">${esc(trimTo(mapName, 22))}</text>`,
-    `<text x="${PX}" y="100" font-family="${FONTS}" font-size="${modeFontSize}" fill="#9aa2b1">${esc(gameMode)} · ${mode === 'ground' ? 'наземная техника' : 'авиация'}${esc(selectedText)}</text>`,
-    `<text x="${PX}" y="127" font-family="${FONTS}" font-size="19" fill="#9aa2b1">${esc(dateText)}${durText}</text>`,
+    `<text x="${PX}" y="100" font-family="${FONTS}" font-size="${modeFontSize}" fill="#9aa2b1">${esc(gameMode)} · ${esc(mode === 'ground' ? t.heatmap.ground : t.heatmap.air)}${esc(selectedText)}</text>`,
+    `<text x="${PX}" y="127" font-family="${FONTS}" font-size="19" fill="#9aa2b1">${esc(dateText)}${esc(durText)}</text>`,
     `<line x1="${PX}" y1="150" x2="${PR}" y2="150" stroke="#2a2e35" stroke-width="1.5"/>`,
   )
 
-  // Медиана первых позиций игроков даёт устойчивую точку спавна команды.
-  // Порядок в панели повторяет чтение карты: сверху вниз, затем слева направо.
+  // The median of the players' first positions is a stable team spawn point.
+  // The panel's order follows reading the map: top to bottom, then left to right.
   const orderTeams = [0, 1].sort((a, b) => {
     const sa = teamSpawns[a]
     const sb = teamSpawns[b]
@@ -1146,23 +1147,20 @@ export function buildHeatmapSvg(
   orderedTeams.forEach((ti, orderIndex) => {
     const roster = rosters[ti]
     if (!roster) return
-    // Панель всегда повторяет общую heatmap; teamIndex фильтрует только поле карты.
+    // The panel always repeats the general heatmap; teamIndex filters only the map field.
     const teamPlayers = playersByTeam[ti] ?? []
     const clan = mostCommonTag(roster.map((rp) => rp.clanTag))
-    const label = clan ? tagMarkup(clan, gameFont) : `Команда ${roster[0]?.team ?? ti + 1}`
+    const label = clan ? tagMarkup(clan, gameFont) : esc(t.battle.team(roster[0]?.team ?? ti + 1))
     const won = events.teamWon > 0 && roster[0]?.team === events.teamWon
     const spawn = teamSpawns[ti]
-    const spawnText = spawn?.label ?? ''
+    const spawnText = spawn ? esc(t.heatmap.spawn[spawn.direction]) : ''
     const teamKills = roster.reduce((sum, player) => sum + (killsDeaths.get(player.userId)?.[0] ?? 0), 0)
     const survivors = roster.filter((player) => (killsDeaths.get(player.userId)?.[1] ?? 0) === 0).length
-    const summary =
-      `${roster.length} ${pluralRu(roster.length, 'игрок', 'игрока', 'игроков')} · ` +
-      `${teamKills} ${pluralRu(teamKills, 'фраг', 'фрага', 'фрагов')} · ` +
-      `${survivors} ${pluralRu(survivors, 'выжил', 'выжили', 'выжили')}`
+    const summary = esc(t.heatmap.teamSummary(roster.length, teamKills, survivors))
     parts.push(
       `<text x="${PX}" y="${py}" font-family="${FONTS}" font-size="29" font-weight="700" fill="${won ? '#f2c811' : '#ffffff'}">${label}</text>`,
       won
-        ? `<text x="${PR}" y="${py}" font-family="${FONTS}" font-size="17" font-weight="700" text-anchor="end" fill="#f2c811">победа</text>`
+        ? `<text x="${PR}" y="${py}" font-family="${FONTS}" font-size="17" font-weight="700" text-anchor="end" fill="#f2c811">${esc(t.heatmap.victory)}</text>`
         : '',
       `<text x="${PX}" y="${py + 21}" font-family="${FONTS}" font-size="14.5" fill="#7f8998">${summary}</text>`,
       `<text x="${PR}" y="${py + 21}" font-family="${FONTS}" font-size="15" text-anchor="end" fill="#9aa2b1">${spawnText}</text>`,
@@ -1173,7 +1171,7 @@ export function buildHeatmapSvg(
       const [kills, deaths] = killsDeaths.get(p.userId) ?? [0, 0]
       const vehicles = p.models.map((m) => vehicleInfo(dict, m).name).join(', ')
       const deathsAt = (killsByVictim.get(p.userId) ?? []).map((kill) => kill.time)
-      const fate = deathsAt.length > 0 ? `погиб ${fmtTime(Math.max(...deathsAt))}` : 'жив'
+      const fate = esc(deathsAt.length > 0 ? t.heatmap.died(fmtTime(Math.max(...deathsAt))) : t.heatmap.alive)
       const fateColor = deathsAt.length > 0 ? '#d98c8c' : '#9fd6a4'
       parts.push(
         `<rect x="${PX}" y="${py + 6}" width="20" height="20" rx="4" fill="${p.color}"/>`,
@@ -1181,50 +1179,50 @@ export function buildHeatmapSvg(
         `<text x="${PR}" y="${py + 23}" font-family="${FONTS}" font-size="21" font-weight="700" text-anchor="end" fill="#d7dce4">${kills}/${deaths}</text>`,
         `<text x="${PX + 32}" y="${py + playerSecondLineY}" font-family="${FONTS}" font-size="17" fill="#8f97a6">${esc(trimTo(vehicles, 27))}</text>`,
         `<text x="${PR}" y="${py + playerSecondLineY}" font-family="${FONTS}" font-size="17" text-anchor="end">` +
-          (rp ? `<tspan fill="#8f97a6">${rp.score} очк. · </tspan>` : '') +
+          (rp ? `<tspan fill="#8f97a6">${esc(t.heatmap.points(rp.score))} · </tspan>` : '') +
           `<tspan fill="${fateColor}">${fate}</tspan></text>`,
       )
       py += playerRowStep
     }
     if (teamPlayers.length === 0) {
       parts.push(
-        `<text x="${PX}" y="${py + 20}" font-family="${FONTS}" font-size="18" fill="#5a616e">без траекторий в этом режиме</text>`,
+        `<text x="${PX}" y="${py + 20}" font-family="${FONTS}" font-size="18" fill="#5a616e">${esc(t.heatmap.noPaths)}</text>`,
       )
       py += 34
     }
     if (orderIndex < orderedTeams.length - 1) py += teamGap
   })
 
-  // Обозначения — прижаты к низу панели, если осталось место
+  // The legend sits at the bottom of the panel
   const glyphColor = '#19c2c9'
   const symbols: [string, string][] = [
-    [`<path d="M-11 4 C-5 -7, 3 9, 11 -2" fill="none" stroke="${glyphColor}" stroke-width="3" stroke-linecap="round"/>`, 'траектория'],
+    [`<path d="M-11 4 C-5 -7, 3 9, 11 -2" fill="none" stroke="${glyphColor}" stroke-width="3" stroke-linecap="round"/>`, t.heatmap.legend.path],
     [
       `<circle r="9" fill="#10130d" fill-opacity="0.74" stroke="${glyphColor}" stroke-width="2"/>` +
         `<text y="4" font-family="${FONTS}" font-size="11" font-weight="700" fill="#f2f4f7" text-anchor="middle">4</text>`,
-      'минута боя',
+      t.heatmap.legend.minute,
     ],
-    [`<circle r="9.5" fill="${glyphColor}" fill-opacity="0.26" stroke="${glyphColor}" stroke-width="1.6"/>`, 'стоянка и её время'],
-    [`<line x1="-11" y1="3" x2="11" y2="-3" stroke="${glyphColor}" stroke-width="1.8" stroke-dasharray="5 4"/>`, 'выстрел убийцы'],
+    [`<circle r="9.5" fill="${glyphColor}" fill-opacity="0.26" stroke="${glyphColor}" stroke-width="1.6"/>`, t.heatmap.legend.stop],
+    [`<line x1="-11" y1="3" x2="11" y2="-3" stroke="${glyphColor}" stroke-width="1.8" stroke-dasharray="5 4"/>`, t.heatmap.legend.shot],
     [
       `<circle cy="-1" r="7" fill="${glyphColor}" stroke="#15181c" stroke-width="1.4"/>` +
         `<circle cx="-2.6" cy="-1.6" r="1.8" fill="#15181c"/><circle cx="2.6" cy="-1.6" r="1.8" fill="#15181c"/>` +
         `<rect x="-3.4" y="4.4" width="6.8" height="3.6" rx="1.4" fill="${glyphColor}" stroke="#15181c" stroke-width="1"/>`,
-      'гибель (цвет — чей)',
+      t.heatmap.legend.death,
     ],
-    [causeBadge(0, 0, { icon: 'tank' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), 'чем убит'],
-    [`<circle r="6.5" fill="${glyphColor}" stroke="#10130d" stroke-width="1.8"/>`, 'жив в конце боя'],
+    [causeBadge(0, 0, { icon: 'tank' }, '#8a919e').replace(/^<g transform="translate\(0 0\)">/, '<g>'), t.heatmap.legend.cause],
+    [`<circle r="6.5" fill="${glyphColor}" stroke="#10130d" stroke-width="1.8"/>`, t.heatmap.legend.survivor],
   ]
   if (clanUavs.length > 0) {
     symbols.push([
       `<path d="M-11 0H11" stroke="${glyphColor}" stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round"/>` +
         `<circle r="5" fill="#10130d" stroke="${glyphColor}" stroke-width="1.7"/>`,
-      'БПЛА и зона наблюдения',
+      t.heatmap.legend.uav,
     ])
   }
   parts.push(
     `<line data-panel-legend="1" x1="${PX}" y1="${legendY}" x2="${PR}" y2="${legendY}" stroke="#2a2e35" stroke-width="1.5"/>`,
-    `<text x="${PX}" y="${legendY + 30}" font-family="${FONTS}" font-size="19" font-weight="600" fill="#cfd4dc">Обозначения</text>`,
+    `<text x="${PX}" y="${legendY + 30}" font-family="${FONTS}" font-size="19" font-weight="600" fill="#cfd4dc">${esc(t.heatmap.legendTitle)}</text>`,
   )
   const colW = (PANEL_W - 60) / 2
   symbols.forEach(([glyph, text], i) => {
@@ -1232,7 +1230,7 @@ export function buildHeatmapSvg(
     const gy = legendY + 58 + Math.floor(i / 2) * 34
     parts.push(
       `<g transform="translate(${gx} ${gy})">${glyph}</g>`,
-      `<text x="${gx + 24}" y="${gy + 6}" font-family="${FONTS}" font-size="16.5" fill="#9aa2b1">${text}</text>`,
+      `<text x="${gx + 24}" y="${gy + 6}" font-family="${FONTS}" font-size="16.5" fill="#9aa2b1">${esc(text)}</text>`,
     )
   })
 
@@ -1331,19 +1329,11 @@ function trimTo(s: string, n: number): string {
 const fmtTime = (ms: number): string =>
   `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`
 
-function pluralRu(value: number, one: string, few: string, many: string): string {
-  const mod100 = Math.abs(value) % 100
-  const mod10 = mod100 % 10
-  if (mod100 >= 11 && mod100 <= 19) return many
-  if (mod10 === 1) return one
-  if (mod10 >= 2 && mod10 <= 4) return few
-  return many
-}
 
 interface TeamSpawn {
   x: number
   z: number
-  label: string
+  direction: SpawnDirection
 }
 
 interface SpawnCluster {
@@ -1867,7 +1857,7 @@ function arrowSubpath(arrow: DirectionArrow): string {
   return `M${point(-8, -5)}L${point(2, 0)}L${point(-8, 5)}`
 }
 
-/** Медианный начальный спавн команды и его направление относительно центра карты. */
+/** The team's median first spawn and its direction from the map's centre. */
 function teamSpawn(players: PlayerPaths[], cx: number, cz: number, half: number): TeamSpawn | null {
   const starts = players.flatMap((player) => {
     const first = player.paths
@@ -1887,26 +1877,21 @@ function teamSpawn(players: PlayerPaths[], cx: number, cz: number, half: number)
   const z = median(starts.map((point) => point.z))
   const dx = (x - cx) / half
   const dz = (z - cz) / half
-  if (Math.hypot(dx, dz) < 0.12) return { x, z, label: 'спавн в центре' }
-
+  if (Math.hypot(dx, dz) < 0.12) return { x, z, direction: 'centre' }
+  // Eighths of a turn counter-clockwise from the right; ±4 is the left.
   const sector = Math.round(Math.atan2(dz, dx) / (Math.PI / 4))
-  const direction =
-    sector === 0
-      ? 'справа'
-      : sector === 1
-        ? 'сверху справа'
-        : sector === 2
-          ? 'сверху'
-          : sector === 3
-            ? 'сверху слева'
-            : Math.abs(sector) === 4
-              ? 'слева'
-              : sector === -3
-                ? 'снизу слева'
-                : sector === -2
-                  ? 'снизу'
-                  : 'снизу справа'
-  return { x, z, label: `спавн ${direction}` }
+  const directions: Record<string, SpawnDirection> = {
+    '0': 'right',
+    '1': 'topRight',
+    '2': 'top',
+    '3': 'topLeft',
+    '4': 'left',
+    '-4': 'left',
+    '-3': 'bottomLeft',
+    '-2': 'bottom',
+    '-1': 'bottomRight',
+  }
+  return { x, z, direction: directions[String(sector)] ?? 'right' }
 }
 
 /** Шаг меток времени в минутах: не больше ~6 меток на траекторию */
@@ -2176,24 +2161,25 @@ const SAM_RE =
   /zur|9m3\d|fim_?92|mim_?72|mim_?146|roland|rapier|type_?81|type_?91|starstreak|igla|stinger|aspide|crotale|santal|adats|vt1/i
 
 /**
- * Чем убит: для авиации — тип ГСН ракеты (ИК/ПАРЛ/АРЛ из датамайна,
- * ЗУР по имени оружия зенитки), иначе — силуэт класса убийцы.
- * Без убийцы — «разбился». null — причину не определить.
+ * What killed: for aircraft the missile's seeker (IR/SARH/ARH from the
+ * datamine, a SAM by the AA vehicle's weapon name), otherwise the killer's
+ * class silhouette. No killer — a crash. null — the cause is unknown.
  */
 function deathCause(
   k: ReplayKill,
   mode: 'ground' | 'air',
   dict: VehicleDict,
   seekers: Map<string, MissileSeeker> | undefined,
+  labels: BotText['heatmap']['causes'],
 ): DeathCause | null {
   if (!k.killerId || k.killerId === k.victimId) return { icon: 'crash' }
   const killerCls = vehicleInfo(dict, modelId(k.killerModel)).cls
   if (mode === 'air') {
     const seeker = seekers?.get(k.weapon)
-    if (seeker === 'ir') return { label: 'ИК' }
-    if (seeker === 'sarh') return { label: 'ПАРЛ' }
-    if (seeker === 'arh') return { label: 'АРЛ' }
-    if (killerCls === 'AA' && SAM_RE.test(k.weapon)) return { label: 'ЗУР' }
+    if (seeker === 'ir') return { label: labels.ir }
+    if (seeker === 'sarh') return { label: labels.sarh }
+    if (seeker === 'arh') return { label: labels.arh }
+    if (killerCls === 'AA' && SAM_RE.test(k.weapon)) return { label: labels.sam }
   }
   switch (killerCls) {
     case 'T':
@@ -2257,7 +2243,7 @@ function causeBadge(x: number, y: number, cause: DeathCause, ring: string): stri
   return (
     `<g transform="translate(${r1(x)} ${r1(y)})">` +
     `<rect x="${r1(-w / 2)}" y="-9" width="${r1(w)}" height="18" rx="8.5" fill="#10130d" fill-opacity="0.88" stroke="${ring}" stroke-width="1.8"/>` +
-    `<text y="4" font-family="${FONTS}" font-size="11" font-weight="700" fill="#f2f4f7" text-anchor="middle">${cause.label}</text>` +
+    `<text y="4" font-family="${FONTS}" font-size="11" font-weight="700" fill="#f2f4f7" text-anchor="middle">${esc(cause.label)}</text>` +
     `</g>`
   )
 }

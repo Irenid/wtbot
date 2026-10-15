@@ -1,31 +1,18 @@
 /**
- * /scout reply text: plain English for players who do not know the model
- * (memory: short, no abbreviations or emojis), read at a glance mid-battle —
- * the setup first, then the players grouped by the class they will most
- * likely spawn, one line each. Pure: Discord limits are enforced here, the
- * command only wraps the result in an embed.
+ * /scout reply text: plain words for players who do not know the model
+ * (short, no abbreviations or emojis), read at a glance mid-battle — the
+ * setup first, then the players grouped by the class they will most likely
+ * spawn, one line each. The words come from the bot's catalog (English
+ * unless the caller passes another). Pure: Discord limits are enforced here,
+ * the command only wraps the result in an embed.
  */
 
 import { escapeMarkdown } from 'discord.js'
+import { botText, type BotText } from '../i18n/index.js'
 import { vehicleInfo, type VehicleDict } from '../wrpl/vehicles.js'
 import { SESSION_GAP_SEC, TEAM_SIZE, type ScoutClass, type ScoutPlayerPrediction, type ScoutSetup, type VehicleChance } from './model.js'
 import type { ScoutImageReport, ScoutReport } from './report.js'
 
-const CLASS_NAMES: Record<ScoutClass, [string, string]> = {
-  F: ['aircraft', 'aircraft'],
-  H: ['helicopter', 'helicopters'],
-  T: ['tank', 'tanks'],
-  L: ['light tank', 'light tanks'],
-  AA: ['anti-air', 'anti-air'],
-}
-const GROUP_TITLES: Record<ScoutClass | 'unknown', string> = {
-  F: 'Aircraft',
-  H: 'Helicopters',
-  T: 'Tanks',
-  L: 'Light tanks',
-  AA: 'Anti-air',
-  unknown: 'Vehicle unknown',
-}
 const CLASS_ORDER: readonly ScoutClass[] = ['F', 'H', 'T', 'L', 'AA']
 /** Second and third vehicles below this chance are left out of a player's line. */
 const MIN_ALTERNATIVE_CHANCE = 0.1
@@ -48,19 +35,9 @@ export function plainVehicleName(name: string): string {
   return plain === '' ? name : plain
 }
 
-const FLAG_NAMES: Record<string, string> = {
-  usa: 'USA',
-  ussr: 'USSR',
-  britain: 'Great Britain',
-  gdr: 'East Germany',
-  republic_china: 'Republic of China',
-  uae: 'UAE',
-}
-
-/** A flag's country in plain English: `usa_modern` → "USA", `south_africa` → "South Africa". */
-export function flagName(icon: string): string {
-  const base = icon.replace(/_(modern|early|kingdom|empire|weimar_republic|1963_1991)$/u, '')
-  return FLAG_NAMES[base] ?? base.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
+/** A flag's country: `usa_modern` → "USA", `south_africa` → "South Africa". */
+export function flagName(icon: string, t: BotText = botText()): string {
+  return t.scout.flag(icon.replace(/_(modern|early|kingdom|empire|weimar_republic|1963_1991)$/u, ''))
 }
 
 /** "Nrst North_Steel", or the tag alone when the name repeats it. */
@@ -76,12 +53,9 @@ export function percent(chance: number): string {
   return `${Math.round(chance * 100)}%`
 }
 
-export function compositionText(counts: Record<ScoutClass, number>): string {
-  const parts = CLASS_ORDER.filter((cls) => counts[cls] > 0).map((cls) => {
-    const [one, many] = CLASS_NAMES[cls]
-    return `${counts[cls]} ${counts[cls] === 1 ? one : many}`
-  })
-  return parts.length > 0 ? parts.join(' · ') : 'nobody'
+export function compositionText(counts: Record<ScoutClass, number>, t: BotText = botText()): string {
+  const parts = CLASS_ORDER.filter((cls) => counts[cls] > 0).map((cls) => t.scout.classCount(cls, counts[cls]))
+  return parts.length > 0 ? parts.join(' · ') : t.scout.nobody
 }
 
 const clip = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max - 1)}…`)
@@ -104,25 +78,26 @@ const byChance = (a: VehicleChance, b: VehicleChance): number => b.chance - a.ch
  * vehicle is the bold part. A vehicle not seen from the player at this BR
  * (the guess from what squadrons take at it) is marked "new".
  */
-function playerLine(player: ScoutPlayerPrediction, vehicles: VehicleDict): string {
+function playerLine(player: ScoutPlayerPrediction, vehicles: VehicleDict, t: BotText): string {
   const name = (id: string) => escapeMarkdown(plainVehicleName(vehicleInfo(vehicles, id).name))
-  const plays = player.playChance < SHOW_PLAY_CHANCE_BELOW ? ` (plays ${percent(player.playChance)})` : ''
+  const plays = player.playChance < SHOW_PLAY_CHANCE_BELOW ? ` (${t.scout.plays(percent(player.playChance))})` : ''
   const who = `${escapeMarkdown(player.nick)}${plays}`
   const fresh = new Set(player.newVehicles.map((vehicle) => vehicle.vehicleId))
   const [best, ...rest] = [...player.vehicles, ...player.newVehicles].sort(byChance)
   const others = rest.slice(0, 2).filter((vehicle) => vehicle.chance >= MIN_ALTERNATIVE_CHANCE)
   if (player.battlesAtCap === 0) {
-    if (!best || best.chance < MIN_ALTERNATIVE_CHANCE) return `${who} — no battles at this BR yet`
+    if (!best || best.chance < MIN_ALTERNATIVE_CHANCE) return `${who} — ${t.scout.noBattlesAtBr}`
     const guesses = [`**${name(best.vehicleId)} ${percent(best.chance)}**`, ...others.map((vehicle) => `${name(vehicle.vehicleId)} ${percent(vehicle.chance)}`)]
-    return `${who} — no battles at this BR yet, likely ${guesses.join(' · ')}`
+    return `${who} — ${t.scout.likely(guesses.join(' · '))}`
   }
-  if (!best) return `${who} — no battles at this BR yet`
-  const label = (vehicle: VehicleChance) => `${name(vehicle.vehicleId)}${fresh.has(vehicle.vehicleId) ? ' (new)' : ''} ${percent(vehicle.chance)}`
+  if (!best) return `${who} — ${t.scout.noBattlesAtBr}`
+  const label = (vehicle: VehicleChance) =>
+    `${name(vehicle.vehicleId)}${fresh.has(vehicle.vehicleId) ? ` (${t.scout.newMark})` : ''} ${percent(vehicle.chance)}`
   const shown = [best, ...others]
   const parts = [`**${label(best)}**`, ...others.map(label)]
   const named = shown.filter((vehicle) => fresh.has(vehicle.vehicleId)).reduce((sum, vehicle) => sum + vehicle.chance, 0)
   const unnamed = player.unseenChance - named
-  if (unnamed >= MIN_UNSEEN_CHANCE) parts.push(`${named > 0 ? 'other new vehicle' : 'new vehicle'} ${percent(unnamed)}`)
+  if (unnamed >= MIN_UNSEEN_CHANCE) parts.push(named > 0 ? t.scout.otherNewVehicle(percent(unnamed)) : t.scout.newVehicle(percent(unnamed)))
   return `${who} — ${parts.join(' · ')}`
 }
 
@@ -144,38 +119,29 @@ function likelyClass(player: ScoutPlayerPrediction, vehicles: VehicleDict): Scou
   return cls === '?' ? 'unknown' : cls
 }
 
-export function formatScoutReport(report: ScoutReport): ScoutEmbedText {
+export function formatScoutReport(report: ScoutReport, t: BotText = botText()): ScoutEmbedText {
   const { squadron, prediction } = report
   const title = clip(squadronLabel(squadron.displayTag, squadron.name), 256)
   const group = prediction.primary
   if (!group || prediction.lastBattleEnd === null) {
-    return { color: SCOUT_COLOR_GUESS, title, description: 'No battles stored in the last two weeks, so there is nothing to predict from.', fields: [] }
+    return { color: SCOUT_COLOR_GUESS, title, description: t.scout.nothingStored, fields: [] }
   }
   const lines: string[] = []
-  if (group.regime === 'session') {
-    lines.push(`Last battle <t:${group.anchor.endTime}:R>, mid-session: the same players will most likely play.`)
-  } else {
-    lines.push(
-      `Last battle <t:${group.anchor.endTime}:R>, nothing in the last ${SESSION_GAP_SEC / 60} minutes:`
-      + ' the players are a guess from who played recently at this time of day.',
-    )
-  }
+  const last = `<t:${group.anchor.endTime}:R>`
+  lines.push(group.regime === 'session' ? t.scout.lastBattleSession(last) : t.scout.lastBattleGuess(last, SESSION_GAP_SEC / 60))
   if (report.hint) {
-    lines.push(report.hint.matched
-      ? `Showing the group of **${escapeMarkdown(report.hint.nick)}**.`
-      : `**${escapeMarkdown(report.hint.nick)}** is not in their recent battles, so this is their latest group.`)
+    const nick = escapeMarkdown(report.hint.nick)
+    lines.push(report.hint.matched ? t.scout.hintMatched(nick) : t.scout.hintMissed(nick))
   }
-  const brText = prediction.maxBr === null ? '' : ` at BR ${prediction.maxBr.toFixed(1)}`
-  lines.push(`Based on ${prediction.battlesAtCap} of their battles${brText}.`, '')
-  lines.push(...setupLines(group.setup))
+  lines.push(t.scout.basedOn(prediction.battlesAtCap, brText(prediction.maxBr)), '')
+  lines.push(...setupLines(group.setup, t))
   const description = clip(lines.join('\n'), MAX_DESCRIPTION)
-  const fields = classFields(group.players.slice(0, TEAM_SIZE), report.vehicles)
+  const fields = classFields(group.players.slice(0, TEAM_SIZE), report.vehicles, t)
   for (const other of prediction.otherGroups.slice(0, 2)) {
     fields.push({
-      name: 'Another group is playing at the same time',
+      name: t.scout.otherGroupTitle,
       value: clip(
-        `Last battle <t:${other.anchor.endTime}:R>: ${other.nicks.map((nick) => escapeMarkdown(nick)).join(', ')}.`
-        + '\nIf you face them, run /scout again with one of these nicks in `player`.',
+        t.scout.otherGroup(`<t:${other.anchor.endTime}:R>`, other.nicks.map((nick) => escapeMarkdown(nick)).join(', ')),
         MAX_FIELD,
       ),
     })
@@ -191,72 +157,66 @@ function fitEmbed(text: ScoutEmbedText): ScoutEmbedText {
   return { ...text, fields }
 }
 
-function setupLines(setup: ScoutSetup): string[] {
+/** The cap as the catalog's functions take it: "10.7", or null outside the known stages. */
+const brText = (maxBr: number | null): string | null => (maxBr === null ? null : maxBr.toFixed(1))
+
+function setupLines(setup: ScoutSetup, t: BotText): string[] {
   const lines: string[] = []
   const [top, ...others] = setup.compositions
   if (top) {
-    lines.push('**Most likely setup**', `${compositionText(top.counts)} — ${percent(top.chance)}`)
-    for (const other of others) lines.push(`${compositionText(other.counts)} — ${percent(other.chance)}`)
+    lines.push(`**${t.scout.setupTitle}**`, `${compositionText(top.counts, t)} — ${percent(top.chance)}`)
+    for (const other of others) lines.push(`${compositionText(other.counts, t)} — ${percent(other.chance)}`)
     lines.push('')
   }
   const air = setup.expected.F + setup.expected.H
-  lines.push(`**Air:** ${air.toFixed(1)} expected, at least one ${percent(setup.airChance)}`)
+  lines.push(t.scout.air(air.toFixed(1), percent(setup.airChance)))
   return lines
 }
 
 /** Players grouped by the class of their most likely vehicle, one line each. */
-function classFields(players: readonly ScoutPlayerPrediction[], vehicles: VehicleDict): { name: string; value: string }[] {
+function classFields(players: readonly ScoutPlayerPrediction[], vehicles: VehicleDict, t: BotText): { name: string; value: string }[] {
   const fields: { name: string; value: string }[] = []
   for (const cls of [...CLASS_ORDER, 'unknown'] as const) {
     const members = players.filter((player) => likelyClass(player, vehicles) === cls)
     if (members.length === 0) continue
     fields.push({
-      name: `${GROUP_TITLES[cls]} · ${members.length}`,
-      value: clip(members.map((player) => playerLine(player, vehicles)).join('\n'), MAX_FIELD),
+      name: `${t.scout.groups[cls]} · ${members.length}`,
+      value: clip(members.map((player) => playerLine(player, vehicles, t)).join('\n'), MAX_FIELD),
     })
   }
   return fields
 }
 
 /** The reply to a scoreboard screenshot: the enemy team as read, its likely vehicles and setup. */
-export function formatScoutImageReport(report: ScoutImageReport): ScoutEmbedText {
-  const title = clip(report.squadron ? squadronLabel(report.squadron.displayTag, report.squadron.name) : 'Enemy team', 256)
+export function formatScoutImageReport(report: ScoutImageReport, t: BotText = botText()): ScoutEmbedText {
+  const title = clip(report.squadron ? squadronLabel(report.squadron.displayTag, report.squadron.name) : t.scout.enemyTeam, 256)
   const { prediction } = report
-  const lines = [`Read from the screenshot: ${report.recognised} of ${report.recognised + report.unread.length} enemy players.`]
-  if (prediction.lastTogether) {
-    lines.push(`Last played together <t:${prediction.lastTogether.endTime}:R>.`)
-  }
-  const brText = prediction.maxBr === null ? '' : ` at BR ${prediction.maxBr.toFixed(1)}`
+  const total = report.recognised + report.unread.length
+  const lines = [t.scout.readFromScreenshot(report.recognised, total)]
+  if (prediction.lastTogether) lines.push(t.scout.lastTogether(`<t:${prediction.lastTogether.endTime}:R>`))
+  const br = brText(prediction.maxBr)
   const { read, rowsWithout } = report.enemyFlags
   if (prediction.flags) {
-    const names = [...new Set(prediction.flags.icons.map(flagName))].join(', ')
-    lines.push(`Vehicle chances come from each player's own battles${brText} and the flags above their team: ${names}.`)
-    if (rowsWithout) {
-      lines.push(`${rowsWithout === 1 ? '1 enemy shows' : `${rowsWithout} enemies show`} no flag (not spawned yet or destroyed): their chances rest on their battles alone.`)
-    }
+    lines.push(t.scout.chancesWithFlags(br, [...new Set(prediction.flags.icons.map((icon) => flagName(icon, t)))].join(', ')))
+    if (rowsWithout) lines.push(t.scout.withoutFlag(rowsWithout))
   } else if (read > 0) {
-    lines.push(`Vehicle chances come from each player's own battles${brText}.`)
-  } else if (rowsWithout !== null && rowsWithout >= report.recognised + report.unread.length) {
-    lines.push(`Vehicle chances come from each player's own battles${brText}. No enemy is in a vehicle yet: a screenshot after they spawn shows their flags and sharpens the guess.`)
+    lines.push(t.scout.chancesOwn(br))
+  } else if (rowsWithout !== null && rowsWithout >= total) {
+    lines.push(t.scout.noneSpawned(br))
   } else if (rowsWithout !== null) {
-    lines.push(`Vehicle chances come from each player's own battles${brText}. The flags above their team were not read: a screenshot showing them sharpens the guess.`)
+    lines.push(t.scout.flagsUnread(br))
   } else {
-    lines.push(`Vehicle chances come from each player's own battles${brText}. A screenshot after they spawn shows their flags and sharpens the guess.`)
+    lines.push(t.scout.spawnFirst(br))
   }
-  if (report.killsShown > 0) {
-    lines.push(`What ${report.killsShown === 1 ? '1 enemy has' : `${report.killsShown} enemies have`} already destroyed or captured narrows their vehicles too.`)
-  }
+  if (report.killsShown > 0) lines.push(t.scout.killsNarrow(report.killsShown))
   const guessed = prediction.players.some((player) => player.newVehicles.some((vehicle) => vehicle.chance >= MIN_ALTERNATIVE_CHANCE))
-  if (guessed) {
-    const shark = report.statShark.players > 0 ? ` and their battles on StatShark (${report.statShark.players} ${report.statShark.players === 1 ? 'player' : 'players'})` : ''
-    lines.push(`A vehicle not seen from a player at this BR (new) is guessed from what squadrons take at it${shark}.`)
-  }
-  if (report.statShark.pending) lines.push('Checking their battles on StatShark: this reply updates in a minute or two.')
-  lines.push('', ...setupLines(prediction.setup))
-  const fields = classFields(prediction.players, report.vehicles)
+  if (guessed) lines.push(t.scout.newGuessed(report.statShark.players))
+  if (report.statShark.pending) lines.push(t.scout.statSharkPending)
+  lines.push('', ...setupLines(prediction.setup, t))
+  const fields = classFields(prediction.players, report.vehicles, t)
   if (report.unread.length > 0) {
     fields.push({
-      name: `Not recognised · ${report.unread.length}`,
+      name: t.scout.notRecognised(report.unread.length),
       value: clip(report.unread.map((text) => `"${escapeMarkdown(text)}"`).join('\n'), MAX_FIELD),
     })
   }

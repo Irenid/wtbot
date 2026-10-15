@@ -82,7 +82,7 @@ export function isWellFormedReplay(value: unknown): value is WtReplay {
 function assertListResponse(data: WtListResponse, label: string): void {
   if (typeof data !== 'object' || data === null || !Array.isArray(data.items)
     || typeof data.total_count !== 'number' || data.items.length > MAX_ITEMS_PER_PAGE) {
-    throw new Error(`${label}: неожиданный формат ответа Replay API`)
+    throw new Error(`${label}: unexpected Replay API response format`)
   }
 }
 
@@ -103,7 +103,7 @@ async function requireJsonContentType(response: Response, label: string): Promis
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
   if (!contentType.includes('json')) {
     await response.body?.cancel().catch(() => undefined)
-    throw new Error(`${label}: сервер вернул не JSON (Content-Type: ${contentType || 'отсутствует'})`)
+    throw new Error(`${label}: the server returned no JSON (Content-Type: ${contentType || 'missing'})`)
   }
 }
 
@@ -112,8 +112,8 @@ async function fetchPage(page: number): Promise<WtListResponse> {
     method: 'POST',
     headers: { ...baseHeaders(), 'content-type': 'application/json' },
     signal: AbortSignal.timeout(20_000),
-    // Тело повторяет запрос сайта; при пустых timeRangeFrom/To
-    // поля дат игнорируются и API отдаёт просто последние бои
+    // The body repeats the site's request; with empty timeRangeFrom/To the
+    // date fields are ignored and the API returns the latest battles
     body: JSON.stringify({
       gameMode: ['arcade', 'realistic', 'simulation'],
       gameType: 'clanBattle',
@@ -134,26 +134,26 @@ async function fetchPage(page: number): Promise<WtListResponse> {
       limit: 20,
       page,
     }),
-  }, `список replay, страница ${page}`)
-  await requireJsonContentType(res, `список replay, страница ${page}`)
-  return readResponseJson<WtListResponse>(res, 4 * 1024 * 1024, `список replay, страница ${page}`)
+  }, `replay list, page ${page}`)
+  await requireJsonContentType(res, `replay list, page ${page}`)
+  return readResponseJson<WtListResponse>(res, 4 * 1024 * 1024, `replay list, page ${page}`)
 }
 
-/** Ссылки на файлы .wrpl реплея; при ошибке — null, реплей сохранится без них */
+/** The replay's .wrpl file links; null on an error, and the replay is saved without them */
 async function fetchParts(sessionId: string): Promise<string[] | null> {
   let res: Response
   try {
     res = await fetchWtResponse(`${LIST_URL}/${sessionId}`, {
       headers: baseHeaders(),
       signal: AbortSignal.timeout(20_000),
-    }, `детали replay ${sessionId}`)
+    }, `replay details ${sessionId}`)
   } catch (error) {
     if (error instanceof WtRequestError && [401, 403, 429].includes(error.status)) throw error
     return null
   }
   try {
-    await requireJsonContentType(res, `детали replay ${sessionId}`)
-    const detail = await readResponseJson<WtDetailResponse>(res, 2 * 1024 * 1024, 'детали replay')
+    await requireJsonContentType(res, `replay details ${sessionId}`)
+    const detail = await readResponseJson<WtDetailResponse>(res, 2 * 1024 * 1024, 'replay details')
     return detail.replay_parts ?? null
   } catch {
     return null
@@ -307,25 +307,25 @@ export async function collectFreshReplays(
 
 export const wtReplays: ParserSource = {
   name: 'wt-replays',
-  // Частый опрос дешёвый: парсинг инкрементальный, без новых реплеев
-  // это один запрос первой страницы списка
+  // A frequent poll is cheap: parsing is incremental, and without new
+  // replays it is one request for the list's first page
   intervalMs: 20_000,
   async run(signal) {
-    // Догон: листаем до первого уже сохранённого боя. Планировщик не допускает
-    // параллельных запусков этого source, а запросы ограничены паузой 1,5 с.
+    // Catch-up: page down to the first stored battle. The scheduler never runs
+    // this source twice at once, and requests are spaced 1.5 s apart.
     const { items, totalOnSite, pagesRead, hitCap, rejected } = await collectFreshReplays({
       maxPages: PLANNED_REPLAYS_MAX_PAGES,
       stopAtKnown: true,
       signal,
-      // Точные URL частей восстанавливаются из url + partsCount. Отдельный
-      // запрос на каждый новый бой замедляет догон и быстро приводит к 429.
+      // Exact part URLs are rebuilt from url + partsCount. A request per new
+      // battle slows the catch-up and soon runs into 429.
       fetchDetails: false,
     })
 
-    let summary = `Новых реплеев: ${items.length} (всего на сайте: ${totalOnSite})`
-    if (pagesRead > 1) summary += ` · прочитано страниц: ${pagesRead}`
-    if (hitCap) summary += ` · достигнут предел ${PLANNED_REPLAYS_MAX_PAGES} страниц`
-    if (rejected > 0) summary += ` · отброшено некорректных записей API: ${rejected}`
+    let summary = `New replays: ${items.length} (on the site: ${totalOnSite})`
+    if (pagesRead > 1) summary += ` · pages read: ${pagesRead}`
+    if (hitCap) summary += ` · reached the ${PLANNED_REPLAYS_MAX_PAGES}-page cap`
+    if (rejected > 0) summary += ` · malformed API items dropped: ${rejected}`
     return { summary, items }
   },
 }

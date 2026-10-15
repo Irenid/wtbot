@@ -175,7 +175,7 @@ export class WtBrowserError extends Error {
 
 function safeErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim() !== '') return error.message.slice(0, 300)
-  return 'неизвестная ошибка'
+  return 'unknown error'
 }
 
 function profileDir(): string {
@@ -192,7 +192,7 @@ async function edgeExecutable(): Promise<string> {
   )
   const executable = candidates.find((_, index) => available[index])
   if (executable !== undefined) return executable
-  throw new WtBrowserError('исполняемый файл Edge/Chrome/Chromium не найден; задайте WT_BROWSER_EXECUTABLE')
+  throw new WtBrowserError('no Edge/Chrome/Chromium executable found; set WT_BROWSER_EXECUTABLE')
 }
 
 async function cdpIsReady(port: number): Promise<boolean> {
@@ -212,7 +212,7 @@ async function waitForCdp(port: number, waitMs = CDP_WAIT_MS): Promise<void> {
     if (await cdpIsReady(port)) return
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 250))
   }
-  throw new WtBrowserError(`Edge не открыл DevTools-порт ${port}`)
+  throw new WtBrowserError(`Edge did not open DevTools port ${port}`)
 }
 
 function ephemeralPort(): Promise<number> {
@@ -222,7 +222,7 @@ function ephemeralPort(): Promise<number> {
     server.listen(0, '127.0.0.1', () => {
       const address = server.address()
       if (address === null || typeof address === 'string') {
-        server.close(() => rejectPort(new WtBrowserError('не удалось выбрать свободный порт для CDP')))
+        server.close(() => rejectPort(new WtBrowserError('could not pick a free port for CDP')))
         return
       }
       const { port } = address
@@ -340,8 +340,8 @@ async function spawnEdge(): Promise<{ child: ChildProcess; port: number }> {
   const noDisplay = displayProblem(process.platform, process.env)
   if (noDisplay !== null) throw new WtBrowserError(noDisplay)
   const executable = await edgeExecutable()
-  // Профиль без живых процессов: SingletonLock остался от прошлого запуска
-  // (или контейнера) и помешает браузеру открыть DevTools-порт.
+  // A profile without live processes: SingletonLock is left from the previous
+  // run (or container) and would keep the browser from opening its DevTools port.
   if (process.platform === 'linux' && findProfileBrowserPids(profileDir()).length === 0) {
     removeChromiumSingletonFiles(profileDir())
   }
@@ -350,21 +350,21 @@ async function spawnEdge(): Promise<{ child: ChildProcess; port: number }> {
     const child = spawn(executable, spawnArgs(port), { stdio: 'ignore', windowsHide: true })
     child.unref()
     try {
-      // Первая попытка ждёт меньше: типичная причина молчания порта — Edge,
-      // удерживающий профиль, и тогда лишнее ожидание бессмысленно.
+      // The first attempt waits less: a silent port usually means an Edge
+      // holding the profile, and waiting longer is pointless then.
       await waitForCdp(port, attempt === 1 ? 10_000 : CDP_WAIT_MS)
       await rememberPort(port)
       return { child, port }
     } catch (error) {
       if (!child.killed) child.kill()
       if (attempt === 2) throw error
-      // Порт не открылся почти всегда по одной причине: профиль удерживает
-      // Edge, оставшийся от прошлого запуска.
-      console.warn('[wt-browser] CDP не открылся — снимаю Edge, удерживающий профиль, и пробую ещё раз')
+      // The port almost always stays shut for one reason: an Edge left from
+      // the previous run holds the profile.
+      console.warn('[wt-browser] CDP did not open: killing the Edge that holds the profile and retrying')
       await killStaleProfileBrowsers()
     }
   }
-  throw new WtBrowserError('не удалось запустить Edge с DevTools-портом')
+  throw new WtBrowserError('could not start Edge with a DevTools port')
 }
 
 async function connectBrowser(): Promise<BrowserState> {
@@ -415,7 +415,7 @@ async function ensureBrowser(): Promise<BrowserState> {
     if (state !== null && !browserStateIsUsable(state)) {
       const stale = state
       state = null
-      rejectPageWaiters(new WtBrowserError('Соединение с Edge потеряно'))
+      rejectPageWaiters(new WtBrowserError('lost the connection to Edge'))
       await Promise.all(stale.pool.map((entry) => entry.page.close().catch(() => undefined)))
       await stale.browser.close().catch(() => undefined)
       if (stale.child !== null && !stale.child.killed) stale.child.kill()
@@ -427,8 +427,8 @@ async function ensureBrowser(): Promise<BrowserState> {
     state = started
     try {
       await removeDuplicateCookies(started.context)
-      // До первых навигаций пула: копия сессии jar в браузере не должна
-      // уходить на сайт, пока сессию несёт прямой путь.
+      // Before the pool's first navigations: the browser's copy of the jar
+      // session must not reach the site while the direct path carries it.
       await prepareBrowserSession(started.context, sessionCarrierProbe())
       await ensurePool(started)
       if (started.userAgent.trim() !== '') {
@@ -437,7 +437,7 @@ async function ensureBrowser(): Promise<BrowserState> {
       return started
     } catch (error) {
       state = null
-      rejectPageWaiters(new WtBrowserError('Browser pool не запустился'))
+      rejectPageWaiters(new WtBrowserError('the browser pool did not start'))
       await Promise.all(started.pool.map((entry) => entry.page.close().catch(() => undefined)))
       await started.browser.close().catch(() => undefined)
       if (started.child !== null && !started.child.killed) started.child.kill()
@@ -451,7 +451,7 @@ async function ensureBrowser(): Promise<BrowserState> {
     state = null
     if (!launchFailureLogged) {
       launchFailureLogged = true
-      console.warn(`[wt-browser] Не удалось поднять Edge (${safeErrorMessage(error)})`)
+      console.warn(`[wt-browser] Could not start Edge (${safeErrorMessage(error)})`)
     }
     throw error
   } finally {
@@ -515,7 +515,7 @@ function rejectPageWaiters(error: Error): void {
 function releasePage(entry: PoolEntry): void {
   entry.busy = false
   if (entry.page.isClosed() || state === null || !state.pool.includes(entry)) {
-    rejectPageWaiters(new WtBrowserError('Browser pool потерял рабочую вкладку'))
+    rejectPageWaiters(new WtBrowserError('the browser pool lost a working tab'))
     return
   }
   const waiter = waiters.shift()
@@ -550,7 +550,7 @@ async function acquirePage(): Promise<PoolEntry> {
       timer: setTimeout(() => {
         const index = waiters.indexOf(waiter)
         if (index >= 0) waiters.splice(index, 1)
-        rejectEntry(new WtBrowserError(`Ожидание свободной вкладки Edge превысило ${config.wtBrowserTimeoutMs} мс`))
+        rejectEntry(new WtBrowserError(`waited over ${config.wtBrowserTimeoutMs} ms for a free Edge tab`))
       }, config.wtBrowserTimeoutMs),
     }
     waiter.timer.unref()
@@ -1126,7 +1126,7 @@ export function refreshWtClearance(
 
 function toResponse(result: BrowserFetchResult, maxBytes: number, label: string): Response {
   if (result.aborted) {
-    throw new WtBrowserError(`${label}: ответ браузера превышает лимит ${maxBytes} байт`)
+    throw new WtBrowserError(`${label}: the browser's response is over the ${maxBytes}-byte limit`)
   }
   const emptyBodyStatus = result.status === 204 || result.status === 205 || result.status === 304
   const response = new Response(emptyBodyStatus ? null : result.body, {
@@ -1138,16 +1138,16 @@ function toResponse(result: BrowserFetchResult, maxBytes: number, label: string)
 }
 
 /**
- * Выполняет запрос внутри страницы браузера, где Cloudflare выдала clearance.
- * Тело возвращается как текст, поэтому путь пригоден только для HTML и JSON;
- * бинарные файлы (.wrpl) качаются с CDN обычным fetch без Cloudflare.
- * `session` — адресу нужна сессия WT: браузер получает её из jar.
+ * Runs a request inside a browser page that holds Cloudflare clearance. The
+ * body comes back as text, so the path suits only HTML and JSON; binary files
+ * (.wrpl) come from the CDN through a plain fetch without Cloudflare.
+ * `session` — the address needs the WT session: the browser takes it from the jar.
  */
 export async function fetchWtResponseInBrowser(
   url: string | URL,
   init: RequestInit,
   maxBytes = 8 * 1024 * 1024,
-  label = 'запрос WT',
+  label = 'WT request',
   options: { session?: boolean } = {},
 ): Promise<Response> {
   const target = String(url)
@@ -1165,8 +1165,8 @@ export async function fetchWtResponseInBrowser(
     } catch (error) {
       failure = error
       metrics.transportErrors += 1
-      // Вкладка могла остаться на полпути (зависший fetch, навигация), поэтому
-      // возвращаем её в известное состояние, прежде чем отдавать в пул.
+      // The tab may be stuck halfway (a hung fetch, a navigation): return it to
+      // a known state before it goes back to the pool.
       await entry.page.goto(POOL_PARK_URL, { waitUntil: 'domcontentloaded' }).catch(() => undefined)
       await saveSessionIfCarrier(entry.page.context(), carrier)
     } finally {
@@ -1174,15 +1174,15 @@ export async function fetchWtResponseInBrowser(
     }
 
     if (failure !== null) {
-      // Одиночный зависший in-page запрос не должен убивать весь вызов:
-      // следующая попытка уйдёт на другую вкладку пула.
+      // One hung in-page request must not fail the whole call: the next
+      // attempt goes to another pool tab.
       if (attempt === MAX_REQUEST_ATTEMPTS) {
         throw new WtBrowserError(
-          `${label}: запрос в браузере не выполнен (${safeErrorMessage(failure)})`,
+          `${label}: the browser request failed (${safeErrorMessage(failure)})`,
           { cause: failure },
         )
       }
-      console.warn(`[wt-browser] ${label}: попытка ${attempt} не удалась (${safeErrorMessage(failure)}) — повторяю`)
+      console.warn(`[wt-browser] ${label}: attempt ${attempt} failed (${safeErrorMessage(failure)}), retrying`)
       continue
     }
 
@@ -1198,7 +1198,7 @@ export async function fetchWtResponseInBrowser(
     const cleared = await refreshWtClearance(label, true, carrier)
     if (!cleared) return toResponse(result, maxBytes, label)
   }
-  throw new WtBrowserError(`${label}: запрос в браузере не выполнен за ${MAX_REQUEST_ATTEMPTS} попытки`)
+  throw new WtBrowserError(`${label}: the browser request failed after ${MAX_REQUEST_ATTEMPTS} attempts`)
 }
 
 /** Прогревает браузер и clearance заранее, чтобы первый запрос не ждал проверку. */

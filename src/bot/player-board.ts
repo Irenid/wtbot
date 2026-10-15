@@ -27,7 +27,14 @@ import {
   type StoredItem,
   type VoicePresenceRow,
 } from '../db/index.js'
-import { collectPlayerItem, normalizeNickname as normalizedNickname } from '../parsers/sources/wt-player.js'
+import { botText, type BotText, type Locale, type PlayerFetchError } from '../i18n/index.js'
+import {
+  collectPlayerItem,
+  normalizeNickname as normalizedNickname,
+  PlayerNotFoundError,
+  PlayerSchemaError,
+  PlayerSessionError,
+} from '../parsers/sources/wt-player.js'
 import type { PlayerStatsComparison, PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { runWorkerTask } from '../workers/pool.js'
 
@@ -58,14 +65,16 @@ export interface PlayerBoardEntry {
   item: StoredItem
   baselineData: Record<string, unknown> | null
   baselineAt: number | null
-  /** Присутствие в голосовом канале; отсутствует у legacy/render smoke entries. */
+  /** Voice channel presence; absent from legacy and render smoke entries. */
   voice?: VoicePresenceRow
-  /** Ленивый account/replay read-model для текущего голоса. */
+  /** The lazy account/replay read model for the current voice. */
   account?: PlayerStatsComparison | null
-  accountError?: string | null
+  accountError?: AccountLookupError | null
   fetchState?: 'ready' | 'loading' | 'error' | 'unavailable'
-  fetchError?: string | null
+  fetchError?: PlayerFetchError | null
 }
+
+type AccountLookupError = keyof BotText['playerBoard']['lookup']
 
 interface LoadedPlayerBoardEntries {
   entries: PlayerBoardEntry[]
@@ -84,8 +93,10 @@ export interface PlayerBoardRender {
 }
 
 export interface PlayerBoardRenderOptions {
-  /** `voice` ограничивает описание и пустое состояние текущим голосом. */
+  /** `voice` limits the description and the empty state to the current voice. */
   mode?: 'configured' | 'voice'
+  /** The board's language; English without it. */
+  locale?: Locale
 }
 
 export interface PlayerBoardRefreshResult {
@@ -103,7 +114,7 @@ const lastMessageValidation = new Map<string, number>()
 const voiceFetches = new Map<string, {
   inFlight: Promise<void> | null
   nextAttemptAt: number
-  error: string | null
+  error: PlayerFetchError | null
 }>()
 let boardClient: Client | null = null
 let pendingTick = false
@@ -127,12 +138,12 @@ function metricValues(value: unknown): MetricValues {
   return result
 }
 
-function playerView(value: unknown, fallbackNickname: string): PlayerView | null {
+function playerView(value: unknown, fallbackNickname: string, unknownPlayer: string): PlayerView | null {
   if (!isRecord(value)) return null
   const profile = value['profile']
   const statistics = value['statistics']
   if (!isRecord(profile) || !isRecord(statistics)) return null
-  const nickname = nullableString(profile['nickname']) ?? (fallbackNickname.trim() || 'Неизвестный игрок')
+  const nickname = nullableString(profile['nickname']) ?? (fallbackNickname.trim() || unknownPlayer)
   const level = typeof profile['level'] === 'number' && Number.isFinite(profile['level']) ? profile['level'] : null
   const replayCount = typeof value['replayCount'] === 'number' && Number.isFinite(value['replayCount'])
     ? Math.max(0, Math.trunc(value['replayCount']))
@@ -159,15 +170,14 @@ function integerMetric(value: string | null | undefined): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null
 }
 
-function formatInteger(value: number | null): string {
-  return value === null ? '—' : value.toLocaleString('ru-RU')
+function formatInteger(value: number | null, t: BotText): string {
+  return value === null ? '—' : t.number(value)
 }
 
-function formatDelta(current: number | null, previous: number | null): string {
+function formatDelta(current: number | null, previous: number | null, t: BotText): string {
   if (current === null || previous === null) return ''
   const delta = current - previous
-  const sign = delta > 0 ? '+' : ''
-  return ` (${sign}${delta.toLocaleString('ru-RU')}/24ч)`
+  return t.playerBoard.delta(`${delta > 0 ? '+' : ''}${t.number(delta)}`)
 }
 
 function totalTargets(metrics: MetricValues): number | null {
@@ -185,6 +195,7 @@ function modeLine(
   icon: string,
   current: MetricValues,
   previous: MetricValues | null,
+  t: BotText,
 ): string {
   const battles = integerMetric(current['Completed missions'])
   const victories = integerMetric(current['Victories'])
@@ -193,96 +204,76 @@ function modeLine(
   const ratio = nullableString(current['Victories/battles ratio']) ?? '—'
   const deaths = integerMetric(current['Deaths'])
   const targets = totalTargets(current)
+  const text = t.playerBoard
   return (
-    `${icon} **${label}**: ${formatInteger(battles)} боёв${formatDelta(battles, previousBattles)}` +
-    ` · ${formatInteger(victories)} побед${formatDelta(victories, previousVictories)}` +
-    ` · ${escapeMarkdown(ratio)} · смертей ${formatInteger(deaths)} · целей ${formatInteger(targets)}`
+    `${icon} **${label}**: ${text.battles(formatInteger(battles, t))}${formatDelta(battles, previousBattles, t)}` +
+    ` · ${text.victories(formatInteger(victories, t))}${formatDelta(victories, previousVictories, t)}` +
+    ` · ${escapeMarkdown(ratio)} · ${text.deaths(formatInteger(deaths, t))} · ${text.targets(formatInteger(targets, t))}`
   )
 }
 
-function accountStateLabel(state: PlayerStatsComparison['account']['state']): string {
-  switch (state) {
-    case 'fresh': return 'аккаунт свежий'
-    case 'stale': return 'аккаунт устарел'
-    case 'pending': return 'аккаунт запрашивается'
-    case 'empty': return 'аккаунт ещё не получен'
-    case 'disabled': return 'внешний источник выключен'
-    case 'disabled_cached': return 'кэш внешнего источника'
-    case 'private': return 'профиль закрыт'
-    case 'not_found': return 'внешний профиль не найден'
-    case 'rate_limited': return 'лимит внешнего источника'
-    case 'schema_error': return 'ошибка формата внешнего источника'
-    case 'error': return 'ошибка внешнего источника'
-  }
-}
-
-function accountLine(comparison: PlayerStatsComparison): string {
+/** The account line; a source's own error text stays in the log and the site, never on the board. */
+function accountLine(comparison: PlayerStatsComparison, t: BotText): string {
   const account = comparison.account
   const aggregate = account.totals.find((row) =>
     row.gameType === null && row.mode === null && row.category === null,
   ) ?? account.totals[0]
   const replay = comparison.replay.stats
-  const parts = [`🌐 ${accountStateLabel(account.state)}`]
+  const parts = [`🌐 ${t.playerBoard.accountStates[account.state]}`]
   if (aggregate?.battles !== null && aggregate?.battles !== undefined) {
-    parts.push(`${formatInteger(aggregate.battles)} аккаунт-б.`)
+    parts.push(t.playerBoard.accountBattles(formatInteger(aggregate.battles, t)))
   }
   if (aggregate?.victories !== null && aggregate?.victories !== undefined) {
     const accountRate = aggregate.battles !== null && aggregate.battles > 0
       ? ` · ${((aggregate.victories / aggregate.battles) * 100).toFixed(1)}%`
       : ''
-    parts.push(`${formatInteger(aggregate.victories)} побед${accountRate}`)
+    parts.push(`${t.playerBoard.accountVictories(formatInteger(aggregate.victories, t))}${accountRate}`)
   }
   if (replay !== null) {
     const replayRate = replay.winRate === null ? '—' : `${(replay.winRate * 100).toFixed(1)}%`
-    parts.push(`локально: ${formatInteger(replay.battles)} б. · ${replayRate}`)
-  }
-  if (account.error !== null && account.error.trim() !== '') {
-    parts.push(escapeMarkdown(account.error.slice(0, 180)))
+    parts.push(t.playerBoard.replayStats(formatInteger(replay.battles, t), replayRate))
   }
   return parts.join(' · ')
 }
 
-function playerField(entry: PlayerBoardEntry): { name: string; value: string; inline: false } {
-  const current = playerView(entry.item.data, entry.item.title)
+function playerField(entry: PlayerBoardEntry, t: BotText): { name: string; value: string; inline: false } {
+  const text = t.playerBoard
+  const current = playerView(entry.item.data, entry.item.title, text.unknownPlayer)
   const voice = entry.voice
   const voiceLine = voice === undefined
     ? null
     : `🎙️ ${escapeMarkdown(voice.channelName)} (<#${voice.channelId}>)`
   if (current === null) {
     return {
-      name: escapeMarkdown(entry.item.title || 'Неизвестный игрок').slice(0, 256),
-      value: [voiceLine, 'Сохранённые данные имеют неизвестный формат.']
+      name: escapeMarkdown(entry.item.title || text.unknownPlayer).slice(0, 256),
+      value: [voiceLine, text.unknownFormat]
         .filter((line): line is string => line !== null)
         .join('\n'),
       inline: false,
     }
   }
-  const previous = entry.baselineData ? playerView(entry.baselineData, current.nickname) : null
+  const previous = entry.baselineData ? playerView(entry.baselineData, current.nickname, text.unknownPlayer) : null
   const profile = [
     voiceLine,
-    current.clan ? `полк ${escapeMarkdown(current.clan)}` : 'без полка',
-    current.level === null ? null : `ур. ${current.level}`,
-    current.registrationDate ? `регистрация ${escapeMarkdown(current.registrationDate)}` : null,
-    `реплеев найдено: ${current.replayCount.toLocaleString('ru-RU')}`,
+    current.clan ? text.squadron(escapeMarkdown(current.clan)) : text.noSquadron,
+    current.level === null ? null : text.level(current.level),
+    current.registrationDate ? text.registered(escapeMarkdown(current.registrationDate)) : null,
+    text.replaysFound(t.number(current.replayCount)),
   ].filter((part): part is string => part !== null)
   const lines = [
     profile.join(' · '),
-    modeLine('АБ', '🕹️', current.statistics['arcade'], previous?.statistics['arcade'] ?? null),
-    modeLine('РБ', '🎯', current.statistics['realistic'], previous?.statistics['realistic'] ?? null),
-    modeLine('СБ', '🛠️', current.statistics['simulation'], previous?.statistics['simulation'] ?? null),
+    modeLine(text.modes.arcade, '🕹️', current.statistics['arcade'], previous?.statistics['arcade'] ?? null, t),
+    modeLine(text.modes.realistic, '🎯', current.statistics['realistic'], previous?.statistics['realistic'] ?? null, t),
+    modeLine(text.modes.simulation, '🛠️', current.statistics['simulation'], previous?.statistics['simulation'] ?? null, t),
   ]
-  if (entry.account !== undefined && entry.account !== null) lines.push(accountLine(entry.account))
+  if (entry.account !== undefined && entry.account !== null) lines.push(accountLine(entry.account, t))
   if (entry.accountError !== undefined && entry.accountError !== null) {
-    lines.push(`🌐 Статистика: ${escapeMarkdown(entry.accountError.slice(0, 180))}`)
+    lines.push(text.statistics(text.lookup[entry.accountError]))
   }
-  if (entry.fetchState === 'loading') lines.push('⏳ Профиль WT запрашивается…')
-  if (entry.fetchState === 'unavailable') {
-    lines.push(`⚪ Профиль WT не запрошен: ${escapeMarkdown(entry.fetchError ?? 'нет WT_COOKIE')}`)
-  }
-  if (entry.fetchState === 'error') {
-    lines.push(`🔴 Профиль WT: ${escapeMarkdown(entry.fetchError ?? 'ошибка запроса')}`)
-  }
-  if (previous === null) lines.push('Δ24ч: накапливается первый исторический интервал')
+  if (entry.fetchState === 'loading') lines.push(text.profileLoading)
+  if (entry.fetchState === 'unavailable') lines.push(text.profileUnavailable)
+  if (entry.fetchState === 'error') lines.push(text.profileError[entry.fetchError ?? 'other'])
+  if (previous === null) lines.push(text.firstDay)
   return {
     name: escapeMarkdown(current.nickname).slice(0, 256),
     value: lines.join('\n').slice(0, 1024),
@@ -290,22 +281,18 @@ function playerField(entry: PlayerBoardEntry): { name: string; value: string; in
   }
 }
 
-function parserState(parse: ParseRecord | null, nowSec: number): { text: string; color: number } {
-  if (parse === null) return { text: '⚪ Парсер ещё не запускался', color: 0x95a5a6 }
+function parserState(parse: ParseRecord | null, nowSec: number, t: BotText): { text: string; color: number } {
+  const text = t.playerBoard.parser
+  if (parse === null) return { text: text.never, color: 0x95a5a6 }
   const relative = `<t:${parse.parsedAt}:R>`
-  if (!parse.ok) {
-    return { text: `🔴 Последнее обновление завершилось ошибкой ${relative}; показаны последние данные`, color: 0xe74c3c }
-  }
-  if (/ошибки\s*:/iu.test(parse.summary ?? '')) {
-    return { text: `🟡 Обновление частичное (${relative}); часть ников не найдена`, color: 0xf1c40f }
-  }
-  if (nowSec - parse.parsedAt > STALE_AFTER_SEC) {
-    return { text: `🟡 Данные давно не проверялись (${relative})`, color: 0xf1c40f }
-  }
-  return { text: `🟢 Данные проверены ${relative}`, color: 0x2ecc71 }
+  if (!parse.ok) return { text: text.failed(relative), color: 0xe74c3c }
+  // wt-players' summary lists failed nicks after "errors:" ("ошибки:" in history written before 2026-10-15)
+  if (/(?:errors|ошибки)\s*:/iu.test(parse.summary ?? '')) return { text: text.partial(relative), color: 0xf1c40f }
+  if (nowSec - parse.parsedAt > STALE_AFTER_SEC) return { text: text.stale(relative), color: 0xf1c40f }
+  return { text: text.fresh(relative), color: 0x2ecc71 }
 }
 
-/** Чистый рендер: используется publisher-ом и изолированным smoke-тестом. */
+/** A pure render: used by the publisher and the isolated smoke test. */
 export function renderPlayerBoard(
   entries: PlayerBoardEntry[],
   parse: ParseRecord | null,
@@ -314,26 +301,25 @@ export function renderPlayerBoard(
   missingNicknames: string[] = [],
   options: PlayerBoardRenderOptions = {},
 ): PlayerBoardRender {
-  const state = parserState(parse, nowSec)
+  const t = botText(options.locale)
+  const text = t.playerBoard
+  const state = parserState(parse, nowSec, t)
   const shown = entries.slice(0, MAX_RENDERED_PLAYERS)
   const voiceMode = options.mode === 'voice' || entries.some((entry) => entry.voice !== undefined)
   const description = [
     state.text,
-    voiceMode
-      ? 'Показываются только игроки, которые сейчас находятся в отслеживаемых голосовых каналах; свежие профили догружаются лениво.'
-      : 'Источник War Thunder обновляется автоматически примерно раз в 30 минут.',
+    voiceMode ? text.voiceIntro : text.configuredIntro,
     configuredCount > entries.length
       ? voiceMode
-        ? `В голосе сейчас ${configuredCount}; в табло загружено ${entries.length}.`
-        : `Собрано ${entries.length} из ${configuredCount} настроенных игроков.`
+        ? text.voiceLoaded(configuredCount, entries.length)
+        : text.collected(entries.length, configuredCount)
       : null,
     !voiceMode && missingNicknames.length > 0
-      ? `Нет текущего снимка: ${missingNicknames.slice(0, 5).map((nickname) => escapeMarkdown(nickname)).join(', ')}${missingNicknames.length > 5 ? '…' : ''}.`
+      ? text.missing(`${missingNicknames.slice(0, 5).map((nickname) => escapeMarkdown(nickname)).join(', ')}${missingNicknames.length > 5 ? '…' : ''}`)
       : null,
   ].filter((line): line is string => line !== null)
-  const candidateFields = shown.map(playerField)
-  const baseCharacters = '📊 Игроки War Thunder'.length + description.join('\n').length +
-    'Δ24ч сравнивается с последним снимком не новее суток'.length
+  const candidateFields = shown.map((entry) => playerField(entry, t))
+  const baseCharacters = text.title.length + description.join('\n').length + text.footer.length
   const fields: { name: string; value: string; inline: false }[] = []
   let usedCharacters = baseCharacters
   for (const field of candidateFields) {
@@ -344,20 +330,15 @@ export function renderPlayerBoard(
   }
   const totalPlayers = voiceMode ? configuredCount : entries.length
   const omitted = Math.max(0, totalPlayers - fields.length)
-  if (omitted > 0) description.push(`Показано ${fields.length} из ${totalPlayers} игроков из-за лимитов Discord.`)
+  if (omitted > 0) description.push(text.omitted(fields.length, totalPlayers))
   const embed = new EmbedBuilder()
-    .setTitle('📊 Игроки War Thunder')
+    .setTitle(text.title)
     .setColor(state.color)
     .setDescription(description.join('\n'))
-    .setFooter({ text: 'Δ24ч сравнивается с последним снимком не новее суток' })
+    .setFooter({ text: text.footer })
 
   if (fields.length === 0) {
-    embed.addFields({
-      name: voiceMode ? 'В голосовых каналах никого нет' : 'Нет данных',
-      value: voiceMode
-        ? 'Когда игрок зайдёт в отслеживаемый голосовой канал, табло обновится автоматически.'
-        : 'Добавь ники в WT_PLAYER_NAMES и дождись успешного запуска wt-players.',
-    })
+    embed.addFields(voiceMode ? text.emptyVoice : text.emptyConfigured)
   } else {
     embed.addFields(fields)
   }
@@ -398,7 +379,15 @@ function placeholderItem(voice: VoicePresenceRow): StoredItem {
 
 function fetchErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  return (message.trim() || 'неизвестная ошибка').slice(0, 300)
+  return (message.trim() || 'unknown error').slice(0, 300)
+}
+
+/** What the board may say about a failed profile request; the message itself goes to the log. */
+function fetchErrorKind(error: unknown): PlayerFetchError {
+  if (error instanceof PlayerNotFoundError) return 'notFound'
+  if (error instanceof PlayerSessionError) return 'session'
+  if (error instanceof PlayerSchemaError) return 'schema'
+  return 'other'
 }
 
 function queueVoicePlayerFetch(nickname: string): void {
@@ -415,9 +404,9 @@ function queueVoicePlayerFetch(nickname: string): void {
       state.nextAttemptAt = 0
     })
     .catch((error: unknown) => {
-      state.error = fetchErrorMessage(error)
+      state.error = fetchErrorKind(error)
       state.nextAttemptAt = Math.floor(Date.now() / 1000) + VOICE_PLAYER_RETRY_SEC
-      console.warn(`[player-board] ${nickname}: ${state.error}`)
+      console.warn(`[player-board] ${nickname}: ${fetchErrorMessage(error)}`)
     })
     .then(() => {
       state.inFlight = null
@@ -432,19 +421,14 @@ function fetchStateFor(
   nickname: string,
   item: StoredItem,
   nowSec: number,
-): { state: NonNullable<PlayerBoardEntry['fetchState']>; error: string | null } {
+): { state: NonNullable<PlayerBoardEntry['fetchState']>; error: PlayerFetchError | null } {
   const fresh = item.id !== 0 && item.updatedAt > nowSec - VOICE_PLAYER_CACHE_TTL_SEC
   const previous = voiceFetches.get(normalizedNickname(nickname))
   if (fresh) return { state: 'ready', error: null }
   if (previous?.inFlight !== null && previous?.inFlight !== undefined) {
     return { state: 'loading', error: null }
   }
-  if (config.wtCookie.trim() === '') {
-    return {
-      state: 'unavailable',
-      error: 'WT_COOKIE не задан в .env',
-    }
-  }
+  if (config.wtCookie.trim() === '') return { state: 'unavailable', error: null }
   if (previous?.error !== null && previous?.error !== undefined && nowSec < previous.nextAttemptAt) {
     return { state: 'error', error: previous.error }
   }
@@ -454,7 +438,7 @@ function fetchStateFor(
 
 function lookupAccountStats(nickname: string): {
   account: PlayerStatsComparison | null
-  error: string | null
+  error: AccountLookupError | null
 } {
   if (playerStatsCoordinator === null) return { account: null, error: null }
   try {
@@ -466,7 +450,7 @@ function lookupAccountStats(nickname: string): {
           .then(() => requestPlayerBoardRefresh())
           .catch((error: unknown) => {
             if (!stopping) {
-              console.warn(`[player-board] не удалось дождаться account-статистики: ${fetchErrorMessage(error)}`)
+              console.warn(`[player-board] waiting for account statistics failed: ${fetchErrorMessage(error)}`)
             }
           })
           .finally(() => {
@@ -475,12 +459,10 @@ function lookupAccountStats(nickname: string): {
       }
       return { account: result.stats, error: null }
     }
-    if (result.status === 'ambiguous') {
-      return { account: null, error: 'ник соответствует нескольким локальным identity' }
-    }
-    return { account: null, error: 'локальная identity ещё не создана' }
+    return { account: null, error: result.status === 'ambiguous' ? 'ambiguous' : 'unknown' }
   } catch (error) {
-    return { account: null, error: fetchErrorMessage(error) }
+    console.warn(`[player-board] account statistics of ${nickname}: ${fetchErrorMessage(error)}`)
+    return { account: null, error: 'error' }
   }
 }
 
@@ -488,8 +470,8 @@ function loadVoiceEntries(nowSec: number, guildId: string): LoadedPlayerBoardEnt
   const presence = getVoicePresence()
     .filter((entry) => entry.guildId === guildId)
     .sort((left, right) =>
-      left.channelName.localeCompare(right.channelName, 'ru')
-      || left.wtNick.localeCompare(right.wtNick, 'ru')
+      left.channelName.localeCompare(right.channelName, botText(config.botLocale).intl)
+      || left.wtNick.localeCompare(right.wtNick, botText(config.botLocale).intl)
       || left.userId.localeCompare(right.userId),
     )
   if (presence.length === 0) return { entries: [], missingNicknames: [] }
@@ -508,8 +490,8 @@ function loadVoiceEntries(nowSec: number, guildId: string): LoadedPlayerBoardEnt
       ? null
       : getWtPlayerSnapshotAtOrBefore(item.externalId, item.title, cutoff)
     const currentData = isRecord(item.data) ? item.data : null
-    // При первой миграции истории updated_at доказывает, что текущее значение
-    // не менялось весь интервал, поэтому нулевая дельта достоверна.
+    // Right after the history migration, updated_at proves the current value
+    // did not change over the whole interval, so a zero delta is true.
     const unchangedForDay = item.id !== 0 && snapshot === null && currentData !== null && item.updatedAt <= cutoff
     const fetchState = fetchStateFor(voice.wtNick, item, nowSec)
     const account = lookupAccountStats(voice.wtNick)
@@ -539,7 +521,7 @@ function buildCurrentRender(
     nowSec,
     getVoicePresence().filter((entry) => entry.guildId === guildId).length,
     loaded.missingNicknames,
-    { mode: 'voice' },
+    { mode: 'voice', locale: config.botLocale },
   )
 }
 
@@ -550,7 +532,7 @@ function messageUrl(guildId: string, channelId: string, messageId: string): stri
 async function resolveChannel(client: Client, channelId: string): Promise<GuildTextBasedChannel> {
   const channel = await client.channels.fetch(channelId)
   if (channel === null || channel.isDMBased() || !channel.isTextBased() || !channel.isSendable()) {
-    throw new Error(`канал ${channelId} недоступен или не поддерживает сообщения`)
+    throw new Error(`channel ${channelId} is unavailable or takes no messages`)
   }
   return channel as GuildTextBasedChannel
 }
@@ -585,14 +567,14 @@ async function retirePreviousBoardMessage(
     const oldMessage = await fetchOwnedMessage(client, oldChannel, previous.messageId)
     if (oldMessage !== null) {
       await oldMessage.edit({
-        content: `Табло перенесено в <#${newChannelId}>. Это сообщение больше не обновляется.`,
+        content: botText(config.botLocale).playerBoard.moved(`<#${newChannelId}>`),
         embeds: [],
         allowedMentions: { parse: [] },
       })
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    console.warn(`[player-board] старое табло ${previous.guildId} не удалось пометить как перенесённое: ${message}`)
+    console.warn(`[player-board] could not mark the old board of ${previous.guildId} as moved: ${message}`)
   }
 }
 
@@ -670,7 +652,7 @@ export function refreshPlayerStatBoard(
 ): Promise<PlayerBoardRefreshResult> {
   return serialize(async () => {
     const board = getPlayerStatBoard(guildId)
-    if (board === null || !board.enabled) throw new Error('табло игроков на этом сервере не настроено')
+    if (board === null || !board.enabled) throw new Error('the player board is not set up on this server')
     return refreshBoardInternal(client, board, force)
   })
 }
@@ -709,12 +691,12 @@ async function tick(client: Client): Promise<void> {
       const result = await refreshBoardInternal(client, board, false)
       if (result.changed) {
         console.log(
-          `[player-board] ${result.recreated ? 'восстановлено' : 'обновлено'} табло сервера ${board.guildId}`,
+          `[player-board] ${result.recreated ? 'restored' : 'updated'} the board of server ${board.guildId}`,
         )
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error(`[player-board] сервер ${board.guildId}: ${message}`)
+      console.error(`[player-board] server ${board.guildId}: ${message}`)
     }
   })
 }
@@ -729,7 +711,7 @@ function scheduleBoardTick(client: Client): void {
     .catch((error: unknown) => {
       if (!stopping) {
         const message = error instanceof Error ? error.message : String(error)
-        console.error(`[player-board] сбой фонового тика: ${message}`)
+        console.error(`[player-board] background tick failed: ${message}`)
       }
     })
     .finally(() => {
@@ -741,7 +723,7 @@ function scheduleBoardTick(client: Client): void {
     })
 }
 
-/** Немедленно ставит перерисовку после изменения voice_presence. */
+/** Queues a redraw at once after voice_presence changes. */
 export function requestPlayerBoardRefresh(): void {
   if (boardClient !== null) scheduleBoardTick(boardClient)
 }
@@ -761,7 +743,7 @@ export function startPlayerBoardPublisher(
   scheduleBoardTick(client)
   boardTimer = setInterval(() => scheduleBoardTick(client), TICK_MS)
   boardTimer.unref()
-  console.log('[player-board] автообновление табло запущено')
+  console.log('[player-board] board auto-update started')
 }
 
 export async function stopPlayerBoardPublisher(): Promise<void> {

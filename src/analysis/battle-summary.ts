@@ -156,13 +156,14 @@ if (flags.has('--image')) {
       dict,
       psr,
       winnerTeam,
+      locale: config.botLocale,
     },
     'normal',
   )
   await mkdir('./data/battles', { recursive: true })
   const file = `./data/battles/${header.sessionIdHex}.png`
   await writeFile(file, png)
-  console.log(`Картинка: ${file}`)
+  console.log(`Image: ${file}`)
 }
 
 if (flags.has('--media')) {

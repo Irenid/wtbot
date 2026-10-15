@@ -69,20 +69,22 @@ full texts are in Git (commit `46b6950` and earlier).
   499981394946553783 (July) keeps 7 rows: the v9 phantom-bot rule dropped
   its second bot.
 
-- **English everywhere** (AGENTS.md, section 9). Docs are English; comments
-  and strings in `src/`, `frontend/` and configs are still Russian: ~5,500
-  lines (comments ~3,300, strings ~2,050: logs, Discord, site, images, tests).
+- **English everywhere** (AGENTS.md, section 9). Docs and the bot's Discord
+  and image text (`src/i18n`) are English; comments and strings elsewhere in
+  `src/`, `frontend/` and configs are still Russian: ~4,050 lines on
+  2026-10-15 (`src/` ~3,180 in code and ~710 in tests, `frontend/src` ~170:
+  comments, logs, CLIs, the `/statistics` dashboard, site API errors).
   Cheap plan instead of a whole-repo sweep: a script extracts only the
   Cyrillic spans, a model translates small batches in fresh contexts, the
   script puts them back with checks (span unchanged, quotes, `${}` and `{n}`
   placeholders), then `npm run verify` and `npm run build:web`. Terms follow
   `frontend/src/i18n/en.ts` (squadron, PSR, AB/RB/SB); `en.ts` becomes the
   canonical UI dictionary (today `ru.ts` is, and `en.ts` lacks 4 keys).
-  Server-side `ru`/`ru-RU` formatting → `en-GB`, `pluralRu` → English plurals.
-  Logs quoted in docs (`[ingest] бой …`, the verify skill) change together
-  with the code. Slash-command descriptions reach Discord only after
-  `npm run deploy:commands`. Also remove `.cbmignore` (codebase-memory-mcp is
-  not configured).
+  The remaining server-side `ru-RU` formatting (the dashboard in
+  `src/web/routes/pages.ts`, `player-stats-live-smoke.ts`) → `en-GB`. Logs
+  quoted in docs (`[ingest] бой …`, the verify skill) change together with
+  the code. Also remove `.cbmignore` (codebase-memory-mcp is not
+  configured).
 - **Tactical map: arrows to bases outside the view.** The game draws
   `arrow_mark.svg` (hud.blk `outOfMapArrow`, 15×18 UI px) at the frame's edge
   for every base outside it; `src/tactical-map/render.ts` draws none yet. The

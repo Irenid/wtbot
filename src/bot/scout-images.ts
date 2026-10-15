@@ -14,6 +14,7 @@ import { EmbedBuilder, type Attachment, type Message } from 'discord.js'
 import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { readResponseBuffer } from '../http-response.js'
+import { botText } from '../i18n/index.js'
 import { formatScoutImageReport, squadronLabel } from '../scout/format.js'
 import { OcrUnavailableError } from '../scout/ocr.js'
 import { scoutFromImage, scoutPredictionRecord, type ScoutImageOutcome, type ScoutImageReport, type ScoutStatSharkSource } from '../scout/report.js'
@@ -54,7 +55,7 @@ export function scoutImagesIdle(): Promise<void> {
 export function handleScoutImageMessage(message: Message, statShark: ScoutStatSharkSource | null = null): void {
   if (!isScoutImageMessage(message)) return
   if (queued >= MAX_QUEUED) {
-    void message.reply({ content: 'Too many screenshots at once, try again in a minute.', allowedMentions: { repliedUser: false } }).catch(() => {})
+    void message.reply({ content: botText(config.botLocale).scout.images.tooMany, allowedMentions: { repliedUser: false } }).catch(() => {})
     return
   }
   queued += 1
@@ -81,10 +82,11 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
       receivedAt: new Date().toISOString(),
       name: attachment.name,
     }
+    const t = botText(config.botLocale).scout.images
     let reply: string | EmbedBuilder
     let update: Promise<ScoutImageReport> | null = null
     try {
-      if (attachment.size > MAX_IMAGE_BYTES) throw new UserFacingError('The image is over 25 MB.')
+      if (attachment.size > MAX_IMAGE_BYTES) throw new UserFacingError(t.tooLarge)
       const response = await fetch(attachment.url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
       if (!response.ok) throw new Error(`HTTP ${response.status} downloading the attachment`)
       const bytes = await readResponseBuffer(response, MAX_IMAGE_BYTES, 'scoreboard screenshot')
@@ -105,8 +107,8 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
       reply = error instanceof UserFacingError
         ? error.message
         : error instanceof OcrUnavailableError
-          ? 'Reading screenshots is not available on this bot (no OCR installed).'
-          : 'Could not read this screenshot.'
+          ? t.noOcr
+          : t.unreadable
       if (!(error instanceof UserFacingError)) console.error('[scout-images] reading failed:', error)
     }
     await writeFileAtomic(`${base}.json`, JSON.stringify(record, null, 2)).catch((error: unknown) => {
@@ -136,22 +138,21 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
 class UserFacingError extends Error {}
 
 function replyFor(outcome: ScoutImageOutcome): string | EmbedBuilder {
+  const t = botText(config.botLocale).scout.images
   switch (outcome.kind) {
     case 'no-table':
-      return 'No scoreboard found. Send a screenshot of the Tab table with both teams.'
+      return t.noTable
     case 'no-players':
-      return 'No known players found on the scoreboard. A sharper, uncropped screenshot helps; or use /scout with the enemy tag.'
-    case 'one-side': {
-      const name = outcome.squadron ? squadronLabel(outcome.squadron.displayTag, outcome.squadron.name) : 'one squadron'
-      return `Only one team could be read (${name}). Enemies are on the right half of the scoreboard: send a screenshot with both teams.`
-    }
+      return t.noPlayers
+    case 'one-side':
+      return t.oneSide(outcome.squadron ? squadronLabel(outcome.squadron.displayTag, outcome.squadron.name) : null)
     case 'report':
       return reportEmbed(outcome.report)
   }
 }
 
 function reportEmbed(report: ScoutImageReport): EmbedBuilder {
-  const text = formatScoutImageReport(report)
+  const text = formatScoutImageReport(report, botText(config.botLocale))
   const embed = new EmbedBuilder().setTitle(text.title).setDescription(text.description).setColor(text.color)
   if (text.fields.length > 0) embed.addFields(text.fields)
   return embed

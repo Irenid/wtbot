@@ -20,14 +20,14 @@ test('readResponseBuffer пишет identity body прямо в буфер Conte
   assert.equal((await readResponseBuffer(response, 16, 'fixture')).toString('utf8'), 'abcdef')
 })
 
-test('readResponseBuffer отвергает несовпадение с identity Content-Length', async () => {
+test('readResponseBuffer rejects a body that does not match an identity Content-Length', async () => {
   await assert.rejects(
     readResponseBuffer(responseOf(['abc'], { 'content-length': '4' }), 16, 'short'),
-    /тело 3 байт не совпадает с Content-Length 4/,
+    /a 3-byte body does not match Content-Length 4/,
   )
   await assert.rejects(
     readResponseBuffer(responseOf(['abcde'], { 'content-length': '4' }), 16, 'long'),
-    /тело больше Content-Length 4/,
+    /the body is longer than Content-Length 4/,
   )
 })
 
@@ -39,9 +39,9 @@ test('readResponseBuffer сохраняет chunk fallback для encoded body',
   assert.equal((await readResponseBuffer(response, 16, 'encoded')).toString('utf8'), 'abcdef')
 })
 
-test('readResponseBuffer проверяет Content-Length до чтения body', async () => {
+test('readResponseBuffer checks Content-Length before reading the body', async () => {
   await assert.rejects(
     readResponseBuffer(responseOf(['abc'], { 'content-length': '3' }), 2, 'large'),
-    /Content-Length 3 больше лимита 2/,
+    /Content-Length 3 is over the 2-byte limit/,
   )
 })

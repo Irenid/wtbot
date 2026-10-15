@@ -85,8 +85,8 @@ export function browserSpawnArgs(options: BrowserSpawnOptions): string[] {
 export function displayProblem(platform: NodeJS.Platform, env: Env): string | null {
   if (platform !== 'linux') return null
   if ((env['DISPLAY'] ?? '').trim() !== '' || (env['WAYLAND_DISPLAY'] ?? '').trim() !== '') return null
-  return 'нет графического дисплея (DISPLAY): Cloudflare не пропускает headless-браузер. '
-    + 'Запустите бота в Docker-образе wtbot (там есть Xvfb) или через xvfb-run'
+  return 'no graphical display (DISPLAY): Cloudflare blocks a headless browser. '
+    + 'Run the bot in the wtbot Docker image (it has Xvfb) or through xvfb-run'
 }
 
 /**

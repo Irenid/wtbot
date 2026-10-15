@@ -1,10 +1,12 @@
 import { SlashCommandBuilder } from 'discord.js'
+import { config } from '../../config.js'
+import { botText } from '../../i18n/index.js'
 import type { Command } from '../types.js'
 
 export const ping: Command = {
-  data: new SlashCommandBuilder().setName('ping').setDescription('Проверка, что бот жив'),
+  data: new SlashCommandBuilder().setName('ping').setDescription(botText(config.botLocale).commands.ping.description),
   async execute(interaction) {
     const ws = interaction.client.ws.ping
-    await interaction.reply(`🏓 Понг! WebSocket: ${ws >= 0 ? `${Math.round(ws)} мс` : 'н/д'}`)
+    await interaction.reply(botText(config.botLocale).ping(ws >= 0 ? Math.round(ws) : null))
   },
 }

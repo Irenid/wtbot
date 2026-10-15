@@ -39,12 +39,12 @@ function utcDay(year: number, month: number, day: number, label: string): number
   const ms = Date.UTC(year, month - 1, day)
   const date = new Date(ms)
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
-    throw new Error(`${label}: несуществующая дата ${day}.${month}.${year}`)
+    throw new Error(`${label}: no such date ${day}.${month}.${year}`)
   }
   return ms / 1_000
 }
 
-/** Дата этапа без года: берём тот год, при котором она попадает в сезон (сезон может пересечь Новый год). */
+/** A stage date without a year: the year that puts it inside the season (a season may cross New Year). */
 function stageDay(
   day: number,
   month: number,
@@ -55,7 +55,7 @@ function stageDay(
     const at = utcDay(year, month, day, label)
     if (at >= season.startsAt && at < season.endsAt) return at
   }
-  throw new Error(`${label}: дата ${day}.${month} вне сезона`)
+  throw new Error(`${label}: date ${day}.${month} is outside the season`)
 }
 
 function formatDay(sec: number): string {
@@ -69,11 +69,11 @@ function formatRuDay(sec: number): string {
 
 function parseSeasonBlock(header: RegExpExecArray, body: string): ClanSeasonSchedule {
   const [, d1, m1, y1, d2, m2, y2] = header.map(Number) as [number, number, number, number, number, number, number]
-  const label = `сезон ${header[0]}`
+  const label = `season ${header[0]}`
   const startsAt = utcDay(y1, m1, d1, label)
   const endsAt = utcDay(y2, m2, d2, label) + DAY_SEC
-  if (endsAt <= startsAt) throw new Error(`${label}: конец раньше начала`)
-  if ((endsAt - startsAt) / DAY_SEC > MAX_SEASON_DAYS) throw new Error(`${label}: сезон длиннее ${MAX_SEASON_DAYS} дней`)
+  if (endsAt <= startsAt) throw new Error(`${label}: the end is before the start`)
+  if ((endsAt - startsAt) / DAY_SEC > MAX_SEASON_DAYS) throw new Error(`${label}: the season is longer than ${MAX_SEASON_DAYS} days`)
   const season = { startsAt, endsAt, startYear: y1 }
 
   const stages: ClanSeasonStage[] = []
@@ -81,18 +81,18 @@ function parseSeasonBlock(header: RegExpExecArray, body: string): ClanSeasonSche
     const match = STAGE_RE.exec(line)
     if (!match) continue
     const week = stages.length + 1
-    const stageLabel = `${label}, этап ${week}`
-    if (week > MAX_STAGES) throw new Error(`${label}: больше ${MAX_STAGES} этапов`)
+    const stageLabel = `${label}, stage ${week}`
+    if (week > MAX_STAGES) throw new Error(`${label}: more than ${MAX_STAGES} stages`)
     if (match[1] !== undefined && Number(match[1]) !== week) {
-      throw new Error(`${stageLabel}: на форуме указана неделя ${match[1]}`)
+      throw new Error(`${stageLabel}: the forum says week ${match[1]}`)
     }
     const maxBr = Number(match[2]!.replace(',', '.'))
-    if (!(maxBr >= MIN_BR && maxBr <= MAX_BR)) throw new Error(`${stageLabel}: БР ${match[2]} вне диапазона`)
+    if (!(maxBr >= MIN_BR && maxBr <= MAX_BR)) throw new Error(`${stageLabel}: BR ${match[2]} is out of range`)
     const stageStart = stageDay(Number(match[3]), Number(match[4]), season, stageLabel)
     const stageEnd = stageDay(Number(match[5]), Number(match[6]), season, stageLabel) + DAY_SEC
     stages.push({ week, startsAt: stageStart, endsAt: stageEnd, maxBr })
   }
-  if (stages.length === 0) throw new Error(`${label}: не найдено ни одного этапа`)
+  if (stages.length === 0) throw new Error(`${label}: no stage found`)
 
   const schedule: ClanSeasonSchedule = {
     id: `${FORUM_SEASON_ID_PREFIX}${formatDay(startsAt)}`,
@@ -105,11 +105,11 @@ function parseSeasonBlock(header: RegExpExecArray, body: string): ClanSeasonSche
   return schedule
 }
 
-/** Все сезоны из поста по порядку. Пост без единого сезона — ошибка: значит, изменился формат. */
+/** Every season of the post in order. A post without a season is an error: the format changed. */
 export function parseForumSeasonPost(text: string): ClanSeasonSchedule[] {
-  if (text.length > MAX_FORUM_POST_CHARS) throw new Error('пост с расписанием слишком большой')
+  if (text.length > MAX_FORUM_POST_CHARS) throw new Error('the schedule post is too large')
   const headers = [...text.matchAll(SEASON_RE)] as RegExpExecArray[]
-  if (headers.length === 0) throw new Error('в посте не найдено строки «Сезон ДД.ММ.ГГГГ — ДД.ММ.ГГГГ»')
+  if (headers.length === 0) throw new Error('the post has no "Сезон DD.MM.YYYY — DD.MM.YYYY" line')
   const schedules = headers.map((header, index) => {
     const bodyStart = header.index + header[0].length
     const bodyEnd = headers[index + 1]?.index ?? text.length

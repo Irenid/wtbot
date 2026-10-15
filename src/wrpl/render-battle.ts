@@ -1,3 +1,4 @@
+import { botText, type BotText, type Locale } from '../i18n/index.js'
 import { ensureUnitIcons, loadMapBackground } from './battle-assets.js'
 import type { BattlePsr } from './battle-psr.js'
 import { isAiDrivenSlot, isBotId } from './player-events.js'
@@ -165,6 +166,8 @@ export interface BattleImageInput {
   psr?: Map<string, PsrColumnEntry>
   /** The winning team (a results team; cachedBattleMeta) or null */
   winnerTeam?: number | null
+  /** The language of the image's text; English without it. */
+  locale?: Locale
 }
 
 /** The whole numbers the table shows: PSR rounded as the site does, points as the guides' tables (0 — no points line). */
@@ -238,8 +241,8 @@ function isDisconnected(p: ReplayPlayerResult): boolean {
  * The row's name: the player's nick from the ECS slot when the AI drove their
  * slot (results name the row after the bot), "Bot" for a bot's own slot.
  */
-export function shownName(p: Pick<ReplayPlayerResult, 'userId' | 'name' | 'slotNick'>): string {
-  return isBotId(p.userId) ? 'Bot' : p.slotNick ?? p.name
+export function shownName(p: Pick<ReplayPlayerResult, 'userId' | 'name' | 'slotNick'>, bot = botText().image.bot): string {
+  return isBotId(p.userId) ? bot : p.slotNick ?? p.name
 }
 
 /** What the player drove (player-events.ts); the lineup when the events have no tracks. */
@@ -274,10 +277,11 @@ export function summarizeTeams(results: ReplayResults, dict: VehicleDict): TeamS
 }
 
 export function buildBattleSvg(
-  { missionName, header, results, dict, psr, winnerTeam }: BattleImageInput,
+  { missionName, header, results, dict, psr, winnerTeam, locale }: BattleImageInput,
   assets: BattleAssets = { unitIcons: new Map(), mapImage: null, gameFlags: new Map(), gameFont: false },
 ): string {
-  // " [Conquest #1] Fire Arc" → режим и имя карты
+  const t = botText(locale)
+  // " [Conquest #1] Fire Arc" → the mode and the map name
   const m = /^\s*\[(.+?)\]\s*(.+)$/.exec(missionName.trim())
   const mode = m?.[1] ?? header.battleType
   const mapName = m?.[2] ?? missionName.trim()
@@ -305,7 +309,7 @@ export function buildBattleSvg(
     `<linearGradient id="botfade" x1="0" y1="0" x2="0" y2="1">`,
     `<stop offset="0" stop-color="#05070b" stop-opacity="0"/><stop offset="1" stop-color="#05070b" stop-opacity="0.7"/>`,
     `</linearGradient>`,
-    // Разделители с растворяющимися краями — аккуратнее сплошных линий
+    // Separators that fade out at the ends: neater than solid lines
     `<linearGradient id="sepH" x1="0" y1="0" x2="1" y2="0">`,
     `<stop offset="0" stop-color="#ffffff" stop-opacity="0"/><stop offset="0.5" stop-color="#ffffff" stop-opacity="0.6"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/>`,
     `</linearGradient>`,
@@ -315,7 +319,7 @@ export function buildBattleSvg(
     `</defs>`,
   )
 
-  // Фон: скриншот карты с затемнением или тёмный градиент
+  // Background: the dimmed map screenshot or a dark gradient
   if (assets.mapImage) {
     parts.push(
       `<image x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice" href="${assets.mapImage}"/>`,
@@ -328,21 +332,21 @@ export function buildBattleSvg(
   }
 
   parts.push(
-    // Заголовок
+    // Title
     text(W / 2, 92, esc(mapName), 66, '#ffffff', 'middle', 600),
-    text(W / 2, 148, `[${esc(mode)}] · ${dateStr} · бой ${dur}`, 34, '#dbe3ec', 'middle'),
+    text(W / 2, 148, `[${esc(mode)}] · ${dateStr} · ${esc(t.image.duration(dur))}`, 34, '#dbe3ec', 'middle'),
     `<rect x="200" y="${CONTENT_TOP - 28}" width="${W - 400}" height="2" fill="url(#sepH)"/>`,
-    // Разделитель команд
+    // Team separator
     `<rect x="${W / 2 - 1}" y="${CONTENT_TOP + 10}" width="2" height="${H - 90 - (CONTENT_TOP + 10)}" fill="url(#sepV)"/>`,
   )
 
   rosters.forEach((roster, i) => {
     const theme = TEAM_THEME[Math.min(i, TEAM_THEME.length - 1)]!
     const won = winnerTeam != null && winnerTeam > 0 && roster[0]?.team === winnerTeam
-    parts.push(renderTeam(roster, i * TEAM_WIDTH + TEAM_SIDE_PADDING, CONTENT_TOP, dict, theme, assets, i, won, psr))
+    parts.push(renderTeam(roster, i * TEAM_WIDTH + TEAM_SIDE_PADDING, CONTENT_TOP, dict, theme, assets, i, won, t, psr))
   })
 
-  parts.push(text(W / 2, H - 26, `Match ID: ${header.sessionId}`, 30, '#aab4c0', 'middle'))
+  parts.push(text(W / 2, H - 26, `${esc(t.battle.matchId)}: ${header.sessionId}`, 30, '#aab4c0', 'middle'))
   parts.push('</svg>')
   return parts.join('\n')
 }
@@ -356,6 +360,7 @@ function renderTeam(
   assets: BattleAssets,
   teamIndex: number,
   won: boolean,
+  t: BotText,
   psr?: Map<string, PsrColumnEntry>,
 ): string {
   const parts: string[] = []
@@ -370,13 +375,12 @@ function renderTeam(
   // Clan tag: the game font draws the decorations (Unicode stand-ins without it).
   const clan = mostCommon(roster.map((r) => r.clanTag).filter((t) => t !== ''))
   const teamNo = roster[0]?.team ?? teamIndex + 1
-  const clanText = clan !== undefined ? clan : `Team ${teamNo}`
-  const clanLabel = tagMarkup(clanText, assets.gameFont)
+  const clanLabel = clan !== undefined ? tagMarkup(clan, assets.gameFont) : esc(t.battle.team(teamNo))
   parts.push(text(ox + 10, titleBaseline, clanLabel, 46, theme.clan, 'start', 600))
   if (won) {
     const victoryLabel =
       `<tspan fill-opacity="0">${clanLabel}</tspan>` +
-      `<tspan dx="18" dy="-4" fill="#f2cc60" font-size="28" font-weight="700">Victory</tspan>`
+      `<tspan dx="18" dy="-4" fill="#f2cc60" font-size="28" font-weight="700">${esc(t.scoreboard.victory)}</tspan>`
     parts.push(text(ox + 10, titleBaseline, victoryLabel, 46, theme.clan, 'start', 600))
   }
 
@@ -455,7 +459,7 @@ function renderTeam(
 
     // Platform (@psn/@live) → an icon before the nickname. The vehicle line
     // keeps its column and does not follow the icon.
-    const { name, platform } = splitPlatform(shownName(p))
+    const { name, platform } = splitPlatform(shownName(p, t.image.bot))
     const vehicleX = ox + 112
     let nameX = vehicleX
     if (platform === 'live') {
@@ -472,7 +476,7 @@ function renderTeam(
           Math.min(defaultNameWidth, Math.floor(Math.max(0, ratingX - nameX - NAME_RATING_GAP_PX) / NAME_UNIT_PX)),
         )
       : defaultNameWidth
-    const displayName = esc(trimToWidth(name || 'Unknown Player', nameWidth))
+    const displayName = esc(trimToWidth(name || t.scoreboard.unknownPlayer, nameWidth))
     const nameColor = isBotId(p.userId) ? '#9aa2b1' : theme.player
     if (psr) {
       const clipId = `player-name-${teamIndex}-${row}`
@@ -487,13 +491,13 @@ function renderTeam(
     // Under the nickname: the vehicles, a disconnect note or a dash (never spawned).
     // A bot drove the player's slot: its vehicles, marked "bot".
     if (disconnected) {
-      parts.push(text(vehicleX, y + 70, 'Disconnected', 26, '#9aa2b1'))
+      parts.push(text(vehicleX, y + 70, esc(t.scoreboard.disconnected), 26, '#9aa2b1'))
     } else if (firstId === '') {
       parts.push(text(vehicleX, y + 70, '—', 26, '#9aa2b1'))
     } else {
       const extra = shown.length > 1 ? ` +${shown.length - 1}` : ''
       // A no-break space: resvg drops a plain one at the start of a tspan
-      const bot = isBotPlayed(p) ? '<tspan fill="#9aa2b1">&#160;· bot</tspan>' : ''
+      const bot = isBotPlayed(p) ? `<tspan fill="#9aa2b1">&#160;· ${esc(t.scoreboard.botDriven)}</tspan>` : ''
       parts.push(text(vehicleX, y + 70, esc(trimToWidth(first.name, bot ? 20 : 26)) + extra + bot, 26, color))
     }
 

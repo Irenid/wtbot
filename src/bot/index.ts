@@ -1,5 +1,6 @@
 import { ApplicationFlagsBitField, Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, REST, RESTJSONErrorCodes, Routes, type Interaction } from 'discord.js'
 import { config } from '../config.js'
+import { botText } from '../i18n/index.js'
 import { recordCommandUse } from '../db/index.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
@@ -12,10 +13,10 @@ let acceptingInteractions = true
 const activeInteractions = new Set<Promise<void>>()
 
 /**
- * 10062 Unknown interaction — токен нажатия/команды протух. У Discord всего
- * 3 секунды на подтверждение (defer/reply). CPU-разбор и рендер вынесены в
- * workers, но токен всё ещё может протухнуть при сетевой/Discord-задержке или
- * во время остановки процесса. Отвечать уже некому — спокойно выходим.
+ * 10062 Unknown interaction: the press's or command's token expired. Discord
+ * gives 3 seconds to acknowledge (defer/reply); parsing and rendering run in
+ * workers, but a network or Discord delay, or shutdown, can still outlast it.
+ * Nobody is left to answer, so the handler just returns.
  */
 function isExpiredInteraction(err: unknown): boolean {
   return err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownInteraction
@@ -59,12 +60,12 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
   const client = new Client({ intents })
 
   client.once(Events.ClientReady, (readyClient) => {
-    console.log(`[bot] Готов! Вошёл как ${readyClient.user.tag}`)
-    // Автоанонс новых боёв в канал WT_BATTLES_CHANNEL (если задан)
+    console.log(`[bot] Ready, logged in as ${readyClient.user.tag}`)
+    // Announces new battles in WT_BATTLES_CHANNEL (when set)
     if (config.battleBackgroundEnabled) {
       startBattleAnnouncer(readyClient)
     } else {
-      console.log('[announce] Автоанонс боёв отключён')
+      console.log('[announce] Battle announcements are off')
     }
   })
   if (config.scoutChannelIds.length > 0) {
@@ -77,28 +78,29 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
     console.error('[bot] Gateway client error:', error)
   })
   client.on(Events.ShardError, (error, shardId) => {
-    console.error(`[bot] Ошибка shard ${shardId}:`, error)
+    console.error(`[bot] Shard ${shardId} error:`, error)
   })
   client.on(Events.ShardDisconnect, (closeEvent, shardId) => {
-    console.warn(`[bot] Shard ${shardId} отключён: код ${closeEvent.code}`)
+    console.warn(`[bot] Shard ${shardId} disconnected: code ${closeEvent.code}`)
   })
 
   const handleInteraction = async (interaction: Interaction): Promise<void> => {
-    // Кнопки под сообщением /battle (battle log, хитмапы, чат)
+    const failure = botText(config.botLocale).failure
+    // The buttons under a /battle message (battle log, heatmaps, chat)
     if (interaction.isButton() && interaction.customId.startsWith('battle:')) {
       try {
         await handleBattleButton(interaction)
       } catch (err) {
         if (isExpiredInteraction(err)) {
-          console.warn(`[bot] нажатие ${interaction.customId} устарело — бот был занят, нужно нажать ещё раз`)
+          console.warn(`[bot] the press of ${interaction.customId} expired: the bot was busy, it must be pressed again`)
           return
         }
-        console.error('[bot] Ошибка кнопки', interaction.customId, err)
+        console.error('[bot] Button error', interaction.customId, err)
         if (interaction.deferred || interaction.replied) {
-          await interaction.editReply('Произошла ошибка при сборке материалов боя.').catch(() => {})
+          await interaction.editReply(failure.battleMedia).catch(() => {})
         } else {
           await interaction
-            .reply({ content: 'Произошла ошибка при сборке материалов боя.', flags: MessageFlags.Ephemeral })
+            .reply({ content: failure.battleMedia, flags: MessageFlags.Ephemeral })
             .catch(() => {})
         }
       }
@@ -119,23 +121,23 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
     if (!command) return
 
     try {
-      // Учитываем вызов в статистике, но ошибка SQLite не должна оставить
-      // interaction без ответа и без записи в логе.
+      // Counted in the statistics; an SQLite error must not leave the
+      // interaction unanswered and unlogged.
       recordCommandUse(interaction.commandName, interaction.guildId, interaction.user.id)
       await command.execute(interaction)
     } catch (err) {
       if (isExpiredInteraction(err)) {
-        console.warn(`[bot] вызов /${interaction.commandName} устарел — бот был занят, повтори команду`)
+        console.warn(`[bot] /${interaction.commandName} expired: the bot was busy, the command must be repeated`)
         return
       }
-      console.error(`[bot] Ошибка в /${interaction.commandName}:`, err)
+      console.error(`[bot] Error in /${interaction.commandName}:`, err)
       if (interaction.deferred || interaction.replied) {
         await interaction
-          .editReply('Произошла ошибка при выполнении команды.')
+          .editReply(failure.command)
           .catch(() => {})
       } else {
         await interaction
-          .reply({ content: 'Произошла ошибка при выполнении команды.', flags: MessageFlags.Ephemeral })
+          .reply({ content: failure.command, flags: MessageFlags.Ephemeral })
           .catch(() => {})
       }
     }

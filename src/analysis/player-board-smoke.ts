@@ -91,8 +91,19 @@ try {
     nowSec,
   )
   const rendered = JSON.stringify(render.payload)
-  assert.match(rendered, /\+12\/24ч/)
-  assert.match(rendered, /\+6\/24ч/)
+  assert.match(rendered, /\+12\/24h/)
+  assert.match(rendered, /\+6\/24h/)
+  // The same board in Russian: the catalog, not the renderer, owns the words
+  const russian = JSON.stringify(renderPlayerBoard(
+    [entry],
+    { source: 'wt-players', ok: true, summary: 'smoke', error: null, parsedAt: nowSec },
+    nowSec,
+    1,
+    [],
+    { locale: 'ru' },
+  ).payload)
+  assert.match(russian, /\+12\/24ч/)
+  assert.doesNotMatch(rendered, /[А-Яа-яЁё]/u, 'the English board has no Cyrillic')
   assert.equal(render.contentHash.length, 64)
   assert.equal(
     renderPlayerBoard(

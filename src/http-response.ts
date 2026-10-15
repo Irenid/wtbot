@@ -1,12 +1,12 @@
 import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
-/** Читает fetch Response потоково и обрывает ответ до лишнего выделения RAM. */
+/** Reads a fetch Response as a stream and cuts it off before it allocates too much RAM. */
 export async function readResponseBuffer(response: Response, maxBytes: number, label: string): Promise<Buffer> {
   const declaredHeader = response.headers.get('content-length')
   const declared = Number(declaredHeader)
   if (declaredHeader !== null && Number.isFinite(declared) && declared > maxBytes) {
     await response.body?.cancel().catch(() => undefined)
-    throw new Error(`${label}: Content-Length ${declared} больше лимита ${maxBytes}`)
+    throw new Error(`${label}: Content-Length ${declared} is over the ${maxBytes}-byte limit`)
   }
   const contentEncoding = response.headers.get('content-encoding')?.trim().toLowerCase()
   if (
@@ -29,7 +29,7 @@ export async function readResponseBuffer(response: Response, maxBytes: number, l
       total += value.byteLength
       if (total > maxBytes) {
         await reader.cancel().catch(() => undefined)
-        throw new Error(`${label}: ответ больше лимита ${maxBytes} байт`)
+        throw new Error(`${label}: the response is over the ${maxBytes}-byte limit`)
       }
       chunks.push(value)
     }
@@ -44,8 +44,8 @@ export async function readResponseBuffer(response: Response, maxBytes: number, l
     result.set(chunk, offset)
     offset += chunk.byteLength
     copiedSinceYield += chunk.byteLength
-    // Сборка ответа до 96 МБ тоже является CPU/memcpy: регулярно отдаём
-    // управление Discord/Fastify вместо одного длинного синхронного цикла.
+    // Assembling up to 96 MB is CPU and memcpy work too: yield to Discord and
+    // Fastify regularly instead of one long synchronous loop.
     if (copiedSinceYield >= 4 * 1024 * 1024 && offset < total) {
       copiedSinceYield = 0
       await yieldImmediate()
@@ -61,7 +61,7 @@ async function readKnownLengthBody(
 ): Promise<Buffer> {
   if (!response.body) {
     if (declaredBytes === 0) return Buffer.alloc(0)
-    throw new Error(`${label}: пустое тело при Content-Length ${declaredBytes}`)
+    throw new Error(`${label}: an empty body with Content-Length ${declaredBytes}`)
   }
   const reader = response.body.getReader()
   const result = Buffer.allocUnsafe(declaredBytes)
@@ -72,7 +72,7 @@ async function readKnownLengthBody(
       if (done) break
       if (offset + value.byteLength > declaredBytes) {
         await reader.cancel().catch(() => undefined)
-        throw new Error(`${label}: тело больше Content-Length ${declaredBytes}`)
+        throw new Error(`${label}: the body is longer than Content-Length ${declaredBytes}`)
       }
       result.set(value, offset)
       offset += value.byteLength
@@ -81,7 +81,7 @@ async function readKnownLengthBody(
     reader.releaseLock()
   }
   if (offset !== declaredBytes) {
-    throw new Error(`${label}: тело ${offset} байт не совпадает с Content-Length ${declaredBytes}`)
+    throw new Error(`${label}: a ${offset}-byte body does not match Content-Length ${declaredBytes}`)
   }
   return result
 }

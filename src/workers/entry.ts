@@ -324,6 +324,7 @@ async function renderHeatmap(input: HeatmapRenderInput): Promise<{ value: ArrayB
     mission: input.mission,
     mode: input.mode,
     ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
+    ...(input.locale ? { locale: input.locale } : {}),
     ...(input.teamIndex === undefined ? {} : { teamIndex: input.teamIndex }),
     seekers: new Map(input.assets.seekers),
     renderScale: input.scale,
@@ -949,6 +950,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
     events,
     dict: input.dict,
     ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
+    ...(input.locale ? { locale: input.locale } : {}),
   }
 
   started = performance.now()
@@ -1016,7 +1018,7 @@ async function renderMedia(input: MediaRenderInput): Promise<{
   const heatmapTeamAir = air?.teams ?? null
 
   started = performance.now()
-  const chat = formatBattleChat(events, input.results.players)
+  const chat = formatBattleChat(events, input.results.players, input.locale)
   addPhase(profile, 'chat.format', performance.now() - started)
   const transfer = [log, heatmapGround, ...heatmapTeamGround]
   if (heatmapAir && heatmapTeamAir) {
@@ -1059,6 +1061,7 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
     events,
     dict: input.dict,
     ...(input.heatmapOptions ? { heatmapOptions: input.heatmapOptions } : {}),
+    ...(input.locale ? { locale: input.locale } : {}),
   }
 
   started = performance.now()
@@ -1068,7 +1071,7 @@ async function renderMediaKind(input: MediaKindRenderInput): Promise<{
   let media: ArrayBuffer | string
   if (input.kind === 'chat') {
     started = performance.now()
-    media = formatBattleChat(events, input.results.players)
+    media = formatBattleChat(events, input.results.players, input.locale)
     addPhase(profile, 'media.chat', performance.now() - started)
   } else if (input.kind === 'log') {
     started = performance.now()

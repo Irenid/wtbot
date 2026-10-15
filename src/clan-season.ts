@@ -15,7 +15,7 @@ export interface ClanSeasonSchedule {
 
 function utcDate(value: string): number {
   const timestamp = Date.parse(`${value}T00:00:00Z`)
-  if (!Number.isSafeInteger(timestamp)) throw new Error(`Некорректная дата сезона: ${value}`)
+  if (!Number.isSafeInteger(timestamp)) throw new Error(`invalid season date: ${value}`)
   return timestamp / 1_000
 }
 
@@ -32,33 +32,33 @@ const seasonStages = [
 ] as const
 
 /**
- * Проверяет расписание: этапы идут подряд без дыр и перекрытий, первый
- * начинается вместе с сезоном, последний заканчивается вместе с ним, недели
- * нумеруются с 1, сезоны не пересекаются. Ошибка в расписании — ошибка
- * старта, а не тихо неверные рейтинговые границы.
+ * Checks a schedule: stages follow each other without gaps or overlaps, the
+ * first starts with the season and the last ends with it, weeks count from 1,
+ * seasons do not overlap. A schedule error fails startup instead of quietly
+ * giving wrong rating bounds.
  */
 export function validateClanSeasonSchedules(schedules: readonly ClanSeasonSchedule[]): void {
   const ids = new Set<string>()
   const sorted = [...schedules].sort((left, right) => left.startsAt - right.startsAt)
   sorted.forEach((season, index) => {
-    const label = `сезон ${season.id}`
-    if (ids.has(season.id)) throw new Error(`${label}: повторяющийся id`)
+    const label = `season ${season.id}`
+    if (ids.has(season.id)) throw new Error(`${label}: duplicate id`)
     ids.add(season.id)
-    if (!(season.endsAt > season.startsAt)) throw new Error(`${label}: конец не позже начала`)
+    if (!(season.endsAt > season.startsAt)) throw new Error(`${label}: the end is not after the start`)
     const previous = sorted[index - 1]
     if (previous !== undefined && season.startsAt < previous.endsAt) {
-      throw new Error(`${label}: пересекается с сезоном ${previous.id}`)
+      throw new Error(`${label}: overlaps season ${previous.id}`)
     }
-    if (season.stages.length === 0) throw new Error(`${label}: нет этапов`)
+    if (season.stages.length === 0) throw new Error(`${label}: no stages`)
     let expectedStart = season.startsAt
     season.stages.forEach((stage, stageIndex) => {
-      if (stage.week !== stageIndex + 1) throw new Error(`${label}: этапы должны нумероваться 1, 2, 3…`)
-      if (stage.startsAt !== expectedStart) throw new Error(`${label}: дыра или перекрытие перед этапом ${stage.week}`)
-      if (!(stage.endsAt > stage.startsAt)) throw new Error(`${label}: этап ${stage.week} пустой`)
-      if (!(stage.maxBr > 0)) throw new Error(`${label}: этап ${stage.week} без максимального БР`)
+      if (stage.week !== stageIndex + 1) throw new Error(`${label}: stages must be numbered 1, 2, 3…`)
+      if (stage.startsAt !== expectedStart) throw new Error(`${label}: a gap or overlap before stage ${stage.week}`)
+      if (!(stage.endsAt > stage.startsAt)) throw new Error(`${label}: stage ${stage.week} is empty`)
+      if (!(stage.maxBr > 0)) throw new Error(`${label}: stage ${stage.week} has no max BR`)
       expectedStart = stage.endsAt
     })
-    if (expectedStart !== season.endsAt) throw new Error(`${label}: последний этап не совпадает с концом сезона`)
+    if (expectedStart !== season.endsAt) throw new Error(`${label}: the last stage does not end with the season`)
   })
 }
 

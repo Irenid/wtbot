@@ -1,6 +1,7 @@
 import { DiscordAPIError, RESTJSONErrorCodes, type Client, type Message, type SendableChannels } from 'discord.js'
 import { subscribeBattleLifecycle } from '../battle-lifecycle.js'
 import { config } from '../config.js'
+import { botText } from '../i18n/index.js'
 import {
   getBattleClanTags,
   getBattleIngestState,
@@ -125,7 +126,7 @@ export function startBattleAnnouncer(client: Client): void {
       )
       if (readiness === 'wait') continue
       if (readiness === 'skip') {
-        await finishPendingWithError(channel, item, 'The replay could not be parsed.')
+        await finishPendingWithError(channel, item, botText(config.botLocale).battle.unparsed)
         markAnnounce(item.id, 'ok')
         continue
       }
@@ -249,7 +250,7 @@ async function finishPendingWithError(
   if (!item.announceMessageId) return
   try {
     const pending = await pendingMessage(channel, item)
-    await pending?.edit({ content: `${message}\nMatch ID: \`${item.externalId}\``, components: [] })
+    await pending?.edit({ content: `${message}\n${botText(config.botLocale).battle.matchId}: \`${item.externalId}\``, components: [] })
   } catch (error) {
     console.warn(
       `[bot] could not update the preliminary announcement ${item.externalId}: ` +

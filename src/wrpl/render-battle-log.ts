@@ -1,3 +1,4 @@
+import { botText, type Locale } from '../i18n/index.js'
 import type { ReplayEvents } from './replay-events.js'
 import type { ReplayPlayerResult, ReplayResults, WrplHeader } from './replay.js'
 import { buildRosters, shownName, tagMarkup } from './render-battle.js'
@@ -39,6 +40,8 @@ export interface BattleLogInput {
   results: ReplayResults
   events: ReplayEvents
   dict: VehicleDict
+  /** The language of the image's text; English without it. */
+  locale?: Locale
 }
 
 interface LogSide {
@@ -61,6 +64,7 @@ const modelId = (model: string): string => model.replace(/^.*\//, '')
 /** Собирает строки лога в хронологическом порядке */
 export function collectLogRows(input: BattleLogInput): LogRow[] {
   const { events, results, dict } = input
+  const bot = botText(input.locale).image.bot
 
   // userId → цвет команды (по порядку ростеров со скриншота) и имя
   const teamOf = new Map<string, { p: ReplayPlayerResult; color: string }>()
@@ -74,7 +78,7 @@ export function collectLogRows(input: BattleLogInput): LogRow[] {
     const known = userId ? teamOf.get(userId) : undefined
     const vehicle = model ? vehicleInfo(dict, modelId(model)).name : ''
     if (known) {
-      return { name: shownName(known.p).replace(/@(psn|live|epic)$/i, ''), color: known.color, vehicle }
+      return { name: shownName(known.p, bot).replace(/@(psn|live|epic)$/i, ''), color: known.color, vehicle }
     }
     if (!model) return null
     return { name: vehicle, color: AI_COLOR, vehicle: '' }
@@ -107,14 +111,8 @@ export function collectLogRows(input: BattleLogInput): LogRow[] {
   return rows
 }
 
-/** Глаголы: с виновником и без него (сам разбился/загорелся) */
-const VERBS = {
-  kill: ['уничтожил', 'разбился'],
-  fire: ['поджёг', 'загорелся'],
-  severe: ['тяжело повредил', 'тяжело повреждён'],
-} as const
-
 export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): string {
+  const t = botText(input.locale)
   const rows = collectLogRows(input)
   const shown = rows.slice(0, 70)
   const moreH = rows.length > shown.length ? 50 : 0
@@ -142,10 +140,10 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
     `</defs>`,
     `<rect width="${W}" height="${H}" fill="url(#bg)"/>`,
     text(CX, 72, esc(mapName), 50, '#ffffff', 'middle', 600),
-    text(CX, 118, `Battle Log · [${esc(mode)}] · ${dateStr} · бой ${dur}`, 28, '#aab4c0', 'middle'),
+    text(CX, 118, `${esc(t.battleLog.title)} · [${esc(mode)}] · ${dateStr} · ${esc(t.image.duration(dur))}`, 28, '#aab4c0', 'middle'),
   )
 
-  // Противостояние: теги команд в их цветах (в строках лога тегов нет)
+  // The match-up: the teams' tags in their colours (log rows carry no tags)
   const rosters = buildRosters(input.results)
   const tagOf = (roster: ReplayPlayerResult[] | undefined, fallback: string): string => {
     const counts = new Map<string, number>()
@@ -155,8 +153,8 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
     const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
     return top !== undefined ? tagMarkup(top, gameFont) : esc(fallback)
   }
-  const leftTag = tagOf(rosters[0], 'Команда 1')
-  const rightTag = tagOf(rosters[1], 'Команда 2')
+  const leftTag = tagOf(rosters[0], t.battle.team(1))
+  const rightTag = tagOf(rosters[1], t.battle.team(2))
 
   parts.push(
     `<text x="${CX - 95}" y="166" font-family="${FONTS}" font-size="32" ` +
@@ -165,7 +163,7 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
     `</text>`,
 
     `<text x="${CX}" y="166" font-family="${FONTS}" font-size="26" ` +
-    `font-weight="400" fill="#6d7681" text-anchor="middle">против</text>`,
+    `font-weight="400" fill="#6d7681" text-anchor="middle">${esc(t.battleLog.versus)}</text>`,
 
     `<text x="${CX + 95}" y="166" font-family="${FONTS}" font-size="32" ` +
     `font-weight="600" fill="${TEAM_COLOR[1]}" text-anchor="start">` +
@@ -176,7 +174,7 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
   )
 
   if (shown.length === 0) {
-    parts.push(text(CX, TOP + 10, 'Событий не найдено', 32, '#9aa2b1', 'middle'))
+    parts.push(text(CX, TOP + 10, esc(t.battleLog.empty), 32, '#9aa2b1', 'middle'))
   }
 
   shown.forEach((row, i) => {
@@ -186,39 +184,39 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
     }
     parts.push(text(150, y, mmss(row.time), 26, '#7d8590', 'end'))
 
-    const verb = VERBS[row.kind][row.left ? 0 : 1]
+    const verb = t.battleLog.verbs[row.kind][row.left ? 0 : 1]
     if (row.left) {
-      // убийца ← центр → жертва; блоки прижаты якорями, съехать нечему
+      // killer ← centre → victim; anchored blocks have nothing to shift
       parts.push(sideText(row.left, CX - MID_GAP, y, 'end'))
       parts.push(centerBlock(row.kind, verb, y, gameFont))
-      parts.push(sideText(row.right, CX + MID_GAP, y, 'start', row.distanceM))
+      parts.push(sideText(row.right, CX + MID_GAP, y, 'start', row.distanceM !== null && row.distanceM > 0 ? t.battleLog.distance(row.distanceM) : null))
     } else {
-      // без виновника: жертва — действующее лицо в левой колонке
+      // No attacker: the victim acts in the left column
       parts.push(sideText(row.right, CX - MID_GAP, y, 'end'))
       parts.push(centerBlock(row.kind, verb, y, gameFont))
     }
   })
 
   if (rows.length > shown.length) {
-    parts.push(text(CX, TOP + shown.length * ROW_H + 14, `… ещё ${rows.length - shown.length} событий`, 26, '#7d8590', 'middle'))
+    parts.push(text(CX, TOP + shown.length * ROW_H + 14, esc(t.battleLog.more(rows.length - shown.length)), 26, '#7d8590', 'middle'))
   }
 
-  // Легенда значков и Match ID
+  // The icon legend and Match ID
   const legendY = H - 66
   const legendItems: [string, string][] = [
-    [skull(0, -21, gameFont), 'уничтожение'],
-    [flame(0, -22), 'поджог'],
-    [wrench(0, -21), 'тяжёлое повреждение'],
+    [skull(0, -21, gameFont), t.battleLog.legend.kill],
+    [flame(0, -22), t.battleLog.legend.fire],
+    [wrench(0, -21), t.battleLog.legend.severe],
   ]
   const itemW = (label: string): number => 34 + width(label, 22) + 46
   const totalW = legendItems.reduce((acc, [, label]) => acc + itemW(label), 0) - 46
   let lx = CX - totalW / 2
   for (const [icon, label] of legendItems) {
     parts.push(`<g transform="translate(${lx} ${legendY})">${icon}</g>`)
-    parts.push(text(lx + 32, legendY, label, 22, '#8b949e'))
+    parts.push(text(lx + 32, legendY, esc(label), 22, '#8b949e'))
     lx += itemW(label)
   }
-  parts.push(text(CX, H - 26, `Match ID: ${input.header.sessionId}`, 26, '#8b949e', 'middle'))
+  parts.push(text(CX, H - 26, `${esc(t.battle.matchId)}: ${input.header.sessionId}`, 26, '#8b949e', 'middle'))
   parts.push('</svg>')
   return parts.join('\n')
 }
@@ -226,28 +224,33 @@ export function buildBattleLogSvg(input: BattleLogInput, gameFont = false): stri
 // ---------- строки лога ----------
 
 /**
- * Блок участника одной строкой с якорем: имя + серым техника (+ дистанция
- * у жертвы). Ширины подобраны под колонку, длинное обрезается.
+ * A participant on one anchored line: the name, the vehicle in grey (and the
+ * distance at the victim). Widths fit the column; longer text is cut.
  */
-function sideText(s: LogSide, x: number, y: number, anchor: 'start' | 'end', distanceM: number | null = null): string {
+function sideText(s: LogSide, x: number, y: number, anchor: 'start' | 'end', distance: string | null = null): string {
   const name = trimU(s.name, 18)
   const vehicle = s.vehicle ? trimU(s.vehicle, 12) : ''
-  // отступы между кусками — через dx: пробел в начале tspan SVG схлопывает
+  // Gaps between the pieces through dx: SVG collapses a space at a tspan's start
   return (
     `<text x="${x}" y="${y}" font-family="${FONTS}" font-size="28" font-weight="600" fill="${s.color}" text-anchor="${anchor}">` +
     esc(name) +
     (vehicle ? `<tspan font-size="22" font-weight="400" fill="${VEHICLE_COLOR}" dx="9">(${esc(vehicle)})</tspan>` : '') +
-    (distanceM !== null && distanceM > 0 ? `<tspan font-size="22" font-weight="400" fill="#6d7681" dx="9">· ${distanceM} м</tspan>` : '') +
+    (distance !== null ? `<tspan font-size="22" font-weight="400" fill="#6d7681" dx="9">· ${esc(distance)}</tspan>` : '') +
     `</text>`
   )
 }
 
-/** Иконка с глаголом, отцентрованные в средней колонке */
+/** Whether a catalog verb fits between the name columns with 8 px to spare on each side. */
+export function logVerbFits(verb: string): boolean {
+  return 34 + width(verb, 24) <= 2 * MID_GAP - 16
+}
+
+/** The icon and the verb, centred in the middle column */
 function centerBlock(kind: LogRow['kind'], verb: string, y: number, gameFont: boolean): string {
   const total = 34 + width(verb, 24)
   const x = CX - total / 2
   const icon = kind === 'kill' ? skull(x, y - 21, gameFont) : kind === 'fire' ? flame(x, y - 22) : wrench(x, y - 21)
-  return icon + text(x + 34, y, verb, 24, KIND_COLOR[kind])
+  return icon + text(x + 34, y, esc(verb), 24, KIND_COLOR[kind])
 }
 
 // ---------- примитивы ----------

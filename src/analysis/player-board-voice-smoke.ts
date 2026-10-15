@@ -97,7 +97,7 @@ try {
   }], null, Math.floor(Date.now() / 1000), 1, [], { mode: 'voice' })
   const renderedJson = JSON.stringify(rendered.payload)
   assert.match(renderedJson, /Squad/)
-  assert.match(renderedJson, /отслеживаемых голосовых каналах/)
+  assert.match(renderedJson, /watched voice channels/)
 
   const messages = new Map<string, {
     id: string

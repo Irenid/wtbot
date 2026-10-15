@@ -223,17 +223,17 @@ test('настройки авиационной карты отключают п
   assert.ok(!svg.includes('06-battle-area'))
 })
 
-test('heatmap сохраняет старый макет и новые текстовые подписи', () => {
+test('the heatmap keeps the old layout and the new text labels', () => {
   const svg = renderAt(-800, 0)
 
   assert.match(svg, /<svg width="1880" height="1400"/)
   assert.ok(svg.includes('shape-rendering="geometricPrecision"'))
-  assert.ok(!svg.includes('ТАКТИЧЕСКАЯ КАРТА'))
-  assert.ok(svg.includes('Длительность: 3:00'))
-  assert.ok(svg.includes('500 очк. · '))
-  assert.ok(svg.includes('погиб 2:00'))
+  assert.ok(!svg.includes('TACTICAL MAP'))
+  assert.ok(svg.includes('Duration: 3:00'))
+  assert.ok(svg.includes('500 pts · '))
+  assert.ok(svg.includes('died 2:00'))
   assert.ok(svg.includes('fill="#f2c811">AAA</text>'))
-  assert.ok(svg.includes('>победа</text>'))
+  assert.ok(svg.includes('>victory</text>'))
   assert.ok(svg.includes('data-capture-zone="A"'))
   assert.ok(svg.includes('data-team-spawn="0"'))
 })
@@ -349,16 +349,16 @@ test('готовый игровой скриншот сохраняет миро
   assert.ok(!svg.includes('coordinate-grid'))
 })
 
-test('heatmap определяет восемь направлений спавна', () => {
+test('the heatmap tells eight spawn directions', () => {
   const cases: [number, number, string][] = [
-    [800, 0, 'спавн справа'],
-    [700, 700, 'спавн сверху справа'],
-    [0, 800, 'спавн сверху'],
-    [-700, 700, 'спавн сверху слева'],
-    [-800, 0, 'спавн слева'],
-    [-700, -700, 'спавн снизу слева'],
-    [0, -800, 'спавн снизу'],
-    [700, -700, 'спавн снизу справа'],
+    [800, 0, 'spawn on the right'],
+    [700, 700, 'spawn top right'],
+    [0, 800, 'spawn at the top'],
+    [-700, 700, 'spawn top left'],
+    [-800, 0, 'spawn on the left'],
+    [-700, -700, 'spawn bottom left'],
+    [0, -800, 'spawn at the bottom'],
+    [700, -700, 'spawn bottom right'],
   ]
 
   for (const [x, z, label] of cases) assert.ok(renderAt(x, z).includes(`>${label}</text>`), label)
@@ -480,7 +480,7 @@ test('длинный маршрут упрощается и остаётся о�
   assert.ok(!routeLayer.includes('data-route-crossing='))
 })
 
-test('карта клана сохраняет цвет общей карты и скрывает чужой маршрут', () => {
+test('a squadron map keeps the overview colours and hides the other team\'s routes', () => {
   const clanPlayer: ReplayPlayerResult = { ...player, clanTag: '=AAA=' }
   const enemy: ReplayPlayerResult = { ...player, userId: '2', name: 'Enemy', clanTag: 'BBB', team: 2, score: 400 }
   const events: ReplayEvents = {
@@ -534,6 +534,7 @@ test('карта клана сохраняет цвет общей карты и
   const clan = buildHeatmapSvg({ ...input, teamIndex: 0 })
   const overviewAir = buildHeatmapSvg({ ...input, mode: 'air' })
   const clanAir = buildHeatmapSvg({ ...input, mode: 'air', teamIndex: 0 })
+  const russian = buildHeatmapSvg({ ...input, teamIndex: 0, locale: 'ru' })
 
   assert.ok(overview.includes('stroke="#FF003C"'))
   assert.ok(clan.includes('stroke="#FF003C"'))
@@ -541,11 +542,13 @@ test('карта клана сохраняет цвет общей карты и
   assert.ok(!clan.includes('stroke="#5A00FF"'))
   assert.ok(clan.includes('>Player</text>'))
   assert.ok(clan.includes('>Enemy</text>'))
-  assert.ok(clan.includes('маршруты: AAA'))
-  assert.ok(!clan.includes('маршруты: =AAA='))
+  assert.ok(clan.includes('routes: AAA'))
+  assert.ok(!clan.includes('routes: =AAA='))
   assert.match(clan, /data-spawn-label="0"[^>]*>AAA<\/text>/)
   assert.ok(!clan.includes('data-selected-team='))
-  assert.ok(clan.includes('1 игрок · 2 фрага · 1 выжил'))
+  assert.ok(clan.includes('1 player · 2 kills · 1 survived'))
+  assert.ok(russian.includes('маршруты: AAA'))
+  assert.ok(russian.includes('1 игрок · 2 фрага · 1 выжил'))
   assert.equal(clan.match(/data-spawn-label="0"/g)?.length, 4)
   assert.ok(clan.includes('data-route-layer="outline"'))
   assert.ok(clan.includes('data-route-layer="color"'))
@@ -563,14 +566,14 @@ test('карта клана сохраняет цвет общей карты и
   assert.ok(clan.includes('data-marker-leader="1"'))
   assert.ok(clan.includes('fill="#5A00FF" stroke="#15181c"'))
   assert.ok(clan.includes('stroke="#FF003C" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"'))
-  assert.ok(!clan.includes('цель: техника'))
+  assert.ok(!clan.includes('target: vehicles'))
   assert.ok(overviewAir.includes('stroke="#FF003C"'))
   assert.ok(clanAir.includes('stroke="#FF003C"'))
   assert.ok(overviewAir.includes('stroke="#5A00FF"'))
   assert.ok(!clanAir.includes('stroke="#5A00FF"'))
 })
 
-test('легенда остаётся видимой при шестнадцати игроках', () => {
+test('the legend stays visible with sixteen players', () => {
   const players = Array.from({ length: 16 }, (_, i): ReplayPlayerResult => ({
     ...player,
     userId: String(i + 1),
@@ -608,7 +611,7 @@ test('легенда остаётся видимой при шестнадцат
   })
 
   assert.ok(svg.includes('data-panel-legend="1"'))
-  assert.ok(svg.includes('>Обозначения</text>'))
+  assert.ok(svg.includes('>Legend</text>'))
   assert.ok(svg.includes('>Player16</text>'))
 })
 

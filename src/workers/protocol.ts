@@ -1,4 +1,5 @@
 import type { BattleInput, DbMaintenanceResult, PlayerReplayInsights, ScoutStatSharkBattles, ScoutTeamRow, SitePlayerSearchHit } from '../db/index.js'
+import type { Locale } from '../i18n/index.js'
 import type { MissionDocSummary, MissionInfo } from '../wrpl/mission-info.js'
 import type { ReplayResults, WrplHeader } from '../wrpl/replay.js'
 import type { BattleImageInput } from '../wrpl/render-battle.js'
@@ -94,6 +95,8 @@ export interface MediaRenderInput {
   dict: VehicleDict
   mission: MissionInfo | null
   heatmapOptions?: HeatmapRenderOptions
+  /** The language of the images' and chat's text; English without it. */
+  locale?: Locale
   assets: {
     fontFiles: string[]
     gameFont: boolean

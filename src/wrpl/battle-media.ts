@@ -156,8 +156,10 @@ export async function cachedBattleHeatmap2x(
 // 48: air heatmaps show the bases where squadron battles spawn (runways, bombers' air spawns, the rank's airfields).
 // 49: a stage's first night window keeps the previous cap's maps (battleBalanceLevel by stageAt).
 // 50: ground maps outline the spawn detection zones (TACTICAL_MAP_VERSION 4).
-const BATTLE_MEDIA_VERSION = 50
-const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify(config.heatmapOptions)
+// 51: texts from the WT_BOT_LOCALE catalog (src/i18n), English by default.
+const BATTLE_MEDIA_VERSION = 51
+/** What the artifacts depend on beyond the version: a changed WT_BOT_LOCALE or heatmap option redraws them. */
+const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions, locale: config.botLocale })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)
   .digest('hex')
@@ -298,6 +300,7 @@ async function doBuildBattleHeatmap2x(
         dict,
         mission,
         heatmapOptions: config.heatmapOptions,
+        locale: config.botLocale,
         mode: selection.mode,
         ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
         scale: 2,
@@ -516,6 +519,7 @@ function mediaWorkerPayload(
       dict: assets.dict,
       mission: assets.mission,
       heatmapOptions: config.heatmapOptions,
+      locale: config.botLocale,
       assets: {
         fontFiles: assets.fontFiles,
         gameFont: assets.gameFontFiles.length > 0,
