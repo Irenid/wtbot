@@ -6,11 +6,12 @@ import {
   type GuildTextBasedChannel,
 } from 'discord.js'
 import { config } from '../../config.js'
-import { botText } from '../../i18n/index.js'
+import { botText, type BotText } from '../../i18n/index.js'
 import {
   disablePlayerStatBoard,
   getPlayerStatBoard,
 } from '../../db/index.js'
+import { userLocale } from '../locale.js'
 import {
   configurePlayerStatBoard,
   refreshPlayerStatBoard,
@@ -24,11 +25,8 @@ const REQUIRED_BOT_PERMISSIONS = [
   [PermissionFlagsBits.ReadMessageHistory, 'history'],
 ] as const
 
-const text = botText(config.botLocale).playerBoard
-const descriptions = botText(config.botLocale).commands.playerBoard
-
 /** The watched voice channels as mentions, or the catalog's "all" when WT_VOICE_CHANNELS is empty. */
-function voiceChannelList(): string {
+function voiceChannelList(text: BotText['playerBoard']): string {
   return config.voiceChannelIds.length === 0
     ? text.replies.allVoiceChannels
     : config.voiceChannelIds.map((id) => `<#${id}>`).join(', ')
@@ -46,35 +44,37 @@ function guildTextChannel(value: unknown): GuildTextBasedChannel | null {
 }
 
 export const playerBoard: Command = {
-  data: new SlashCommandBuilder()
+  definition: (t) => new SlashCommandBuilder()
     .setName('playerboard')
-    .setDescription(descriptions.description)
+    .setDescription(t.commands.playerBoard.description)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false)
     .addSubcommand((subcommand) =>
       subcommand
         .setName('setup')
-        .setDescription(descriptions.setup)
+        .setDescription(t.commands.playerBoard.setup)
         .addChannelOption((option) =>
           option
             .setName('channel')
-            .setDescription(descriptions.channel)
+            .setDescription(t.commands.playerBoard.channel)
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
             .setRequired(true),
         ),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('status').setDescription(descriptions.status),
+      subcommand.setName('status').setDescription(t.commands.playerBoard.status),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('refresh').setDescription(descriptions.refresh),
+      subcommand.setName('refresh').setDescription(t.commands.playerBoard.refresh),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('disable').setDescription(descriptions.disable),
+      subcommand.setName('disable').setDescription(t.commands.playerBoard.disable),
     ),
 
   async execute(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+    // The replies are ephemeral; the board itself is in the server's language (player-board.ts).
+    const text = botText(userLocale(interaction)).playerBoard
     if (!interaction.inGuild() || interaction.guildId === null) {
       await interaction.editReply(text.replies.guildOnly)
       return
@@ -106,7 +106,7 @@ export const playerBoard: Command = {
         }
         const result = await configurePlayerStatBoard(interaction.client, interaction.guildId, channel.id)
         await interaction.editReply(
-          text.replies.configured(`<#${channel.id}>`, result.messageUrl, result.playerCount, voiceChannelList()),
+          text.replies.configured(`<#${channel.id}>`, result.messageUrl, result.playerCount, voiceChannelList(text)),
         )
         return
       }
@@ -118,7 +118,7 @@ export const playerBoard: Command = {
           return
         }
         const url = `https://discord.com/channels/${board.guildId}/${board.channelId}/${board.messageId}`
-        await interaction.editReply(text.replies.status(`<#${board.channelId}>`, url, voiceChannelList()))
+        await interaction.editReply(text.replies.status(`<#${board.channelId}>`, url, voiceChannelList(text)))
         return
       }
 

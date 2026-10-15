@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { closeDb, initDb } from '../db/index.js'
-import { battleBalanceLevel, battleMaxBr } from './battle-media.js'
+import { battleBalanceLevel, battleMaxBr, publishedArtifacts } from './battle-media.js'
 
 test('battleBalanceLevel: the night window of a stage\'s first day still plays the previous cap', () => {
   initDb(':memory:')
@@ -17,4 +17,18 @@ test('battleBalanceLevel: the night window of a stage\'s first day still plays t
   } finally {
     closeDb()
   }
+})
+
+test('publishedArtifacts: each language keeps its own list of cached media', () => {
+  assert.deepEqual(publishedArtifacts(undefined, 'en', ['chat', 'log'], false), { en: ['log', 'chat'] })
+  assert.deepEqual(
+    publishedArtifacts({ en: ['log'], ru: ['chat'] }, 'en', ['heatmap-ground'], false),
+    { en: ['log', 'heatmap-ground'], ru: ['chat'] },
+    'a lazy artifact joins its language\'s list',
+  )
+  assert.deepEqual(
+    publishedArtifacts({ en: ['log', 'chat'], ru: ['log'] }, 'en', ['heatmap-air'], true),
+    { en: ['heatmap-air'], ru: ['log'] },
+    'a full bundle replaces only its language\'s list',
+  )
 })

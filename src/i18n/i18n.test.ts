@@ -84,6 +84,12 @@ test('/scout names flags in the bot language', () => {
   assert.equal(flagName('new_country', botText('ru')), 'New Country')
 })
 
+test('each catalog names its language in that language, once', () => {
+  const names = LOCALES.map((locale) => botText(locale).languageName)
+  assert.equal(new Set(names).size, LOCALES.length)
+  assert.equal(botText('ru').languageName, 'Русский')
+})
+
 test('WT_BOT_LOCALE accepts only a catalog\'s own key', () => {
   for (const locale of LOCALES) assert.ok(isLocale(locale), locale)
   for (const value of ['', 'EN', 'en-GB', 'xx', 'toString', '__proto__']) assert.equal(isLocale(value), false, value)

@@ -31,11 +31,16 @@ const FLAGS: Record<string, string> = {
 export const ru: BotText = {
   intl: 'ru-RU',
   number: (value) => numberFormat.format(value),
+  languageName: 'Русский',
 
   commands: {
     battle: {
       description: 'Результаты боя из реплея War Thunder (картинкой)',
       id: 'sessionId боя (по умолчанию — последний бой)',
+    },
+    language: {
+      description: 'Выбрать язык бота на этом сервере',
+      language: 'Язык постов и команд бота на этом сервере',
     },
     ping: { description: 'Проверка, что бот жив' },
     stats: { description: 'Статистика бота и сбора данных' },
@@ -52,6 +57,14 @@ export const ru: BotText = {
       squadron: 'Тег или название полка, как в игре',
       player: 'Ник из команды противника: выбирает нужную группу, если играют две',
     },
+  },
+
+  language: {
+    guildOnly: 'Эта команда доступна только на Discord-сервере.',
+    needManageGuild: 'Для выбора языка бота требуется право «Управлять сервером».',
+    changed:
+      'Теперь бот пишет на этом сервере по-русски: посты о боях, табло игроков, а через минуту и описания команд. ' +
+      'Ответы, которые видите только вы, приходят на языке вашего Discord.',
   },
 
   failure: {

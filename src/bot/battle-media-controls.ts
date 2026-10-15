@@ -1,6 +1,5 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js'
-import { config } from '../config.js'
-import { botText } from '../i18n/index.js'
+import type { BotText } from '../i18n/index.js'
 import type { BattleHeatmapKind } from '../wrpl/battle-media-kind.js'
 
 export type HeatmapScale = 1 | 2
@@ -18,7 +17,7 @@ export function heatmapQualityRow(
   kind: BattleHeatmapKind,
   sessionId: string,
   currentScale: HeatmapScale,
-  t = botText(config.botLocale),
+  t: BotText,
 ): ActionRowBuilder<ButtonBuilder> {
   const nextScale: HeatmapScale = currentScale === 1 ? 2 : 1
   return new ActionRowBuilder<ButtonBuilder>().addComponents(

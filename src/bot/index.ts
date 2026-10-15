@@ -2,12 +2,14 @@ import { ApplicationFlagsBitField, Client, DiscordAPIError, Events, GatewayInten
 import { config } from '../config.js'
 import { botText } from '../i18n/index.js'
 import { recordCommandUse } from '../db/index.js'
+import { startCommandSync, stopCommandSync } from './command-sync.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
 import type { ScoutStatSharkSource } from '../scout/report.js'
 import { handleScoutImageMessage, scoutImagesIdle } from './scout-images.js'
+import { channelLocale, userLocale } from './locale.js'
 
 let acceptingInteractions = true
 const activeInteractions = new Set<Promise<void>>()
@@ -61,6 +63,7 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`[bot] Ready, logged in as ${readyClient.user.tag}`)
+    startCommandSync(readyClient, [...commands.values()])
     // Announces new battles in WT_BATTLES_CHANNEL (when set)
     if (config.battleBackgroundEnabled) {
       startBattleAnnouncer(readyClient)
@@ -85,9 +88,9 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
   })
 
   const handleInteraction = async (interaction: Interaction): Promise<void> => {
-    const failure = botText(config.botLocale).failure
-    // The buttons under a /battle message (battle log, heatmaps, chat)
+    // The buttons under a /battle message (battle log, heatmaps, chat); their replies are ephemeral.
     if (interaction.isButton() && interaction.customId.startsWith('battle:')) {
+      const failure = botText(userLocale(interaction)).failure
       try {
         await handleBattleButton(interaction)
       } catch (err) {
@@ -131,7 +134,10 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
         return
       }
       console.error(`[bot] Error in /${interaction.commandName}:`, err)
-      if (interaction.deferred || interaction.replied) {
+      // Replaces a public reply in the channel's language; a new reply is ephemeral.
+      const answered = interaction.deferred || interaction.replied
+      const failure = botText(answered && !interaction.ephemeral ? channelLocale(interaction) : userLocale(interaction)).failure
+      if (answered) {
         await interaction
           .editReply(failure.command)
           .catch(() => {})
@@ -151,7 +157,7 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
       () => activeInteractions.delete(task),
       (error) => {
         activeInteractions.delete(task)
-        console.error('[bot] необработанная ошибка обработчика interaction:', error)
+        console.error('[bot] Unhandled interaction handler error:', error)
       },
     )
   })
@@ -161,17 +167,18 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
 }
 
 /**
- * Останавливает фоновые Discord producers и ждёт handlers с верхней границей.
- * После дедлайна shutdown уничтожит Discord client и CPU pool; атомарные кэши
- * допускают обрыв незавершённой сетевой сборки без публикации битого поколения.
+ * Stops the background Discord producers and waits for the handlers, at most
+ * `graceMs`. After that shutdown destroys the Discord client and the CPU pool;
+ * atomic caches survive an interrupted build without publishing a broken set.
  */
 export async function stopBotWork(graceMs = 10_000): Promise<void> {
   acceptingInteractions = false
-  // Вызовы сразу выставляют stopping-флаги, поэтому запускаем их до ожидания.
+  // Each call sets its stopping flag at once, so all start before the wait.
   const drain = Promise.allSettled([
     stopBattleAnnouncer(),
     stopPlayerBoardPublisher(),
     stopBattlePostUpdates(),
+    stopCommandSync(),
     scoutImagesIdle(),
     Promise.allSettled([...activeInteractions]),
   ])
@@ -188,6 +195,6 @@ export async function stopBotWork(graceMs = 10_000): Promise<void> {
   ])
   if (timer) clearTimeout(timer)
   if (!drained) {
-    console.warn(`[bot] Discord-задачи не завершились за ${graceMs} мс — прерываю их вместе с client/CPU pool`)
+    console.warn(`[bot] Discord work did not finish in ${graceMs} ms: it ends with the client and the CPU pool`)
   }
 }

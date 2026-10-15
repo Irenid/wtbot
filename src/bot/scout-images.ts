@@ -14,11 +14,12 @@ import { EmbedBuilder, type Attachment, type Message } from 'discord.js'
 import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { readResponseBuffer } from '../http-response.js'
-import { botText } from '../i18n/index.js'
+import { botText, type BotText } from '../i18n/index.js'
 import { formatScoutImageReport, squadronLabel } from '../scout/format.js'
 import { OcrUnavailableError } from '../scout/ocr.js'
 import { scoutFromImage, scoutPredictionRecord, type ScoutImageOutcome, type ScoutImageReport, type ScoutStatSharkSource } from '../scout/report.js'
 import { MAX_IMAGE_BYTES } from '../scout/scoreboard-image.js'
+import { guildLocale } from './locale.js'
 
 export const SCOUT_IMAGE_DIR = './data/scout-images'
 const MAX_IMAGES_PER_MESSAGE = 4
@@ -45,6 +46,11 @@ export function isScoutImageMessage(message: Message): boolean {
     && message.attachments.some((attachment) => imageExtension(attachment) !== null)
 }
 
+/** The replies are public: in the server's language (locale.ts). */
+function messageText(message: Message): BotText {
+  return botText(guildLocale(message.guildId, message.guild?.preferredLocale))
+}
+
 /** Resolves once the queued screenshots are answered (shutdown drain); pending StatShark updates are dropped. */
 export function scoutImagesIdle(): Promise<void> {
   stopping = true
@@ -55,7 +61,7 @@ export function scoutImagesIdle(): Promise<void> {
 export function handleScoutImageMessage(message: Message, statShark: ScoutStatSharkSource | null = null): void {
   if (!isScoutImageMessage(message)) return
   if (queued >= MAX_QUEUED) {
-    void message.reply({ content: botText(config.botLocale).scout.images.tooMany, allowedMentions: { repliedUser: false } }).catch(() => {})
+    void message.reply({ content: messageText(message).scout.images.tooMany, allowedMentions: { repliedUser: false } }).catch(() => {})
     return
   }
   queued += 1
@@ -69,6 +75,8 @@ export function handleScoutImageMessage(message: Message, statShark: ScoutStatSh
 
 async function processMessage(message: Message, statShark: ScoutStatSharkSource | null): Promise<void> {
   const images = [...message.attachments.values()].filter((attachment) => imageExtension(attachment) !== null).slice(0, MAX_IMAGES_PER_MESSAGE)
+  const text = messageText(message)
+  const t = text.scout.images
   if ('sendTyping' in message.channel) await message.channel.sendTyping().catch(() => {})
   const day = new Date(message.createdTimestamp).toISOString().slice(0, 10)
   const dir = path.join(SCOUT_IMAGE_DIR, day)
@@ -82,7 +90,6 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
       receivedAt: new Date().toISOString(),
       name: attachment.name,
     }
-    const t = botText(config.botLocale).scout.images
     let reply: string | EmbedBuilder
     let update: Promise<ScoutImageReport> | null = null
     try {
@@ -95,7 +102,7 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
       record['file'] = path.basename(file)
       const outcome = await scoutFromImage(new Uint8Array(bytes), undefined, statShark)
       record['read'] = outcome.read
-      reply = replyFor(outcome)
+      reply = replyFor(outcome, text)
       if (outcome.kind === 'report') {
         record['enemySquadron'] = outcome.report.squadron?.core ?? null
         record['allySquadron'] = outcome.report.allySquadron?.core ?? null
@@ -126,7 +133,7 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
           await writeFileAtomic(`${base}.json`, JSON.stringify(record, null, 2)).catch((error: unknown) => {
             console.warn('[scout-images] could not save the updated prediction:', error)
           })
-          if (!stopping) await sent.edit({ embeds: [reportEmbed(next)] })
+          if (!stopping) await sent.edit({ embeds: [reportEmbed(next, text)] })
         })
         .catch((error: unknown) => console.warn('[scout-images] StatShark update failed:', error))
         .finally(() => updates.delete(task))
@@ -137,8 +144,8 @@ async function processMessage(message: Message, statShark: ScoutStatSharkSource 
 
 class UserFacingError extends Error {}
 
-function replyFor(outcome: ScoutImageOutcome): string | EmbedBuilder {
-  const t = botText(config.botLocale).scout.images
+function replyFor(outcome: ScoutImageOutcome, text: BotText): string | EmbedBuilder {
+  const t = text.scout.images
   switch (outcome.kind) {
     case 'no-table':
       return t.noTable
@@ -147,13 +154,13 @@ function replyFor(outcome: ScoutImageOutcome): string | EmbedBuilder {
     case 'one-side':
       return t.oneSide(outcome.squadron ? squadronLabel(outcome.squadron.displayTag, outcome.squadron.name) : null)
     case 'report':
-      return reportEmbed(outcome.report)
+      return reportEmbed(outcome.report, text)
   }
 }
 
-function reportEmbed(report: ScoutImageReport): EmbedBuilder {
-  const text = formatScoutImageReport(report, botText(config.botLocale))
-  const embed = new EmbedBuilder().setTitle(text.title).setDescription(text.description).setColor(text.color)
-  if (text.fields.length > 0) embed.addFields(text.fields)
+function reportEmbed(report: ScoutImageReport, text: BotText): EmbedBuilder {
+  const formatted = formatScoutImageReport(report, text)
+  const embed = new EmbedBuilder().setTitle(formatted.title).setDescription(formatted.description).setColor(formatted.color)
+  if (formatted.fields.length > 0) embed.addFields(formatted.fields)
   return embed
 }

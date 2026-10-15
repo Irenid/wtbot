@@ -18,14 +18,29 @@ export interface BotText {
   intl: string
   /** An integer with this language's digit grouping. */
   number(value: number): string
+  /** The language's name in itself ("English", "Русский"): a /language choice. */
+  languageName: string
 
-  /** Slash-command descriptions, registered by `npm run deploy:commands`. */
+  /**
+   * Slash-command descriptions. The bot registers them on every server
+   * (src/bot/command-sync.ts): the server's language by default, every
+   * catalog's for the users whose Discord language it is.
+   */
   commands: {
     battle: { description: string; id: string }
+    language: { description: string; language: string }
     ping: { description: string }
     stats: { description: string }
     playerBoard: { description: string; setup: string; channel: string; status: string; refresh: string; disable: string }
     scout: { description: string; squadron: string; player: string }
+  }
+
+  /** /language: the server's language. */
+  language: {
+    guildOnly: string
+    needManageGuild: string
+    /** Confirms the choice, in the chosen language. */
+    changed: string
   }
 
   /** Replies when a handler fails; the error itself goes only to the log. */

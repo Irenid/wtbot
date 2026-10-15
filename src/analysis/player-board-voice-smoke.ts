@@ -137,6 +137,8 @@ try {
   const discordLikeClient = {
     user: { id: 'bot' },
     channels: { fetch: async () => textChannel },
+    // The board's language comes from its server (src/bot/locale.ts).
+    guilds: { cache: new Map([[guild.id, guild]]) },
   }
   syncVoicePresence([voiceEntry])
   const configured = await configurePlayerStatBoard(discordLikeClient as never, guild.id, 'text-1')

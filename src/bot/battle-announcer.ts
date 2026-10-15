@@ -1,7 +1,7 @@
 import { DiscordAPIError, RESTJSONErrorCodes, type Client, type Message, type SendableChannels } from 'discord.js'
 import { subscribeBattleLifecycle } from '../battle-lifecycle.js'
 import { config } from '../config.js'
-import { botText } from '../i18n/index.js'
+import { botText, type Locale } from '../i18n/index.js'
 import {
   getBattleClanTags,
   getBattleIngestState,
@@ -27,6 +27,7 @@ import {
   renderBattlePost,
   type BattlePostPayload,
 } from './commands/battle.js'
+import { guildLocale } from './locale.js'
 
 /**
  * The battle announcer waits for durable ingest, then posts the finished post
@@ -112,6 +113,8 @@ export function startBattleAnnouncer(client: Client): void {
       return
     }
 
+    // The posts' language is read once per tick: a /language choice applies from the next one.
+    const locale = channelServerLocale(channel)
     // Posted in battle order; legacy messages lie behind the baseline, so the
     // two lists never overlap.
     const legacy = unfinishedMessages.splice(0)
@@ -126,7 +129,7 @@ export function startBattleAnnouncer(client: Client): void {
       )
       if (readiness === 'wait') continue
       if (readiness === 'skip') {
-        await finishPendingWithError(channel, item, botText(config.botLocale).battle.unparsed)
+        await finishPendingWithError(channel, item, locale)
         markAnnounce(item.id, 'ok')
         continue
       }
@@ -137,7 +140,7 @@ export function startBattleAnnouncer(client: Client): void {
         continue
       }
       try {
-        const post = await renderBattlePost(item, 'background')
+        const post = await renderBattlePost(item, locale, 'background')
         if (stopping) break
         if (!post) {
           // No replay links: counts as an attempt, skipped after the limit.
@@ -242,15 +245,22 @@ async function pendingMessage(
   }
 }
 
+/** The language of the announcement channel's server (locale.ts). */
+function channelServerLocale(channel: SendableChannels): Locale {
+  return 'guild' in channel ? guildLocale(channel.guild.id, channel.guild.preferredLocale) : guildLocale(null)
+}
+
+/** Edits a legacy preliminary message into "could not be parsed". */
 async function finishPendingWithError(
   channel: SendableChannels,
   item: PendingAnnounceItem,
-  message: string,
+  locale: Locale,
 ): Promise<void> {
   if (!item.announceMessageId) return
+  const t = botText(locale).battle
   try {
     const pending = await pendingMessage(channel, item)
-    await pending?.edit({ content: `${message}\n${botText(config.botLocale).battle.matchId}: \`${item.externalId}\``, components: [] })
+    await pending?.edit({ content: `${t.unparsed}\n${t.matchId}: \`${item.externalId}\``, components: [] })
   } catch (error) {
     console.warn(
       `[bot] could not update the preliminary announcement ${item.externalId}: ` +

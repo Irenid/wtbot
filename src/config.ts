@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { isIP } from 'node:net'
-import { DEFAULT_LOCALE, isLocale, LOCALES, type Locale } from './i18n/index.js'
+import { isLocale, LOCALES, type Locale } from './i18n/index.js'
 import { workerResourcePlan } from './runtime-options.js'
 
 function required(name: string): string {
@@ -52,9 +52,9 @@ function envTrustProxy(name: string): boolean | string[] {
   return entries
 }
 
-function envLocale(name: string): Locale {
+function envLocale(name: string): Locale | null {
   const value = process.env[name]?.trim().toLowerCase() ?? ''
-  if (value === '') return DEFAULT_LOCALE
+  if (value === '') return null
   if (!isLocale(value)) throw new Error(`${name} must be one of: ${LOCALES.join(', ')}`)
   return value
 }
@@ -76,23 +76,19 @@ function envCsvUnique(name: string): string[] {
 const workers = workerResourcePlan()
 
 /**
- * Токен Discord-бота. Процессы, которым нужен Discord (бот, deploy:commands),
- * вызывают проверку явно при старте, а оффлайн-тесты, verify:* и CLI вроде
- * db:backup импортируют config без секрета.
+ * The Discord bot token. Only the bot process needs it and checks it first at
+ * startup; offline tests, verify:* and CLIs such as db:backup import config
+ * without the secret.
  */
 export function requireDiscordToken(): string {
   return required('TOKEN')
 }
 
 export const config = {
-  /** Токен Discord-бота (Developer Portal → Bot → Reset Token); читается лениво. */
+  /** The Discord bot token (Developer Portal → Bot → Reset Token); read on first use. */
   get token(): string {
     return requireDiscordToken()
   },
-  /** Application ID — нужен для регистрации slash-команд (npm run deploy:commands) */
-  clientId: process.env['CLIENT_ID'],
-  /** ID тестового сервера: команды на нём регистрируются мгновенно (опционально) */
-  guildId: process.env['GUILD_ID'],
   /** Порт веб-дашборда */
   port: Math.floor(envNumber('PORT', 3000, 1, 65_535)),
   /** Интерфейс веб-сервера; loopback по умолчанию не выставляет API в сеть. */
@@ -154,11 +150,11 @@ export const config = {
    */
   wtBrowserNoSandbox: envBoolean('WT_BROWSER_NO_SANDBOX', false),
   /**
-   * The language of everything the bot writes to Discord and draws on battle
-   * images (src/i18n); slash-command descriptions change after
-   * `npm run deploy:commands`.
+   * The language of a server that has not chosen one with /language
+   * (src/bot/locale.ts); null — the server's Discord language, else English.
+   * CLIs draw battle images in it (English when null).
    */
-  botLocale: envLocale('WT_BOT_LOCALE'),
+  defaultLocale: envLocale('WT_BOT_LOCALE'),
   /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
   voiceChannelIds: (process.env['WT_VOICE_CHANNELS'] ?? '')
     .split(',')

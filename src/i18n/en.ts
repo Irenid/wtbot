@@ -26,11 +26,16 @@ const FLAGS: Record<string, string> = {
 export const en: BotText = {
   intl: 'en-GB',
   number: (value) => numberFormat.format(value),
+  languageName: 'English',
 
   commands: {
     battle: {
       description: 'Results of a War Thunder battle as an image',
       id: 'The battle\'s session id (the latest battle by default)',
+    },
+    language: {
+      description: 'Choose the bot\'s language on this server',
+      language: 'The language of the bot\'s posts and commands here',
     },
     ping: { description: 'Check that the bot is alive' },
     stats: { description: 'Bot and data collection statistics' },
@@ -47,6 +52,14 @@ export const en: BotText = {
       squadron: 'Squadron tag or name, as the game shows it',
       player: 'A nick you see on the enemy team: picks the right group when two play at once',
     },
+  },
+
+  language: {
+    guildOnly: 'This command works only on a Discord server.',
+    needManageGuild: 'Choosing the bot\'s language needs the Manage Server permission.',
+    changed:
+      'The bot now writes in English on this server: battle posts, the player board and, within a minute, ' +
+      'the command descriptions. Replies only you see come in your own Discord language.',
   },
 
   failure: {

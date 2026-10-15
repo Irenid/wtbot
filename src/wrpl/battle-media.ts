@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, stat, utimes } from 'node:fs/promises'
 import path from 'node:path'
 import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
+import { isLocale, type Locale } from '../i18n/index.js'
 import { mapConcurrent } from '../concurrency.js'
 import { getBattleWeaponIds, getScoutStages, markBattleIngest, saveBattle } from '../db/index.js'
 import { stageAt } from '../clan-season.js'
@@ -39,9 +40,10 @@ import {
 export type { BattleHeatmapKind, BattleMediaKind } from './battle-media-kind.js'
 
 /**
- * Дополнительные материалы боя. Диск/сеть/SQLite остаются в main thread,
- * а распаковка и JSON событий, SVG и Resvg выполняются в CPU worker. Интерактивный путь
- * строит один материал, фоновый прогрев при необходимости — полный bundle.
+ * Battle media: the log, heatmaps and chat. Disk, network and SQLite stay on
+ * the main thread; event unpacking and JSON, SVG and Resvg run in a CPU
+ * worker. A Discord button builds one artifact, the `battle` CLI the full
+ * set; each artifact is built and cached per language.
  */
 
 const CACHE_DIR = './data/battles'
@@ -79,19 +81,20 @@ export interface BuiltBattleMedia extends BattleMedia {
   summary: BattleEventSummary
 }
 
-const cacheFile = (sessionIdHex: string, kind: BattleMediaKind): string =>
-  path.join(CACHE_DIR, `${sessionIdHex}-${kind}${kind === 'chat' ? '.txt' : '.png'}`)
+/** One file per language: the media draws the catalog's text (src/i18n). */
+const cacheFile = (sessionIdHex: string, kind: BattleMediaKind, locale: Locale): string =>
+  path.join(CACHE_DIR, `${sessionIdHex}-${kind}.${locale}${kind === 'chat' ? '.txt' : '.png'}`)
 
-const highResCacheFile = (sessionIdHex: string, kind: BattleHeatmapKind): string =>
-  path.join(CACHE_DIR, `${sessionIdHex}-${kind}@2x-${BATTLE_MEDIA_RENDER_VARIANT}.png`)
+const highResCacheFile = (sessionIdHex: string, kind: BattleHeatmapKind, locale: Locale): string =>
+  path.join(CACHE_DIR, `${sessionIdHex}-${kind}@2x-${BATTLE_MEDIA_RENDER_VARIANT}.${locale}.png`)
 
-/** Cache hit без синхронного чтения большого PNG на Discord event loop. */
-export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaKind): Promise<Buffer | null> {
+/** A cache hit without a synchronous read of a large PNG on the Discord event loop. */
+export async function cachedBattleMedia(sessionIdHex: string, kind: BattleMediaKind, locale: Locale): Promise<Buffer | null> {
   if (!config.battleCacheEnabled) return null
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
   const metadata = await cachedBattleMeta(sessionIdHex)
-  if (!metadata?.artifacts.includes(kind)) return null
-  const file = cacheFile(sessionIdHex, kind)
+  if (!metadata?.artifacts[locale]?.includes(kind)) return null
+  const file = cacheFile(sessionIdHex, kind, locale)
   try {
     const maxBytes = kind === 'chat' ? MAX_CHAT_BYTES : MAX_IMAGE_BYTES
     if ((await stat(file)).size > maxBytes) {
@@ -117,18 +120,22 @@ export interface BattleMeta {
   endTimeMs: number
   hasAir: boolean
   hasChat: boolean
-  artifacts: BattleMediaKind[]
+  /** The published artifacts of each language. */
+  artifacts: BattleArtifactsByLocale
 }
 
-/** Ленивый 2×-кэш одной выбранной карты; обычный bundle при этом не пересобирается. */
+export type BattleArtifactsByLocale = Partial<Record<Locale, BattleMediaKind[]>>
+
+/** The lazy 2× cache of one chosen map; the ordinary bundle is not rebuilt for it. */
 export async function cachedBattleHeatmap2x(
   sessionIdHex: string,
   kind: BattleHeatmapKind,
+  locale: Locale,
 ): Promise<Buffer | null> {
   if (!config.battleCacheEnabled) return null
   if (!/^[0-9a-f]{12,20}$/i.test(sessionIdHex)) return null
   if (!(await cachedBattleMeta(sessionIdHex))) return null
-  const file = highResCacheFile(sessionIdHex, kind)
+  const file = highResCacheFile(sessionIdHex, kind, locale)
   try {
     if ((await stat(file)).size > MAX_IMAGE_BYTES) {
       await rm(file, { force: true }).catch(() => undefined)
@@ -157,9 +164,10 @@ export async function cachedBattleHeatmap2x(
 // 49: a stage's first night window keeps the previous cap's maps (battleBalanceLevel by stageAt).
 // 50: ground maps outline the spawn detection zones (TACTICAL_MAP_VERSION 4).
 // 51: texts from the WT_BOT_LOCALE catalog (src/i18n), English by default.
-const BATTLE_MEDIA_VERSION = 51
-/** What the artifacts depend on beyond the version: a changed WT_BOT_LOCALE or heatmap option redraws them. */
-const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions, locale: config.botLocale })
+// 52: one artifact per language: servers and users read the bot in their own (src/bot/locale.ts).
+const BATTLE_MEDIA_VERSION = 52
+/** What the artifacts depend on beyond the version and their language: a changed heatmap option redraws them. */
+const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
   .update(`${BATTLE_MEDIA_VERSION}:${BATTLE_MEDIA_RENDER_OPTIONS}`)
   .digest('hex')
@@ -185,8 +193,7 @@ async function readBattleMetaFile(sessionIdHex: string): Promise<BattleMeta | nu
       Number.isFinite((parsed as BattleMeta).endTimeMs) &&
       typeof (parsed as BattleMeta).hasAir === 'boolean' &&
       typeof (parsed as BattleMeta).hasChat === 'boolean' &&
-      Array.isArray((parsed as BattleMeta).artifacts) &&
-      (parsed as BattleMeta).artifacts.every((kind) => typeof kind === 'string' && mediaKinds.has(kind))
+      isArtifactsByLocale((parsed as BattleMeta).artifacts)
     ) {
       return parsed as BattleMeta
     }
@@ -195,6 +202,29 @@ async function readBattleMetaFile(sessionIdHex: string): Promise<BattleMeta | nu
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return null
     throw error
   }
+}
+
+function isArtifactsByLocale(value: unknown): value is BattleArtifactsByLocale {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.entries(value).every(([locale, kinds]) =>
+      isLocale(locale) &&
+      Array.isArray(kinds) &&
+      kinds.every((kind) => typeof kind === 'string' && mediaKinds.has(kind)))
+}
+
+/**
+ * The artifact lists after publishing `kinds` in `locale`: added to that
+ * language's list, or replacing it (a full bundle); the other languages' stay.
+ */
+export function publishedArtifacts(
+  existing: BattleArtifactsByLocale | undefined,
+  locale: Locale,
+  kinds: readonly BattleMediaKind[],
+  replace: boolean,
+): BattleArtifactsByLocale {
+  const available = new Set<BattleMediaKind>(replace ? [] : existing?.[locale] ?? [])
+  for (const kind of kinds) available.add(kind)
+  return { ...existing, [locale]: ALL_MEDIA_KINDS.filter((kind) => available.has(kind)) }
 }
 
 interface MediaBuildState {
@@ -222,10 +252,11 @@ export function buildBattleHeatmap2x(
   sessionId: string,
   kind: BattleHeatmapKind,
   meta: BattleItemMeta,
+  locale: Locale,
   priority: WorkerPriority = 'interactive',
 ): Promise<Buffer> {
   const sessionHex = toSessionHex(sessionId)
-  const key = `${sessionHex}:${kind}:2`
+  const key = `${sessionHex}:${kind}:2:${locale}`
   const running = inflightHeatmapBuilds.get(key)
   if (running) {
     promoteBuild(running.state, priority)
@@ -233,7 +264,7 @@ export function buildBattleHeatmap2x(
   }
   const state: MediaBuildState = { priority, workerControls: new Set() }
   acquireCacheSession(sessionHex)
-  const build = doBuildBattleHeatmap2x(sessionId, kind, meta, state).finally(() => {
+  const build = doBuildBattleHeatmap2x(sessionId, kind, meta, locale, state).finally(() => {
     inflightHeatmapBuilds.delete(key)
     releaseCacheSession(sessionHex)
   })
@@ -245,6 +276,7 @@ async function doBuildBattleHeatmap2x(
   sessionId: string,
   kind: BattleHeatmapKind,
   meta: BattleItemMeta,
+  locale: Locale,
   state: MediaBuildState,
 ): Promise<Buffer> {
   const stored = reconstructBattle(sessionId)
@@ -300,7 +332,7 @@ async function doBuildBattleHeatmap2x(
         dict,
         mission,
         heatmapOptions: config.heatmapOptions,
-        locale: config.botLocale,
+        locale,
         mode: selection.mode,
         ...(selection.teamIndex === undefined ? {} : { teamIndex: selection.teamIndex }),
         scale: 2,
@@ -329,7 +361,7 @@ async function doBuildBattleHeatmap2x(
   }
   // The cache flag controls reuse; every render is saved regardless.
   await mkdir(CACHE_DIR, { recursive: true })
-  await writeFileAtomic(highResCacheFile(stored.header.sessionIdHex, kind), png)
+  await writeFileAtomic(highResCacheFile(stored.header.sessionIdHex, kind, locale), png)
   await enforceCacheCap(png.byteLength)
   return png
 }
@@ -495,6 +527,7 @@ function mediaWorkerPayload(
   source: BattleRenderSource,
   missionName: string,
   assets: Awaited<ReturnType<typeof loadBattleRenderAssets>>,
+  locale: Locale,
 ) {
   const wireBlob = transferableBuffer(source.eventsBlob)
   const wireTacticalMap = assets.tacticalMap ? transferableBuffer(assets.tacticalMap) : null
@@ -519,7 +552,7 @@ function mediaWorkerPayload(
       dict: assets.dict,
       mission: assets.mission,
       heatmapOptions: config.heatmapOptions,
-      locale: config.botLocale,
+      locale,
       assets: {
         fontFiles: assets.fontFiles,
         gameFont: assets.gameFontFiles.length > 0,
@@ -546,26 +579,27 @@ function selectBuiltMedia(media: BuiltBattleMedia, kind: BattleMediaKind): Buffe
   return Buffer.from(media.chat, 'utf8')
 }
 
-/** Собирает один материал; полный bundle продолжает использоваться для фонового прогрева. */
+/** Builds one artifact in `locale`; a running full bundle of that language answers it instead. */
 export function buildBattleMediaKind(
   sessionId: string,
   partUrls: string[],
   meta: BattleItemMeta,
   kind: BattleMediaKind,
+  locale: Locale,
   realNames: Map<string, string> = new Map(),
   priority: WorkerPriority = 'interactive',
 ): Promise<Buffer> {
   const sessionHex = toSessionHex(sessionId)
-  const runningBundle = inflightBuilds.get(sessionHex)
+  const runningBundle = inflightBuilds.get(`${sessionHex}:${locale}`)
   if (runningBundle) {
     promoteBuild(runningBundle.state, priority)
     return runningBundle.promise.then((media) => {
       const selected = selectBuiltMedia(media, kind)
-      return selected ?? buildBattleMediaKind(sessionId, partUrls, meta, kind, realNames, priority)
+      return selected ?? buildBattleMediaKind(sessionId, partUrls, meta, kind, locale, realNames, priority)
     })
   }
 
-  const key = `${sessionHex}:${kind}:1`
+  const key = `${sessionHex}:${kind}:1:${locale}`
   const running = inflightMediaKindBuilds.get(key)
   if (running) {
     promoteBuild(running.state, priority)
@@ -573,7 +607,7 @@ export function buildBattleMediaKind(
   }
   const state: MediaBuildState = { priority, workerControls: new Set() }
   acquireCacheSession(sessionHex)
-  const build = doBuildBattleMediaKind(sessionId, partUrls, meta, kind, realNames, state).finally(() => {
+  const build = doBuildBattleMediaKind(sessionId, partUrls, meta, kind, locale, realNames, state).finally(() => {
     inflightMediaKindBuilds.delete(key)
     releaseCacheSession(sessionHex)
   })
@@ -586,6 +620,7 @@ async function doBuildBattleMediaKind(
   partUrls: string[],
   meta: BattleItemMeta,
   kind: BattleMediaKind,
+  locale: Locale,
   realNames: Map<string, string>,
   state: MediaBuildState,
 ): Promise<Buffer> {
@@ -600,7 +635,7 @@ async function doBuildBattleMediaKind(
     kind !== 'chat',
     heatmap && heatmapSelection(kind).mode === 'air',
   )
-  const payload = mediaWorkerPayload(source, missionName, assets)
+  const payload = mediaWorkerPayload(source, missionName, assets, locale)
   const trackRender = workerControlTracker(state)
   const rendered = await runWorkerTask(
     {
@@ -628,30 +663,34 @@ async function doBuildBattleMediaKind(
     source.header.sessionIdHex,
     [{ kind, data: media }],
     buildBattleMeta(summary, assets.dict),
+    locale,
   )
   return media
 }
 
+/** Builds every artifact in `locale` (the `battle` CLI). */
 export function buildBattleMedia(
   sessionId: string,
   partUrls: string[],
   meta: BattleItemMeta,
+  locale: Locale,
   realNames: Map<string, string> = new Map(),
   priority: WorkerPriority = 'interactive',
 ): Promise<BuiltBattleMedia> {
   const sessionHex = toSessionHex(sessionId)
-  const running = inflightBuilds.get(sessionHex)
+  const key = `${sessionHex}:${locale}`
+  const running = inflightBuilds.get(key)
   if (running) {
     promoteBuild(running.state, priority)
     return running.promise
   }
   const state: MediaBuildState = { priority, workerControls: new Set() }
   acquireCacheSession(sessionHex)
-  const build = doBuildBattleMedia(sessionId, partUrls, meta, realNames, state).finally(() => {
-    inflightBuilds.delete(sessionHex)
+  const build = doBuildBattleMedia(sessionId, partUrls, meta, locale, realNames, state).finally(() => {
+    inflightBuilds.delete(key)
     releaseCacheSession(sessionHex)
   })
-  inflightBuilds.set(sessionHex, { promise: build, state })
+  inflightBuilds.set(key, { promise: build, state })
   return build
 }
 
@@ -659,6 +698,7 @@ async function doBuildBattleMedia(
   sessionId: string,
   partUrls: string[],
   meta: BattleItemMeta,
+  locale: Locale,
   realNames: Map<string, string>,
   state: MediaBuildState,
 ): Promise<BuiltBattleMedia> {
@@ -666,7 +706,7 @@ async function doBuildBattleMedia(
   const { header, parseErrors } = source
   const missionName = meta.missionName ?? header.locName ?? ''
   const assets = await loadBattleRenderAssets(source, missionName, state, true, true)
-  const payload = mediaWorkerPayload(source, missionName, assets)
+  const payload = mediaWorkerPayload(source, missionName, assets, locale)
   const trackRender = workerControlTracker(state)
   const rendered = await runWorkerTask(
     {
@@ -712,6 +752,7 @@ async function doBuildBattleMedia(
     header.sessionIdHex,
     artifacts,
     buildBattleMeta(summary, assets.dict),
+    locale,
     true,
   )
 
@@ -732,7 +773,7 @@ function buildBattleMeta(
       return vehicleClass === 'F' || vehicleClass === 'H'
     }),
     hasChat: summary.chat > 0,
-    artifacts: [],
+    artifacts: {},
   }
 }
 
@@ -747,25 +788,24 @@ async function publishBattleArtifacts(
   sessionIdHex: string,
   artifacts: BattleArtifact[],
   metadata: BattleMeta,
+  locale: Locale,
   replaceArtifacts = false,
 ): Promise<void> {
   const previous = artifactPublishLocks.get(sessionIdHex) ?? Promise.resolve()
   const publish = previous.catch(() => undefined).then(async () => {
     await mkdir(CACHE_DIR, { recursive: true })
     const metaFile = path.join(CACHE_DIR, `${sessionIdHex}-meta.json`)
-    const existing = replaceArtifacts ? null : await readBattleMetaFile(sessionIdHex)
-    const available = new Set(existing?.artifacts ?? [])
-    for (const artifact of artifacts) available.add(artifact.kind)
+    const existing = await readBattleMetaFile(sessionIdHex)
     const publishedMeta: BattleMeta = {
       ...metadata,
-      artifacts: ALL_MEDIA_KINDS.filter((kind) => available.has(kind)),
+      artifacts: publishedArtifacts(existing?.artifacts, locale, artifacts.map((artifact) => artifact.kind), replaceArtifacts),
     }
 
-    // Для полного поколения marker снимается до публикации; ленивый файл
-    // сам публикуется атомарно, после чего marker получает новый список.
+    // A full bundle takes the marker down before writing its files; a lazy
+    // file is published atomically on its own, then the marker lists it.
     if (replaceArtifacts) await rm(metaFile, { force: true })
     await Promise.all(
-      artifacts.map((artifact) => writeFileAtomic(cacheFile(sessionIdHex, artifact.kind), artifact.data)),
+      artifacts.map((artifact) => writeFileAtomic(cacheFile(sessionIdHex, artifact.kind, locale), artifact.data)),
     )
     const serializedMeta = JSON.stringify(publishedMeta)
     await writeFileAtomic(metaFile, serializedMeta)

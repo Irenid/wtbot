@@ -40,10 +40,10 @@ process would get the same Discord token and the same database.
 `curl -s --retry 15 --retry-connrefused --retry-delay 1 http://127.0.0.1:3000/health`.
 `GET /statistics` — the HTML dashboard, `GET /` — the site; the `analysis`
 field in `/api/items` is filled by `npm run analyze` (paid,
-`ANTHROPIC_API_KEY`). `npm run deploy:commands`
-(needs `CLIENT_ID`, `GUILD_ID`; changes the commands in Discord) prints
-`Зарегистрировано команд: N — на сервере … (мгновенно)` (N commands
-registered); only a live user can press the commands.
+`ANTHROPIC_API_KEY`). The bot registers its slash commands on every server
+at start (it changes them in Discord): `[commands] N commands registered on
+server … (<language>)` when they changed, nothing when they did not; only a
+live user can press the commands.
 
 Windows: TaskStop of a background shell leaves the child node alive — find the
 PID on port 3000 (`Get-NetTCPConnection -LocalPort 3000 -State Listen`) and

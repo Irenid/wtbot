@@ -37,6 +37,7 @@ import {
 } from '../parsers/sources/wt-player.js'
 import type { PlayerStatsComparison, PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { runWorkerTask } from '../workers/pool.js'
+import { guildLocale } from './locale.js'
 
 const SOURCE = 'wt-players'
 const TICK_MS = 60_000
@@ -466,12 +467,13 @@ function lookupAccountStats(nickname: string): {
   }
 }
 
-function loadVoiceEntries(nowSec: number, guildId: string): LoadedPlayerBoardEntries {
+function loadVoiceEntries(nowSec: number, guildId: string, locale: Locale): LoadedPlayerBoardEntries {
+  const { intl } = botText(locale)
   const presence = getVoicePresence()
     .filter((entry) => entry.guildId === guildId)
     .sort((left, right) =>
-      left.channelName.localeCompare(right.channelName, botText(config.botLocale).intl)
-      || left.wtNick.localeCompare(right.wtNick, botText(config.botLocale).intl)
+      left.channelName.localeCompare(right.channelName, intl)
+      || left.wtNick.localeCompare(right.wtNick, intl)
       || left.userId.localeCompare(right.userId),
     )
   if (presence.length === 0) return { entries: [], missingNicknames: [] }
@@ -509,19 +511,25 @@ function loadVoiceEntries(nowSec: number, guildId: string): LoadedPlayerBoardEnt
   return { entries, missingNicknames: [] }
 }
 
+/** A board's language: its server's (locale.ts); a /language change redraws it through the content hash. */
+function boardLocale(client: Client, guildId: string): Locale {
+  return guildLocale(guildId, client.guilds.cache.get(guildId)?.preferredLocale)
+}
+
 function buildCurrentRender(
   guildId: string,
+  locale: Locale,
   nowSec = Math.floor(Date.now() / 1000),
 ): PlayerBoardRender {
   const parse = getLatestParsePerSource().find((entry) => entry.source === SOURCE) ?? null
-  const loaded = loadVoiceEntries(nowSec, guildId)
+  const loaded = loadVoiceEntries(nowSec, guildId, locale)
   return renderPlayerBoard(
     loaded.entries,
     parse,
     nowSec,
     getVoicePresence().filter((entry) => entry.guildId === guildId).length,
     loaded.missingNicknames,
-    { mode: 'voice', locale: config.botLocale },
+    { mode: 'voice', locale },
   )
 }
 
@@ -567,7 +575,7 @@ async function retirePreviousBoardMessage(
     const oldMessage = await fetchOwnedMessage(client, oldChannel, previous.messageId)
     if (oldMessage !== null) {
       await oldMessage.edit({
-        content: botText(config.botLocale).playerBoard.moved(`<#${newChannelId}>`),
+        content: botText(boardLocale(client, previous.guildId)).playerBoard.moved(`<#${newChannelId}>`),
         embeds: [],
         allowedMentions: { parse: [] },
       })
@@ -592,7 +600,7 @@ async function refreshBoardInternal(
   board: PlayerStatBoard,
   force: boolean,
 ): Promise<PlayerBoardRefreshResult> {
-  const render = buildCurrentRender(board.guildId)
+  const render = buildCurrentRender(board.guildId, boardLocale(client, board.guildId))
   const now = Date.now()
   const shouldValidate = now - (lastMessageValidation.get(board.guildId) ?? 0) >= MESSAGE_VALIDATION_MS
   if (!force && board.lastContentHash === render.contentHash && !shouldValidate) {
@@ -663,7 +671,7 @@ export function configurePlayerStatBoard(
   channelId: string,
 ): Promise<PlayerBoardRefreshResult> {
   return serialize(async () => {
-    const render = buildCurrentRender(guildId)
+    const render = buildCurrentRender(guildId, boardLocale(client, guildId))
     const channel = await resolveChannel(client, channelId)
     const previous = getPlayerStatBoard(guildId)
     const existing = previous?.channelId === channelId
@@ -723,7 +731,7 @@ function scheduleBoardTick(client: Client): void {
     })
 }
 
-/** Queues a redraw at once after voice_presence changes. */
+/** Queues a redraw at once: voice_presence or a server's language changed. */
 export function requestPlayerBoardRefresh(): void {
   if (boardClient !== null) scheduleBoardTick(boardClient)
 }

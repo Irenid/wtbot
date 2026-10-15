@@ -1,6 +1,6 @@
 import { EmbedBuilder, SlashCommandBuilder } from 'discord.js'
-import { config } from '../../config.js'
 import { botText, type BotText } from '../../i18n/index.js'
+import { channelLocale } from '../locale.js'
 import type { Command } from '../types.js'
 import { getClanSeasonContext, getCommandStats, getItemStats, getLatestParsePerSource, type ClanSeasonContext } from '../../db/index.js'
 
@@ -17,7 +17,7 @@ function formatUptime(totalSec: number, t: BotText): string {
 export function seasonText(
   { season, stages, currentStage, stageSwitchDelaySec }: ClanSeasonContext,
   nowSec: number,
-  t = botText(config.botLocale),
+  t: BotText,
 ): string {
   const text = t.stats.season
   if (!season) return text.noSchedule
@@ -33,9 +33,9 @@ export function seasonText(
 }
 
 export const stats: Command = {
-  data: new SlashCommandBuilder().setName('stats').setDescription(botText(config.botLocale).commands.stats.description),
+  definition: (t) => new SlashCommandBuilder().setName('stats').setDescription(t.commands.stats.description),
   async execute(interaction) {
-    const t = botText(config.botLocale)
+    const t = botText(channelLocale(interaction))
     const cmdStats = getCommandStats()
     const parses = getLatestParsePerSource()
     const itemStats = getItemStats()

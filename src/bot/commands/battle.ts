@@ -9,10 +9,10 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { config } from '../../config.js'
-import { botText } from '../../i18n/index.js'
+import { botText, type BotText, type Locale } from '../../i18n/index.js'
 import type { Command } from '../types.js'
 import { heatmapQualityRow, heatmapScaleForUpload, type HeatmapScale } from '../battle-media-controls.js'
+import { channelLocale, userLocale } from '../locale.js'
 import {
   canAdmitWinnerUpdate,
   shouldQueueWinnerUpdate,
@@ -73,15 +73,16 @@ interface ReplayItemData {
 }
 
 export const battle: Command = {
-  data: new SlashCommandBuilder()
+  definition: (t) => new SlashCommandBuilder()
     .setName('battle')
-    .setDescription(botText(config.botLocale).commands.battle.description)
+    .setDescription(t.commands.battle.description)
     .addStringOption((o) =>
-      o.setName('id').setDescription(botText(config.botLocale).commands.battle.id),
+      o.setName('id').setDescription(t.commands.battle.id),
     ),
   async execute(interaction) {
     await interaction.deferReply()
-    const t = botText(config.botLocale).battle
+    const locale = channelLocale(interaction)
+    const t = botText(locale).battle
 
     const rawId = interaction.options.getString('id')
     const item = rawId
@@ -94,7 +95,7 @@ export const battle: Command = {
       return
     }
 
-    const post = await renderBattlePost(item)
+    const post = await renderBattlePost(item, locale)
     if (!post) {
       await interaction.editReply(t.noParts)
       return
@@ -144,17 +145,18 @@ export interface BattlePost {
 
 /**
  * The battle results message for a stored item: the image, the teams text
- * and the media buttons. Shared by /battle and the announcer. null — the item
- * has no replay part links.
+ * and the media buttons, in `locale`, which its later redraws keep. Shared by
+ * /battle and the announcer. null — the item has no replay part links.
  */
 export async function renderBattlePost(
   item: StoredItem,
+  locale: Locale,
   priority: WorkerPriority = 'interactive',
 ): Promise<BattlePost | null> {
   const data = item.data as ReplayItemData
   const sessionId = item.externalId
   const realNames = realNamesFromItem(data)
-  const t = botText(config.botLocale)
+  const t = botText(locale)
 
   // A parsed battle comes from the database without downloading the replay.
   // Otherwise the results-BLK of the last part (parts are needed only here).
@@ -202,7 +204,7 @@ export async function renderBattlePost(
   // The text next to the image: Match ID, then each team's squadron, composition and players
   const buildContent = (): string => {
     const text =
-      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime))}\n` +
+      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}\n` +
       teams
         .map((team, i) => {
           const clan = escapeMarkdown(team.clan ?? t.battle.team(i + 1))
@@ -267,7 +269,7 @@ export async function renderBattlePost(
     renderPriority: WorkerPriority = priority,
   ): Promise<BattlePostPayload> => {
     const png = await renderBattleImage(
-      { missionName, header, results, dict, psr, winnerTeam, locale: config.botLocale },
+      { missionName, header, results, dict, psr, winnerTeam, locale },
       renderPriority,
     )
     shownPsr = psr
@@ -362,7 +364,7 @@ export async function renderBattlePost(
 }
 
 /** The cap the battle played (battleMaxBr) after its Match ID; nothing outside the known stages. */
-export function seasonMaxBrSuffix(maxBr: number | null, t = botText(config.botLocale)): string {
+export function seasonMaxBrSuffix(maxBr: number | null, t: BotText): string {
   return maxBr === null ? '' : ` · ${t.battle.maxBr(maxBr.toFixed(1))}`
 }
 
@@ -533,9 +535,14 @@ function samePsr(left: ReadonlyMap<string, BattlePsr>, right: ReadonlyMap<string
   return true
 }
 
-/** Presses of battle:<kind>:<sessionId>[:<scale>]; only the ephemeral heatmap toggle carries a scale. */
+/**
+ * Presses of battle:<kind>:<sessionId>[:<scale>]; only the ephemeral heatmap
+ * toggle carries a scale. The replies and their images are in the presser's
+ * language (locale.ts), each cached per language.
+ */
 export async function handleBattleButton(interaction: ButtonInteraction): Promise<void> {
-  const t = botText(config.botLocale).battle
+  const locale = userLocale(interaction)
+  const t = botText(locale).battle
   const [, rawKind, sessionId, rawScale] = interaction.customId.split(':')
   const kind = rawKind as BattleMediaKind
   if (!Object.hasOwn(t.media, kind) || !sessionId) return
@@ -564,7 +571,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
 
   try {
     if (scale === 2 && isBattleHeatmapKind(kind)) {
-      media = await cachedBattleHeatmap2x(sessionIdHex, kind)
+      media = await cachedBattleHeatmap2x(sessionIdHex, kind, locale)
       if (!media) {
         // The first ordinary render stores the normalized battle; the HD task
         // then takes its blob and builds only the one chosen map.
@@ -578,14 +585,15 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
             parts,
             meta,
             kind,
+            locale,
             realNamesFromItem(data ?? {}),
             'interactive',
           )
         }
-        media = await buildBattleHeatmap2x(sessionId, kind, meta, 'interactive')
+        media = await buildBattleHeatmap2x(sessionId, kind, meta, locale, 'interactive')
       }
     } else {
-      media = await cachedBattleMedia(sessionIdHex, kind)
+      media = await cachedBattleMedia(sessionIdHex, kind, locale)
       if (!media) {
         // A stored battle builds from the database (no replay needed); otherwise the replay parts are.
         if (!hasBattle(sessionId) && (!item || parts.length === 0)) {
@@ -597,6 +605,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
           parts,
           meta,
           kind,
+          locale,
           realNamesFromItem(data ?? {}),
           'interactive',
         )
@@ -627,7 +636,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     scale === 2
   ) {
     const hdByteLength = media.byteLength
-    const standard = await cachedBattleMedia(sessionIdHex, kind)
+    const standard = await cachedBattleMedia(sessionIdHex, kind, locale)
     if (!standard) {
       await interaction.editReply(t.hdOverLimitNoCache)
       return
@@ -643,7 +652,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     files: [new AttachmentBuilder(media, { name: `battle-${sessionIdHex}-${kind}${responseScale === 2 ? '@2x' : ''}.png` })],
     components:
       isBattleHeatmapKind(kind) && !qualityNotice
-        ? [heatmapQualityRow(kind, sessionId, responseScale)]
+        ? [heatmapQualityRow(kind, sessionId, responseScale, botText(locale))]
         : [],
   })
 }

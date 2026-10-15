@@ -62,7 +62,10 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
 
    Or set `WT_GAME_HOST_DIR` in `.env` to the game folder itself: compose
    mounts it instead, and maps follow game patches.
-3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`.
+3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`. At
+   start the bot registers its slash commands on every server it is in (invite
+   it with the `bot` and `applications.commands` scopes); `/language` (Manage
+   Server) sets a server's language.
 4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
    `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links
    redirect to the same page at the root. For network access put a reverse proxy with TLS

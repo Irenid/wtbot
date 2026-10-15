@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { config } from '../config.js'
 import { closeDb, getBattleWinner, getItemByExternalId, getLatestItems, initDb } from '../db/index.js'
+import { DEFAULT_LOCALE } from '../i18n/index.js'
 import { levelId } from '../wrpl/battle-assets.js'
 import { buildBattleMedia, cachedBattleMeta } from '../wrpl/battle-media.js'
 import { battlePsr } from '../wrpl/battle-psr.js'
@@ -147,6 +148,9 @@ for (const [ti, roster] of rosters.entries()) {
 console.log()
 console.log(`Игроков: ${results.players.length} · статус: ${results.status || '—'}`)
 
+// WT_BOT_LOCALE, the default of servers without /language.
+const locale = config.defaultLocale ?? DEFAULT_LOCALE
+
 if (flags.has('--image')) {
   const png = await renderBattleImage(
     {
@@ -156,7 +160,7 @@ if (flags.has('--image')) {
       dict,
       psr,
       winnerTeam,
-      locale: config.botLocale,
+      locale,
     },
     'normal',
   )
@@ -167,23 +171,24 @@ if (flags.has('--image')) {
 }
 
 if (flags.has('--media')) {
-  console.log('Собираю материалы боя (из БД, если уже разобран; иначе скачиваю реплей)...')
+  console.log('Building the battle media (from the database if the battle is stored, else from the replay)...')
   const media = await buildBattleMedia(
     sessionId,
     parts,
     { missionName: data.missionName ?? item.title, gameMode: data.gameMode, gameVersion: data.gameVersion },
+    locale,
     realNames,
     'normal',
   )
   const events = media.summary
-  const won = events.teamWon > 0 ? `команда ${events.teamWon}` : 'не определён'
+  const won = events.teamWon > 0 ? `team ${events.teamWon}` : 'unknown'
   console.log(
-    `События: убийств ${events.kills}, повреждений ${events.damage}, сообщений в чате ${events.chat},` +
-      ` траекторий ${events.units} · победитель: ${won}` +
-      (events.errors.length > 0 ? ` · ошибок разбора: ${events.errors.length}` : ''),
+    `Events: ${events.kills} kills, ${events.damage} damage, ${events.chat} chat messages,` +
+      ` ${events.units} tracks · winner: ${won}` +
+      (events.errors.length > 0 ? ` · ${events.errors.length} parse errors` : ''),
   )
   for (const kind of ['log', 'heatmap-ground', 'heatmap-air', 'chat'] as const) {
-    console.log(`  data/battles/${header.sessionIdHex}-${kind}${kind === 'chat' ? '.txt' : '.png'}`)
+    console.log(`  data/battles/${header.sessionIdHex}-${kind}.${locale}${kind === 'chat' ? '.txt' : '.png'}`)
   }
 }
 

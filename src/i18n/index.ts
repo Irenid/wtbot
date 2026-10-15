@@ -1,7 +1,9 @@
 /**
  * The bot's languages. A new language is one catalog file implementing
- * BotText (copy en.ts, translate every value) plus its entry in CATALOGS;
- * WT_BOT_LOCALE then selects it. English is canonical: add a text there first.
+ * BotText (copy en.ts, translate every value) plus its entry in CATALOGS,
+ * keyed by its lowercase language code: servers then choose it with
+ * /language, and users whose Discord language it is get it in what only they
+ * see (src/bot/locale.ts). English is canonical: add a text there first.
  */
 import { en } from './en.js'
 import { ru } from './ru.js'

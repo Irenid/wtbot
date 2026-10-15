@@ -118,13 +118,13 @@ worker-task producers have stopped.
 
 | Variable | Contract |
 |---|---|
-| `TOKEN` | read on first use (`config.token`): only the bot process (checked first at startup) and `deploy:commands` need it; other CLIs run without it |
+| `TOKEN` | read on first use (`config.token`): only the bot process needs it (checked first at startup); other CLIs run without it |
 | `DB_PATH`, `WTBOT_ALLOW_NEW_DB=false` | a new database only when explicitly allowed |
 | `PORT`, `WEB_HOST=127.0.0.1`, `WEB_TOKEN` | loopback accepts only a loopback `Host` (DNS rebinding); non-loopback (always `0.0.0.0` in Docker) only with `WEB_TOKEN`: Bearer or HTTP Basic password |
 | `WEB_TRUST_PROXY` | `false`/`true`, or a list of IP/CIDR and `loopback`/`linklocal`/`uniquelocal`, for `X-Forwarded-For`; Fastify 5.12 has no hop count |
 | `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer, POSTs included; the bot does not read them, the token never reaches the bundle |
 | `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — all channels; a battles channel without a clan tag announces every clan (~1,500 battles a day, 869–2,466 over 2026-09-24…10-11); the tag filters publishing, not collection |
-| `WT_BOT_LOCALE=en` | the one language of the bot's Discord text and battle images (`src/i18n`: `en`, `ru`; any other value fails startup); keys the media cache; after a change rerun `deploy:commands` for the command descriptions |
+| `WT_BOT_LOCALE` | the language of servers without a `/language` choice (`src/i18n`: `en`, `ru`; any other value fails startup); unset — the server's Discord language if a catalog has it, else English (section 8); CLIs draw battle images in it |
 | `WT_SCOUT_CHANNEL` | channels where a scoreboard screenshot is read and answered (`src/bot/scout-images.ts`); adds the `GuildMessages` intent, and `MessageContent` only when the application has it (asking without it fails the login, 4014) |
 | `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
 | `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) or Edge/Chrome/Chromium (Linux) for addresses behind Cloudflare; `NO_SANDBOX=true` only in Docker; `WT_VNC_PASSWORD` opens VNC to its Xvfb display in Docker for a manual login or Cloudflare check |
@@ -529,10 +529,11 @@ Data:
 
 - `data/wtbot.db` — the source of truth and the dataset;
 - `data/replays/<sid>/` — TTL cache of replay parts;
-- `data/battles/` — LRU of rendered artifacts up to `WT_BATTLE_CACHE_MB`:
-  `*-meta.json` is published last as the commit marker, eviction removes the
-  whole session set; `WT_BATTLE_CACHE_ENABLED=false` disables reuse, not
-  saving;
+- `data/battles/` — LRU of rendered artifacts up to `WT_BATTLE_CACHE_MB`, one
+  file per language (`<hex>-<kind>.<locale>.png`): `*-meta.json` (each
+  language's artifact list) is published last as the commit marker, eviction
+  removes the whole session set; `WT_BATTLE_CACHE_ENABLED=false` disables
+  reuse, not saving;
 - `benchmarks/fixtures/replays/` — the only permanent WRPL corpus;
 - `data/missions/`, `maps/`, `unit-icons/`, `fonts/`, `weapons.json`,
   `ecshashes.json`, `wt-vehicles.json` — assets and rebuildable indexes;
@@ -545,13 +546,26 @@ Data:
 
 ## 8. Discord, site and player statistics
 
-- Slash command: a file in `src/bot/commands/` (autocomplete:
-  `Command.autocomplete`), registration in `src/bot/commands/index.ts`, then
-  `npm run deploy:commands` — only with permission.
+- Slash command: a file in `src/bot/commands/` (`definition(t)` in one
+  language; autocomplete: `Command.autocomplete`), listed in
+  `src/bot/commands/index.ts`. The bot registers the commands itself
+  (`command-sync.ts`): guild commands on every server it is in, descriptions in
+  the server's language plus every catalog's as Discord localizations; a
+  server is rewritten when it is joined or its body's hash (`bot_state`
+  `commands:<guildId>`) changes, so every start of changed code — a deploy, or
+  a dev run with the production token — registers its commands; global
+  commands are removed at start.
 - Bot text — replies, posts, embeds, buttons, command descriptions, image
   labels — lives only in the `BotText` catalogs of `src/i18n/` (`en`
-  canonical): code reads `botText(config.botLocale)`, a worker gets `locale`
-  in its input, a pure renderer defaults to English. A new text goes into
+  canonical): code reads `botText(locale)`, a worker gets `locale` in its
+  input, a pure renderer defaults to English. The language
+  (`src/bot/locale.ts`): what the channel sees (posts, public replies, the
+  player board, screenshot replies) is in the server's — its `/language`
+  choice (`bot_state` `guild-locale:<guildId>`), else `WT_BOT_LOCALE`, else
+  the server's Discord language, else English; what one user sees (ephemeral
+  replies, autocomplete) is in that user's Discord language if a catalog has
+  it, else the server's. A post's redraws keep its language; after
+  `/language` only the player board is redrawn. A new text goes into
   `types.ts` and every catalog (a missing one is a type error); a new language
   is one catalog file plus its `CATALOGS` entry; `i18n.test.ts` holds the
   length limits. Internal errors never reach Discord (the catalog's generic
@@ -798,10 +812,10 @@ that use fetch (libuv assert), and no test hangs. Dependabot runs weekly.
 
 Only with explicit permission (external or local effects):
 
-- `npm run dev`, `npm start`, `npm run dev:bot`, `npm run start:bot`;
+- `npm run dev`, `npm start`, `npm run dev:bot`, `npm run start:bot` — the
+  bot registers its code's slash commands on every server (section 8);
 - `npm run site` — the API over `DB_PATH`, which `initDb()` migrates;
 - `npm run dev:web` with `WTBOT_API_URL` — its POSTs act on production;
-- `npm run deploy:commands` — changes Discord slash commands;
 - `npm run backfill -- <days>` — network and database writes;
 - `npm run analyze -- <limit>` — paid API calls;
 - `npm run battle -- <id>` — may download a replay, build media and store the
