@@ -9,19 +9,21 @@ import {
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 
 /**
- * Следит, кто сидит в голосовых каналах, и держит снимок в таблице
- * voice_presence (дашборд читает её через /api/voice).
+ * Tracks who sits in voice channels and keeps the snapshot in table
+ * voice_presence (the player board and /api/voice read it).
  *
- * Ник в игре достаётся из серверного ника участника — на клановых серверах
- * его обычно оформляют как «WTНик (Имя)», например «Venukbr (ИванЧай)»;
- * если скобок нет, ником в игре считается весь серверный ник.
+ * The WT nick comes from the member's server nickname, usually written
+ * «WTNick (Name)», e.g. «Venukbr (ИванЧай)»; without brackets the whole
+ * nickname is the WT nick.
  *
- * WT_VOICE_CHANNELS в .env ограничивает список каналов (id через запятую);
- * пусто — отслеживаются все голосовые каналы всех серверов бота.
+ * WT_VOICE_CHANNELS limits the channels (comma-separated IDs); empty — every
+ * voice channel the bot can view on every server it is in. A channel hidden
+ * from the bot is never tracked: the board would show the regiment who sits
+ * in a staff or newcomer room. Overwrite and role changes re-read the snapshot.
  *
- * Раз в 10 минут для сидящих в каналах обновляются снимки ПКР их кланов
- * (клан ищется по прошлым снимкам ника — он появляется после первого
- * рендера боя клана командой /battle).
+ * Every 10 minutes the PSR snapshots of the squadrons of everyone in voice are
+ * refreshed (a squadron is found from the nick's past snapshots, which appear
+ * after the first /battle render of a battle of that squadron).
  */
 
 const RATINGS_REFRESH_MS = 10 * 60_000
@@ -60,8 +62,13 @@ export function startVoiceTracker(
     promise.then(() => active.delete(promise), () => active.delete(promise))
     return promise
   }
-  const isTracked = (channelId: string | null): channelId is string =>
-    channelId !== null && (watched.size === 0 || watched.has(channelId))
+  /** The state's channel ID while it is tracked, else null. */
+  const trackedChannel = (state: VoiceState): string | null => {
+    const id = state.channelId
+    if (id === null || (watched.size > 0 && !watched.has(id))) return null
+    // false only for a cached channel the bot lacks View Channel in.
+    return state.channel?.viewable === false ? null : id
+  }
 
   const notifyPresenceChange = (): void => {
     if (stopping || options.onPresenceChange === undefined) return
@@ -80,26 +87,27 @@ export function startVoiceTracker(
   }
 
   const entryFrom = (state: VoiceState, member: GuildMember): VoicePresenceEntry | null => {
-    if (!isTracked(state.channelId)) return null
+    const channelId = trackedChannel(state)
+    if (channelId === null) return null
     const displayName = member.displayName || member.user.username
     return {
       guildId: state.guild.id,
       guildName: state.guild.name,
-      channelId: state.channelId,
-      channelName: state.channel?.name ?? state.channelId,
+      channelId,
+      channelName: state.channel?.name ?? channelId,
       userId: member.id,
       displayName,
       wtNick: parseWtNick(displayName),
     }
   }
 
-  // Полный снимок: GUILD_CREATE приносит voice-стейты без участников,
-  // поэтому недостающих подтягиваем ограниченно-параллельно через REST.
+  // A full snapshot: GUILD_CREATE brings voice states without members, so the
+  // missing ones are fetched over REST, MEMBER_FETCH_CONCURRENCY at a time.
   const snapshot = async (): Promise<number> => {
     const states: VoiceState[] = []
     for (const guild of client.guilds.cache.values()) {
       for (const state of guild.voiceStates.cache.values()) {
-        if (isTracked(state.channelId)) states.push(state)
+        if (trackedChannel(state) !== null) states.push(state)
       }
     }
 
@@ -167,6 +175,30 @@ export function startVoiceTracker(
   }
   client.on(Events.VoiceStateUpdate, voiceHandler)
 
+  // Overwrites and the bot's roles decide which channels are viewable. A burst
+  // of updates (a role reorder edits every role) runs one snapshot, then one more.
+  let resnapshotRunning = false
+  let resnapshotAgain = false
+  const resnapshot = (): void => {
+    if (stopping) return
+    if (resnapshotRunning) {
+      resnapshotAgain = true
+      return
+    }
+    resnapshotRunning = true
+    void track(snapshot()).catch((error: unknown) => {
+      console.warn(`[voice] snapshot after a permission change failed: ${(error as Error).message}`)
+    }).finally(() => {
+      resnapshotRunning = false
+      if (resnapshotAgain) {
+        resnapshotAgain = false
+        resnapshot()
+      }
+    })
+  }
+  client.on(Events.ChannelUpdate, resnapshot)
+  client.on(Events.GuildRoleUpdate, resnapshot)
+
   // Периодически освежаем ПКР кланов тех, кто сидит в каналах
   const timer = setInterval(() => {
     if (!stopping) void track(refreshRatings(false)).catch((err) => console.error('[voice] Не смог обновить рейтинги:', err))
@@ -202,6 +234,8 @@ export function startVoiceTracker(
       clearInterval(timer)
       client.off(Events.ClientReady, readyHandler)
       client.off(Events.VoiceStateUpdate, voiceHandler)
+      client.off(Events.ChannelUpdate, resnapshot)
+      client.off(Events.GuildRoleUpdate, resnapshot)
       await Promise.allSettled([...active])
     },
   }

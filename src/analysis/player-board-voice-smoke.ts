@@ -160,6 +160,16 @@ try {
   client.emit('voiceStateUpdate', state, leftState)
   assert.equal(getVoicePresence().length, 0)
   assert.ok(changes >= 2)
+
+  // A watched channel the bot cannot view stays off the board.
+  const hiddenState = { ...state, channel: { ...channel, viewable: false } }
+  client.emit('voiceStateUpdate', leftState, hiddenState)
+  assert.equal(getVoicePresence().length, 0, 'a channel hidden from the bot is not tracked')
+  guild.voiceStates.cache.set(member.id, hiddenState)
+  client.emit('channelUpdate', channel, hiddenState.channel)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(getVoicePresence().length, 0, 'the snapshot skips it too')
+  guild.voiceStates.cache.delete(member.id)
   const refreshed = await refreshPlayerStatBoard(discordLikeClient as never, guild.id, true)
   assert.equal(refreshed.playerCount, 0)
   await tracker.stop()
