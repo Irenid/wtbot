@@ -123,9 +123,9 @@ worker-task producers have stopped.
 | `PORT`, `WEB_HOST=127.0.0.1`, `WEB_TOKEN` | loopback accepts only a loopback `Host` (DNS rebinding); non-loopback (always `0.0.0.0` in Docker) only with `WEB_TOKEN`: Bearer or HTTP Basic password |
 | `WEB_TRUST_PROXY` | `false`/`true`, or a list of IP/CIDR and `loopback`/`linklocal`/`uniquelocal`, for `X-Forwarded-For`; Fastify 5.12 has no hop count |
 | `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer, POSTs included; the bot does not read them, the token never reaches the bundle |
-| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL`, `WT_CLAN_TAG` | empty voice list — every channel the bot can view (a hidden one is never tracked: the board would show who sits in a staff room); a battles channel without a clan tag announces every clan (~1,500 battles a day, 869–2,466 over 2026-09-24…10-11); the tag filters publishing, not collection |
+| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL` + `WT_CLAN_TAG`, `WT_SCOUT_CHANNEL` | imported once per value into the per-server `/settings` (`src/bot/guild-settings.ts`, table `guild_channels`), which owns them after that; a server without voice channels tracks every one the bot can view (a hidden one never: the board would show who sits in a staff room); a battles channel without a squadron gets every squadron's battles (~1,500 a day, 869–2,466 over 2026-09-24…10-11); the squadron filters publishing, not collection |
+| `WT_ANNOUNCE_ENABLED=true` | `false` — no battle posts anywhere: a dev run or the soak on a copy of the production database, whose `/settings` name real channels |
 | `WT_BOT_LOCALE` | the language of servers without a `/language` choice (`src/i18n`: `en`, `ru`; any other value fails startup); unset — the server's Discord language if a catalog has it, else English (section 8); CLIs draw battle images in it |
-| `WT_SCOUT_CHANNEL` | channels where a scoreboard screenshot is read and answered (`src/bot/scout-images.ts`); adds the `GuildMessages` intent, and `MessageContent` only when the application has it (asking without it fails the login, 4014) |
 | `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
 | `WT_BROWSER_*` (`ENABLED=true`) | Edge (Windows) or Edge/Chrome/Chromium (Linux) for addresses behind Cloudflare; `NO_SANDBOX=true` only in Docker; `WT_VNC_PASSWORD` opens VNC to its Xvfb display in Docker for a manual login or Cloudflare check |
 | `WT_REPLAY_HOSTS` | allowlist of CDN hosts for replay parts (`src/wrpl/replay-url-policy.ts`); structural SSRF protection applies without it |
@@ -546,6 +546,15 @@ Data:
 
 ## 8. Discord, site and player statistics
 
+- The bot is public-ready: what it does on a server is that server's
+  `/settings` (Manage Server; `src/bot/commands/settings.ts`): battle-post
+  channels (every squadron or one, several rows per channel post a battle
+  once), scoreboard-screenshot channels, the board's voice channels; at most
+  `MAX_GUILD_CHANNELS` of each. A channel is accepted only with the bot's
+  permissions there (`NEEDS`); a deleted channel or a server that removed the
+  bot drops its rows (`ChannelDelete`, `GuildDelete`). The bot always asks for
+  `GuildMessages`, and `MessageContent` only when the application has it
+  (asking without it fails the login, 4014); messages are not cached.
 - Slash command: a file in `src/bot/commands/` (`definition(t)` in one
   language; autocomplete: `Command.autocomplete`), listed in
   `src/bot/commands/index.ts`. The bot registers the commands itself
@@ -585,7 +594,7 @@ Data:
   (`--fit`: train before `--split`, test after; `--known-team` for a
   screenshot's roster: all cores but two, ~7 GB); refit after a rules or
   format change and update the accuracy in the doc.
-- `/scout` by picture: a Tab screenshot in `WT_SCOUT_CHANNEL`; OCR, nick
+- `/scout` by picture: a Tab screenshot in a `/settings scout` channel; OCR, nick
   matching and flag drawing run only in worker tasks (`read-scoreboard-image`,
   `read-scout-players`, `render-flag-templates`), Tesseract with the models of
   `OCR_PASSES` that the `Dockerfile` installs; team colours are never assumed.
@@ -618,15 +627,17 @@ Data:
   payload, so the record counts the battle once its winner is stored. Two more
   main-thread reads, 1–2 ms a team: the day's battles drive the join
   (`CROSS JOIN`); from the tag's index a busy squadron reads its whole history.
-- Announcer: attempts and message state in `announce_state`, the baseline in
-  `bot_state`; the first start does not publish history; battles older than
+- Announcer: attempts in `announce_state`, the baseline in `bot_state`; the
+  first start does not publish history, and while no server has a battles
+  channel the baseline follows the newest battle; battles older than
   `WT_ANNOUNCE_MAX_AGE_HOURS` are skipped by one `skipStaleAnnounce()`. A
-  battle is posted once, in battle start order, after a commit that stored its
-  winner; a terminal ingest without a winner resolves it unposted
-  (`battleAnnouncementDecision`). Preliminary messages are no longer sent; the
-  legacy ones behind the baseline (`getUnfinishedAnnounceMessages()`, loaded
-  at announcer start, kept until resolved) are edited into the post or the
-  error, or marked done if Discord deleted them.
+  battle is posted once per matching channel, in battle start order, after a
+  commit that stored its winner, rendered once per server language; a
+  terminal ingest without a winner resolves it unposted
+  (`battleAnnouncementDecision`). A channel the bot cannot post to is skipped
+  without an attempt (permissions are checked first: Discord bans an IP after
+  10,000 invalid requests in 10 min); a retry posts only to the channels not
+  reached yet (in memory). Preliminary messages are gone (none was left).
 - `/playerboard setup` stores the channel and one editable message in SQLite;
   the board shows the current voice snapshot and writes its publication state
   through a worker task only when the hash changes. The WT nickname is the
@@ -810,8 +821,8 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `verify:player-board-voice`, `verify:benchmark-corpus` (needs
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
-frontend change run `build:web`. Baseline on **2026-10-15**: all gates pass,
-**534 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+frontend change run `build:web`. Baseline on **2026-10-19**: all gates pass,
+**538 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).
@@ -835,13 +846,14 @@ Only with explicit permission (external or local effects):
 - `npm run capture:map` — reads a running game client (port 8111), writes
   `data/maps/` and `data/fonts/`;
 - `verify:player-stats-live`, `verify:statshark-live`, `verify:wt-transport`,
-  `benchmark:performance-soak` — external services (soak clears
-  `WT_BATTLES_CHANNEL` but still uses the network and the database).
+  `benchmark:performance-soak` — external services (soak sets
+  `WT_ANNOUNCE_ENABLED=false` but still uses the network and the database).
 
 An allowed live run follows skill `verify` (checks, logs, the bot in Docker);
 a run of `[ingest]` lines with `убийств 0, победитель ?` (kills 0, winner ?)
-means a game patch broke parsing (section 7). With `WT_BATTLES_CHANNEL` set,
-the announcement queue goes to the real channel — estimate it first. Windows:
+means a game patch broke parsing (section 7). The announcement queue goes to
+the real `/settings` channels of the database unless `WT_ANNOUNCE_ENABLED=false`
+— estimate it first. Windows:
 after a watch run check child node processes and port 3000 —
 `process.kill(pid, 'SIGINT')` exits without handlers; graceful shutdown is
 tested with Ctrl+C or `docker compose stop`.

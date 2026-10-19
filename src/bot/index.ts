@@ -1,4 +1,4 @@
-import { ApplicationFlagsBitField, Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, REST, RESTJSONErrorCodes, Routes, type Interaction } from 'discord.js'
+import { ApplicationFlagsBitField, Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, Options, REST, RESTJSONErrorCodes, Routes, type Interaction } from 'discord.js'
 import { config } from '../config.js'
 import { botText } from '../i18n/index.js'
 import { recordCommandUse } from '../db/index.js'
@@ -8,6 +8,7 @@ import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
 import type { ScoutStatSharkSource } from '../scout/report.js'
+import { forgetGuildChannels, importEnvChannels } from './guild-settings.js'
 import { handleScoutImageMessage, scoutImagesIdle } from './scout-images.js'
 import { channelLocale, userLocale } from './locale.js'
 
@@ -47,36 +48,50 @@ export interface BotOptions {
 
 export async function startBot(options: BotOptions = {}): Promise<Client> {
   acceptingInteractions = true
-  // Guilds — slash commands, GuildVoiceStates — who sits in voice channels
-  // (neither is privileged). GuildMessages (+ MessageContent when the portal
-  // allows it) — scoreboard screenshots in WT_SCOUT_CHANNEL.
-  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
-  if (config.scoutChannelIds.length > 0) {
-    intents.push(GatewayIntentBits.GuildMessages)
-    if (await messageContentAllowed()) {
-      intents.push(GatewayIntentBits.MessageContent)
-    } else {
-      console.warn('[bot] Message Content Intent is off in the Developer Portal: /scout screenshots are read only when the message mentions the bot')
-    }
+  // Guilds — slash commands, GuildVoiceStates — who sits in voice channels,
+  // GuildMessages — scoreboard screenshots in /settings scout channels (none
+  // is privileged); MessageContent only when the portal allows it.
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages]
+  if (await messageContentAllowed()) {
+    intents.push(GatewayIntentBits.MessageContent)
+  } else {
+    console.warn('[bot] Message Content Intent is off in the Developer Portal: /scout screenshots are read only when the message mentions the bot')
   }
-  const client = new Client({ intents })
+  const client = new Client({
+    intents,
+    // Every message of every server arrives (GuildMessages); nothing reads them back from the cache.
+    makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, MessageManager: 0 }),
+  })
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`[bot] Ready, logged in as ${readyClient.user.tag}`)
     startCommandSync(readyClient, [...commands.values()])
-    // Announces new battles in WT_BATTLES_CHANNEL (when set)
-    if (config.battleBackgroundEnabled) {
-      startBattleAnnouncer(readyClient)
-    } else {
-      console.log('[announce] Battle announcements are off')
-    }
+    // The env channels first, so the first tick already posts to them.
+    void importEnvChannels(readyClient)
+      .catch((error: unknown) => console.warn('[settings] importing the env channels failed:', error))
+      .finally(() => {
+        if (!acceptingInteractions) return
+        if (config.battleBackgroundEnabled && config.announceEnabled) {
+          startBattleAnnouncer(readyClient)
+        } else {
+          console.log('[announce] Battle announcements are off')
+        }
+      })
   })
-  if (config.scoutChannelIds.length > 0) {
-    client.on(Events.MessageCreate, (message) => {
-      if (!acceptingInteractions) return
-      handleScoutImageMessage(message, options.scoutStatShark ?? null)
-    })
-  }
+  client.on(Events.MessageCreate, (message) => {
+    if (!acceptingInteractions) return
+    handleScoutImageMessage(message, options.scoutStatShark ?? null)
+  })
+  // Settings of a deleted channel, or of a server that removed the bot, are dropped.
+  client.on(Events.ChannelDelete, (channel) => {
+    if (channel.isDMBased()) return
+    const removed = forgetGuildChannels({ channelId: channel.id })
+    if (removed > 0) console.log(`[settings] channel ${channel.id} was deleted: ${removed} setting(s) removed`)
+  })
+  client.on(Events.GuildDelete, (guild) => {
+    const removed = forgetGuildChannels({ guildId: guild.id })
+    console.log(`[bot] removed from server ${guild.id}: ${removed} channel setting(s) dropped`)
+  })
   client.on(Events.Error, (error) => {
     console.error('[bot] Gateway client error:', error)
   })

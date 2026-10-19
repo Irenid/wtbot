@@ -8,7 +8,8 @@ import { rankNicks } from '../../nick-search.js'
 
 const MAX_CHOICE = 100
 
-function squadronChoice(squadron: ScoutSquadron, t: BotText['scout']): { name: string; value: string } {
+/** An autocomplete choice: tag, name, leaderboard place; shared with /settings battles. */
+export function squadronChoice(squadron: ScoutSquadron, t: BotText['scout']): { name: string; value: string } {
   const place = squadron.position !== null ? ` · ${t.choicePlace(squadron.position)}` : ''
   const label = `${squadronLabel(squadron.displayTag, squadron.name)}${place}${squadron.inReplays ? '' : ` · ${t.choiceNoBattles}`}`
   return { name: label.slice(0, MAX_CHOICE), value: squadron.core.slice(0, MAX_CHOICE) }

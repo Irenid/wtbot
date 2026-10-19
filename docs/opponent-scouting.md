@@ -121,7 +121,7 @@ on 2026-10-01 – 2026-10-08. 16.5 s on 26 threads.
 
 ### By picture
 
-A Tab screenshot posted in `WT_SCOUT_CHANNEL` names the enemy players, so only
+A Tab screenshot posted in a `/settings scout` channel names the enemy players, so only
 their vehicles are predicted (`predictKnownTeam`: each player's own battles at
 the cap, any squadron; unread rows count with the class shares). The test set
 is `data/scout-images/` with `truth.json` (`npm run scout:images` scores it):

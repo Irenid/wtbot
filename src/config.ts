@@ -155,24 +155,29 @@ export const config = {
    * CLIs draw battle images in it (English when null).
    */
   defaultLocale: envLocale('WT_BOT_LOCALE'),
-  /** ID голосовых каналов для наблюдения (через запятую); пусто — все каналы */
+  /** Voice channels for the player board, comma-separated; imported once into /settings voice. */
   voiceChannelIds: (process.env['WT_VOICE_CHANNELS'] ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s !== ''),
-  /** ID текстового канала для автоанонса новых боёв; пусто — выключено */
-  battlesChannelId: process.env['WT_BATTLES_CHANNEL'] ?? '',
+  /**
+   * Imported once into /settings (src/bot/guild-settings.ts), with
+   * WT_CLAN_TAG as its squadron; after that /settings battles owns it.
+   */
+  battlesChannelId: (process.env['WT_BATTLES_CHANNEL'] ?? '').trim(),
+  /**
+   * false — the bot posts no battles anywhere (the performance soak, a dev
+   * run on a copy of the production database, whose /settings name real channels).
+   */
+  announceEnabled: envBoolean('WT_ANNOUNCE_ENABLED', true),
   /**
    * Text channels where a scoreboard (Tab) screenshot gets the enemy's likely
-   * setup (src/bot/scout-images.ts); comma-separated, empty — off. Reading
-   * attachments needs the Message Content intent (Developer Portal → Bot);
-   * without it only messages that mention the bot are read.
+   * setup (src/bot/scout-images.ts), comma-separated; imported once into
+   * /settings scout. Reading attachments needs the Message Content intent
+   * (Developer Portal → Bot); without it only messages that mention the bot are read.
    */
   scoutChannelIds: envCsvUnique('WT_SCOUT_CHANNEL'),
-  /**
-   * Клан-тег, бои которого анонсировать (например, WLILY); пусто — анонсим
-   * все клановые бои. Сравнивается по «ядру» тега без украшений/регистра.
-   */
+  /** The squadron of the imported WT_BATTLES_CHANNEL (its tag core: no decorations or case); empty — every squadron. */
   clanTag: (process.env['WT_CLAN_TAG'] ?? '').trim(),
   /**
    * Бои старше стольких часов (по времени начала) не анонсируются, а

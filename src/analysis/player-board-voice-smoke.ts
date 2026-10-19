@@ -148,7 +148,9 @@ try {
   const client = new FakeClient()
   client.guilds.cache.set(guild.id, guild)
   let changes = 0
-  const tracker = startVoiceTracker(client as never, [channel.id], {
+  // The server watches this one channel (/settings voice).
+  db.addGuildChannel({ kind: 'voice', guildId: guild.id, channelId: channel.id, clan: '' })
+  const tracker = startVoiceTracker(client as never, {
     onPresenceChange: () => { changes += 1 },
   })
   await new Promise((resolve) => setTimeout(resolve, 10))

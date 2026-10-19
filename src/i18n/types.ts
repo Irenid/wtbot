@@ -33,6 +33,22 @@ export interface BotText {
     stats: { description: string }
     playerBoard: { description: string; setup: string; channel: string; status: string; refresh: string; disable: string }
     scout: { description: string; squadron: string; player: string }
+    settings: {
+      description: string
+      show: string
+      battles: string
+      battlesAdd: string
+      battlesRemove: string
+      scout: string
+      scoutAdd: string
+      scoutRemove: string
+      voice: string
+      voiceAdd: string
+      voiceRemove: string
+      channel: string
+      squadron: string
+      squadronRemove: string
+    }
   }
 
   /** /language: the server's language. */
@@ -41,6 +57,47 @@ export interface BotText {
     needManageGuild: string
     /** Confirms the choice, in the chosen language. */
     changed: string
+  }
+
+  /** /settings: the server's channels for battle posts, screenshots and the board's voice channels. */
+  settings: {
+    guildOnly: string
+    needManageGuild: string
+    badChannel: string
+    /** Discord's own permission names, as the server settings show them. */
+    permissions: Record<'view' | 'send' | 'attach' | 'embed' | 'history', string>
+    missingPermissions(channel: string, permissions: string): string
+    squadronNotFound(query: string): string
+    limit(max: number): string
+    /** `squadron` null — every squadron's battles. */
+    battlesAdded(channel: string, squadron: string | null): string
+    battlesExists(channel: string, squadron: string | null): string
+    battlesRemoved(channel: string): string
+    /** `mentionOnly` — the bot sees attachments only in messages that mention it (no Message Content intent). */
+    scoutAdded(channel: string, mentionOnly: boolean): string
+    scoutExists(channel: string): string
+    scoutRemoved(channel: string): string
+    voiceAdded(channel: string): string
+    voiceExists(channel: string): string
+    /** `othersLeft` false — the board shows every voice channel again. */
+    voiceRemoved(channel: string, othersLeft: boolean): string
+    notSet(channel: string): string
+    show: {
+      title: string
+      language: string
+      battles: string
+      scout: string
+      voice: string
+      playerBoard: string
+      /** `chosen` false — the default, not a /language choice. */
+      languageValue(name: string, chosen: boolean): string
+      everySquadron: string
+      noBattles: string
+      noScout: string
+      allVoice: string
+      noBoard: string
+      missing(permissions: string): string
+    }
   }
 
   /** Replies when a handler fails; the error itself goes only to the log. */

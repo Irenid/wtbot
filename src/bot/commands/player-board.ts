@@ -5,12 +5,12 @@ import {
   SlashCommandBuilder,
   type GuildTextBasedChannel,
 } from 'discord.js'
-import { config } from '../../config.js'
 import { botText, type BotText } from '../../i18n/index.js'
 import {
   disablePlayerStatBoard,
   getPlayerStatBoard,
 } from '../../db/index.js'
+import { watchedVoiceChannels } from '../guild-settings.js'
 import { userLocale } from '../locale.js'
 import {
   configurePlayerStatBoard,
@@ -25,11 +25,10 @@ const REQUIRED_BOT_PERMISSIONS = [
   [PermissionFlagsBits.ReadMessageHistory, 'history'],
 ] as const
 
-/** The watched voice channels as mentions, or the catalog's "all" when WT_VOICE_CHANNELS is empty. */
-function voiceChannelList(text: BotText['playerBoard']): string {
-  return config.voiceChannelIds.length === 0
-    ? text.replies.allVoiceChannels
-    : config.voiceChannelIds.map((id) => `<#${id}>`).join(', ')
+/** The server's watched voice channels as mentions, or the catalog's "all" when /settings voice has none. */
+function voiceChannelList(text: BotText['playerBoard'], guildId: string): string {
+  const ids = [...watchedVoiceChannels(guildId)]
+  return ids.length === 0 ? text.replies.allVoiceChannels : ids.map((id) => `<#${id}>`).join(', ')
 }
 
 function guildTextChannel(value: unknown): GuildTextBasedChannel | null {
@@ -106,7 +105,7 @@ export const playerBoard: Command = {
         }
         const result = await configurePlayerStatBoard(interaction.client, interaction.guildId, channel.id)
         await interaction.editReply(
-          text.replies.configured(`<#${channel.id}>`, result.messageUrl, result.playerCount, voiceChannelList(text)),
+          text.replies.configured(`<#${channel.id}>`, result.messageUrl, result.playerCount, voiceChannelList(text, interaction.guildId)),
         )
         return
       }
@@ -118,7 +117,7 @@ export const playerBoard: Command = {
           return
         }
         const url = `https://discord.com/channels/${board.guildId}/${board.channelId}/${board.messageId}`
-        await interaction.editReply(text.replies.status(`<#${board.channelId}>`, url, voiceChannelList(text)))
+        await interaction.editReply(text.replies.status(`<#${board.channelId}>`, url, voiceChannelList(text, interaction.guildId)))
         return
       }
 

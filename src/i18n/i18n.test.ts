@@ -20,6 +20,11 @@ const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   'scout.classCount': SCOUT_CLASSES.flatMap((cls) => COUNTS.map((count) => [cls, count])),
   'scout.flag': [['usa'], ['ussr'], ['germany'], ['south_vietnam'], ['new_country']],
   'scout.images.oneSide': [['WLILY'], [null]],
+  'settings.battlesAdded': [['<#1>', 'WLILY'], ['<#1>', null]],
+  'settings.battlesExists': [['<#1>', 'WLILY'], ['<#1>', null]],
+  'settings.scoutAdded': [['<#1>', true], ['<#1>', false]],
+  'settings.voiceRemoved': [['<#1>', true], ['<#1>', false]],
+  'settings.show.languageValue': [['English', true], ['English', false]],
 }
 
 /** Every text of a catalog: strings as they are, functions called with sample arguments. */

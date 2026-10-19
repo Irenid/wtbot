@@ -1,6 +1,6 @@
 /**
- * /scout by picture: a scoreboard (Tab) screenshot posted in a WT_SCOUT_CHANNEL
- * channel is read (src/scout/scoreboard-read.ts) and answered with the enemy's
+ * /scout by picture: a scoreboard (Tab) screenshot posted in a channel set with
+ * /settings scout is read (src/scout/scoreboard-read.ts) and answered with the enemy's
  * likely setup. Every image, its reading and the prediction (also after the
  * StatShark update) are kept in data/scout-images/ (day folders) to improve the
  * reading and score the replies later (`npm run scout:outcomes`); nothing there
@@ -12,13 +12,13 @@ import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { EmbedBuilder, type Attachment, type Message } from 'discord.js'
 import { writeFileAtomic } from '../atomic-file.js'
-import { config } from '../config.js'
 import { readResponseBuffer } from '../http-response.js'
 import { botText, type BotText } from '../i18n/index.js'
 import { formatScoutImageReport, squadronLabel } from '../scout/format.js'
 import { OcrUnavailableError } from '../scout/ocr.js'
 import { scoutFromImage, scoutPredictionRecord, type ScoutImageOutcome, type ScoutImageReport, type ScoutStatSharkSource } from '../scout/report.js'
 import { MAX_IMAGE_BYTES } from '../scout/scoreboard-image.js'
+import { isScoutChannel } from './guild-settings.js'
 import { guildLocale } from './locale.js'
 
 export const SCOUT_IMAGE_DIR = './data/scout-images'
@@ -42,8 +42,8 @@ function imageExtension(attachment: Attachment): 'png' | 'jpg' | null {
 
 export function isScoutImageMessage(message: Message): boolean {
   return !message.author.bot
-    && config.scoutChannelIds.includes(message.channelId)
     && message.attachments.some((attachment) => imageExtension(attachment) !== null)
+    && isScoutChannel(message.channelId)
 }
 
 /** The replies are public: in the server's language (locale.ts). */

@@ -7,6 +7,7 @@ import {
   type VoicePresenceEntry,
 } from '../db/index.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
+import { onGuildChannelsChange, watchedVoiceChannels } from './guild-settings.js'
 
 /**
  * Tracks who sits in voice channels and keeps the snapshot in table
@@ -16,10 +17,11 @@ import { fetchRatingsForTags } from '../wrpl/clan-info.js'
  * «WTNick (Name)», e.g. «Venukbr (ИванЧай)»; without brackets the whole
  * nickname is the WT nick.
  *
- * WT_VOICE_CHANNELS limits the channels (comma-separated IDs); empty — every
- * voice channel the bot can view on every server it is in. A channel hidden
+ * Each server picks its channels with /settings voice (guild-settings.ts);
+ * none picked — every voice channel the bot can view there. A channel hidden
  * from the bot is never tracked: the board would show the regiment who sits
- * in a staff or newcomer room. Overwrite and role changes re-read the snapshot.
+ * in a staff or newcomer room. Overwrite, role and setting changes re-read
+ * the snapshot.
  *
  * Every 10 minutes the PSR snapshots of the squadrons of everyone in voice are
  * refreshed (a squadron is found from the nick's past snapshots, which appear
@@ -51,10 +53,8 @@ export interface VoiceTrackerOptions {
 
 export function startVoiceTracker(
   client: Client,
-  channelIds: string[],
   options: VoiceTrackerOptions = {},
 ): VoiceTracker {
-  const watched = new Set(channelIds)
   const active = new Set<Promise<unknown>>()
   let stopping = false
   const track = <T>(promise: Promise<T>): Promise<T> => {
@@ -62,8 +62,8 @@ export function startVoiceTracker(
     promise.then(() => active.delete(promise), () => active.delete(promise))
     return promise
   }
-  /** The state's channel ID while it is tracked, else null. */
-  const trackedChannel = (state: VoiceState): string | null => {
+  /** The state's channel ID while it is tracked, else null; `watched` — the server's /settings voice channels. */
+  const trackedChannel = (state: VoiceState, watched = watchedVoiceChannels(state.guild.id)): string | null => {
     const id = state.channelId
     if (id === null || (watched.size > 0 && !watched.has(id))) return null
     // false only for a cached channel the bot lacks View Channel in.
@@ -106,8 +106,9 @@ export function startVoiceTracker(
   const snapshot = async (): Promise<number> => {
     const states: VoiceState[] = []
     for (const guild of client.guilds.cache.values()) {
+      const watched = watchedVoiceChannels(guild.id)
       for (const state of guild.voiceStates.cache.values()) {
-        if (trackedChannel(state) !== null) states.push(state)
+        if (trackedChannel(state, watched) !== null) states.push(state)
       }
     }
 
@@ -148,8 +149,8 @@ export function startVoiceTracker(
   const readyHandler = (): void => {
     if (stopping) return
     void track(snapshot()).then((n) =>
-      console.log(`[voice] Каналы под наблюдением: ${watched.size === 0 ? 'все' : watched.size}, сейчас в голосе: ${n}`),
-    ).catch((error: unknown) => console.warn(`[voice] Не удалось получить начальный снимок: ${(error as Error).message}`))
+      console.log(`[voice] watching the voice channels of ${client.guilds.cache.size} server(s), in voice now: ${n}`),
+    ).catch((error: unknown) => console.warn(`[voice] the first snapshot failed: ${(error as Error).message}`))
   }
   if (client.isReady()) {
     readyHandler()
@@ -198,6 +199,9 @@ export function startVoiceTracker(
   }
   client.on(Events.ChannelUpdate, resnapshot)
   client.on(Events.GuildRoleUpdate, resnapshot)
+  const unsubscribeSettings = onGuildChannelsChange((kind) => {
+    if (kind === 'voice') resnapshot()
+  })
 
   // Периодически освежаем ПКР кланов тех, кто сидит в каналах
   const timer = setInterval(() => {
@@ -236,6 +240,7 @@ export function startVoiceTracker(
       client.off(Events.VoiceStateUpdate, voiceHandler)
       client.off(Events.ChannelUpdate, resnapshot)
       client.off(Events.GuildRoleUpdate, resnapshot)
+      unsubscribeSettings()
       await Promise.allSettled([...active])
     },
   }

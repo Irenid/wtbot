@@ -52,6 +52,22 @@ export const en: BotText = {
       squadron: 'Squadron tag or name, as the game shows it',
       player: 'A nick you see on the enemy team: picks the right group when two play at once',
     },
+    settings: {
+      description: 'Choose where the bot posts and what it watches on this server',
+      show: 'Show the bot\'s channels and language on this server',
+      battles: 'Channels for battle posts',
+      battlesAdd: 'Post battles in a channel: one squadron\'s, or every squadron\'s',
+      battlesRemove: 'Stop battle posts in a channel',
+      scout: 'Channels where scoreboard screenshots are read',
+      scoutAdd: 'Read scoreboard (Tab) screenshots posted in a channel',
+      scoutRemove: 'Stop reading screenshots in a channel',
+      voice: 'Voice channels the player board shows',
+      voiceAdd: 'Show the players of a voice channel on the board',
+      voiceRemove: 'Stop showing a voice channel on the board',
+      channel: 'The channel',
+      squadron: 'Squadron tag or name; empty: every squadron\'s battles',
+      squadronRemove: 'Only this squadron\'s posts; empty: all of the channel\'s',
+    },
   },
 
   language: {
@@ -60,6 +76,56 @@ export const en: BotText = {
     changed:
       'The bot now writes in English on this server: battle posts, the player board and, within a minute, ' +
       'the command descriptions. Replies only you see come in your own Discord language.',
+  },
+
+  settings: {
+    guildOnly: 'This command works only on a Discord server.',
+    needManageGuild: 'Changing the bot\'s channels needs the Manage Server permission.',
+    badChannel: 'Pick a channel of this server.',
+    permissions: {
+      view: 'View Channel',
+      send: 'Send Messages',
+      attach: 'Attach Files',
+      embed: 'Embed Links',
+      history: 'Read Message History',
+    },
+    missingPermissions: (channel, permissions) =>
+      `The bot lacks ${permissions} in ${channel}. Give them to its role in that channel, then run the command again.`,
+    squadronNotFound: (query) => `The bot knows no squadron "${query}". Write the tag as the game shows it.`,
+    limit: (max) => `This server already has ${max} such channels. Remove one first.`,
+    battlesAdded: (channel, squadron) => squadron === null
+      ? `${channel} will get every squadron battle the bot finds: over a thousand posts a day.`
+      : `${channel} will get the battles of ${squadron}.`,
+    battlesExists: (channel, squadron) => squadron === null
+      ? `${channel} already gets every squadron battle.`
+      : `${channel} already gets the battles of ${squadron}.`,
+    battlesRemoved: (channel) => `${channel} gets no more battle posts.`,
+    scoutAdded: (channel, mentionOnly) =>
+      `Scoreboard (Tab) screenshots posted in ${channel} will get the enemy's likely players and vehicles.` +
+      (mentionOnly ? ' Mention the bot in the message: without that it cannot see the picture.' : ''),
+    scoutExists: (channel) => `Screenshots in ${channel} are already read.`,
+    scoutRemoved: (channel) => `Screenshots in ${channel} are no longer read.`,
+    voiceAdded: (channel) => `The board shows the players of ${channel}, and of the other chosen voice channels only.`,
+    voiceExists: (channel) => `The board already shows ${channel}.`,
+    voiceRemoved: (channel, othersLeft) => othersLeft
+      ? `The board no longer shows ${channel}.`
+      : `The board no longer shows ${channel}: it shows every voice channel the bot can see again.`,
+    notSet: (channel) => `${channel} was not set up for that.`,
+    show: {
+      title: 'The bot on this server',
+      language: 'Language',
+      battles: 'Battle posts',
+      scout: 'Screenshots read in',
+      voice: 'Voice channels on the board',
+      playerBoard: 'Player board',
+      languageValue: (name, chosen) => chosen ? name : `${name} (the default; /language changes it)`,
+      everySquadron: 'every squadron',
+      noBattles: 'none: /settings battles add',
+      noScout: 'none: /settings scout add',
+      allVoice: 'every voice channel the bot can see',
+      noBoard: 'none: /playerboard setup',
+      missing: (permissions) => `⚠ the bot lacks ${permissions}`,
+    },
   },
 
   failure: {

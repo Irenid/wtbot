@@ -9,7 +9,6 @@ import {
   getLatestItemSummaries,
   initDb,
   markAnnounce,
-  markAnnouncePending,
   recordCommandUse,
   saveItems,
   setBotState,
@@ -30,7 +29,7 @@ test('dashboard отдаёт лёгкий кэшируемый снимок и �
   const failedAnnounce = getItemByExternalId('wt-replays', 'announce-failed')
   assert.ok(pendingAnnounce)
   assert.ok(failedAnnounce)
-  markAnnouncePending(pendingAnnounce.id, 'message-1')
+  markAnnounce(pendingAnnounce.id, 'failed', 'test-0')
   markAnnounce(failedAnnounce.id, 'failed', 'test-1')
   markAnnounce(failedAnnounce.id, 'failed', 'test-2')
   markAnnounce(failedAnnounce.id, 'failed', 'test-3')

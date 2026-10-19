@@ -6,13 +6,12 @@ import {
   getPendingAnnounce,
   initDb,
   markAnnounce,
-  markAnnouncePending,
   nextAnnounceBaseline,
   saveItems,
   skipStaleAnnounce,
 } from './index.js'
 
-test('announce queue keeps preliminary message pending and processes newest first', () => {
+test('announce queue retries a failed battle and processes newest first', () => {
   try {
     initDb(':memory:', { allowCreate: true })
     saveItems('wt-replays', [
@@ -25,12 +24,11 @@ test('announce queue keeps preliminary message pending and processes newest firs
 
     const newest = getItemByExternalId('wt-replays', '2')
     assert.ok(newest)
-    markAnnouncePending(newest.id, 'message-2')
+    markAnnounce(newest.id, 'failed', 'network')
 
-    const pending = getPendingAnnounce(0, 3, 2).find((item) => item.externalId === '2')
-    assert.equal(pending?.announceStatus, 'pending')
-    assert.equal(pending?.announceMessageId, 'message-2')
-    assert.equal(pending?.announceAttempts, 0)
+    const failed = getPendingAnnounce(0, 3, 2).find((item) => item.externalId === '2')
+    assert.equal(failed?.announceStatus, 'failed')
+    assert.equal(failed?.announceAttempts, 1)
 
     markAnnounce(newest.id, 'ok')
     assert.deepEqual(getPendingAnnounce(0, 3, 2).map((item) => item.externalId), ['1'])
@@ -40,26 +38,24 @@ test('announce queue keeps preliminary message pending and processes newest firs
   }
 })
 
-test('устаревшие бои пропускаются без публикации, кроме уже начатых предварительных анонсов', () => {
+test('stale battles are resolved unposted, failed ones too', () => {
   try {
     initDb(':memory:', { allowCreate: true })
     saveItems('wt-replays', [
       { externalId: 'old', title: 'old', data: { startTime: 1_000 } },
       { externalId: 'old-failed', title: 'old-failed', data: { startTime: 1_100 } },
-      { externalId: 'old-pending', title: 'old-pending', data: { startTime: 1_200 } },
       { externalId: 'fresh', title: 'fresh', data: { startTime: 9_000 } },
       { externalId: 'no-time', title: 'no-time', data: {} },
     ])
     const id = (externalId: string) => getItemByExternalId('wt-replays', externalId)!.id
-    markAnnounce(id('old-failed'), 'failed', 'сеть')
-    markAnnouncePending(id('old-pending'), 'message-1')
+    markAnnounce(id('old-failed'), 'failed', 'network')
 
     assert.equal(skipStaleAnnounce(0, 3, 5_000), 2)
     assert.deepEqual(
       getPendingAnnounce(0, 3, 10).map((item) => item.externalId).sort(),
-      ['fresh', 'no-time', 'old-pending'],
+      ['fresh', 'no-time'],
     )
-    // Повтор ничего не меняет.
+    // A repeat changes nothing.
     assert.equal(skipStaleAnnounce(0, 3, 5_000), 0)
   } finally {
     closeDb()

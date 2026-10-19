@@ -356,6 +356,27 @@ const PLAYER_EXTERNAL_COUNTRIES_DDL = `
     );
 `
 
+/**
+ * A server's channels for the bot (src/bot/guild-settings.ts), set with
+ * /settings: `battles` — battle posts, of the squadron `clan` (its tag core)
+ * or of every squadron (''); `scout` — scoreboard screenshots; `voice` — the
+ * voice channels the player board watches (none listed: every one the bot can
+ * view). Several `battles` rows of one channel post a battle there once.
+ */
+const GUILD_CHANNELS_DDL = `
+    CREATE TABLE IF NOT EXISTS guild_channels (
+      kind       TEXT    NOT NULL,
+      channel_id TEXT    NOT NULL,
+      clan       TEXT    NOT NULL DEFAULT '',
+      guild_id   TEXT    NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (kind, channel_id, clan),
+      CHECK (kind IN ('battles', 'scout', 'voice')),
+      CHECK (guild_id <> '' AND channel_id <> ''),
+      CHECK (kind = 'battles' OR clan = '')
+    ) WITHOUT ROWID;
+`
+
 const DB_MIGRATIONS: readonly DbMigration[] = [
   {
     version: 1,
@@ -949,6 +970,14 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       `)
     },
   },
+  {
+    version: 24,
+    apply(database) {
+      // Per-server channels instead of WT_BATTLES_CHANNEL, WT_CLAN_TAG,
+      // WT_SCOUT_CHANNEL and WT_VOICE_CHANNELS, which the bot imports once.
+      database.exec(GUILD_CHANNELS_DDL)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -1362,6 +1391,7 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
 
     CREATE INDEX IF NOT EXISTS idx_player_stat_boards_enabled
       ON player_stat_boards (enabled, guild_id);
+    ${GUILD_CHANNELS_DDL}
 
     -- Компактная история профиля нужна для дельты за сутки. Список реплеев
     -- сюда намеренно не копируется: он остаётся в текущем items-снимке.
@@ -1483,10 +1513,11 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    -- Статус автоанонса по каждому бою (а не одна общая отметка «докуда
-    -- дошли»): упавший анонс тогда ретраится, а не теряется навсегда.
-    -- ok — отправлен, failed — не удалось (с числом попыток; после лимита
-    -- бой пропускается, чтобы битая запись не блокировала очередь).
+    -- The announcement state of each battle (not one "done up to" mark), so a
+    -- failed announcement is retried, not lost: ok — resolved (posted to
+    -- every matching channel, or none matched), failed — with the attempts
+    -- (skipped after the limit, so a broken battle never blocks the queue).
+    -- message_id: legacy preliminary messages, unused since v24.
     CREATE TABLE IF NOT EXISTS announce_state (
       item_id    INTEGER PRIMARY KEY,
       status     TEXT    NOT NULL,
@@ -2137,37 +2168,17 @@ export function getMaxItemId(source: string): number {
   return row?.m ?? 0
 }
 
-// ---------- Очередь автоанонса боёв (announce_state) ----------
+// ---------- Battle announcement queue (announce_state) ----------
 
+/** 'pending' — a legacy preliminary message (before 2026-08-01, e530b1c); none is left. */
 export type AnnounceStatus = 'pending' | 'ok' | 'failed'
 
 export interface PendingAnnounceItem extends StoredItem {
   announceStatus: AnnounceStatus | null
   announceAttempts: number
-  announceMessageId: string | null
 }
 
 export type AnnounceQueueOrder = 'newest' | 'oldest'
-
-/**
- * A preliminary message was sent; the full post replaces it after ingest.
- * The announcer stopped sending them on 2026-08-01 (e530b1c): only legacy rows
- * and tests have one (getUnfinishedAnnounceMessages).
- */
-export function markAnnouncePending(itemId: number, messageId: string): void {
-  getDb()
-    .prepare(`
-      INSERT INTO announce_state (item_id, status, attempts, error, message_id, updated_at)
-      VALUES (?, 'pending', 0, NULL, ?, unixepoch())
-      ON CONFLICT (item_id) DO UPDATE SET
-        status = 'pending',
-        attempts = 0,
-        error = NULL,
-        message_id = excluded.message_id,
-        updated_at = unixepoch()
-    `)
-    .run(itemId, messageId)
-}
 
 /** Записывает исход анонса боя; при повторе увеличивает счётчик попыток */
 export function markAnnounce(itemId: number, status: AnnounceStatus, error: string | null = null): void {
@@ -2199,8 +2210,7 @@ export function getPendingAnnounce(
     .prepare(`
       SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at,
              NULL AS analysis, a.status AS announce_status,
-             COALESCE(a.attempts, 0) AS announce_attempts,
-             a.message_id AS announce_message_id
+             COALESCE(a.attempts, 0) AS announce_attempts
       FROM items i
       LEFT JOIN announce_state a ON a.item_id = i.id
       WHERE i.source = 'wt-replays' AND i.id > ?
@@ -2215,32 +2225,9 @@ export function getPendingAnnounce(
   return rows.map(toPendingAnnounceItem)
 }
 
-/**
- * Unfinished preliminary messages the baseline has already passed (legacy
- * rows, see markAnnouncePending): getPendingAnnounce never selects them, so
- * the announcer finishes them once at start. A primary-key range scan.
- */
-export function getUnfinishedAnnounceMessages(baselineId: number, maxAttempts: number): PendingAnnounceItem[] {
-  const rows = getDb()
-    .prepare(`
-      SELECT i.id, i.source, i.external_id, i.title, i.data, i.updated_at,
-             NULL AS analysis, a.status AS announce_status,
-             a.attempts AS announce_attempts,
-             a.message_id AS announce_message_id
-      FROM announce_state a
-      JOIN items i ON i.id = a.item_id
-      WHERE a.item_id <= ? AND a.message_id IS NOT NULL
-        AND a.status IN ('pending', 'failed') AND a.attempts < ?
-      ORDER BY a.item_id
-    `)
-    .all(baselineId, maxAttempts) as unknown as PendingAnnounceRow[]
-  return rows.map(toPendingAnnounceItem)
-}
-
 type PendingAnnounceRow = ItemRow & {
   announce_status: AnnounceStatus | null
   announce_attempts: number
-  announce_message_id: string | null
 }
 
 function toPendingAnnounceItem(row: PendingAnnounceRow): PendingAnnounceItem {
@@ -2248,28 +2235,25 @@ function toPendingAnnounceItem(row: PendingAnnounceRow): PendingAnnounceItem {
     ...toStoredItem(row),
     announceStatus: row.announce_status,
     announceAttempts: row.announce_attempts,
-    announceMessageId: row.announce_message_id,
   }
 }
 
 /**
- * Помечает решёнными (без публикации) ждущие анонса бои, начавшиеся раньше
- * cutoffSec. Трогает только бои без предварительного сообщения в Discord:
- * такое сообщение обычный путь анонса обязан дописать или удалить.
- * Возвращает число пропущенных боёв.
+ * Resolves, unposted, the waiting battles that started before `cutoffSec`;
+ * returns how many.
  */
 export function skipStaleAnnounce(baselineId: number, maxAttempts: number, cutoffSec: number): number {
   const result = getDb()
     .prepare(`
       INSERT INTO announce_state (item_id, status, attempts, error, updated_at)
-      SELECT i.id, 'ok', COALESCE(a.attempts, 0), 'устарел — не анонсирован', unixepoch()
+      SELECT i.id, 'ok', COALESCE(a.attempts, 0), 'stale: not announced', unixepoch()
       FROM items i
       LEFT JOIN announce_state a ON a.item_id = i.id
       WHERE i.source = 'wt-replays' AND i.id > ?
         AND json_extract(i.data, '$.startTime') < ?
         AND (
           a.item_id IS NULL
-          OR (a.status = 'failed' AND a.attempts < ? AND a.message_id IS NULL)
+          OR (a.status = 'failed' AND a.attempts < ?)
         )
       ON CONFLICT (item_id) DO UPDATE SET
         status = excluded.status,
@@ -2635,6 +2619,50 @@ export function disablePlayerStatBoard(guildId: string): boolean {
     `)
     .run(guildId)
   return Number(result.changes) > 0
+}
+
+// ---------- Per-server channels (guild_channels) ----------
+
+export type GuildChannelKind = 'battles' | 'scout' | 'voice'
+
+export interface GuildChannel {
+  kind: GuildChannelKind
+  guildId: string
+  channelId: string
+  /** `battles`: the squadron's tag core; '' — every squadron (always '' for the other kinds). */
+  clan: string
+}
+
+/** Every server's channels; the bot keeps them in memory (src/bot/guild-settings.ts). */
+export function listGuildChannels(): GuildChannel[] {
+  const rows = getDb()
+    .prepare('SELECT kind, guild_id, channel_id, clan FROM guild_channels ORDER BY guild_id, kind, created_at, channel_id, clan')
+    .all() as { kind: GuildChannelKind; guild_id: string; channel_id: string; clan: string }[]
+  return rows.map((row) => ({ kind: row.kind, guildId: row.guild_id, channelId: row.channel_id, clan: row.clan }))
+}
+
+/** false — the row was already there. */
+export function addGuildChannel(row: GuildChannel): boolean {
+  const result = getDb()
+    .prepare('INSERT INTO guild_channels (kind, channel_id, clan, guild_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING')
+    .run(row.kind, row.channelId, row.clan, row.guildId)
+  return Number(result.changes) > 0
+}
+
+/** Removes a channel's rows of `kind` (only the squadron `clan` when given); returns how many. */
+export function removeGuildChannel(kind: GuildChannelKind, channelId: string, clan?: string): number {
+  const result = clan === undefined
+    ? getDb().prepare('DELETE FROM guild_channels WHERE kind = ? AND channel_id = ?').run(kind, channelId)
+    : getDb().prepare('DELETE FROM guild_channels WHERE kind = ? AND channel_id = ? AND clan = ?').run(kind, channelId, clan)
+  return Number(result.changes)
+}
+
+/** Removes every row of a channel (deleted) or a server (the bot was removed from it). */
+export function removeGuildChannelsWhere(scope: { channelId: string } | { guildId: string }): number {
+  const result = 'channelId' in scope
+    ? getDb().prepare('DELETE FROM guild_channels WHERE channel_id = ?').run(scope.channelId)
+    : getDb().prepare('DELETE FROM guild_channels WHERE guild_id = ?').run(scope.guildId)
+  return Number(result.changes)
 }
 
 export function getLatestItems(limit = 20, source?: string): StoredItem[] {

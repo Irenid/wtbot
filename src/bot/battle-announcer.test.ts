@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import type { Client } from 'discord.js'
+import type { BattlePlayerInput } from '../db/index.js'
+import type { BattlePost } from './commands/battle.js'
 
 test('the announcer sends no text before ingest finishes', async () => {
-  process.env['WT_BATTLES_CHANNEL'] = 'test-channel'
   const [
     { emitBattleLifecycle },
     { startBattleAnnouncer, stopBattleAnnouncer },
-    { closeDb, initDb, saveItems, setBotState },
+    { addGuildChannel, closeDb, initDb, saveItems, setBotState },
   ] = await Promise.all([
     import('../battle-lifecycle.js'),
     import('./battle-announcer.js'),
@@ -16,19 +20,17 @@ test('the announcer sends no text before ingest finishes', async () => {
 
   initDb(':memory:', { allowCreate: true })
   setBotState('battles:lastAnnouncedId', '0')
+  addGuildChannel({ kind: 'battles', guildId: 'guild', channelId: 'test-channel', clan: '' })
   let sends = 0
   const channel = {
+    id: 'test-channel',
     isSendable: () => true,
     send: async () => {
       sends += 1
       throw new Error('no preliminary announcement may be sent')
     },
   }
-  const client = {
-    channels: {
-      fetch: async () => channel,
-    },
-  } as unknown as Client
+  const client = { user: null, channels: { fetch: async () => channel } } as unknown as Client
 
   try {
     startBattleAnnouncer(client)
@@ -50,8 +52,16 @@ test('the announcer sends no text before ingest finishes', async () => {
   }
 })
 
-test('legacy preliminary messages behind the baseline are finished, a waiting one later', async () => {
-  process.env['WT_BATTLES_CHANNEL'] = 'test-channel'
+function player(userId: string, clanTag: string): BattlePlayerInput {
+  return {
+    userId, nick: `p${userId}`, clanTag, team: 1, kills: 0, groundKills: 0, navalKills: 0, aiKills: 0,
+    aiGroundKills: 0, assists: 0, deaths: 0, captureZone: 0, damageZone: 0, score: 0, awardDamage: 0,
+    teamKills: 0, squadId: 4096, vehicle: null, vehicles: [], disconnected: false, slot: null, title: null,
+    autoSquad: null,
+  }
+}
+
+test('a battle reaches every channel that asked for it once; a gone channel leaves the settings', async () => {
   const [
     { DiscordAPIError, RESTJSONErrorCodes },
     { emitBattleLifecycle },
@@ -63,65 +73,95 @@ test('legacy preliminary messages behind the baseline are finished, a waiting on
     import('./battle-announcer.js'),
     import('../db/index.js'),
   ])
-
-  db.initDb(':memory:', { allowCreate: true })
-  db.saveItems('wt-replays', [
-    { externalId: 'legacy-expired', title: 'Legacy', data: { startTime: 1 } },
-    { externalId: 'legacy-deleted', title: 'Legacy, message deleted', data: { startTime: 2 } },
-    { externalId: 'legacy-waiting', title: 'Legacy, ingest not done', data: { startTime: 3 } },
-  ])
-  const id = (externalId: string): number => db.getItemByExternalId('wt-replays', externalId)!.id
-  db.markAnnouncePending(id('legacy-expired'), 'message-1')
-  db.markAnnouncePending(id('legacy-deleted'), 'message-2')
-  db.markAnnouncePending(id('legacy-waiting'), 'message-3')
-  db.markBattleIngest('legacy-expired', 'expired')
-  db.markBattleIngest('legacy-deleted', 'expired')
-  const baseline = id('legacy-waiting')
-  db.setBotState('battles:lastAnnouncedId', String(baseline))
-  assert.equal(db.getPendingAnnounce(baseline, 3, 10).length, 0, 'the tick query never sees them')
-
-  const edits: [string, unknown][] = []
-  const channel = {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-announcer-'))
+  db.initDb(path.join(root, 'announce.db'), { allowCreate: true })
+  db.setBotState('battles:lastAnnouncedId', '0')
+  for (const [channelId, clan] of [['all', ''], ['ours', 'wlily'], ['gone', 'wlily'], ['flaky', '']] as const) {
+    db.addGuildChannel({ kind: 'battles', guildId: `guild-${channelId}`, channelId, clan })
+  }
+  const sent: string[] = []
+  let flakyFailures = 1
+  const channel = (id: string) => ({
+    id,
     isSendable: () => true,
-    send: async () => {
-      throw new Error('a legacy message is finished in place, never posted anew')
+    send: async (payload: { content: string }) => {
+      if (id === 'flaky' && flakyFailures-- > 0) throw new Error('socket hang up')
+      sent.push(`${id}:${payload.content}`)
+      return { edit: async () => {} }
     },
-    messages: {
-      fetch: async (messageId: string) => {
-        if (messageId === 'message-2') {
-          throw new DiscordAPIError(
-            { code: RESTJSONErrorCodes.UnknownMessage, message: 'Unknown Message' },
-            RESTJSONErrorCodes.UnknownMessage,
-            404,
-            'GET',
-            '/channels/test-channel/messages/message-2',
-            {},
-          )
-        }
-        return { edit: async (payload: { content?: string }) => edits.push([messageId, payload.content]) }
+  })
+  const client = {
+    user: null,
+    channels: {
+      fetch: async (id: string) => {
+        if (id !== 'gone') return channel(id)
+        throw new DiscordAPIError(
+          { code: RESTJSONErrorCodes.UnknownChannel, message: 'Unknown Channel' },
+          RESTJSONErrorCodes.UnknownChannel, 404, 'GET', `/channels/${id}`, {},
+        )
       },
     },
-  }
-  const client = { channels: { fetch: async () => channel } } as unknown as Client
+  } as unknown as Client
+  const renderPost = async (item: { externalId: string }): Promise<BattlePost> => ({
+    payload: { content: item.externalId, files: [], components: [] },
+    sessionIdHex: item.externalId,
+    buildWinnerPayload: null,
+    buildRatingsPayload: null,
+    buildLookupPayload: null,
+    buildRecheckPayload: null,
+    recheckAt: 0,
+    updateBytes: 0,
+  }) as unknown as BattlePost
 
-  const unfinished = (): string[] => db.getUnfinishedAnnounceMessages(baseline, 3).map((item) => item.externalId)
-  const settle = async (expected: string[]): Promise<void> => {
-    for (let i = 0; i < 100 && unfinished().join() !== expected.join(); i++) {
+  const startTime = Math.floor(Date.now() / 1000)
+  for (const [sessionId, tag] of [['1', '=WLILY='], ['2', '[AVR]']] as const) {
+    db.saveItems('wt-replays', [{ externalId: sessionId, title: sessionId, data: { startTime: startTime + Number(sessionId) } }])
+    db.saveBattle({
+      sessionId, sessionHex: sessionId.padStart(16, '0'), missionName: 'test', level: 'test', gameMode: null,
+      battleType: null, environment: null, status: null, startTime, durationSec: 2, endTimeMs: 3, teamWon: 1,
+      gameVersion: null, missionSettings: null, players: [player('1', tag), player('2', tag)], kills: [], chat: [],
+      eventsBlob: Buffer.from('test'),
+    })
+  }
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 200 && db.getPendingAnnounce(0, 3, 10).length > 0; i++) {
+      emitBattleLifecycle({ kind: 'committed', sessionId: '1' })
       await new Promise<void>((resolve) => setTimeout(resolve, 10))
     }
-    assert.deepEqual(unfinished(), expected)
   }
 
   try {
-    startBattleAnnouncer(client)
-    await settle(['legacy-waiting'])
-    assert.deepEqual(edits, [['message-1', 'The replay could not be parsed.\nMatch ID: `legacy-expired`']])
+    startBattleAnnouncer(client, { renderPost })
+    await settle()
+    assert.deepEqual(db.getPendingAnnounce(0, 3, 10), [])
+    // In battle order; the flaky channel's retry posts only there.
+    assert.deepEqual(sent.sort(), ['all:1', 'all:2', 'flaky:1', 'flaky:2', 'ours:1'])
+    assert.deepEqual(
+      db.listGuildChannels().map((row) => row.channelId).sort(),
+      ['all', 'flaky', 'ours'],
+    )
+  } finally {
+    await stopBattleAnnouncer()
+    db.closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
-    // The waiting one stays queued in memory and is finished by a later tick.
-    db.markBattleIngest('legacy-waiting', 'expired')
-    emitBattleLifecycle({ kind: 'committed', sessionId: 'legacy-waiting' })
-    await settle([])
-    assert.deepEqual(edits.map(([messageId]) => messageId), ['message-1', 'message-3'])
+test('without any battle channel the baseline follows the newest battle', async () => {
+  const [{ startBattleAnnouncer, stopBattleAnnouncer }, db] = await Promise.all([
+    import('./battle-announcer.js'),
+    import('../db/index.js'),
+  ])
+  db.initDb(':memory:', { allowCreate: true })
+  db.setBotState('battles:lastAnnouncedId', '0')
+  db.saveItems('wt-replays', [{ externalId: 'a', title: 'a', data: {} }, { externalId: 'b', title: 'b', data: {} }])
+  const client = { user: null, channels: { fetch: async () => null } } as unknown as Client
+  try {
+    startBattleAnnouncer(client)
+    for (let i = 0; i < 100 && db.getBotState('battles:lastAnnouncedId') === '0'; i++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(db.getBotState('battles:lastAnnouncedId'), String(db.getMaxItemId('wt-replays')))
   } finally {
     await stopBattleAnnouncer()
     db.closeDb()

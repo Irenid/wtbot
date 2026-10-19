@@ -98,7 +98,8 @@ coinciding synchronous write or read.
 ## Live measurements
 
 All runs: 5 workers, reserve 1, ingest up to 8, replay budget 384 MiB, web on
-loopback, `WT_BATTLES_CHANNEL` forced empty.
+loopback, `WT_BATTLES_CHANNEL` forced empty (since 2026-10-19
+`WT_ANNOUNCE_ENABLED=false`).
 
 ### Exact reservation: A/B
 
@@ -163,8 +164,8 @@ remaining hot phase.
 ## Gates
 
 Offline — `npm run verify`, `npm run build`, `npm run verify:workers:dist`
-(baseline — AGENTS.md, section 10). A live run only with an empty
-`WT_BATTLES_CHANNEL` and web on loopback.
+(baseline — AGENTS.md, section 10). A live run only with
+`WT_ANNOUNCE_ENABLED=false` and web on loopback.
 
 | Metric | Gate |
 | --- | ---: |
@@ -186,7 +187,7 @@ Offline — `npm run verify`, `npm run build`, `npm run verify:workers:dist`
 | RSS growth | `WT_REPLAY_EXACT_RESERVATION_ENABLED=false` |
 | Worker pressure | lower `WT_INGEST_CONCURRENCY` |
 | CDN pressure | keep the shared limiter, AIMD and `Retry-After` |
-| Risk of flooding Discord | clear `WT_BATTLES_CHANNEL` |
+| Risk of flooding Discord | `WT_ANNOUNCE_ENABLED=false` |
 
 ## Artifacts of 2026-08-01
 

@@ -181,6 +181,8 @@ function applySoakEnvironment(): void {
   process.env['WT_REPLAY_EXACT_RESERVATION_ENABLED'] =
     args.includes('--exact-reservation') ? 'true' : 'false'
   process.env['WT_BATTLES_CHANNEL'] = ''
+  // The database's /settings name real channels.
+  process.env['WT_ANNOUNCE_ENABLED'] = 'false'
   process.env['WEB_HOST'] = '127.0.0.1'
 }
 
@@ -214,7 +216,8 @@ function validateProfile(config: typeof import('../config.js')['config']): void 
   if (config.workerResources.replayProcessByteBudgetMb !== 384) {
     errors.push('WT_REPLAY_PROCESS_BUDGET_MB=384')
   }
-  if (config.battlesChannelId !== '') errors.push('WT_BATTLES_CHANNEL должен быть пустым')
+  if (config.battlesChannelId !== '') errors.push('WT_BATTLES_CHANNEL must be empty')
+  if (config.announceEnabled) errors.push('WT_ANNOUNCE_ENABLED=false')
   if (!['127.0.0.1', '::1', 'localhost'].includes(config.webHost.toLowerCase())) {
     errors.push('WEB_HOST должен быть loopback')
   }

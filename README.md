@@ -64,8 +64,15 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    mounts it instead, and maps follow game patches.
 3. `docker compose up -d --build`; logs — `docker compose logs -f wtbot`. At
    start the bot registers its slash commands on every server it is in (invite
-   it with the `bot` and `applications.commands` scopes); `/language` (Manage
-   Server) sets a server's language.
+   it with the `bot` and `applications.commands` scopes and the permissions
+   View Channels, Send Messages, Embed Links, Attach Files, Read Message
+   History: `permissions=117760` in the invite link). On each server, members
+   with Manage Server set it up themselves: `/settings battles add` (battle
+   posts, one squadron's or every squadron's), `/settings scout add`
+   (scoreboard screenshots), `/settings voice add` (the player board's voice
+   channels; none — all), `/playerboard setup`, `/language`; `/settings show`
+   lists them. Anyone can add the bot once the Developer Portal marks it
+   Public Bot (Bot tab).
 4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
    `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links
    redirect to the same page at the root. For network access put a reverse proxy with TLS

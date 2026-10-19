@@ -367,7 +367,7 @@ async function startServices(): Promise<void> {
   // Табло запускается до первого voice-снимка: callback трекера сразу
   // перерисует его после синхронизации voice_presence.
   startPlayerBoardPublisher(startedClient, { playerStats: playerStatsCoordinator })
-  const startedVoiceTracker = startVoiceTracker(startedClient, config.voiceChannelIds, {
+  const startedVoiceTracker = startVoiceTracker(startedClient, {
     onPresenceChange: requestPlayerBoardRefresh,
   })
   voiceTracker = startedVoiceTracker

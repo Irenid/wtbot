@@ -57,6 +57,22 @@ export const ru: BotText = {
       squadron: 'Тег или название полка, как в игре',
       player: 'Ник из команды противника: выбирает нужную группу, если играют две',
     },
+    settings: {
+      description: 'Выбрать, куда бот пишет и что отслеживает на этом сервере',
+      show: 'Показать каналы и язык бота на этом сервере',
+      battles: 'Каналы для постов о боях',
+      battlesAdd: 'Постить бои в канал: одного полка или всех полков',
+      battlesRemove: 'Перестать постить бои в канал',
+      scout: 'Каналы, где бот читает скриншоты таблицы',
+      scoutAdd: 'Читать скриншоты таблицы (Tab) в канале',
+      scoutRemove: 'Перестать читать скриншоты в канале',
+      voice: 'Голосовые каналы на табло игроков',
+      voiceAdd: 'Показывать на табло игроков голосового канала',
+      voiceRemove: 'Убрать голосовой канал с табло',
+      channel: 'Канал',
+      squadron: 'Тег или название полка; пусто — бои всех полков',
+      squadronRemove: 'Только посты этого полка; пусто — все посты канала',
+    },
   },
 
   language: {
@@ -65,6 +81,56 @@ export const ru: BotText = {
     changed:
       'Теперь бот пишет на этом сервере по-русски: посты о боях, табло игроков, а через минуту и описания команд. ' +
       'Ответы, которые видите только вы, приходят на языке вашего Discord.',
+  },
+
+  settings: {
+    guildOnly: 'Эта команда доступна только на Discord-сервере.',
+    needManageGuild: 'Чтобы менять каналы бота, нужно право «Управлять сервером».',
+    badChannel: 'Выберите канал этого сервера.',
+    permissions: {
+      view: 'Просматривать канал',
+      send: 'Отправлять сообщения',
+      attach: 'Прикреплять файлы',
+      embed: 'Встраивать ссылки',
+      history: 'Читать историю сообщений',
+    },
+    missingPermissions: (channel, permissions) =>
+      `Боту не хватает прав в ${channel}: ${permissions}. Выдайте их его роли в этом канале и повторите команду.`,
+    squadronNotFound: (query) => `Бот не знает полк «${query}». Напишите тег так, как его показывает игра.`,
+    limit: (max) => `На этом сервере уже ${max} таких каналов. Сначала уберите один.`,
+    battlesAdded: (channel, squadron) => squadron === null
+      ? `В ${channel} будут приходить все полковые бои, которые находит бот: больше тысячи постов в день.`
+      : `В ${channel} будут приходить бои полка ${squadron}.`,
+    battlesExists: (channel, squadron) => squadron === null
+      ? `В ${channel} уже приходят все полковые бои.`
+      : `В ${channel} уже приходят бои полка ${squadron}.`,
+    battlesRemoved: (channel) => `В ${channel} больше не будет постов о боях.`,
+    scoutAdded: (channel, mentionOnly) =>
+      `На скриншот таблицы (Tab) в ${channel} бот ответит вероятным составом и техникой противника.` +
+      (mentionOnly ? ' Упомяните бота в сообщении: иначе он не видит картинку.' : ''),
+    scoutExists: (channel) => `Скриншоты в ${channel} уже читаются.`,
+    scoutRemoved: (channel) => `Скриншоты в ${channel} больше не читаются.`,
+    voiceAdded: (channel) => `Табло показывает игроков ${channel} и только других выбранных голосовых каналов.`,
+    voiceExists: (channel) => `Табло уже показывает ${channel}.`,
+    voiceRemoved: (channel, othersLeft) => othersLeft
+      ? `Табло больше не показывает ${channel}.`
+      : `Табло больше не показывает ${channel} и снова показывает все голосовые каналы, которые видит бот.`,
+    notSet: (channel) => `Для ${channel} это не было настроено.`,
+    show: {
+      title: 'Бот на этом сервере',
+      language: 'Язык',
+      battles: 'Посты о боях',
+      scout: 'Скриншоты читаются в',
+      voice: 'Голосовые каналы на табло',
+      playerBoard: 'Табло игроков',
+      languageValue: (name, chosen) => chosen ? name : `${name} (по умолчанию; меняется командой /language)`,
+      everySquadron: 'все полки',
+      noBattles: 'нет: /settings battles add',
+      noScout: 'нет: /settings scout add',
+      allVoice: 'все голосовые каналы, которые видит бот',
+      noBoard: 'нет: /playerboard setup',
+      missing: (permissions) => `⚠ боту не хватает прав: ${permissions}`,
+    },
   },
 
   failure: {
