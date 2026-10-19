@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { OverwriteType, PermissionFlagsBits } from 'discord.js'
 
 // Конфиг импортируется лениво, поэтому smoke не требует WT-cookie и не делает
 // сетевых запросов; Discord token config читает только по требованию.
@@ -33,10 +34,35 @@ class FakeClient extends EventEmitter {
   isReady(): boolean { return true }
 }
 
+// The board's readers (src/bot/access.ts): @everyone sees the board's channel and Squad;
+// Staff opens only to its role, so the board leaves it out.
+const overwrite = (id: string, type: OverwriteType, allow: bigint, deny: bigint) =>
+  [id, { id, type, allow: { bitfield: allow }, deny: { bitfield: deny } }] as const
 const guild = {
   id: 'guild-voice-smoke',
   name: 'Smoke guild',
   voiceStates: { cache: new Map<string, unknown>() },
+  roles: {
+    cache: new Map([
+      ['guild-voice-smoke', { id: 'guild-voice-smoke', permissions: { bitfield: PermissionFlagsBits.ViewChannel } }],
+      ['staff', { id: 'staff', permissions: { bitfield: 0n } }],
+    ]),
+  },
+  channels: {
+    cache: new Map([
+      ['text-1', { id: 'text-1', permissionOverwrites: { cache: new Map() } }],
+      ['voice-1', { id: 'voice-1', permissionOverwrites: { cache: new Map() } }],
+      ['voice-2', {
+        id: 'voice-2',
+        permissionOverwrites: {
+          cache: new Map([
+            overwrite('guild-voice-smoke', OverwriteType.Role, 0n, PermissionFlagsBits.ViewChannel),
+            overwrite('staff', OverwriteType.Role, PermissionFlagsBits.ViewChannel, 0n),
+          ]),
+        },
+      }],
+    ]),
+  },
 }
 const member = {
   id: 'user-1',
@@ -140,9 +166,11 @@ try {
     // The board's language comes from its server (src/bot/locale.ts).
     guilds: { cache: new Map([[guild.id, guild]]) },
   }
-  syncVoicePresence([voiceEntry])
+  const staffEntry: VoicePresenceEntry = { ...voiceEntry, channelId: 'voice-2', channelName: 'Staff', userId: 'user-2', displayName: 'Officer', wtNick: 'Officer' }
+  syncVoicePresence([voiceEntry, staffEntry])
   const configured = await configurePlayerStatBoard(discordLikeClient as never, guild.id, 'text-1')
-  assert.equal(configured.playerCount, 1)
+  assert.equal(configured.playerCount, 1, 'the board leaves out a room some of its readers cannot see')
+  assert.doesNotMatch(JSON.stringify([...messages.values()].map((message) => message.payload)), /Staff|Officer/)
   syncVoicePresence([])
 
   const client = new FakeClient()

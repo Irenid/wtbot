@@ -65,6 +65,10 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`[bot] Ready, logged in as ${readyClient.user.tag}`)
+    // The owner (or team) sees the parsers in /stats (access.ts); until this read, nobody does.
+    void readyClient.application.fetch().catch((error: unknown) => {
+      console.warn('[bot] could not read the application owner: /stats shows the parsers to nobody', error)
+    })
     startCommandSync(readyClient, [...commands.values()])
     // The env channels first, so the first tick already posts to them.
     void importEnvChannels(readyClient)

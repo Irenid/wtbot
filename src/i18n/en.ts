@@ -54,7 +54,7 @@ export const en: BotText = {
     },
     settings: {
       description: 'Choose where the bot posts and what it watches on this server',
-      show: 'Show the bot\'s channels and language on this server',
+      show: 'Show the bot\'s channels, language and who can use its commands here',
       battles: 'Channels for battle posts',
       battlesAdd: 'Post battles in a channel: one squadron\'s, or every squadron\'s',
       battlesRemove: 'Stop battle posts in a channel',
@@ -72,7 +72,6 @@ export const en: BotText = {
 
   language: {
     guildOnly: 'This command works only on a Discord server.',
-    needManageGuild: 'Choosing the bot\'s language needs the Manage Server permission.',
     changed:
       'The bot now writes in English on this server: battle posts, the player board and, within a minute, ' +
       'the command descriptions. Replies only you see come in your own Discord language.',
@@ -80,8 +79,8 @@ export const en: BotText = {
 
   settings: {
     guildOnly: 'This command works only on a Discord server.',
-    needManageGuild: 'Changing the bot\'s channels needs the Manage Server permission.',
     badChannel: 'Pick a channel of this server.',
+    cannotView: (channel) => `You cannot see ${channel} yourself, so you cannot set the bot up there.`,
     permissions: {
       view: 'View Channel',
       send: 'Send Messages',
@@ -105,11 +104,14 @@ export const en: BotText = {
       (mentionOnly ? ' Mention the bot in the message: without that it cannot see the picture.' : ''),
     scoutExists: (channel) => `Screenshots in ${channel} are already read.`,
     scoutRemoved: (channel) => `Screenshots in ${channel} are no longer read.`,
-    voiceAdded: (channel) => `The board shows the players of ${channel}, and of the other chosen voice channels only.`,
+    voiceAdded: (channel, hiddenOnBoard) =>
+      `The board shows the players of ${channel}, and of the other chosen voice channels only.` +
+      (hiddenOnBoard ? ' Some who see the board cannot see this channel, so the board leaves it out.' : ''),
     voiceExists: (channel) => `The board already shows ${channel}.`,
     voiceRemoved: (channel, othersLeft) => othersLeft
       ? `The board no longer shows ${channel}.`
-      : `The board no longer shows ${channel}: it shows every voice channel the bot can see again.`,
+      : `The board no longer shows ${channel}: it shows every voice channel the bot can see again, ` +
+        'except those some who see the board cannot see.',
     notSet: (channel) => `${channel} was not set up for that.`,
     show: {
       title: 'The bot on this server',
@@ -118,13 +120,34 @@ export const en: BotText = {
       scout: 'Screenshots read in',
       voice: 'Voice channels on the board',
       playerBoard: 'Player board',
+      access: 'Who can use the commands',
       languageValue: (name, chosen) => chosen ? name : `${name} (the default; /language changes it)`,
       everySquadron: 'every squadron',
       noBattles: 'none: /settings battles add',
       noScout: 'none: /settings scout add',
-      allVoice: 'every voice channel the bot can see',
+      allVoice: 'every voice channel the bot can see, except those some who see the board cannot see',
       noBoard: 'none: /playerboard setup',
       missing: (permissions) => `⚠ the bot lacks ${permissions}`,
+      hiddenOnBoard: '⚠ some who see the board cannot see it: left off the board',
+      footer:
+        'Buttons under battle posts answer whoever sees the post. Screenshots are read from whoever can post ' +
+        'in the channel. The board leaves out a voice channel that some who see the board cannot see.',
+    },
+    access: {
+      everyone: 'everyone',
+      manageGuild: 'members with Manage Server',
+      adminsOnly: 'administrators only',
+      needsPermissions: 'members with the permissions it asks for',
+      also: (list) => `also ${list}`,
+      only: (list) => `only ${list}`,
+      except: (list) => `not ${list}`,
+      onlyIn: (channels) => `only in ${channels}`,
+      alsoIn: (channels) => `also in ${channels}`,
+      notIn: (channels) => `not in ${channels}`,
+      noChannel: 'in no channel',
+      everyCommand: 'Every command',
+      note: (bot) => `Administrators can use every command. To change who can use one: Server Settings → Integrations → ${bot}.`,
+      unread: 'Discord did not say who can use the commands. Try again later.',
     },
   },
 
@@ -424,8 +447,8 @@ export const en: BotText = {
     moved: (channel) => `The board moved to ${channel}. This message no longer updates.`,
     replies: {
       guildOnly: 'This command works only on a Discord server.',
-      needManageGuild: 'Setting up the board needs the Manage Server permission.',
       badChannel: 'The chosen channel is unavailable or is not a text channel of this server.',
+      cannotView: (channel) => `You cannot see ${channel} yourself, so you cannot put the board there.`,
       permissions: {
         view: 'View Channel',
         send: 'Send Messages',
@@ -433,7 +456,7 @@ export const en: BotText = {
         history: 'Read Message History',
       },
       missingPermissions: (channel, permissions) => `The bot lacks permissions in ${channel}: ${permissions}.`,
-      allVoiceChannels: 'all the bot can see',
+      allVoiceChannels: 'all the bot can see, except those some who see the board cannot see',
       configured: (channel, url, players, voiceChannels) =>
         `The board is set up in ${channel}: ${url}\nPlayers in the current snapshot: ${players}.\nVoice channels: ${voiceChannels}.`,
       notConfigured: 'The player board is not set up on this server or is disabled.',

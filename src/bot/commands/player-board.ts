@@ -73,13 +73,10 @@ export const playerBoard: Command = {
   async execute(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral })
     // The replies are ephemeral; the board itself is in the server's language (player-board.ts).
+    // Manage Server by default; a server may open the command to other roles (access.ts).
     const text = botText(userLocale(interaction)).playerBoard
-    if (!interaction.inGuild() || interaction.guildId === null) {
+    if (!interaction.inCachedGuild()) {
       await interaction.editReply(text.replies.guildOnly)
-      return
-    }
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.editReply(text.replies.needManageGuild)
       return
     }
 
@@ -91,6 +88,11 @@ export const playerBoard: Command = {
         const channel = guildTextChannel(fetched)
         if (channel === null || channel.guildId !== interaction.guildId) {
           await interaction.editReply(text.replies.badChannel)
+          return
+        }
+        // Whoever may use the command puts the board only where they can read it themselves.
+        if (channel.permissionsFor(interaction.member)?.has(PermissionFlagsBits.ViewChannel) !== true) {
+          await interaction.editReply(text.replies.cannotView(`<#${channel.id}>`))
           return
         }
         const permissions = interaction.client.user === null

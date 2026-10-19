@@ -6,6 +6,7 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
+  type Guild,
   type GuildBasedChannel,
 } from 'discord.js'
 import type { GuildChannelKind } from '../../db/index.js'
@@ -13,18 +14,21 @@ import { getPlayerStatBoard } from '../../db/index.js'
 import { botText, type BotText } from '../../i18n/index.js'
 import { findSquadrons } from '../../scout/report.js'
 import { squadronLabel } from '../../scout/format.js'
+import { boardAudience, describeCommandAccess } from '../access.js'
 import { addSetting, guildChannels, removeSetting } from '../guild-settings.js'
 import { chosenGuildLocale, guildLocale, userLocale } from '../locale.js'
 import type { Command } from '../types.js'
 import { squadronChoice } from './scout.js'
 
 /**
- * /settings — what the bot does on this server, for members with Manage
- * Server: the channels of battle posts (every squadron's or one squadron's),
- * of scoreboard screenshots and the voice channels of the player board
- * (guild-settings.ts); `show` lists them with the language and the board.
- * Replies are ephemeral; a channel is accepted only once the bot has what it
- * needs there, so a public install never fails silently.
+ * /settings — what the bot does on this server, for whoever the server lets
+ * use the command (Manage Server by default; access.ts): the channels of
+ * battle posts (every squadron's or one squadron's), of scoreboard
+ * screenshots and the voice channels of the player board (guild-settings.ts);
+ * `show` lists them with the language, the board and who can use each
+ * command. Replies are ephemeral; a channel is accepted only once the bot has
+ * what it needs there, so a public install never fails silently, and only
+ * from a member who can view it.
  */
 
 type PermissionKey = keyof BotText['settings']['permissions']
@@ -128,14 +132,10 @@ export const settings: Command = {
       await interaction.editReply(t.guildOnly)
       return
     }
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.editReply(t.needManageGuild)
-      return
-    }
     const group = interaction.options.getSubcommandGroup()
     const action = interaction.options.getSubcommand()
     if (group === null) {
-      await interaction.editReply({ embeds: [showEmbed(interaction, t)] })
+      await interaction.editReply({ embeds: [await showEmbed(interaction, t)] })
       return
     }
     const kind = group as GuildChannelKind
@@ -146,6 +146,12 @@ export const settings: Command = {
       return
     }
     const mention = `<#${channel.id}>`
+    // A role the server opened /settings to must not point the bot at a channel it cannot see:
+    // posts into a staff room, or a hidden room's members on the board.
+    if (channel.permissionsFor(interaction.member)?.has(PermissionFlagsBits.ViewChannel) !== true) {
+      await interaction.editReply(t.cannotView(mention))
+      return
+    }
 
     let clan = ''
     let squadron: string | null = null
@@ -194,12 +200,53 @@ export const settings: Command = {
         ? (added
           ? t.scoutAdded(mention, !interaction.client.options.intents.has(GatewayIntentBits.MessageContent))
           : t.scoutExists(mention))
-        : (added ? t.voiceAdded(mention) : t.voiceExists(mention))
+        : (added ? t.voiceAdded(mention, hiddenOnBoard(interaction.guild, channel.id)) : t.voiceExists(mention))
     await interaction.editReply(reply)
   },
 }
 
-function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: BotText['settings']): EmbedBuilder {
+/** Whether the server's player board leaves the voice channel out: some who see the board cannot see it (access.ts). */
+function hiddenOnBoard(guild: Guild, channelId: string): boolean {
+  const board = getPlayerStatBoard(guild.id)
+  return board !== null && board.enabled && !boardAudience(guild, board.channelId)(channelId)
+}
+
+/** The lines that fit `room` characters whole, then "…": a cut mention would show as raw text. */
+function fitLines(lines: readonly string[], room: number): string[] {
+  const kept: string[] = []
+  let length = 0
+  for (const [index, line] of lines.entries()) {
+    // The last line needs no room for "…" after it.
+    const reserve = index === lines.length - 1 ? 0 : 2
+    if (length + line.length + reserve > room) return [...kept, '…']
+    kept.push(line)
+    length += line.length + 1
+  }
+  return kept
+}
+
+/** Who can use the bot's commands here, as Discord has them: the registered defaults and the server's Integrations changes. */
+async function commandAccess(interaction: ChatInputCommandInteraction<'cached'>, t: BotText['settings']['access']): Promise<string> {
+  const guild = interaction.guild
+  try {
+    // Two reads at once; a server's /settings show is rare.
+    const [registered, overrides] = await Promise.all([guild.commands.fetch(), guild.commands.permissions.fetch({})])
+    const commands = [...registered.values()].map((command) => ({
+      id: command.id,
+      name: command.name,
+      defaultMemberPermissions: command.defaultMemberPermissions?.bitfield ?? null,
+    }))
+    const lines = describeCommandAccess(guild.id, interaction.applicationId, commands, overrides, t)
+    // The note says where to change it: always kept, within the field's 1,024 characters.
+    const note = t.note(interaction.client.user.username)
+    return [...fitLines(lines, 1024 - note.length - 1), note].join('\n')
+  } catch (error) {
+    console.warn(`[settings] server ${guild.id}: could not read who can use the commands:`, error)
+    return t.unread
+  }
+}
+
+async function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: BotText['settings']): Promise<EmbedBuilder> {
   const s = t.show
   const guild = interaction.guild
   const line = (kind: GuildChannelKind, channelId: string, suffix = ''): string => {
@@ -217,8 +264,10 @@ function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: BotTex
   const scout = guildChannels('scout', guild.id)
   const voice = guildChannels('voice', guild.id)
   const board = getPlayerStatBoard(guild.id)
+  const boardSees = board !== null && board.enabled ? boardAudience(guild, board.channelId) : () => true
   const language = botText(guildLocale(guild.id, guild.preferredLocale)).languageName
   const value = (text: string): string => text.slice(0, 1024)
+  const access = await commandAccess(interaction, t.access)
   return new EmbedBuilder()
     .setTitle(s.title)
     .setColor(0x5865f2)
@@ -231,7 +280,14 @@ function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: BotTex
           : [...battles].map(([channelId, names]) => line('battles', channelId, ` — ${names.join(', ')}`)).join('\n')),
       },
       { name: s.scout, value: value(scout.length === 0 ? s.noScout : scout.map((row) => line('scout', row.channelId)).join('\n')) },
-      { name: s.voice, value: value(voice.length === 0 ? s.allVoice : voice.map((row) => line('voice', row.channelId)).join('\n')) },
+      {
+        name: s.voice,
+        value: value(voice.length === 0
+          ? s.allVoice
+          : voice.map((row) => line('voice', row.channelId, boardSees(row.channelId) ? '' : ` ${s.hiddenOnBoard}`)).join('\n')),
+      },
       { name: s.playerBoard, value: board === null || !board.enabled ? s.noBoard : `<#${board.channelId}>` },
+      { name: s.access, value: access },
     )
+    .setFooter({ text: s.footer })
 }

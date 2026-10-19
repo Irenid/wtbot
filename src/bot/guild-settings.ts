@@ -14,7 +14,7 @@ import { plainClanTag } from '../wrpl/render-battle.js'
 
 /**
  * The channels each server gives the bot (table guild_channels), set with
- * /settings by members with Manage Server: battle posts (every squadron's or
+ * /settings (who may: access.ts): battle posts (every squadron's or
  * one squadron's), scoreboard screenshots, the voice channels of the player
  * board. Reads go to SQLite each time (a few rows, the scout check is a
  * primary-key seek): only this process writes them. WT_BATTLES_CHANNEL

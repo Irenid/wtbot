@@ -1,5 +1,6 @@
 import { EmbedBuilder, SlashCommandBuilder } from 'discord.js'
 import { botText, type BotText } from '../../i18n/index.js'
+import { isBotOwner } from '../access.js'
 import { channelLocale } from '../locale.js'
 import type { Command } from '../types.js'
 import { getClanSeasonContext, getCommandStats, getItemStats, getLatestParsePerSource, type ClanSeasonContext } from '../../db/index.js'
@@ -32,12 +33,18 @@ export function seasonText(
     : `${current} · ${text.ends(`<t:${season.endsAt}:R>`)}`
 }
 
+/**
+ * /stats — the bot's uptime, reach and the squadron battles season for
+ * everyone; the parsers' state (English operator text, errors included) only
+ * for the application's owner, who runs the bot (access.ts).
+ */
 export const stats: Command = {
   definition: (t) => new SlashCommandBuilder().setName('stats').setDescription(t.commands.stats.description),
   async execute(interaction) {
     const t = botText(channelLocale(interaction))
     const cmdStats = getCommandStats()
-    const parses = getLatestParsePerSource()
+    const owner = isBotOwner(interaction.client.application.owner, interaction.user.id)
+    const parses = owner ? getLatestParsePerSource() : []
     const itemStats = getItemStats()
     const nowSec = Math.floor(Date.now() / 1_000)
 
@@ -65,7 +72,7 @@ export const stats: Command = {
         { name: t.stats.fields.itemsCollected, value: t.number(itemStats.total), inline: true },
         { name: t.stats.fields.season, value: seasonText(getClanSeasonContext(nowSec), nowSec, t), inline: false },
         { name: t.stats.fields.topCommands, value: topCommands },
-        { name: t.stats.fields.parsers, value: parsers.slice(0, 1024) },
+        ...(owner ? [{ name: t.stats.fields.parsers, value: parsers.slice(0, 1024) }] : []),
       )
       .setTimestamp()
 

@@ -54,7 +54,6 @@ export interface BotText {
   /** /language: the server's language. */
   language: {
     guildOnly: string
-    needManageGuild: string
     /** Confirms the choice, in the chosen language. */
     changed: string
   }
@@ -62,8 +61,9 @@ export interface BotText {
   /** /settings: the server's channels for battle posts, screenshots and the board's voice channels. */
   settings: {
     guildOnly: string
-    needManageGuild: string
     badChannel: string
+    /** The member picked a channel they cannot view (src/bot/access.ts). */
+    cannotView(channel: string): string
     /** Discord's own permission names, as the server settings show them. */
     permissions: Record<'view' | 'send' | 'attach' | 'embed' | 'history', string>
     missingPermissions(channel: string, permissions: string): string
@@ -77,7 +77,8 @@ export interface BotText {
     scoutAdded(channel: string, mentionOnly: boolean): string
     scoutExists(channel: string): string
     scoutRemoved(channel: string): string
-    voiceAdded(channel: string): string
+    /** `hiddenOnBoard` — some who see the board cannot see the channel, so the board leaves it out. */
+    voiceAdded(channel: string, hiddenOnBoard: boolean): string
     voiceExists(channel: string): string
     /** `othersLeft` false — the board shows every voice channel again. */
     voiceRemoved(channel: string, othersLeft: boolean): string
@@ -89,6 +90,8 @@ export interface BotText {
       scout: string
       voice: string
       playerBoard: string
+      /** The field listing who can use the commands. */
+      access: string
       /** `chosen` false — the default, not a /language choice. */
       languageValue(name: string, chosen: boolean): string
       everySquadron: string
@@ -97,6 +100,35 @@ export interface BotText {
       allVoice: string
       noBoard: string
       missing(permissions: string): string
+      /** After a chosen voice channel the board leaves out. */
+      hiddenOnBoard: string
+      /** Who the buttons, screenshots and the board serve: Discord's channel access, not the commands'. */
+      footer: string
+    }
+    /**
+     * Who can use the commands (src/bot/access.ts): a line is
+     * "/a, /b — <audience> · <part> · …"; lists are mentions joined by ", ".
+     */
+    access: {
+      everyone: string
+      /** The default of the managers' commands. */
+      manageGuild: string
+      adminsOnly: string
+      /** A default of other permissions than Manage Server. */
+      needsPermissions: string
+      also(list: string): string
+      only(list: string): string
+      except(list: string): string
+      onlyIn(channels: string): string
+      alsoIn(channels: string): string
+      notIn(channels: string): string
+      noChannel: string
+      /** Labels the line of what the server set for all commands at once. */
+      everyCommand: string
+      /** `bot` — the bot's name in Server Settings → Integrations. */
+      note(bot: string): string
+      /** Discord did not answer. */
+      unread: string
     }
   }
 
@@ -347,8 +379,9 @@ export interface BotText {
     moved(channel: string): string
     replies: {
       guildOnly: string
-      needManageGuild: string
       badChannel: string
+      /** The member picked a channel they cannot view (src/bot/access.ts). */
+      cannotView(channel: string): string
       permissions: Record<'view' | 'send' | 'embed' | 'history', string>
       missingPermissions(channel: string, permissions: string): string
       allVoiceChannels: string

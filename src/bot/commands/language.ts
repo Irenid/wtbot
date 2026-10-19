@@ -8,6 +8,7 @@ import type { Command } from '../types.js'
 /**
  * /language <language> — the server's language (locale.ts): battle posts,
  * public replies, the player board and the default command descriptions.
+ * Manage Server by default; a server may open it to other roles (access.ts).
  * Kept in bot_state; the server's commands and the boards are redrawn at
  * once, messages already posted stay as they are.
  */
@@ -28,10 +29,6 @@ export const language: Command = {
     const t = botText(userLocale(interaction)).language
     if (!interaction.inGuild()) {
       await interaction.editReply(t.guildOnly)
-      return
-    }
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.editReply(t.needManageGuild)
       return
     }
     const choice = interaction.options.getString('language', true)

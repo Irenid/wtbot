@@ -37,6 +37,7 @@ import {
 } from '../parsers/sources/wt-player.js'
 import type { PlayerStatsComparison, PlayerStatsCoordinator } from '../player-stats/comparison.js'
 import { runWorkerTask } from '../workers/pool.js'
+import { boardAudience } from './access.js'
 import { guildLocale } from './locale.js'
 
 const SOURCE = 'wt-players'
@@ -467,10 +468,9 @@ function lookupAccountStats(nickname: string): {
   }
 }
 
-function loadVoiceEntries(nowSec: number, guildId: string, locale: Locale): LoadedPlayerBoardEntries {
+function loadVoiceEntries(nowSec: number, shown: readonly VoicePresenceRow[], locale: Locale): LoadedPlayerBoardEntries {
   const { intl } = botText(locale)
-  const presence = getVoicePresence()
-    .filter((entry) => entry.guildId === guildId)
+  const presence = [...shown]
     .sort((left, right) =>
       left.channelName.localeCompare(right.channelName, intl)
       || left.wtNick.localeCompare(right.wtNick, intl)
@@ -516,18 +516,34 @@ function boardLocale(client: Client, guildId: string): Locale {
   return guildLocale(guildId, client.guilds.cache.get(guildId)?.preferredLocale)
 }
 
+/**
+ * The voice presence a board shows: its server's, in voice channels every role
+ * that sees the board's channel sees too (access.ts `boardAudience`). The bot
+ * may see every room (Administrator), so its own view never decides what the
+ * board's readers learn about one.
+ */
+function boardPresence(client: Client, guildId: string, boardChannelId: string): VoicePresenceRow[] {
+  const guild = client.guilds.cache.get(guildId)
+  if (guild === undefined) return []
+  const sees = boardAudience(guild, boardChannelId)
+  return getVoicePresence().filter((entry) => entry.guildId === guildId && sees(entry.channelId))
+}
+
 function buildCurrentRender(
+  client: Client,
   guildId: string,
-  locale: Locale,
+  boardChannelId: string,
   nowSec = Math.floor(Date.now() / 1000),
 ): PlayerBoardRender {
+  const locale = boardLocale(client, guildId)
   const parse = getLatestParsePerSource().find((entry) => entry.source === SOURCE) ?? null
-  const loaded = loadVoiceEntries(nowSec, guildId, locale)
+  const presence = boardPresence(client, guildId, boardChannelId)
+  const loaded = loadVoiceEntries(nowSec, presence, locale)
   return renderPlayerBoard(
     loaded.entries,
     parse,
     nowSec,
-    getVoicePresence().filter((entry) => entry.guildId === guildId).length,
+    presence.length,
     loaded.missingNicknames,
     { mode: 'voice', locale },
   )
@@ -600,7 +616,7 @@ async function refreshBoardInternal(
   board: PlayerStatBoard,
   force: boolean,
 ): Promise<PlayerBoardRefreshResult> {
-  const render = buildCurrentRender(board.guildId, boardLocale(client, board.guildId))
+  const render = buildCurrentRender(client, board.guildId, board.channelId)
   const now = Date.now()
   const shouldValidate = now - (lastMessageValidation.get(board.guildId) ?? 0) >= MESSAGE_VALIDATION_MS
   if (!force && board.lastContentHash === render.contentHash && !shouldValidate) {
@@ -671,7 +687,7 @@ export function configurePlayerStatBoard(
   channelId: string,
 ): Promise<PlayerBoardRefreshResult> {
   return serialize(async () => {
-    const render = buildCurrentRender(guildId, boardLocale(client, guildId))
+    const render = buildCurrentRender(client, guildId, channelId)
     const channel = await resolveChannel(client, channelId)
     const previous = getPlayerStatBoard(guildId)
     const existing = previous?.channelId === channelId

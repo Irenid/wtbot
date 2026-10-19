@@ -547,7 +547,7 @@ Data:
 ## 8. Discord, site and player statistics
 
 - The bot is public-ready: what it does on a server is that server's
-  `/settings` (Manage Server; `src/bot/commands/settings.ts`): battle-post
+  `/settings` (`src/bot/commands/settings.ts`): battle-post
   channels (every squadron or one, several rows per channel post a battle
   once), scoreboard-screenshot channels, the board's voice channels; at most
   `MAX_GUILD_CHANNELS` of each. A channel is accepted only with the bot's
@@ -555,6 +555,21 @@ Data:
   bot drops its rows (`ChannelDelete`, `GuildDelete`). The bot always asks for
   `GuildMessages`, and `MessageContent` only when the application has it
   (asking without it fails the login, 4014); messages are not cached.
+- Access (`src/bot/access.ts`): Discord's per-command permissions are the
+  only gate on commands — the registered defaults (Manage Server for
+  `/settings`, `/language`, `/playerboard`; everyone for the rest) plus a
+  server's Server Settings → Integrations changes (a command-level allow
+  passes a member without the default permission, an app-level one does
+  not). No role check in code: it would refuse the roles a server opened a
+  command to; a manager acts only on channels they can view. The bot reads
+  these permissions (`/settings show`), never writes them (a user's Bearer
+  token only); renaming a command drops every server's permissions for it.
+  The rest follows channel access: buttons answer whoever sees the post,
+  screenshots are read from whoever can post in the channel, and the player
+  board shows a voice channel only if every role that sees the board sees it
+  too (per role: a second role's deny and member overwrites aside), whatever
+  the bot itself sees. `/stats` shows the parsers to the application's owner
+  only.
 - Slash command: a file in `src/bot/commands/` (`definition(t)` in one
   language; autocomplete: `Command.autocomplete`), listed in
   `src/bot/commands/index.ts`. The bot registers the commands itself
@@ -579,7 +594,7 @@ Data:
   is one catalog file plus its `CATALOGS` entry; `i18n.test.ts` holds the
   length limits. Internal errors never reach Discord (the catalog's generic
   reply; details go to the log); parser summaries in `/stats` are English
-  operator text, not translated.
+  operator text for the owner, not translated.
 - `/battle` and the announcer share `renderBattlePost()`; `battle:*` buttons
   are routed in `src/bot/index.ts`; chat, log and heatmaps are ephemeral. A
   post's updates run in order — ratings, winner, unknown-tag lookup
@@ -822,7 +837,7 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web`. Baseline on **2026-10-19**: all gates pass,
-**538 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+**545 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).

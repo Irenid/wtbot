@@ -66,13 +66,17 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    start the bot registers its slash commands on every server it is in (invite
    it with the `bot` and `applications.commands` scopes and the permissions
    View Channels, Send Messages, Embed Links, Attach Files, Read Message
-   History: `permissions=117760` in the invite link). On each server, members
-   with Manage Server set it up themselves: `/settings battles add` (battle
-   posts, one squadron's or every squadron's), `/settings scout add`
-   (scoreboard screenshots), `/settings voice add` (the player board's voice
-   channels; none — all), `/playerboard setup`, `/language`; `/settings show`
-   lists them. Anyone can add the bot once the Developer Portal marks it
-   Public Bot (Bot tab).
+   History: `permissions=117760` in the invite link; it needs no other
+   permission, so do not give it Administrator). On each server, members with
+   Manage Server set it up themselves: `/settings battles add` (battle posts,
+   one squadron's or every squadron's), `/settings scout add` (scoreboard
+   screenshots),
+   `/settings voice add` (the player board's voice channels; none — all its
+   readers can see), `/playerboard setup`, `/language`; `/settings show`
+   lists them and who can use each command. Server Settings → Integrations →
+   the bot opens a command to other roles (a staff role without Manage
+   Server) or closes it to some roles and channels. Anyone can add the bot
+   once the Developer Portal marks it Public Bot (Bot tab).
 4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
    `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links
    redirect to the same page at the root. For network access put a reverse proxy with TLS

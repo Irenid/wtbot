@@ -19,9 +19,9 @@ import { onGuildChannelsChange, watchedVoiceChannels } from './guild-settings.js
  *
  * Each server picks its channels with /settings voice (guild-settings.ts);
  * none picked — every voice channel the bot can view there. A channel hidden
- * from the bot is never tracked: the board would show the regiment who sits
- * in a staff or newcomer room. Overwrite, role and setting changes re-read
- * the snapshot.
+ * from the bot is never tracked; the board also leaves out one that some of
+ * its readers cannot see (access.ts), since the bot may see every room.
+ * Overwrite, role and setting changes re-read the snapshot.
  *
  * Every 10 minutes the PSR snapshots of the squadrons of everyone in voice are
  * refreshed (a squadron is found from the nick's past snapshots, which appear
