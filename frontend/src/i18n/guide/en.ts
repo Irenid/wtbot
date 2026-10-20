@@ -25,7 +25,7 @@ export const en: GuideText = {
     },
     grow: {
       q: 'How often do I need to win for PSR to grow?',
-      a: () => 'More than 24 battles in 100 at PSR 1300, more than half at 1500 and more than 85 in 100 at 1800, against teams averaging 1500 or less. Against stronger teams fewer wins are enough.',
+      a: () => 'At least 25 battles in 100 at PSR 1300, more than half at 1500 and at least 85 in 100 at 1800, against teams averaging 1500 or less. Against stronger teams fewer wins are enough.',
     },
     ceiling: {
       q: 'How high will my PSR get?',
@@ -157,7 +157,7 @@ export const en: GuideText = {
       floor: 'PSR never goes below 0',
       opponent: (n) => ["enemy team's average PSR,", `at least ${n}`],
       body: [
-        '**E** is the win share at which PSR stays put: the “Win %” column of the [table](/guides/psr#points), which uses R = 1500. Below 903 the formula would charge less than 1 point for a loss, so there it is always −1 and 3% wins are enough to grow.',
+        '**E** is the win share at which PSR stays put: the “Win %” column of the [table](/guides/psr#points), which uses R = 1500. Below 903 the formula would charge less than 1 point for a loss, so there it is always −1 and just over 3% wins are enough to grow.',
         'Example for PSR 1300 against a team averaging 1500 or less: x = (1500 − 1300) / 400 = 0.5; 10^0.5 ≈ 3.16; E = 1 / 4.16 ≈ 0.24. Win: 32 × 0.76 ≈ +24. Loss: 32 × 0.24 ≈ −8.',
         'Above 903 the average result of one battle is simpler: 32 × (win share − E). At PSR 1300 and 60% wins that is 32 × (0.60 − 0.24) ≈ +11.5 per battle.',
         'This is the Elo system, as in chess, with the enemy team\'s average PSR as the opponent. A weaker team counts as 1500, so a win over it gives as much as over a team averaging 1500.',

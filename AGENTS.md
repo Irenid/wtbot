@@ -843,6 +843,7 @@ npm run build                 # dist/ from tsconfig.build.json, no tests
 npm run verify                # typecheck, npm test, offline verify:*, corpus
 npm run verify:workers:dist
 npm run build:web             # the SPA: its own tsc -b and Vite build
+npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.ts[x])
 ```
 
 `verify` = `typecheck` (`src/` with tests) + `npm test` (`*.test.ts`,
@@ -852,8 +853,10 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `verify:player-board-voice`, `verify:benchmark-corpus` (needs
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
-frontend change run `build:web`. Baseline on **2026-10-20**: all gates pass,
-**546 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+frontend change run `build:web` and `test:web` (Vitest in Node: logic and
+components rendered with `react-dom/server`, no DOM). Baseline on
+**2026-10-20**: all gates pass, **548 pass, 0 fail**, corpus — 6 scenarios
+(including 2.59), the SPA 27 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).

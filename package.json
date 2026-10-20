@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('src/tactical-map/oodle.wasm', 'dist/tactical-map/oodle.wasm')\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:web": "npm --prefix frontend run build",
+    "test:web": "npm --prefix frontend test",
     "dev:web": "npm --prefix frontend run dev",
     "start": "node dist/index.js",
     "start:bot": "node dist/index.js --no-battle-background",

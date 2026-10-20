@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { fetchBattles, fetchClans, type BattleListEntry, type ClanListEntry } from '../api'
+import { mergeBattlePage, nextBattlesBound } from '../lib/battle-pages'
 import { battleVersusLabel, fmtDateTime, fmtDuration, fmtInt, modeLabel, modeShortLabel } from '../lib/format'
 import { Chip, ErrorNotice, Loading, ResultBadge, SegControl } from '../components/ui'
 import { t, tp, useLocale } from '../i18n'
@@ -76,26 +77,20 @@ export function BattlesPage() {
   }, [])
 
   const loadMore = (): void => {
-    const oldest = battles?.[battles.length - 1]
-    if (oldest === undefined || loadingMore) return
+    const to = nextBattlesBound(battles ?? [])
+    if (to === null || loadingMore) return
     const current = generation.current
     setLoadingMore(true)
     setMoreError(null)
-    // Граница `to` исключающая: +1 захватывает бои с тем же временем старта,
-    // уже показанные отбрасываются по sessionId.
     fetchBattles({
       ...(player ? { player } : {}),
       ...(clan ? { clan } : {}),
       limit: PAGE_SIZE,
-      to: oldest.startTime + 1,
+      to,
     })
       .then((body) => {
         if (current !== generation.current) return
-        setBattles((previous) => {
-          const shown = previous ?? []
-          const known = new Set(shown.map((battle) => battle.sessionId))
-          return [...shown, ...body.battles.filter((battle) => !known.has(battle.sessionId))]
-        })
+        setBattles((previous) => mergeBattlePage(previous ?? [], body.battles))
         setHasMore(body.battles.length === PAGE_SIZE)
       })
       .catch((err) => { if (current === generation.current) setMoreError(err) })

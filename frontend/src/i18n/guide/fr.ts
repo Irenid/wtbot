@@ -25,7 +25,7 @@ export const fr: GuideText = {
     },
     grow: {
       q: "À quelle fréquence faut-il gagner pour que la NPE monte ?",
-      a: () => "Plus de 24 batailles sur 100 à une NPE de 1300, plus de la moitié à 1500 et plus de 85 sur 100 à 1800, contre des équipes d'une moyenne de 1500 ou moins. Contre des équipes plus fortes, moins de victoires suffisent.",
+      a: () => "Au moins 25 batailles sur 100 à une NPE de 1300, plus de la moitié à 1500 et au moins 85 sur 100 à 1800, contre des équipes d'une moyenne de 1500 ou moins. Contre des équipes plus fortes, moins de victoires suffisent.",
     },
     ceiling: {
       q: "Jusqu'où montera ma NPE ?",
@@ -157,7 +157,7 @@ export const fr: GuideText = {
       floor: "La NPE ne descend jamais sous 0",
       opponent: (n) => ["NPE moyenne de l'équipe", `adverse, au moins ${n}`],
       body: [
-        "**E** est la part de victoires à laquelle la NPE ne bouge pas : la colonne « Taux de victoire » du [tableau](/guides/psr#points), qui utilise R = 1500. Sous 903, la formule retirerait moins de 1 point pour une défaite, c'est donc toujours −1 et 3% de victoires suffisent pour monter.",
+        "**E** est la part de victoires à laquelle la NPE ne bouge pas : la colonne « Taux de victoire » du [tableau](/guides/psr#points), qui utilise R = 1500. Sous 903, la formule retirerait moins de 1 point pour une défaite, c'est donc toujours −1 et un peu plus de 3% de victoires suffisent pour monter.",
         "Exemple pour une NPE de 1300 contre une équipe d'une moyenne de 1500 ou moins : x = (1500 − 1300) / 400 = 0,5 ; 10^0,5 ≈ 3,16 ; E = 1 / 4,16 ≈ 0,24. Victoire : 32 × 0,76 ≈ +24. Défaite : 32 × 0,24 ≈ −8.",
         "Au-dessus de 903, le résultat moyen d'une bataille se calcule plus simplement : 32 × (part de victoires − E). Pour une NPE de 1300 et 60% de victoires, cela donne 32 × (0,60 − 0,24) ≈ +11,5 par bataille.",
         "C'est le système Elo, comme aux échecs, où l'adversaire est la NPE moyenne de l'équipe adverse. Une équipe plus faible compte pour 1500 : la battre rapporte autant que battre une équipe d'une moyenne de 1500.",

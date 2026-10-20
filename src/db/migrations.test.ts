@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import { normalizePlayerSearchKey } from '../nick-search.js'
 import {
   DB_SCHEMA_VERSION,
   closeDb,
@@ -149,6 +150,173 @@ test('migration runner не проглатывает блокировку кон
     }
     contender.close()
     blocker.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('migrations v1–v5 and v10 bring the oldest table shapes up to date and fill the new columns', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v1-'))
+  const dbPath = path.join(root, 'v0.db')
+  const columns = (database: DatabaseSync, table: string): string[] =>
+    (database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((row) => row.name)
+  try {
+    // user_version 0: the tables as July 2026 wrote them, before the columns v1–v4 and v10 add.
+    const legacy = new DatabaseSync(dbPath)
+    legacy.exec(`
+      CREATE TABLE battles (
+        session_id TEXT PRIMARY KEY, mission_name TEXT NOT NULL, level TEXT NOT NULL, game_mode TEXT,
+        battle_type TEXT, environment TEXT, status TEXT, start_time INTEGER NOT NULL,
+        end_time_ms INTEGER NOT NULL DEFAULT 0, team_won INTEGER NOT NULL DEFAULT 0, events_blob BLOB,
+        ingested_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE TABLE battle_players (
+        session_id TEXT NOT NULL, user_id TEXT NOT NULL, nick TEXT NOT NULL, clan_tag TEXT NOT NULL DEFAULT '',
+        team INTEGER NOT NULL, kills INTEGER NOT NULL DEFAULT 0, ground_kills INTEGER NOT NULL DEFAULT 0,
+        naval_kills INTEGER NOT NULL DEFAULT 0, ai_kills INTEGER NOT NULL DEFAULT 0,
+        ai_ground_kills INTEGER NOT NULL DEFAULT 0, assists INTEGER NOT NULL DEFAULT 0,
+        deaths INTEGER NOT NULL DEFAULT 0, capture_zone INTEGER NOT NULL DEFAULT 0,
+        damage_zone INTEGER NOT NULL DEFAULT 0, score INTEGER NOT NULL DEFAULT 0,
+        award_damage INTEGER NOT NULL DEFAULT 0, team_kills INTEGER NOT NULL DEFAULT 0,
+        squad_id INTEGER NOT NULL DEFAULT -1, vehicle TEXT, vehicles TEXT NOT NULL DEFAULT '[]',
+        disconnected INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_id, user_id)
+      );
+      CREATE TABLE battle_chat (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, time_ms INTEGER NOT NULL,
+        sender TEXT NOT NULL, channel INTEGER NOT NULL, message TEXT NOT NULL
+      );
+      CREATE TABLE clan_rating_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, clan_tag TEXT NOT NULL, nick TEXT NOT NULL,
+        rating INTEGER NOT NULL, seen_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE TABLE voice_presence (
+        guild_id TEXT NOT NULL, guild_name TEXT NOT NULL, channel_id TEXT NOT NULL, channel_name TEXT NOT NULL,
+        user_id TEXT NOT NULL, display_name TEXT NOT NULL, wt_nick TEXT NOT NULL,
+        joined_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (guild_id, user_id)
+      );
+      CREATE TABLE player_identities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, wt_user_id TEXT, canonical_nick TEXT NOT NULL, platform TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE TABLE player_identity_aliases (
+        identity_id INTEGER NOT NULL, source TEXT NOT NULL, external_id TEXT, nick TEXT NOT NULL,
+        nick_base TEXT NOT NULL, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+        match_method TEXT NOT NULL, match_confidence TEXT NOT NULL,
+        PRIMARY KEY (identity_id, source, external_id, nick)
+      );
+      CREATE TABLE player_external_totals (
+        snapshot_id INTEGER NOT NULL, game_type TEXT, mode TEXT, category TEXT, battles INTEGER,
+        victories INTEGER, defeats INTEGER, time_played_sec INTEGER, respawns INTEGER,
+        air_kills INTEGER, ground_kills INTEGER, naval_kills INTEGER
+      );
+      CREATE TABLE clan_roster (
+        clan_tag TEXT NOT NULL, nick TEXT NOT NULL, PRIMARY KEY (clan_tag, nick)
+      );
+      CREATE TABLE announce_state (
+        item_id INTEGER PRIMARY KEY, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT, updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE TABLE clans (tag TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()));
+      CREATE TABLE clan_rating_history (
+        clan_core TEXT NOT NULL, captured_at INTEGER NOT NULL, rating INTEGER NOT NULL,
+        PRIMARY KEY (clan_core, captured_at)
+      ) WITHOUT ROWID;
+
+      INSERT INTO battles (session_id, mission_name, level, start_time, team_won, events_blob)
+        VALUES ('497563820012345678', 'm', 'l', 1000, 1, x'1f8b');
+      INSERT INTO battle_players (session_id, user_id, nick, clan_tag, team)
+        VALUES ('497563820012345678', '11', 'Ægir_X@psn', 'TAG', 1), ('497563820012345678', '12', 'Plain', 'TAG', 2);
+      INSERT INTO battle_chat (session_id, time_ms, sender, channel, message)
+        VALUES ('497563820012345678', 1, 'Plain', 2, 'gl'), ('497563820012345678', 2, 'Plain', 9, 'odd');
+      INSERT INTO clan_rating_snapshots (clan_tag, nick, rating) VALUES ('TAG', 'Ace@live', 1500);
+      INSERT INTO voice_presence (guild_id, guild_name, channel_id, channel_name, user_id, display_name, wt_nick)
+        VALUES ('g', 'G', 'c', 'C', 'u', 'Ace (Ace)', 'Ace@epic');
+      INSERT INTO player_identities (canonical_nick) VALUES ('ÆGIR_X');
+      INSERT INTO player_identity_aliases (identity_id, source, external_id, nick, nick_base, first_seen_at, last_seen_at, match_method, match_confidence)
+        VALUES (1, 'replay', '11', 'ÆGIR_X', 'ÆGIR_X', 1, 2, 'user_id', 'high');
+      INSERT INTO clan_roster (clan_tag, nick) VALUES ('TAG', 'Ace');
+      INSERT INTO announce_state (item_id, status, attempts) VALUES (7, 'ok', 1);
+      INSERT INTO clans (tag, name) VALUES ('TAG', 'Tag squadron');
+      INSERT INTO clan_rating_history (clan_core, captured_at, rating) VALUES ('TAG', 100, 1200);
+    `)
+    legacy.close()
+
+    initDb(dbPath)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      // v1: search keys and base nicks without the platform suffix.
+      assert.deepEqual(
+        migrated.prepare('SELECT user_id, nick_base, nick_search, slot, title, auto_squad FROM battle_players ORDER BY user_id').all()
+          .map((row) => ({ ...row })),
+        [
+          { user_id: '11', nick_base: 'Ægir_X', nick_search: normalizePlayerSearchKey('Ægir_X@psn'), slot: null, title: null, auto_squad: null },
+          { user_id: '12', nick_base: 'Plain', nick_search: normalizePlayerSearchKey('Plain'), slot: null, title: null, auto_squad: null },
+        ],
+      )
+      assert.deepEqual(
+        migrated.prepare('SELECT channel, channel_valid FROM battle_chat ORDER BY time_ms').all().map((row) => ({ ...row })),
+        [{ channel: 2, channel_valid: 1 }, { channel: 9, channel_valid: 0 }],
+      )
+      assert.equal((migrated.prepare('SELECT nick_base FROM clan_rating_snapshots').get() as { nick_base: string }).nick_base, 'Ace')
+      assert.equal((migrated.prepare('SELECT wt_nick_base FROM voice_presence').get() as { wt_nick_base: string }).wt_nick_base, 'Ace')
+      assert.equal(
+        (migrated.prepare('SELECT canonical_nick_search FROM player_identities').get() as { canonical_nick_search: string }).canonical_nick_search,
+        normalizePlayerSearchKey('ÆGIR_X'),
+      )
+      assert.equal(
+        (migrated.prepare('SELECT nick_search FROM player_identity_aliases').get() as { nick_search: string }).nick_search,
+        normalizePlayerSearchKey('ÆGIR_X'),
+      )
+      assert.ok(columns(migrated, 'player_external_totals').includes('deaths'))
+      // The roster keyed by the tag's core replaces the old one, which v1 cannot convert.
+      assert.ok(columns(migrated, 'clan_roster').includes('clan_core'))
+      assert.equal((migrated.prepare('SELECT COUNT(*) AS n FROM clan_roster').get() as { n: number }).n, 0)
+      // v1–v3 battle columns, then v17's compact table with the blob moved out.
+      assert.deepEqual(
+        { ...migrated.prepare(`
+          SELECT session_hex, duration_sec, player_count, kill_count, game_version, mission_settings,
+                 air_unit_count, chat_count, team_won
+          FROM battles`).get() },
+        {
+          session_hex: BigInt('497563820012345678').toString(16).padStart(16, '0'),
+          duration_sec: 0,
+          player_count: 0,
+          kill_count: 0,
+          game_version: null,
+          mission_settings: null,
+          air_unit_count: null,
+          chat_count: null,
+          team_won: 1,
+        },
+      )
+      assert.equal(columns(migrated, 'battles').includes('events_blob'), false)
+      assert.equal((migrated.prepare('SELECT COUNT(*) AS n FROM battle_events').get() as { n: number }).n, 1)
+      // v4: the announcement keeps its state and gets the message column.
+      assert.deepEqual(
+        { ...migrated.prepare('SELECT item_id, status, attempts, message_id FROM announce_state').get() },
+        { item_id: 7, status: 'ok', attempts: 1, message_id: null },
+      )
+      // v8/v10: the squadron's official statistics, the old history row kept.
+      for (const column of ['rating', 'position', 'air_kills', 'ground_kills', 'deaths', 'flight_time', 'activity', 'region', 'clan_type', 'founded_at', 'slogan', 'rewards']) {
+        assert.ok(columns(migrated, 'clans').includes(column), `clans.${column}`)
+      }
+      assert.deepEqual(
+        { ...migrated.prepare('SELECT clan_core, captured_at, rating, battles, wins, air_kills, ground_kills, deaths FROM clan_rating_history').get() },
+        { clan_core: 'TAG', captured_at: 100, rating: 1200, battles: null, wins: null, air_kills: null, ground_kills: null, deaths: null },
+      )
+      const indexes = new Set((migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map((row) => row.name))
+      for (const name of [
+        'idx_player_identities_nick_search', 'idx_player_aliases_nick_search', 'idx_bp_nick_search', 'idx_snapshots_nick_base',
+        'idx_voice_nick_base', 'idx_bp_nick_base', 'idx_battles_session_hex', 'idx_battles_metrics', 'idx_battles_start',
+      ]) {
+        assert.ok(indexes.has(name), name)
+      }
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
     rmSync(root, { recursive: true, force: true })
   }
 })

@@ -116,18 +116,10 @@ full texts are in Git (commit `46b6950` and earlier).
 
 ## Tests
 
-- `announce_state`: exactly-once and baseline monotonicity (the attempt limit
-  and skipping stale battles are already in `src/db/announce.test.ts`).
-- Migrations v1–v5 and v10 have no tests of their own (the other versions and
-  the runner are in `src/db/migrations.test.ts`).
 - Worker pool scheduler with a fake worker factory and fake clocks.
 - WRPL/ECS/GMSync fuzzing and decompression edge cases.
 - Render fixtures with many players: non-zero values, sorting, 32 players.
 - `src/player-stats/service.ts` — smoke scripts only.
-- Frontend: no tests and no test setup (error states, resetting
-  `vehicleDictPromise` after a failure, battle pagination, `lib/psr.ts`
-  against the numbers the guide prose quotes beyond the per-battle points
-  that `src/psr.test.ts` checks: 903, the ceilings).
 
 ## Performance
 

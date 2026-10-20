@@ -25,7 +25,7 @@ export const de: GuideText = {
     },
     grow: {
       q: 'Wie oft muss ich gewinnen, damit meine PSW steigt?',
-      a: () => 'Bei PSW 1300 in mehr als 24 von 100 Gefechten, bei 1500 in mehr als der Hälfte und bei 1800 in mehr als 85 von 100, wenn die Gegner im Schnitt höchstens 1500 haben. Gegen stärkere Teams reichen weniger Siege.',
+      a: () => 'Bei PSW 1300 in mindestens 25 von 100 Gefechten, bei 1500 in mehr als der Hälfte und bei 1800 in mindestens 85 von 100, wenn die Gegner im Schnitt höchstens 1500 haben. Gegen stärkere Teams reichen weniger Siege.',
     },
     ceiling: {
       q: 'Wie hoch steigt meine PSW?',
@@ -157,7 +157,7 @@ export const de: GuideText = {
       floor: 'Die PSW fällt nie unter 0',
       opponent: (n) => ['durchschnittliche PSW', 'des gegnerischen Teams,', `mindestens ${n}`],
       body: [
-        '**E** ist der Anteil an Siegen, bei dem die PSW gleich bleibt: die Spalte „Winrate“ der [Tabelle](/guides/psr#points), die mit R = 1500 rechnet. Unter 903 würde die Formel für eine Niederlage weniger als 1 Punkt abziehen, deshalb sind es dort immer −1, und 3% Siege genügen zum Steigen.',
+        '**E** ist der Anteil an Siegen, bei dem die PSW gleich bleibt: die Spalte „Winrate“ der [Tabelle](/guides/psr#points), die mit R = 1500 rechnet. Unter 903 würde die Formel für eine Niederlage weniger als 1 Punkt abziehen, deshalb sind es dort immer −1, und knapp über 3% Siege genügen zum Steigen.',
         'Beispiel für PSW 1300 gegen ein Team mit durchschnittlich höchstens 1500: x = (1500 − 1300) / 400 = 0,5; 10^0,5 ≈ 3,16; E = 1 / 4,16 ≈ 0,24. Sieg: 32 × 0,76 ≈ +24. Niederlage: 32 × 0,24 ≈ −8.',
         'Über 903 lässt sich das mittlere Ergebnis eines Gefechts einfacher berechnen: 32 × (Anteil der Siege − E). Bei PSW 1300 und 60% Siegen sind das 32 × (0,60 − 0,24) ≈ +11,5 pro Gefecht.',
         'Das ist das Elo-System wie im Schach, mit der durchschnittlichen PSW des gegnerischen Teams als Gegner. Ein schwächeres Team zählt als 1500: Ein Sieg gegen dieses Team bringt so viel wie gegen ein Team mit durchschnittlich 1500.',

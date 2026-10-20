@@ -25,7 +25,7 @@ export const es: GuideText = {
     },
     grow: {
       q: '¿Con qué frecuencia tengo que ganar para que suba la CPE?',
-      a: () => 'Más de 24 batallas de cada 100 con 1300 de CPE, más de la mitad con 1500 y más de 85 de cada 100 con 1800, contra equipos con una media de 1500 o menos. Contra equipos más fuertes bastan menos victorias.',
+      a: () => 'Al menos 25 batallas de cada 100 con 1300 de CPE, más de la mitad con 1500 y al menos 85 de cada 100 con 1800, contra equipos con una media de 1500 o menos. Contra equipos más fuertes bastan menos victorias.',
     },
     ceiling: {
       q: '¿Hasta dónde subirá mi CPE?',
@@ -157,7 +157,7 @@ export const es: GuideText = {
       floor: 'La CPE nunca baja de 0',
       opponent: (n) => ['CPE media del equipo rival,', `como mínimo ${n}`],
       body: [
-        '**E** es la proporción de victorias con la que la CPE no se mueve: la columna «% de victorias» de la [tabla](/guides/psr#points), que usa R = 1500. Por debajo de 903 la fórmula quitaría menos de 1 punto por derrota, así que ahí siempre es −1 y basta con el 3% de victorias para subir.',
+        '**E** es la proporción de victorias con la que la CPE no se mueve: la columna «% de victorias» de la [tabla](/guides/psr#points), que usa R = 1500. Por debajo de 903 la fórmula quitaría menos de 1 punto por derrota, así que ahí siempre es −1 y basta con algo más del 3% de victorias para subir.',
         'Ejemplo con 1300 de CPE contra un equipo con una media de 1500 o menos: x = (1500 − 1300) / 400 = 0,5; 10^0,5 ≈ 3,16; E = 1 / 4,16 ≈ 0,24. Victoria: 32 × 0,76 ≈ +24. Derrota: 32 × 0,24 ≈ −8.',
         'Por encima de 903, el resultado medio de una batalla se calcula más fácil: 32 × (proporción de victorias − E). Con 1300 de CPE y el 60% de victorias son 32 × (0,60 − 0,24) ≈ +11,5 por batalla.',
         'Es el sistema Elo, como en el ajedrez, en el que el rival es la CPE media del equipo contrario. Un equipo más débil cuenta como 1500, así que ganarle da lo mismo que ganar a un equipo con una media de 1500.',
