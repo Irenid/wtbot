@@ -21,11 +21,9 @@ test('battle announcement skips terminal ingest failures', () => {
   assert.equal(battleAnnouncementDecision(false, { status: 'error', attempts: 3 }, 3), 'skip')
 })
 
-test('winner update is queued only while both durable summaries are absent', () => {
-  assert.equal(shouldQueueWinnerUpdate(false, false), true)
-  assert.equal(shouldQueueWinnerUpdate(true, false), false)
-  assert.equal(shouldQueueWinnerUpdate(false, true), false)
-  assert.equal(shouldQueueWinnerUpdate(true, true), false)
+test('winner update is queued while the battle is not stored, media meta or not', () => {
+  assert.equal(shouldQueueWinnerUpdate(false), true)
+  assert.equal(shouldQueueWinnerUpdate(true), false)
 })
 
 test('winner update admission is bounded by count and estimated retained bytes', () => {

@@ -18,6 +18,9 @@ file keeps the stored fields, the reasons and the measurements.
   (`wt-clan-season`) shows in the source status. Both run on UTC days
   (season 62: [2026-09-01, 11-01) 00:00 UTC); only a stage's max BR switches
   later, at 14:00 UTC (`STAGE_SWITCH_DELAY_SEC`, AGENTS.md section 8).
+- A forum post in a new format fails `wt-clan-season` with a parse error (the
+  dashboard and the source status show it): fix `src/clan-season-forum.ts`;
+  the seasons already stored stay.
 - Region, type, slogan and rewards arrive HTML-escaped with game markup
   (`<color=#…>`, `<b>`): plain text is stored. Tag and name stay as they are:
   they key battles and claninfo.

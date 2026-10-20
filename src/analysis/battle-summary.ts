@@ -6,22 +6,32 @@ import { levelId } from '../wrpl/battle-assets.js'
 import { buildBattleMedia, cachedBattleMeta } from '../wrpl/battle-media.js'
 import { battlePsr } from '../wrpl/battle-psr.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
-import { applyRealNames, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls } from '../wrpl/replay.js'
+import {
+  applyRealNames,
+  fakeNamesFromItem,
+  fetchReplayResults,
+  listedUserIdsFromItem,
+  normalizeSessionId,
+  realNamesFromItem,
+  replayPartUrls,
+} from '../wrpl/replay.js'
 import { buildRosters, psrLabel, renderBattleImage, summarizeTeams } from '../wrpl/render-battle.js'
 import { configureReplayUrlPolicy } from '../wrpl/replay-url-policy.js'
 import { fillSquadronTags } from '../wrpl/squadron-tags.js'
 import { ensureVehicleDict, vehicleInfo } from '../wrpl/vehicles.js'
 
-// Результаты боя из файла реплея .wrpl. Запуск:
-//   npm run battle                        — последний собранный реплей
-//   npm run battle -- 498256029276764042  — конкретный бой (sessionId из БД)
-//   npm run battle -- --image             — ещё и PNG-картинка (data/battles/)
-//   npm run battle -- --media             — battle log, хитмапы и чат (data/battles/)
-//   npm run battle -- ... --json          — сырой JSON вместо таблицы
+// A battle's results from its .wrpl replay. Usage:
+//   npm run battle                        — the newest collected replay
+//   npm run battle -- 498256029276764042  — one battle (its sessionId in the database)
+//   npm run battle -- --image             — also the PNG image (data/battles/)
+//   npm run battle -- --media             — the battle log, heatmaps and chat (data/battles/)
+//   npm run battle -- ... --json          — raw JSON instead of the table
 //
-// Данные берутся из results-BLK в конце последней части реплея —
-// это та же таблица, которую показывает сайт и Discord-боты вроде Boris Stats.
-// --media скачивает ВСЕ части и разбирает пакетный поток (см. replay-events.ts).
+// The table is the results-BLK at the end of the replay's last part, the one
+// the game's site shows. --media draws a stored battle from the database,
+// otherwise downloads every part and parses the packet stream
+// (replay-events.ts) without storing the battle: only ingest writes one.
+// Writes squadron PSR snapshots (fetchRatingsForTags).
 
 const flags = new Set(process.argv.slice(2).filter((a) => a.startsWith('--')))
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
@@ -175,7 +185,13 @@ if (flags.has('--media')) {
   const media = await buildBattleMedia(
     sessionId,
     parts,
-    { missionName: data.missionName ?? item.title, gameMode: data.gameMode, gameVersion: data.gameVersion },
+    {
+      missionName: data.missionName ?? item.title,
+      gameMode: data.gameMode,
+      gameVersion: data.gameVersion,
+      listedUserIds: listedUserIdsFromItem(data),
+      fakeNames: fakeNamesFromItem(data),
+    },
     locale,
     realNames,
     'normal',

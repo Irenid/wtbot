@@ -545,8 +545,8 @@ the bot at home sharing one database; TOAST — large values stored separately
 and compressed (the blob-in-row problem would not have happened, but the
 trajectory JSON would get only generic compression, no columns); automatic
 statistics and VACUUM, parallel queries, BRIN/GIN; `pg_dump`, WAL archiving,
-point-in-time recovery and replication (would close "database copies on
-another disk" in the ROADMAP).
+point-in-time recovery and replication (copies off this disk already come
+from the nightly offsite restic snapshots, README).
 
 **What it would cost:** rewriting the data layer — `src/db/index.ts` (~6,700
 lines of synchronous SQL) and every caller (bot, site, parsers, ingest, worker

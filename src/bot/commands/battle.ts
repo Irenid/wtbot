@@ -47,7 +47,7 @@ import {
   type BattlePsr,
 } from '../../wrpl/battle-psr.js'
 import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags } from '../../wrpl/clan-info.js'
-import { applyRealNames, fakeNamesFromItem, fetchReplayResults, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
+import { applyRealNames, fakeNamesFromItem, fetchReplayResults, listedUserIdsFromItem, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
 import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { fillSquadronTags } from '../../wrpl/squadron-tags.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
@@ -334,7 +334,7 @@ export async function renderBattlePost(
         return redrawPsr()
       }
     : null
-  const buildWinnerPayload = shouldQueueWinnerUpdate(dbSummary !== null, mediaMeta !== null)
+  const buildWinnerPayload = shouldQueueWinnerUpdate(dbSummary !== null)
     ? async (): Promise<BattlePostPayload | null> => {
         const fresh = await waitForBattlePostSummary(sessionId)
         if (!fresh) return null
@@ -601,6 +601,7 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     missionName: data?.missionName ?? item?.title ?? '',
     gameMode: data?.gameMode,
     gameVersion: data?.gameVersion,
+    ...(data ? { listedUserIds: listedUserIdsFromItem(data) } : {}),
     fakeNames: fakeNamesFromItem(data ?? {}),
   }
   let media: Buffer | null = null
@@ -609,24 +610,20 @@ export async function handleBattleButton(interaction: ButtonInteraction): Promis
     if (scale === 2 && isBattleHeatmapKind(kind)) {
       media = await cachedBattleHeatmap2x(sessionIdHex, kind, locale)
       if (!media) {
-        // The first ordinary render stores the normalized battle; the HD task
-        // then takes its blob and builds only the one chosen map.
-        if (!hasBattle(sessionId)) {
-          if (!item || parts.length === 0) {
-            await interaction.editReply(t.noReplayForHd)
-            return
-          }
-          await buildBattleMediaKind(
-            sessionId,
-            parts,
-            meta,
-            kind,
-            locale,
-            realNamesFromItem(data ?? {}),
-            'interactive',
-          )
+        // A battle ingest has not stored yet is drawn from its replay parts.
+        if (!hasBattle(sessionId) && (!item || parts.length === 0)) {
+          await interaction.editReply(t.noReplayForHd)
+          return
         }
-        media = await buildBattleHeatmap2x(sessionId, kind, meta, locale, 'interactive')
+        media = await buildBattleHeatmap2x(
+          sessionId,
+          parts,
+          kind,
+          meta,
+          locale,
+          realNamesFromItem(data ?? {}),
+          'interactive',
+        )
       }
     } else {
       media = await cachedBattleMedia(sessionIdHex, kind, locale)

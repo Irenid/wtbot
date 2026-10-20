@@ -412,6 +412,10 @@ Access:
 - Every path that parses a battle passes the Replay API item's user ids
   (`listedUserIdsFromItem`): without them `battleParticipants` keeps phantom
   bot rows.
+- Only ingest writes a battle. Media of a battle not stored yet (`/battle`
+  buttons, `npm run battle -- --media`) parse its replay with the unlisted
+  tail parts and the item's roster, draw it and store nothing
+  (`loadBattleRenderSource`); ingest's commit drops those artifacts.
 - The events blob (`battle_events`, `events-codec.ts`) is columnar. A write
   verifies a byte-exact round trip, otherwise it stores zstd-JSON; readers
   also accept zstd-JSON and gzip. Read through
@@ -863,8 +867,8 @@ Only with explicit permission (external or local effects):
 - `npm run dev:web` with `WTBOT_API_URL` — its POSTs act on production;
 - `npm run backfill -- <days>` — network and database writes;
 - `npm run analyze -- <limit>` — paid API calls;
-- `npm run battle -- <id>` — may download a replay, build media and store the
-  battle;
+- `npm run battle -- <id>` — may download a replay, build media and write
+  squadron PSR snapshots;
 - `npm run capture:map` — reads a running game client (port 8111), writes
   `data/maps/` and `data/fonts/`;
 - `verify:player-stats-live`, `verify:statshark-live`, `verify:wt-transport`,

@@ -5,7 +5,7 @@ import { writeFileAtomic } from '../atomic-file.js'
 import { config } from '../config.js'
 import { isLocale, type Locale } from '../i18n/index.js'
 import { mapConcurrent } from '../concurrency.js'
-import { getBattleWeaponIds, getScoutStages, markBattleIngest, saveBattle } from '../db/index.js'
+import { getBattleWeaponIds, getScoutStages } from '../db/index.js'
 import { stageAt } from '../clan-season.js'
 import { balanceLevelOfBr, ensureGameAirMap, ensureGameTacticalMaps, type GameAirMap, type GameTacticalMaps } from '../tactical-map/index.js'
 import {
@@ -26,8 +26,7 @@ import {
   type MissileSeeker,
 } from './battle-assets.js'
 import { fetchMissionInfo, type MissionInfo } from './mission-info.js'
-import { dropReplayCache } from './replay-cache.js'
-import type { ReplayResults, WrplHeader } from './replay.js'
+import { withUnlistedReplayParts, type ReplayResults, type WrplHeader } from './replay.js'
 import { ensureVehicleDict, promoteVehicleDictLoad } from './vehicles.js'
 import { ensureGameFonts, promoteGameFontLoad } from './wt-fonts.js'
 import {
@@ -251,9 +250,11 @@ function releaseCacheSession(sessionIdHex: string): void {
 /** Renders only the requested heatmap at 2×, without the battle's other media. */
 export function buildBattleHeatmap2x(
   sessionId: string,
+  partUrls: string[],
   kind: BattleHeatmapKind,
   meta: BattleItemMeta,
   locale: Locale,
+  realNames: Map<string, string> = new Map(),
   priority: WorkerPriority = 'interactive',
 ): Promise<Buffer> {
   const sessionHex = toSessionHex(sessionId)
@@ -265,7 +266,7 @@ export function buildBattleHeatmap2x(
   }
   const state: MediaBuildState = { priority, workerControls: new Set() }
   acquireCacheSession(sessionHex)
-  const build = doBuildBattleHeatmap2x(sessionId, kind, meta, locale, state).finally(() => {
+  const build = doBuildBattleHeatmap2x(sessionId, partUrls, kind, meta, locale, realNames, state).finally(() => {
     inflightHeatmapBuilds.delete(key)
     releaseCacheSession(sessionHex)
   })
@@ -275,39 +276,38 @@ export function buildBattleHeatmap2x(
 
 async function doBuildBattleHeatmap2x(
   sessionId: string,
+  partUrls: string[],
   kind: BattleHeatmapKind,
   meta: BattleItemMeta,
   locale: Locale,
+  realNames: Map<string, string>,
   state: MediaBuildState,
 ): Promise<Buffer> {
-  const stored = reconstructBattle(sessionId)
-  if (!stored?.eventsBlob) throw new Error('the battle is not stored yet: the HD render reads it from the database')
-
-  const missionName = meta.missionName ?? stored.header.locName ?? ''
-  const weaponIds = getBattleWeaponIds(stored.header.sessionId)
+  const source = await loadBattleRenderSource(sessionId, partUrls, meta, realNames, state)
+  const missionName = meta.missionName ?? source.header.locName ?? ''
   const trackMission = workerControlTracker(state)
   const selection = heatmapSelection(kind)
   const [gameMaps, airMap] = await Promise.all([
-    battleGameMaps(stored.missionSettings, stored.header, 2, state),
-    selection.mode === 'air' ? battleAirMap(stored.missionSettings, stored.header, state) : null,
+    battleGameMaps(source.missionSettings, source.header, 2, state),
+    selection.mode === 'air' ? battleAirMap(source.missionSettings, source.header, state) : null,
   ])
   const [dict, mission, gameFontFiles, seekers, mapIconFont] = await Promise.all([
     ensureVehicleDict(state.priority),
     gameMaps
       ? Promise.resolve(gameMapMission(gameMaps))
-      : stored.missionSettings
-        ? fetchMissionInfo(stored.missionSettings, () => state.priority, trackMission)
+      : source.missionSettings
+        ? fetchMissionInfo(source.missionSettings, () => state.priority, trackMission)
         : Promise.resolve(null),
     ensureGameFonts(state.priority),
-    ensureWeaponSeekers(weaponIds),
+    ensureWeaponSeekers(source.weaponIds),
     loadMapIconFontPath(),
   ])
   const fontFiles = mapIconFont ? [...gameFontFiles, mapIconFont] : gameFontFiles
   const tacticalMap = !gameMaps && mission?.area
-    ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(stored.header.level))
+    ? (await ensureTacticalMap(missionName) ?? await loadLocalTacticalMap(source.header.level))
     : null
-  const fallbackMap = await loadMapBackground(stored.header.level)
-  const wireBlob = transferableBuffer(stored.eventsBlob)
+  const fallbackMap = await loadMapBackground(source.header.level)
+  const wireBlob = transferableBuffer(source.eventsBlob)
   const wireTacticalMap = tacticalMap ? transferableBuffer(tacticalMap) : null
   const wireMaps = wireGameMaps(gameMaps)
   const wireFallbackMap = fallbackMap
@@ -327,8 +327,8 @@ async function doBuildBattleHeatmap2x(
       kind: 'render-heatmap',
       input: {
         missionName,
-        header: stored.header,
-        results: stored.results,
+        header: source.header,
+        results: source.results,
         eventsBlob: wireBlob,
         dict,
         mission,
@@ -362,7 +362,7 @@ async function doBuildBattleHeatmap2x(
   }
   // The cache flag controls reuse; every render is saved regardless.
   await mkdir(CACHE_DIR, { recursive: true })
-  await writeFileAtomic(highResCacheFile(stored.header.sessionIdHex, kind, locale), png)
+  await writeFileAtomic(highResCacheFile(source.header.sessionIdHex, kind, locale), png)
   await enforceCacheCap(png.byteLength)
   return png
 }
@@ -376,6 +376,13 @@ interface BattleRenderSource {
   parseErrors: string[]
 }
 
+/**
+ * The battle to draw: its stored rows, else a parse of its replay that is
+ * drawn but never stored. Only ingest writes a battle, after its checks
+ * (final results, the item's roster): the parse here takes the same unlisted
+ * tail parts and roster (`meta.listedUserIds`), keeps the cached parts for
+ * ingest, and ingest's commit drops the artifacts drawn from it.
+ */
 async function loadBattleRenderSource(
   sessionId: string,
   partUrls: string[],
@@ -396,8 +403,9 @@ async function loadBattleRenderSource(
   }
 
   const trackLoad = workerControlTracker(state)
+  const replayPriority = (): 'live' | 'background' => state.priority === 'background' ? 'background' : 'live'
   const loaded = await loadBattleData(
-    partUrls,
+    await withUnlistedReplayParts(partUrls, { priority: replayPriority }),
     realNames,
     meta,
     () => state.priority,
@@ -407,15 +415,8 @@ async function loadBattleRenderSource(
   const parseErrors = loaded.summary.errors
   if (parseErrors.length > 0) {
     console.warn(
-      `[wrpl] события ${loaded.header.sessionId}: ${parseErrors.length} ошибок разбора, первая: ${parseErrors[0]}`,
+      `[wrpl] events of ${loaded.header.sessionId}: ${parseErrors.length} parse errors, the first: ${parseErrors[0]}`,
     )
-  }
-  try {
-    saveBattle(loaded.battle)
-    markBattleIngest(loaded.header.sessionId, 'ok')
-    await dropReplayCache(loaded.header.sessionIdHex)
-  } catch (error) {
-    console.warn(`[wrpl] не сохранил бой ${loaded.header.sessionId} в БД: ${(error as Error).message}`)
   }
   return {
     header: loaded.header,

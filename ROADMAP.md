@@ -8,21 +8,7 @@ full texts are in Git (commit `46b6950` and earlier).
 
 ## Operations
 
-1. **Database copies on another disk.** Since 2026-09-29 the bot runs in
-   Docker on a home Linux server, and `./backups` is on the same disk as the
-   database. After the events blobs moved to the columnar format (2026-10-02)
-   the database is ~1.3 GiB and grows by ~1,800 battles and ~57 MiB a day
-   (~20 GiB a year). The three copies are ~18 GB now (taken before the
-   conversion) and ~4 GB after rotation by 2026-10-05 (`docs/database.md`).
-2. **`data/data/`** (~480 MB, came from Windows) — an old copy of the data
-   directory with the previous `wt-cookies.json`. Its `replays/` holds parts
-   of 28 battles: 9 are already in the database, 19 are not (14 `expired`,
-   5 `error`; the CDN no longer has them). Decide whether to parse them by
-   hand, then delete the directory.
-3. **Forum season.** If the post format changes, `wt-clan-season` fails with a
-   parse error (visible on the dashboard) — fix `src/clan-season-forum.ts`;
-   the schedule already in the database stays.
-4. **Public site.** The tunnel to the external reverse proxy is up and
+1. **Public site.** The tunnel to the external reverse proxy is up and
    `WEB_TRUST_PROXY` is set; the proxy still needs the site and TLS (do not
    commit addresses: the repository is public). Recovery after a server reboot
    or an IP change is untested. `POST /api/player-stats` (the refresh button
@@ -30,11 +16,11 @@ full texts are in Git (commit `46b6950` and earlier).
    warthunder.com profile through the browser (and to StatShark if enabled) —
    for anonymous visitors turn it off (`WT_PLAYER_STATS_ENABLED=false`) or
    keep the site behind the token. Discord OAuth is a separate decision.
-5. **Image freshness.** Chromium and Debian packages update only with a
+2. **Image freshness.** Chromium and Debian packages update only with a
    rebuild without cache (README, "Production in Docker"): decide whether it is
    manual or a systemd timer, and when (a restart briefly pauses
    announcements).
-6. **Cap at a season boundary.** `stageAt` treats a season's first day like
+3. **Cap at a season boundary.** `stageAt` treats a season's first day like
    a week's: its 01:00–07:00 UTC window keeps the previous cap (battle posts
    and maps take the old season's last stage; the site and `/stats` count
    down to 14:00 UTC). Only weekly switches are measured
@@ -46,17 +32,6 @@ full texts are in Git (commit `46b6950` and earlier).
    nothing to change.
 
 ## Code
-
-- **Media of an unstored battle stores it past ingest's checks.**
-  `loadBattleRenderSource` (`src/wrpl/battle-media.ts`) serves `/battle` for a
-  battle ingest has not committed yet and `npm run battle`: it runs
-  `loadBattleData` without `withUnlistedReplayParts`, `hasFinalReplayResults`
-  or the item's `listedUserIds`, then `saveBattle` and
-  `markBattleIngest(…, 'ok')` on the main thread. An early-listed battle can
-  be stored with intermediate results or phantom bots and is never read
-  again. Fix: render without storing (or hand the item to ingest); then
-  AGENTS.md can say that only ingest writes a battle. Found by the AGENTS.md
-  audit of 2026-10-13.
 
 - **Bot-played player slots (a8fdc87, DB v22): leftovers.** The independent
   review of a8fdc87 was stopped on 2026-10-12 before it reported (it had read

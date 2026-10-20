@@ -18,12 +18,13 @@ export function battleAnnouncementDecision(
   return 'wait'
 }
 
-/** Обновление нужно только пока нет ни durable summary, ни готовой media meta. */
-export function shouldQueueWinnerUpdate(
-  hasBattleSummary: boolean,
-  hasMediaMeta: boolean,
-): boolean {
-  return !hasBattleSummary && !hasMediaMeta
+/**
+ * A post waits for its stored rows while the battle is not stored: the media
+ * meta of an unstored battle (drawn from its replay, never stored) may give
+ * the first winner, but ingest's commit replaces it.
+ */
+export function shouldQueueWinnerUpdate(hasBattleSummary: boolean): boolean {
+  return !hasBattleSummary
 }
 
 export function canAdmitWinnerUpdate(
