@@ -266,12 +266,5 @@ export async function ensureGameAirMap(
   return withFont(await job)
 }
 
-/** For tests: forget the game folder probe. */
-export function resetGameTacticalMapsForTests(): void {
-  gameDirCache = null
-  failures.clear()
-}
-
-export { CACHE_DIR as GAME_MAP_CACHE_DIR }
 export { balanceBucket, balanceLevelOfBr, pickPerspective } from './perspective.js'
 export type { TacticalMapMeta, TacticalMapSpec }

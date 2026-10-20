@@ -5506,27 +5506,9 @@ export function getBattlePostSummary(sessionId: string): BattlePostSummary | nul
     : null
 }
 
-/** Ноль в team_won означает, что победитель неизвестен. */
-export function isKnownBattleWinner(teamWon: number): boolean {
-  return Number.isFinite(teamWon) && teamWon !== 0
-}
-
 /** Допустимые значения канала чата: 0..3. */
 export function isValidBattleChatChannel(channel: number): boolean {
   return Number.isInteger(channel) && channel >= 0 && channel <= 3
-}
-
-/** Сжатый blob событий боя (по десятичному id или hex) — null, если боя нет */
-export function getBattleEventsBlob(sessionId: string): Buffer | null {
-  const row = getDb()
-    .prepare(`
-      SELECT e.events_blob
-      FROM battles b
-      JOIN battle_events e ON e.session_id = b.session_id
-      WHERE b.session_id = ? OR b.session_hex = ?
-    `)
-    .get(sessionId, sessionId.toLowerCase()) as { events_blob: Uint8Array | null } | undefined
-  return row?.events_blob ? Buffer.from(row.events_blob) : null
 }
 
 /** Строка боя из battles (для перерисовки картинок из БД) */

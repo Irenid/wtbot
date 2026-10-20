@@ -72,10 +72,6 @@ full texts are in Git (commit `46b6950` and earlier).
   frame, pointing away from the view centre (corner arrows diagonal); the
   ardennes and sun_city snapshots also have one on an edge (x 256 and 508 of
   1153) that this does not explain (`docs/tactical-maps.md`).
-- **Dead code and hotspots without reading everything:**
-  `tsc --noUnusedLocals --noUnusedParameters`, exports without callers, files
-  without importers, the longest functions — review only what they flag; the
-  rest is reviewed when it is changed.
 - WAL checkpoint on the main thread: the main connection has the default
   `wal_autocheckpoint`, so a commit that crosses 1,000 frames synchronously
   moves the whole WAL (3,000 frames — 23 ms). While ingest checkpoints by

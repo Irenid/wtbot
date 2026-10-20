@@ -279,15 +279,6 @@ export function parsePlayerProfilePageHtml(
   }
 }
 
-/** Разбирает HTML профиля; не выполняет никаких сетевых запросов. */
-export function parsePlayerProfileHtml(
-  html: string,
-  requestedNickname: string,
-  profileUrl = PROFILE_URL,
-): PlayerProfile {
-  return parsePlayerProfilePageHtml(html, requestedNickname, profileUrl).profile
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

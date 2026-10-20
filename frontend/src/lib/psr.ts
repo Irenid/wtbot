@@ -97,7 +97,3 @@ export function fullWinBelow(): number {
   }
   return psr
 }
-
-export function eloWinChance(diff: number): number {
-  return 1 / (1 + 10 ** (-diff / PSR_SCALE))
-}

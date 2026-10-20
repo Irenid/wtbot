@@ -232,10 +232,3 @@ export function workerResourcePlan(options: WorkerResourcePlanOptions = {}): Wor
   if (useCachedDefault) cachedDefaultPlan = plan
   return plan
 }
-
-/** Совместимый короткий accessor для существующих импортов. */
-export function workerThreadCount(envValue = process.env['WT_WORKER_THREADS']): number {
-  return workerResourcePlan({
-    env: { ...process.env, WT_WORKER_THREADS: envValue },
-  }).workerThreads
-}
