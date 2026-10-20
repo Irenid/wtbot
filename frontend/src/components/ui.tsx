@@ -190,21 +190,49 @@ export function RankBadge({ rank }: { rank: number }) {
 }
 
 /* Сегментированный переключатель (периоды, фильтры, скорость плеера). */
+/** The option a key moves a radio group's choice to (wrapping); null for other keys or no options. */
+export function segControlTarget(chosen: number, count: number, key: string): number | null {
+  if (count <= 0) return null
+  const last = count - 1
+  switch (key) {
+    case 'ArrowLeft': case 'ArrowUp': return chosen <= 0 ? last : chosen - 1
+    case 'ArrowRight': case 'ArrowDown': return chosen < 0 || chosen >= last ? 0 : chosen + 1
+    case 'Home': return 0
+    case 'End': return last
+    default: return null
+  }
+}
+
+/**
+ * One choice of a few, as a radio group: Tab reaches only the chosen option,
+ * the arrow keys move the choice (wrapping), Home and End jump to the ends.
+ */
 export function SegControl<T extends string>({ options, value, onChange, ariaLabel }: {
   options: readonly { value: T; label: string }[]
   value: T
   onChange: (value: T) => void
   ariaLabel?: string
 }) {
+  const chosen = options.findIndex((option) => option.value === value)
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    const next = segControlTarget(chosen, options.length, event.key)
+    const option = next === null ? undefined : options[next]
+    if (next === null || option === undefined) return
+    event.preventDefault()
+    onChange(option.value)
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]')[next]?.focus()
+  }
   return (
-    <div className="seg-control" role="group" aria-label={ariaLabel}>
-      {options.map((option) => (
+    <div className="seg-control" role="radiogroup" aria-label={ariaLabel} onKeyDown={onKeyDown}>
+      {options.map((option, index) => (
         <button
           key={option.value}
           type="button"
-          className={option.value === value ? 'active' : ''}
-          // Выбранный вариант виден скринридеру, а не только по CSS-классу.
-          aria-pressed={option.value === value}
+          role="radio"
+          className={index === chosen ? 'active' : ''}
+          aria-checked={index === chosen}
+          // Without a chosen option the first one takes Tab.
+          tabIndex={index === chosen || (chosen < 0 && index === 0) ? 0 : -1}
           onClick={() => onChange(option.value)}
         >
           {option.label}

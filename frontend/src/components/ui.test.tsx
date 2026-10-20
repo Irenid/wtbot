@@ -2,9 +2,41 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { SiteApiError } from '../api'
 import { t } from '../i18n'
-import { ErrorNotice } from './ui'
+import { ErrorNotice, SegControl, segControlTarget } from './ui'
 
 const notice = (error: unknown): string => renderToStaticMarkup(<ErrorNotice error={error} />)
+
+describe('SegControl', () => {
+  const options = [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }, { value: 'c', label: 'C' }] as const
+
+  it('is a radio group whose chosen option alone takes Tab', () => {
+    const markup = renderToStaticMarkup(<SegControl options={options} value="b" onChange={() => {}} ariaLabel="Mode" />)
+    expect(markup).toContain('role="radiogroup"')
+    expect(markup).toContain('aria-label="Mode"')
+    expect(markup.match(/role="radio"/g)).toHaveLength(3)
+    expect(markup.match(/aria-checked="true"/g)).toHaveLength(1)
+    expect(markup.match(/tabindex="0"/gi)).toHaveLength(1)
+    expect(markup).toMatch(/aria-checked="true" tabindex="0"[^>]*>B</i)
+  })
+
+  it('gives Tab to the first option when none is chosen', () => {
+    const markup = renderToStaticMarkup(<SegControl options={options} value={'x' as 'a'} onChange={() => {}} />)
+    expect(markup).toMatch(/tabindex="0"[^>]*>A</i)
+  })
+
+  it('moves the choice with the arrow keys, wrapping, and jumps with Home and End', () => {
+    expect(segControlTarget(0, 3, 'ArrowRight')).toBe(1)
+    expect(segControlTarget(2, 3, 'ArrowRight')).toBe(0)
+    expect(segControlTarget(2, 3, 'ArrowDown')).toBe(0)
+    expect(segControlTarget(0, 3, 'ArrowLeft')).toBe(2)
+    expect(segControlTarget(1, 3, 'ArrowUp')).toBe(0)
+    expect(segControlTarget(1, 3, 'Home')).toBe(0)
+    expect(segControlTarget(0, 3, 'End')).toBe(2)
+    expect(segControlTarget(-1, 3, 'ArrowRight')).toBe(0)
+    expect(segControlTarget(1, 3, 'Enter')).toBeNull()
+    expect(segControlTarget(0, 0, 'ArrowRight')).toBeNull()
+  })
+})
 
 describe('ErrorNotice', () => {
   it('translates the API codes it knows', () => {

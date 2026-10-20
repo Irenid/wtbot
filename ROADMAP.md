@@ -106,9 +106,6 @@ full texts are in Git (commit `46b6950` and earlier).
   `battle_players (user_id, session_id, …)`, ~+35 MiB.
 - Dashboard `/`: ~1,000 lines of untyped inline script in
   `src/web/routes/pages.ts` — move it to a `.ts` built by `tsc`.
-- SPA accessibility: timeline markers and event-feed rows in `ScenePlayer.tsx`
-  are `<span>`/`<div>` with `onClick` and no keyboard support; replace them
-  with `<button type="button">`. Arrow keys in `SegControl`.
 - Large functions: `buildHeatmapSvg` (~710 lines), `extractReplayEventsProfiled`
   (~240), `src/db/index.ts` (~6,700 lines) — split once things settle.
 

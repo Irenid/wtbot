@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { battleMapUrl, type BattleScene, type SceneUnit, type VehicleDict } from '../api'
 import { t, useLocale } from '../i18n'
 import { fmtInt } from '../lib/format'
+import { SegControl } from './ui'
 
 // An interactive "map video": Canvas 2D over the tactical map (or a grid). React
 // handles only the controls; the frame is drawn in requestAnimationFrame from
@@ -427,35 +428,25 @@ export function ScenePlayer({ scene, dict, battleKey }: {
           >
             {uiPlaying ? t('scene.pause') : t('scene.play')}
           </button>
-          <div className="seg-control" role="group" aria-label={t('scene.speed.aria')}>
-            {SPEEDS.map((option) => (
-              <button
-                key={option}
-                className={uiSpeed === option ? 'active' : ''}
-                type="button"
-                onClick={() => {
-                  stateRef.current.speed = option
-                  setUiSpeed(option)
-                }}
-              >
-                {option}×
-              </button>
-            ))}
-          </div>
+          <SegControl
+            ariaLabel={t('scene.speed.aria')}
+            options={SPEEDS.map((option) => ({ value: String(option), label: `${option}×` }))}
+            value={String(uiSpeed)}
+            onChange={(option) => {
+              stateRef.current.speed = Number(option)
+              setUiSpeed(Number(option))
+            }}
+          />
           {airView && (
-            <div className="seg-control" role="group" aria-label={t('scene.map.aria')}>
-              {(['ground', 'air'] as const).map((option) => (
-                <button
-                  key={option}
-                  className={kind === option ? 'active' : ''}
-                  type="button"
-                  aria-pressed={kind === option}
-                  onClick={() => setMapKind(option)}
-                >
-                  {t(option === 'air' ? 'scene.map.air' : 'scene.map.ground')}
-                </button>
-              ))}
-            </div>
+            <SegControl<MapKind>
+              ariaLabel={t('scene.map.aria')}
+              options={[
+                { value: 'ground', label: t('scene.map.ground') },
+                { value: 'air', label: t('scene.map.air') },
+              ]}
+              value={kind}
+              onChange={setMapKind}
+            />
           )}
           <span className="muted small" style={{ fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
             {formatClock(uiTime)} / {formatClock(scene.endTimeMs)}
@@ -471,18 +462,22 @@ export function ScenePlayer({ scene, dict, battleKey }: {
           style={{ width: '100%', marginTop: 8, cursor: 'pointer' }}
           aria-label={t('scene.timeline.aria')}
         />
-        {/* Event marks on the timeline: a click jumps to the moment. */}
+        {/* Event marks on the timeline: a click jumps to the moment. The event
+            feed holds the same jumps for the keyboard and screen readers, so
+            the marks stay out of the tab order and the accessibility tree. */}
         {feed.length > 0 && scene.endTimeMs > 0 && (
-          <div style={{ position: 'relative', height: 8, margin: '2px 6px 0' }}>
+          <div style={{ position: 'relative', height: 8, margin: '2px 6px 0' }} aria-hidden="true">
             {feed.map((entry) => (
-              <span
+              <button
                 key={entry.key}
+                type="button"
+                tabIndex={-1}
                 onClick={() => seek(entry.t)}
                 title={`${formatClock(entry.t)} · ${entry.text}`}
                 style={{
                   position: 'absolute',
                   left: `${((entry.t / scene.endTimeMs) * 100).toFixed(1)}%`,
-                  top: 0, width: 4, height: 8, borderRadius: 2,
+                  top: 0, width: 4, height: 8, borderRadius: 2, border: 'none', padding: 0,
                   background: entry.dot, cursor: 'pointer', transform: 'translateX(-2px)',
                 }}
               />
@@ -548,8 +543,9 @@ export function ScenePlayer({ scene, dict, battleKey }: {
               const happened = uiTime >= entry.t
               const recent = happened && uiTime - entry.t < FEED_RECENT_MS
               return (
-                <div
+                <button
                   key={entry.key}
+                  type="button"
                   className="scene-feed-row"
                   style={{ opacity: happened ? 1 : 0.38, ...(recent ? { background: 'var(--bg-soft)' } : {}) }}
                   onClick={() => seek(entry.t)}
@@ -563,7 +559,7 @@ export function ScenePlayer({ scene, dict, battleKey }: {
                     {entry.text}
                     {entry.extra && <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}> · {entry.extra}</span>}
                   </span>
-                </div>
+                </button>
               )
             })}
           </div>
