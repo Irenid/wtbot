@@ -673,6 +673,11 @@ Data:
   the board shows the current voice snapshot and writes its publication state
   through a worker task only when the hash changes. The WT nickname is the
   display name up to the first `(`.
+- The site's squadron ranking (`buildClanSnapshot`, `src/web/clan-snapshot.ts`)
+  is rebuilt at most once a minute, after the request that found it stale, in
+  worker task `build-clan-snapshot` (main thread for `:memory:`, or when the
+  task fails and the snapshot is missing or older than
+  `CLAN_STALE_MAIN_BUILD_MS`).
 - Squadrons on the site — `docs/squadrons.md` (ranking tiers `RANK_TIER_*`,
   renamed squadrons, the 24 h window, `ranking`, rosters, the `/api/clans`
   views of `src/web/clan-ranking.ts`). Official figures come from the
@@ -858,7 +863,7 @@ npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.t
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
-**2026-10-20**: all gates pass, **551 pass, 0 fail**, corpus — 6 scenarios
+**2026-10-20**: all gates pass, **552 pass, 0 fail**, corpus — 6 scenarios
 (including 2.59), the SPA 30 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`

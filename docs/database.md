@@ -177,8 +177,10 @@ list) and `battle_kills` (~1.9 KiB).
    multi-minute VACUUM awaited it.
 6. **Site clan snapshot** (`buildClanSnapshot`) — 89–103 ms of main thread per
    rebuild once a minute while the site is open: latest PSR snapshots (28.9k
-   rows) 29 ms, roster (46.8k) 24 ms, the rest is JS. In a worker the main
-   thread would keep ~13 ms of receiving the snapshot (3 MiB).
+   rows) 29 ms, roster (46.8k) 24 ms, the rest is JS. On 2026-10-20 it took
+   138–192 ms on main (766 squadrons); since then worker task
+   `build-clan-snapshot` builds it on its own connection in 160–170 ms while
+   the main thread stalls 1–2 ms receiving it (`src/web/clan-snapshot.ts`).
 7. **WAL checkpoint on the main thread.** The main connection has the default
    `wal_autocheckpoint`: a commit crossing 1,000 frames synchronously moves the
    whole WAL — 1,200 frames 9 ms, 3,000 — 23 ms, 8,000 — 56 ms. The pauses are
@@ -592,7 +594,6 @@ of the production bot.
 
 ## What else can be done
 
-Open database items — the clan snapshot in a worker, WAL checkpoints off the
-main thread, a covering index per player, snapshot retention —
-are in [ROADMAP.md](../ROADMAP.md), section "Code", with the conditions for
+Open database items — WAL checkpoints off the main thread, a covering index
+per player, snapshot retention — are in [ROADMAP.md](../ROADMAP.md), section "Code", with the conditions for
 taking them on.

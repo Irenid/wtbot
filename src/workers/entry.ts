@@ -510,6 +510,29 @@ async function warmSqlite(
   }
 }
 
+/** The site's squadron ranking (web/clan-snapshot.ts) on its own read-only connection. */
+async function buildClanSnapshotTask(
+  input: Extract<AnyWorkerTask, { kind: 'build-clan-snapshot' }>['input'],
+): Promise<{ value: WorkerTaskResult<'build-clan-snapshot'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
+  const [{ DatabaseSync }, { buildClanSnapshot }] = await Promise.all([
+    import('node:sqlite'),
+    import('../web/clan-snapshot.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  const started = performance.now()
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA mmap_size = 1073741824;')
+    database.exec('PRAGMA cache_size = -65536;')
+    database.exec('PRAGMA temp_store = MEMORY;')
+    const snapshot = buildClanSnapshot(database)
+    return { value: { snapshot, elapsedMs: performance.now() - started }, transfer: [] }
+  } finally {
+    database.close()
+  }
+}
+
 /** Аналитика игрока по реплеям (db/index.ts) на отдельном read-only подключении. */
 async function readPlayerInsights(
   input: Extract<AnyWorkerTask, { kind: 'read-player-insights' }>['input'],
@@ -1220,6 +1243,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return runDatabaseMaintenance(task.input)
     case 'read-player-insights':
       return readPlayerInsights(task.input)
+    case 'build-clan-snapshot':
+      return buildClanSnapshotTask(task.input)
     case 'search-player-nicks':
       return searchPlayerNicks(task.input)
     case 'read-scout-history':

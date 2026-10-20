@@ -16,6 +16,7 @@ import type { TacticalMapMeta, TacticalMapSpec } from '../tactical-map/spec.js'
 export interface WireFlagTemplates { icons: string[]; width: number; height: number; rgb: ArrayBuffer }
 import type { ScoreboardReadResult } from '../scout/scoreboard-read.js'
 import type { AnonymousGuess } from '../scout/anonymous.js'
+import type { ClanSnapshot } from '../web/clan-snapshot.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -312,6 +313,10 @@ export interface WorkerTaskMap {
     /** PRAGMA optimize (если optimize) и incremental_vacuum до maxPages страниц. */
     input: { dbPath: string; maxPages: number; optimize: boolean }
     output: DbMaintenanceResult
+  }
+  'build-clan-snapshot': {
+    input: { dbPath: string }
+    output: { snapshot: ClanSnapshot; elapsedMs: number }
   }
   'read-site-dashboard-stats': {
     input: { dbPath: string; sinceTs: number }

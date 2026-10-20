@@ -83,12 +83,6 @@ full texts are in Git (commit `46b6950` and earlier).
   `tsc --noUnusedLocals --noUnusedParameters`, exports without callers, files
   without importers, the longest functions — review only what they flag; the
   rest is reviewed when it is changed.
-- `buildClanSnapshot` runs synchronously on the main thread: 89–103 ms per
-  rebuild once a minute while the site is open (latest PSR snapshots 29 ms,
-  roster 24 ms, the rest is JS). In a worker the main thread would keep ~13 ms
-  of receiving the snapshot (3 MiB) — do it before the site goes public; needs
-  `database` parameters on four read functions and a fallback path for
-  `:memory:` tests.
 - WAL checkpoint on the main thread: the main connection has the default
   `wal_autocheckpoint`, so a commit that crosses 1,000 frames synchronously
   moves the whole WAL (3,000 frames — 23 ms). While ingest checkpoints by

@@ -1825,8 +1825,8 @@ export function getLatestParsePerSource(): ParseRecord[] {
 }
 
 /** Unix seconds of the source's last successful run among the kept 1,000; null — none. */
-export function getLastSuccessfulParseAt(source: string): number | null {
-  const row = getDb()
+export function getLastSuccessfulParseAt(source: string, database: DatabaseSync = getDb()): number | null {
+  const row = database
     .prepare('SELECT parsed_at FROM parse_results WHERE source = ? AND ok = 1 ORDER BY id DESC LIMIT 1')
     .get(source) as { parsed_at: number } | undefined
   return row?.parsed_at ?? null
@@ -2314,8 +2314,8 @@ export function nextAnnounceBaseline(currentBaseline: number, maxAttempts: numbe
 
 // ---------- Служебное состояние бота ----------
 
-export function getBotState(key: string): string | null {
-  const row = getDb().prepare('SELECT value FROM bot_state WHERE key = ?').get(key) as
+export function getBotState(key: string, database: DatabaseSync = getDb()): string | null {
+  const row = database.prepare('SELECT value FROM bot_state WHERE key = ?').get(key) as
     | { value: string }
     | undefined
   return row?.value ?? null
@@ -2357,8 +2357,10 @@ export interface ClanSeasonContext {
 }
 
 /** The season begun last by nowSec, its stages and the cap then, from the schedule in SQLite. */
-export function getClanSeasonContext(nowSec = Math.floor(Date.now() / 1_000)): ClanSeasonContext {
-  const database = getDb()
+export function getClanSeasonContext(
+  nowSec = Math.floor(Date.now() / 1_000),
+  database: DatabaseSync = getDb(),
+): ClanSeasonContext {
   const seasonRow = database.prepare(`
     SELECT season_id, name, starts_at, ends_at
     FROM clan_seasons
@@ -2405,8 +2407,8 @@ export function getClanSeasonContext(nowSec = Math.floor(Date.now() / 1_000)): C
   }
 }
 
-function currentClanSeasonStart(): number {
-  return getClanSeasonContext().season?.startsAt ?? 0
+function currentClanSeasonStart(database?: DatabaseSync): number {
+  return getClanSeasonContext(undefined, database).season?.startsAt ?? 0
 }
 
 export interface ForumClanSeasonSyncResult {
@@ -3144,8 +3146,8 @@ export const CLAN_FULL_CRAWL_KEY = 'wt-clans:full-crawl-at'
 export const CLAN_TOP_CRAWL_PLACES = 100
 
 /** Unix seconds of the last full leaderboard crawl; null — none yet. */
-export function getLastFullClanCrawlAt(): number | null {
-  const value = Number(getBotState(CLAN_FULL_CRAWL_KEY))
+export function getLastFullClanCrawlAt(database?: DatabaseSync): number | null {
+  const value = Number(getBotState(CLAN_FULL_CRAWL_KEY, database))
   return Number.isSafeInteger(value) && value > 0 ? value : null
 }
 
@@ -3159,11 +3161,11 @@ export interface ClanCrawl {
 }
 
 /** Crawls from fromTs on (the log keeps CLAN_CRAWL_KEEP_SEC), oldest first. */
-export function getClanCrawls(fromTs: number): ClanCrawl[] {
+export function getClanCrawls(fromTs: number, database?: DatabaseSync): ClanCrawl[] {
   if (!Number.isSafeInteger(fromTs) || fromTs < 0) {
     throw new RangeError('The crawl log bound must be non-negative Unix seconds')
   }
-  const rows = siteStatement('clanCrawlsSince').all(fromTs) as unknown as {
+  const rows = siteStatementOn(database, 'clanCrawlsSince').all(fromTs) as unknown as {
     captured_at: number
     full_crawl: number
     cores: string
@@ -6430,6 +6432,28 @@ function siteStatement(key: keyof typeof SITE_SQL): StatementSync {
   return statement
 }
 
+const connectionSiteStatements = new WeakMap<DatabaseSync, Map<keyof typeof SITE_SQL, StatementSync>>()
+
+/**
+ * The statement on `database` (a worker's own connection), prepared once per
+ * connection: a squadron snapshot runs one statement ~650 times. Without a
+ * connection, the main one's (siteStatement).
+ */
+function siteStatementOn(database: DatabaseSync | undefined, key: keyof typeof SITE_SQL): StatementSync {
+  if (database === undefined) return siteStatement(key)
+  let statements = connectionSiteStatements.get(database)
+  if (!statements) {
+    statements = new Map()
+    connectionSiteStatements.set(database, statements)
+  }
+  let statement = statements.get(key)
+  if (!statement) {
+    statement = database.prepare(SITE_SQL[key])
+    statements.set(key, statement)
+  }
+  return statement
+}
+
 function padSiteList(values: readonly string[], slots: number): string[] {
   if (values.length > slots) {
     throw new RangeError(`Список для IN(...) не может быть длиннее ${slots}`)
@@ -6817,9 +6841,9 @@ export interface SiteClanMemberLatest {
  * Последний снимок ПКР каждого (клан, ник). Группировка по «ядру» тега
  * выполняется вызывающим кодом: украшения тега нестабильны и живут в TS.
  */
-export function getSiteClanLatestMembers(): SiteClanMemberLatest[] {
-  const seasonStart = currentClanSeasonStart()
-  const rows = siteStatement('clanLatestMembers').all(seasonStart) as unknown as {
+export function getSiteClanLatestMembers(database?: DatabaseSync): SiteClanMemberLatest[] {
+  const seasonStart = currentClanSeasonStart(database)
+  const rows = siteStatementOn(database, 'clanLatestMembers').all(seasonStart) as unknown as {
     clan_tag: string
     nick: string
     rating: number
@@ -6971,8 +6995,8 @@ export function getSiteFirstBattleAt(): number | null {
   return row?.first_battle_at ?? null
 }
 
-export function getSiteClanRosterAll(): { clanCore: string; nick: string; lastPresentAt: number }[] {
-  const rows = siteStatement('clanRosterAll').all() as unknown as {
+export function getSiteClanRosterAll(database?: DatabaseSync): { clanCore: string; nick: string; lastPresentAt: number }[] {
+  const rows = siteStatementOn(database, 'clanRosterAll').all() as unknown as {
     clan_core: string
     nick: string
     last_present_at: number
@@ -6985,12 +7009,15 @@ export function getSiteClanRosterAll(): { clanCore: string; nick: string; lastPr
 }
 
 /** ПКР каждого (клан, ник) на момент atTs — базис честных дельт «за 30 дн.». */
-export function getSiteClanBaselineRatings(atTs: number): { clanTag: string; nick: string; rating: number }[] {
+export function getSiteClanBaselineRatings(
+  atTs: number,
+  database?: DatabaseSync,
+): { clanTag: string; nick: string; rating: number }[] {
   if (!Number.isSafeInteger(atTs) || atTs < 0) {
-    throw new RangeError('atTs должен быть неотрицательным Unix-временем')
+    throw new RangeError('atTs must be non-negative Unix seconds')
   }
-  const seasonStart = currentClanSeasonStart()
-  const rows = siteStatement('clanBaselineSumsAll').all(seasonStart, atTs) as unknown as {
+  const seasonStart = currentClanSeasonStart(database)
+  const rows = siteStatementOn(database, 'clanBaselineSumsAll').all(seasonStart, atTs) as unknown as {
     clan_tag: string
     nick: string
     rating: number
@@ -7038,8 +7065,8 @@ function parseClanRewards(raw: string | null): ClanSeasonRewards | null {
  * группировка по ядру тега — у вызывающего кода: старые варианты украшений
  * без свежего рейтинга всё равно нужны как теги для выборки боёв.
  */
-export function getSiteClanDictionary(): SiteClanDictionaryRow[] {
-  const rows = siteStatement('clanDictionary').all() as unknown as {
+export function getSiteClanDictionary(database?: DatabaseSync): SiteClanDictionaryRow[] {
+  const rows = siteStatementOn(database, 'clanDictionary').all() as unknown as {
     tag: string
     name: string
     rating: number | null
@@ -7100,11 +7127,12 @@ export function getSiteClanOfficialRatingAt(
 export function getBattleTeamsEndedAfter(
   endAfter: number,
   startFrom: number,
+  database?: DatabaseSync,
 ): { sessionId: string; team: number; clanTag: string }[] {
   if (!Number.isSafeInteger(endAfter) || !Number.isSafeInteger(startFrom) || startFrom < 0) {
     throw new RangeError('Battle time bounds must be non-negative Unix seconds')
   }
-  const rows = siteStatement('battleTeamsEndedAfter').all(startFrom, endAfter) as unknown as {
+  const rows = siteStatementOn(database, 'battleTeamsEndedAfter').all(startFrom, endAfter) as unknown as {
     session_id: string
     team: number
     clan_tag: string
@@ -7120,12 +7148,13 @@ export function getSiteClanOfficialStatsAt(
   clanCore: string,
   fromTs: number,
   atTs: number,
+  database?: DatabaseSync,
 ): { capturedAt: number; rating: number; battles: number | null; wins: number | null } | null {
   if (!clanCore) return null
   if (!Number.isSafeInteger(fromTs) || fromTs < 0 || !Number.isSafeInteger(atTs) || atTs < 0) {
     throw new RangeError('Squadron history bounds must be non-negative Unix seconds')
   }
-  const row = siteStatement('clanOfficialRatingAt').get(clanCore, fromTs, atTs) as
+  const row = siteStatementOn(database, 'clanOfficialRatingAt').get(clanCore, fromTs, atTs) as
     | { captured_at: number; rating: number; battles: number | null; wins: number | null }
     | undefined
   return row ? { capturedAt: row.captured_at, rating: row.rating, battles: row.battles, wins: row.wins } : null
