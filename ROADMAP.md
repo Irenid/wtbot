@@ -98,18 +98,8 @@ full texts are in Git (commit `46b6950` and earlier).
   `rocket`/`payload`), part of `ri_gpu_object` does not parse. Kills and
   trajectories are unaffected (entities are isolated), but these entities are
   lost.
-- Migrations: the season tables and some indexes are created by bootstrap DDL
-  outside the `PRAGMA user_version` registry.
-  The same migration can drop the seven indexes no query uses (list in
-  `docs/database.md`, "Page usage").
 - Retention of `clan_rating_snapshots`, `clan_rating_history`,
   `player_external_snapshots`: decide how long to keep them.
-- Foreign keys (`ON DELETE CASCADE` on player and season-stage tables) are
-  declared but `PRAGMA foreign_keys` is off — cascades do nothing; the code
-  deletes child rows itself, there are no violations (`foreign_key_check`
-  2026-10-02). Enable after an integrity check or drop the declarations.
-  `INSERT OR REPLACE` exists only on `battle_events`, which has no foreign
-  keys — replacing never cascades.
 - Player queries on a cold cache take ~120 ms (random reads of
   `battle_players`; warm — 1–5 ms, and since the blob conversion the whole
   database fits in the OS cache). If it becomes noticeable — a covering index

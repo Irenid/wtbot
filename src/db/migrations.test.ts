@@ -10,6 +10,7 @@ import {
   initDb,
   markBattleIngest,
   runDbMigrations,
+  saveAnalysis,
   type DbMigration,
 } from './index.js'
 
@@ -874,6 +875,57 @@ test('migration v23 takes stored players\' anonymiser names from their Replay AP
           { session_id: '1', user_id: '13', fake_name: null },
           { session_id: '2', user_id: '11', fake_name: null },
         ],
+      )
+    } finally {
+      migrated.close()
+    }
+  } finally {
+    closeDb()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('migration v25 drops five unused indexes, keeps the season tables, and the main connection enforces foreign keys', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'wtbot-migration-v25-'))
+  const dbPath = path.join(root, 'v25.db')
+  const dropped = [
+    'idx_player_identities_nick',
+    'idx_player_identities_nick_nocase',
+    'idx_player_aliases_source_external',
+    'idx_player_aliases_nick_nocase',
+    'idx_player_snapshots_content_hash',
+  ]
+  try {
+    initDb(dbPath, { allowCreate: true })
+    closeDb()
+    // Schema v24: the bootstrap still created the five indexes.
+    const database = new DatabaseSync(dbPath)
+    database.exec(`
+      CREATE INDEX idx_player_identities_nick ON player_identities (canonical_nick);
+      CREATE INDEX idx_player_identities_nick_nocase ON player_identities (canonical_nick COLLATE NOCASE);
+      CREATE INDEX idx_player_aliases_source_external ON player_identity_aliases (source, external_id);
+      CREATE INDEX idx_player_aliases_nick_nocase ON player_identity_aliases (nick COLLATE NOCASE, last_seen_at DESC);
+      CREATE INDEX idx_player_snapshots_content_hash ON player_external_snapshots (content_hash) WHERE content_hash IS NOT NULL;
+      PRAGMA user_version = 24;
+    `)
+    database.close()
+
+    initDb(dbPath)
+    // An analysis of an item that does not exist: the declared key now holds.
+    assert.throws(() => saveAnalysis(404, 'text', 'model'), /FOREIGN KEY constraint failed/)
+    closeDb()
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      assert.equal(userVersion(migrated), DB_SCHEMA_VERSION)
+      const present = migrated
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${dropped.map(() => '?').join(', ')})`)
+        .all(...dropped)
+      assert.deepEqual(present, [])
+      assert.equal(tableExists(migrated, 'clan_seasons'), true)
+      assert.equal(tableExists(migrated, 'clan_season_stages'), true)
+      assert.equal(
+        migrated.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_clan_season_stages_time'").get() !== undefined,
+        true,
       )
     } finally {
       migrated.close()

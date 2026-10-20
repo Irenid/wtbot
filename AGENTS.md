@@ -189,6 +189,11 @@ measurements, decisions and migration rollback — `docs/database.md`.
   so after a migration the previous image needs a backup.
 - Every connection sets `busy_timeout = 5000`: without it a connection next to
   a writer fails at once with `SQLITE_BUSY`.
+- Declared foreign keys hold (since v25): every connection that writes sets
+  `foreign_keys = ON`, the main one after migrations, so cascades from
+  identities, snapshots and seasons run and a child row without its parent is
+  refused. Migrations run without them, as SQLite's table rebuild needs: one
+  that rebuilds a parent table keeps its children consistent itself.
 - Maintenance (`db/maintenance.ts`) runs only in worker tasks `db-maintenance`
   and `repair-battle-events`, `incremental_vacuum` in `VACUUM_STEP_PAGES` steps
   with a pause, and stops before the CPU pool.
@@ -847,8 +852,8 @@ npm run build:web             # the SPA: its own tsc -b and Vite build
 `verify:player-board-voice`, `verify:benchmark-corpus` (needs
 `data/ecshashes.json`; CI downloads it with a pinned sha256); each can run
 alone for the affected subsystem. It never type-checks `frontend/`: after a
-frontend change run `build:web`. Baseline on **2026-10-19**: all gates pass,
-**545 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
+frontend change run `build:web`. Baseline on **2026-10-20**: all gates pass,
+**546 pass, 0 fail**, corpus — 6 scenarios (including 2.59). If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).

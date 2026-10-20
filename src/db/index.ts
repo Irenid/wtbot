@@ -286,6 +286,24 @@ function addColumnIfMissing(
 }
 
 /**
+ * The declared foreign keys (cascades from identities, snapshots and seasons)
+ * hold on the main connection after migrations: SQLite's table-rebuild
+ * procedure runs without them, and a transaction cannot switch them. Rows
+ * already without a parent are only counted (none on 2026-10-20).
+ */
+function enforceForeignKeys(database: DatabaseSync): void {
+  database.exec('PRAGMA foreign_keys = ON;')
+  const orphans = database.prepare('PRAGMA foreign_key_check').all() as { table: string }[]
+  if (orphans.length === 0) return
+  const byTable = new Map<string, number>()
+  for (const { table } of orphans) byTable.set(table, (byTable.get(table) ?? 0) + 1)
+  console.warn(
+    `[db] ${orphans.length} rows without their foreign-key parent: ` +
+      [...byTable].map(([table, count]) => `${table} ${count}`).join(', '),
+  )
+}
+
+/**
  * Строка боя без events_blob (с v17). Блоб событий в среднем 140 КБ держал
  * каждую строку на своей листовой странице среди 1,4 млн overflow-страниц:
  * любой проход по боям читал гигабайты, а колонки, добавленные после блоба,
@@ -375,6 +393,34 @@ const GUILD_CHANNELS_DDL = `
       CHECK (guild_id <> '' AND channel_id <> ''),
       CHECK (kind = 'battles' OR clan = '')
     ) WITHOUT ROWID;
+`
+
+/**
+ * Squadron-battle seasons and their weekly stages (src/clan-season.ts): the
+ * built-in schedules and the forum's (`wt-clan-season`). In the bootstrap
+ * since 2026-07-30, in the registry since v25.
+ */
+const CLAN_SEASONS_DDL = `
+    CREATE TABLE IF NOT EXISTS clan_seasons (
+      season_id  TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      starts_at  INTEGER NOT NULL,
+      ends_at    INTEGER NOT NULL,
+      CHECK (ends_at > starts_at)
+    );
+
+    CREATE TABLE IF NOT EXISTS clan_season_stages (
+      season_id  TEXT NOT NULL REFERENCES clan_seasons(season_id) ON DELETE CASCADE,
+      week       INTEGER NOT NULL,
+      starts_at  INTEGER NOT NULL,
+      ends_at    INTEGER NOT NULL,
+      max_br     REAL NOT NULL,
+      PRIMARY KEY (season_id, week),
+      CHECK (week > 0 AND ends_at > starts_at AND max_br > 0)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_clan_season_stages_time
+      ON clan_season_stages (starts_at, ends_at);
 `
 
 const DB_MIGRATIONS: readonly DbMigration[] = [
@@ -978,6 +1024,23 @@ const DB_MIGRATIONS: readonly DbMigration[] = [
       database.exec(GUILD_CHANNELS_DDL)
     },
   },
+  {
+    version: 25,
+    apply(database) {
+      // The season tables, until now only in the bootstrap, join the
+      // registry. Five indexes no query uses go (EXPLAIN QUERY PLAN of the
+      // code's statements on a production copy, docs/database.md "Page
+      // usage"): matching is by the nick_search keys and identity ids.
+      database.exec(`
+        ${CLAN_SEASONS_DDL}
+        DROP INDEX IF EXISTS idx_player_identities_nick;
+        DROP INDEX IF EXISTS idx_player_identities_nick_nocase;
+        DROP INDEX IF EXISTS idx_player_aliases_source_external;
+        DROP INDEX IF EXISTS idx_player_aliases_nick_nocase;
+        DROP INDEX IF EXISTS idx_player_snapshots_content_hash;
+      `)
+    },
+  },
 ]
 
 export const DB_SCHEMA_VERSION = validateMigrations(DB_MIGRATIONS)
@@ -1129,26 +1192,7 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       cores       TEXT    NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS clan_seasons (
-      season_id  TEXT PRIMARY KEY,
-      name       TEXT NOT NULL,
-      starts_at  INTEGER NOT NULL,
-      ends_at    INTEGER NOT NULL,
-      CHECK (ends_at > starts_at)
-    );
-
-    CREATE TABLE IF NOT EXISTS clan_season_stages (
-      season_id  TEXT NOT NULL REFERENCES clan_seasons(season_id) ON DELETE CASCADE,
-      week       INTEGER NOT NULL,
-      starts_at  INTEGER NOT NULL,
-      ends_at    INTEGER NOT NULL,
-      max_br     REAL NOT NULL,
-      PRIMARY KEY (season_id, week),
-      CHECK (week > 0 AND ends_at > starts_at AND max_br > 0)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_clan_season_stages_time
-      ON clan_season_stages (starts_at, ends_at);
+${CLAN_SEASONS_DDL}
 
     -- Снимки личного кланового рейтинга (ПКР) участников: новая строка
     -- пишется только когда рейтинг изменился, поэтому два последних снимка
@@ -1209,10 +1253,6 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_player_identities_wt_user
       ON player_identities (wt_user_id)
       WHERE wt_user_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_player_identities_nick
-      ON player_identities (canonical_nick);
-    CREATE INDEX IF NOT EXISTS idx_player_identities_nick_nocase
-      ON player_identities (canonical_nick COLLATE NOCASE);
 
     -- Ники и внешние идентификаторы сохраняются как наблюдавшиеся алиасы.
     -- expression-index закрывает особенность SQLite, где NULL в составном
@@ -1235,12 +1275,8 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_player_aliases_identity_source_key
       ON player_identity_aliases (identity_id, source, ifnull(external_id, ''), nick);
-    CREATE INDEX IF NOT EXISTS idx_player_aliases_source_external
-      ON player_identity_aliases (source, external_id);
     CREATE INDEX IF NOT EXISTS idx_player_aliases_nick_base
       ON player_identity_aliases (nick_base, source, last_seen_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_player_aliases_nick_nocase
-      ON player_identity_aliases (nick COLLATE NOCASE, last_seen_at DESC);
 
     -- Raw snapshot хранится независимо от replay-статистики. Неизменившийся
     -- ответ переиспользует строку и двигает только last_checked_at.
@@ -1271,9 +1307,6 @@ export function initDb(dbPath: string, options: InitDbOptions = {}): void {
       ON player_external_snapshots (identity_id, source, last_checked_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_player_snapshots_source_player
       ON player_external_snapshots (source, source_player_id, fetched_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_player_snapshots_content_hash
-      ON player_external_snapshots (content_hash)
-      WHERE content_hash IS NOT NULL;
 
     -- Нормализованные account totals не смешиваются со строками техники:
     -- upstream может считать режимы, победы и категории по-разному.
@@ -1529,14 +1562,7 @@ ${PLAYER_EXTERNAL_COUNTRIES_DDL}
   `)
 
   runDbMigrations(db, DB_MIGRATIONS)
-  // Post-migration bootstrap: legacy DB могла не иметь player_count/kill_count
-  // или session_hex, поэтому эти индексы нельзя создавать в раннем CREATE-блоке.
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_battles_session_hex
-      ON battles (session_hex);
-    CREATE INDEX IF NOT EXISTS idx_battles_metrics
-      ON battles (duration_sec, player_count, kill_count);
-  `)
+  enforceForeignKeys(db)
   if (!isMemoryDatabase) reclaimFreePages(db)
   // Временные B-деревья ORDER BY/GROUP BY — в памяти. Только после VACUUM:
   // его копия базы — тоже временная и в память не поместилась бы.

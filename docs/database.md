@@ -80,7 +80,7 @@ reads, warmup).
    −25%, zstd-19 −47% with 0.4 ms decompression versus 0.8 ms for gzip.
 8. **Foreign keys do nothing:** `REFERENCES … ON DELETE CASCADE` is declared
    but `PRAGMA foreign_keys` is never enabled. No orphans: the code deletes
-   child rows itself, before the parent.
+   child rows itself, before the parent. Enforced since v25 (2026-10-20).
 9. **Objects the code does not know:** `clan_poll_log` (47 rows) and snapshots
    of the `thunderinsights` source (4 rows) — dropped in v18.
 
@@ -469,7 +469,7 @@ its schema without statistics.
 | Candidate | Gain (measured) | Cost and risk | Decision |
 |---|---|---|---|
 | Full VACUUM | −41.6 MiB (3%), the index part returns within hours | bot stopped; no speed gain (the file is in RAM); backups are already compact (`VACUUM INTO`) | no |
-| Drop the seven unused indexes | 7 pages, one B-tree write less per row of small tables | a migration: the previous image refuses the database | with the next migration (ROADMAP) |
+| Drop the seven unused indexes | 7 pages, one B-tree write less per row of small tables | a migration: the previous image refuses the database | five in v25; `idx_player_snapshots_identity_source_fetched` (/scout's StatShark query, since 2026-10-09) and `idx_clan_season_stages_time` serve queries by then |
 | zstd `items.data` | `data` −53% (~−40 MiB, −1 KiB per battle) | `json_extract` in SQL, every reader, a migration, rollback | no |
 | 8 or 16 KiB pages | none: +22 / +54 MiB | a full VACUUM | no |
 | `mmap_size` 2 GiB | microseconds per page beyond 1 GiB | outgrown in ~11 days | no |
@@ -535,6 +535,14 @@ the CDN while their parts are there (~2 weeks).
   with the bot stopped and ignores both; battles it ingests get no
   `fake_name`; back on v23 the migration runs again and fills them from
   their items.
+- **v24** only adds `guild_channels`: the v23 image runs on a v24 database
+  after `PRAGMA user_version = 23` with the bot stopped, ignores the table and
+  reads the channels from `.env` again.
+- **v25** registers the season tables (no change on a database that has
+  them), drops five unused indexes and comes with foreign keys enforced on
+  every writer: the v24 image runs on a v25 database after
+  `PRAGMA user_version = 24` with the bot stopped, recreates the indexes and
+  writes without foreign keys; back on v25 the migration drops them again.
 
 ## Should we move to PostgreSQL
 
@@ -585,6 +593,6 @@ of the production bot.
 ## What else can be done
 
 Open database items — the clan snapshot in a worker, WAL checkpoints off the
-main thread, a covering index per player, snapshot retention, foreign keys —
+main thread, a covering index per player, snapshot retention —
 are in [ROADMAP.md](../ROADMAP.md), section "Code", with the conditions for
 taking them on.

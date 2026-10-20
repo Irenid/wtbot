@@ -377,6 +377,8 @@ async function ingestDatabase(dbPath: string): Promise<IngestDatabaseState> {
   const { DatabaseSync } = await import('node:sqlite')
   const database = new DatabaseSync(dbPath)
   database.exec('PRAGMA busy_timeout = 5000;')
+  // Like the main connection: declared foreign keys hold for every writer.
+  database.exec('PRAGMA foreign_keys = ON;')
   // Как у основного подключения: в WAL коммит не ждёт fsync (он — при checkpoint).
   database.exec('PRAGMA synchronous = NORMAL;')
   // Автоматический checkpoint выполняется внутри COMMIT и продлевает
@@ -709,6 +711,7 @@ async function repairBattleEvents(
   const started = performance.now()
   try {
     database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA foreign_keys = ON;')
     database.exec('PRAGMA synchronous = NORMAL;')
     const rows = database
       .prepare(`
@@ -858,6 +861,7 @@ async function runDatabaseMaintenance(
   const database = new DatabaseSync(input.dbPath)
   try {
     database.exec('PRAGMA busy_timeout = 5000;')
+    database.exec('PRAGMA foreign_keys = ON;')
     database.exec('PRAGMA synchronous = NORMAL;')
     return {
       value: await runDbMaintenance(database, { maxPages: input.maxPages, optimize: input.optimize }),
