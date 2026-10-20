@@ -60,11 +60,19 @@ export function t(key: MessageKey, params?: Record<string, string | number>): st
  */
 export function tp(base: string, n: number, params?: Record<string, string | number>): string {
   const category = new Intl.PluralRules(localeTag()).select(n)
-  const exact = DICTS[currentLocale][`${base}.${category}` as MessageKey]
+  return interpolate(pluralTemplate(DICTS[currentLocale], base, category) ?? base, { n: n.toLocaleString(localeTag()), ...params })
+}
+
+/**
+ * A plural form's template: the language's own form, else its "other" (French
+ * and Spanish "many" of exact millions has no entry), and only then the
+ * Russian canon's.
+ */
+export function pluralTemplate(dict: Partial<Record<MessageKey, string>>, base: string, category: string): string | undefined {
+  return dict[`${base}.${category}` as MessageKey]
+    ?? dict[`${base}.other` as MessageKey]
     ?? ru[`${base}.${category}` as MessageKey]
-  const fallback = DICTS[currentLocale][`${base}.other` as MessageKey]
     ?? ru[`${base}.other` as MessageKey]
-  return interpolate(exact ?? fallback ?? base, { n: n.toLocaleString(localeTag()), ...params })
 }
 
 interface I18nContextValue {

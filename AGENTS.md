@@ -864,7 +864,7 @@ alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
 **2026-10-20**: all gates pass, **552 pass, 0 fail**, corpus — 6 scenarios
-(including 2.59), the SPA 30 tests. If the test
+(including 2.59), the SPA 34 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
 (`docs/tactical-maps.md`).
