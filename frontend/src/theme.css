@@ -1858,7 +1858,10 @@ a.row-item:hover { border-color: var(--accent); color: inherit; }
 .guide-pager a {
   display: flex; flex-direction: column; gap: 2px; max-width: 48%; padding: 10px 14px;
   background: var(--bg-soft); border: 1px solid var(--line); border-radius: 12px; color: var(--ink);
+  /* German titles ("Schwadronswertung") are longer than half a phone screen. */
+  overflow-wrap: anywhere;
 }
+@media (max-width: 480px) { .guide-pager a { max-width: 100%; } }
 .guide-pager a:hover { border-color: var(--accent); color: var(--ink); }
 .guide-pager .next { margin-left: auto; text-align: right; }
 

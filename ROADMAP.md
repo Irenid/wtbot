@@ -72,13 +72,6 @@ full texts are in Git (commit `46b6950` and earlier).
   frame, pointing away from the view centre (corner arrows diagonal); the
   ardennes and sun_city snapshots also have one on an edge (x 256 and 508 of
   1153) that this does not explain (`docs/tactical-maps.md`).
-- **Squadron page in de/fr/es.** The redesigns of 2026-10-05 added 71
-  `clan.*` keys (hero, standing track, season tiles, daily bars, rewards
-  chart, roster filters, requirement chips) to `ru.ts` and `en.ts` only:
-  German, French and Spanish show Russian there until translated. Then check
-  every locale at 320–1280 (long words in the role chips, season tiles,
-  rewards legend, requirement chips and the standing track's ends), together
-  with the season panel, unchecked outside English since 27b765c.
 - **Dead code and hotspots without reading everything:**
   `tsc --noUnusedLocals --noUnusedParameters`, exports without callers, files
   without importers, the longest functions — review only what they flag; the
