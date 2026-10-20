@@ -94,7 +94,6 @@ full texts are in Git (commit `46b6950` and earlier).
 
 ## Tests
 
-- Worker pool scheduler with a fake worker factory and fake clocks.
 - WRPL/ECS/GMSync fuzzing and decompression edge cases.
 - Render fixtures with many players: non-zero values, sorting, 32 players.
 - `src/player-stats/service.ts` — smoke scripts only.

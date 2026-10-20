@@ -99,6 +99,23 @@ export interface WorkerPoolSnapshot {
 export interface CpuWorkerPoolOptions {
   size?: number | undefined
   backgroundReserveSlots?: number | undefined
+  /** Starts one worker named `name`; the default runs entry.ts/entry.js in a worker thread. Tests pass a fake. */
+  createWorker?: ((name: string) => PoolWorker) | undefined
+  /** Bytes of transferables the queue may hold; MAX_QUEUED_TRANSFER_BYTES by default. */
+  maxQueuedTransferBytes?: number | undefined
+  /** Epoch milliseconds for queue ages and timings; tests pass a fake clock. */
+  now?: (() => number) | undefined
+}
+
+/** The part of a worker_threads Worker the pool uses. */
+export interface PoolWorker {
+  on(event: 'message', listener: (message: WorkerMessage) => void): unknown
+  on(event: 'messageerror' | 'error', listener: (error: unknown) => void): unknown
+  on(event: 'exit', listener: (code: number) => void): unknown
+  postMessage(request: WorkerRequest, transferList: readonly Transferable[]): void
+  ref(): void
+  unref(): void
+  terminate(): Promise<number>
 }
 
 export interface WorkerTaskControl {
@@ -131,7 +148,7 @@ interface Job {
 }
 
 interface WorkerSlot {
-  worker: Worker
+  worker: PoolWorker
   ready: boolean
   retiring: boolean
   job: Job | null
@@ -170,13 +187,13 @@ const DEFAULT_TIMEOUT_MS: Record<WorkerPriority, number> = {
   normal: 90_000,
   background: 180_000,
 }
-const MAX_QUEUE = 32
+export const MAX_QUEUE = 32
 const MAX_QUEUED_TRANSFER_BYTES = 768 * 1024 * 1024
-const STARTUP_TIMEOUT_MS = 30_000
-const MAX_STARTUP_FAILURES = 3
+export const STARTUP_TIMEOUT_MS = 30_000
+export const MAX_STARTUP_FAILURES = 3
 const MAX_STARTUP_BACKOFF_MS = 5_000
-const MAX_RENDER_JOBS_PER_WORKER = 12
-const BACKGROUND_MAX_WAIT_MS = 10_000
+export const MAX_RENDER_JOBS_PER_WORKER = 12
+export const BACKGROUND_MAX_WAIT_MS = 10_000
 const WORKER_RESOURCES = workerResourcePlan()
 
 export type WorkerPoolErrorCode =
@@ -267,6 +284,29 @@ function recycleReason(error: Error): string {
   return 'WORKER_ERROR'
 }
 
+/** The production worker: entry.ts under tsx when running from source, the built entry.js otherwise. */
+function startEntryWorker(name: string): PoolWorker {
+  const sourceRuntime = /\.[cm]?ts$/i.test(fileURLToPath(import.meta.url))
+  const entryUrl = new URL(sourceRuntime ? './entry.ts' : './entry.js', import.meta.url)
+  // В worker_threads обычный `--import tsx` умеет открыть entry.ts, но на
+  // Node 24 не применяет TS-resolver к его ESM-импортам с расширением .js.
+  // Программная регистрация tsx внутри самого worker покрывает и entry, и
+  // весь его граф импортов. Dist по-прежнему запускает готовый entry.js.
+  const workerUrl = sourceRuntime
+    ? new URL(
+        `data:text/javascript,${encodeURIComponent(
+          `import { register } from ${JSON.stringify(import.meta.resolve('tsx/esm/api'))};` +
+          `register();await import(${JSON.stringify(entryUrl.href)})`,
+        )}`,
+      )
+    : entryUrl
+  return new Worker(workerUrl, {
+    name,
+    execArgv: [],
+    resourceLimits: { maxOldGenerationSizeMb: WORKER_RESOURCES.maxOldGenerationSizeMb },
+  })
+}
+
 function workloadKey(kind: WorkerTaskKind, priority: WorkerPriority): string {
   return `${priority}\u0000${kind}`
 }
@@ -274,6 +314,9 @@ function workloadKey(kind: WorkerTaskKind, priority: WorkerPriority): string {
 export class CpuWorkerPool {
   private readonly size: number
   private readonly backgroundReserveSlots: number
+  private readonly createWorker: (name: string) => PoolWorker
+  private readonly maxQueuedTransferBytes: number
+  private readonly now: () => number
   private readonly queues = new Map<WorkerPriority, Job[]>(PRIORITIES.map((p) => [p, []]))
   private readonly slots = new Set<WorkerSlot>()
   private readonly completedMetrics = emptyCompletedMetrics()
@@ -301,6 +344,9 @@ export class CpuWorkerPool {
     }
     this.size = size
     this.backgroundReserveSlots = backgroundReserveSlots
+    this.createWorker = options.createWorker ?? startEntryWorker
+    this.maxQueuedTransferBytes = options.maxQueuedTransferBytes ?? MAX_QUEUED_TRANSFER_BYTES
+    this.now = options.now ?? epochNow
   }
 
   snapshot(): WorkerPoolSnapshot {
@@ -399,7 +445,7 @@ export class CpuWorkerPool {
       return Promise.reject(error)
     }
     const queuedBytes = this.queuedTransferBytes()
-    if (taskBytes > MAX_QUEUED_TRANSFER_BYTES) {
+    if (taskBytes > this.maxQueuedTransferBytes) {
       const error = new WorkerPoolError(
         `CPU-задача передаёт больше допустимого объёма (${Math.ceil(taskBytes / 1024 / 1024)} МБ)`,
         'TASK_TOO_LARGE',
@@ -407,7 +453,7 @@ export class CpuWorkerPool {
       this.recordRejected(task.kind, priority, error.code)
       return Promise.reject(error)
     }
-    if (queuedBytes + taskBytes > MAX_QUEUED_TRANSFER_BYTES) {
+    if (queuedBytes + taskBytes > this.maxQueuedTransferBytes) {
       const error = new WorkerPoolError(
         `Очередь CPU workers удерживает слишком много данных (${Math.ceil((queuedBytes + taskBytes) / 1024 / 1024)} МБ)`,
         'QUEUE_MEMORY',
@@ -427,7 +473,7 @@ export class CpuWorkerPool {
         task,
         priority,
         timeoutMs,
-        queuedAt: epochNow(),
+        queuedAt: this.now(),
         dispatchedAt: null,
         workerStartupMs: 0,
         coldWorker: false,
@@ -510,28 +556,10 @@ export class CpuWorkerPool {
   }
 
   private spawnWorker(): boolean {
-    const spawnedAt = epochNow()
-    let worker: Worker
+    const spawnedAt = this.now()
+    let worker: PoolWorker
     try {
-      const sourceRuntime = /\.[cm]?ts$/i.test(fileURLToPath(import.meta.url))
-      const entryUrl = new URL(sourceRuntime ? './entry.ts' : './entry.js', import.meta.url)
-      // В worker_threads обычный `--import tsx` умеет открыть entry.ts, но на
-      // Node 24 не применяет TS-resolver к его ESM-импортам с расширением .js.
-      // Программная регистрация tsx внутри самого worker покрывает и entry, и
-      // весь его граф импортов. Dist по-прежнему запускает готовый entry.js.
-      const workerUrl = sourceRuntime
-        ? new URL(
-            `data:text/javascript,${encodeURIComponent(
-              `import { register } from ${JSON.stringify(import.meta.resolve('tsx/esm/api'))};` +
-              `register();await import(${JSON.stringify(entryUrl.href)})`,
-            )}`,
-          )
-        : entryUrl
-      worker = new Worker(workerUrl, {
-        name: `wtbot-cpu-${this.slots.size + 1}`,
-        execArgv: [],
-        resourceLimits: { maxOldGenerationSizeMb: WORKER_RESOURCES.maxOldGenerationSizeMb },
-      })
+      worker = this.createWorker(`wtbot-cpu-${this.slots.size + 1}`)
     } catch (error) {
       this.recordRecycleReason('STARTUP_FAILURE')
       this.onStartupFailure(error instanceof Error ? error : new Error(String(error)))
@@ -553,7 +581,7 @@ export class CpuWorkerPool {
     worker.on('message', (message: WorkerMessage) => this.onMessage(slot, message))
     worker.on('messageerror', (err) => this.retire(slot, new Error(`Ошибка сообщения CPU worker: ${String(err)}`)))
     worker.on('error', (err) => this.retire(slot, err instanceof Error ? err : new Error(String(err))))
-    worker.on('exit', (code) => {
+    worker.on('exit', (code: number) => {
       if (!slot.retiring && !this.closing) {
         this.retire(slot, new Error(`CPU worker неожиданно завершился с кодом ${code}`))
       }
@@ -567,7 +595,7 @@ export class CpuWorkerPool {
     if (message.type === 'ready') {
       clearTimeout(slot.startupTimer)
       slot.ready = true
-      slot.readyAt = epochNow()
+      slot.readyAt = this.now()
       this.startupFailures = 0
       this.dispatch()
       if (!slot.job) slot.worker.unref()
@@ -581,7 +609,7 @@ export class CpuWorkerPool {
     }
     slot.job = null
     job.workerTiming = message.response.timing
-    job.resultReceivedAt = epochNow()
+    job.resultReceivedAt = this.now()
     slot.tasksCompleted++
     if (
       job.task.kind === 'render-scoreboard' ||
@@ -617,7 +645,7 @@ export class CpuWorkerPool {
       }
       slot.job = job
       slot.worker.ref()
-      const sentAt = epochNow()
+      const sentAt = this.now()
       job.dispatchedAt = sentAt
       job.coldWorker = slot.tasksCompleted === 0
       job.workerStartupMs = job.coldWorker ? Math.max(0, (slot.readyAt ?? sentAt) - slot.spawnedAt) : 0
@@ -642,7 +670,7 @@ export class CpuWorkerPool {
       // этот слот не ушёл в многосекундный ingest перед Discord-задачей.
       const readyCapacity = [...this.slots].filter((slot) => slot.ready && !slot.retiring).length
       const backgroundWaitedTooLong =
-        readyCapacity <= 1 && background[0] !== undefined && Date.now() - background[0].queuedAt >= BACKGROUND_MAX_WAIT_MS
+        readyCapacity <= 1 && background[0] !== undefined && this.now() - background[0].queuedAt >= BACKGROUND_MAX_WAIT_MS
       // При 2+ workers гарантируем ingest один слот, если он ждёт; при одном
       // потоке aging не даёт бесконечно вытеснять его Discord-задачами.
       let job =
@@ -787,7 +815,7 @@ export class CpuWorkerPool {
     job.settled = true
     if (job.timer) clearTimeout(job.timer)
     if (job.abortHandler && job.signal) job.signal.removeEventListener('abort', job.abortHandler)
-    const completedAt = job.resultReceivedAt ?? epochNow()
+    const completedAt = job.resultReceivedAt ?? this.now()
     const queueEndedAt = job.dispatchedAt ?? completedAt
     const queueMs = Math.max(0, queueEndedAt - job.queuedAt)
     const workerStartupMs = Math.min(queueMs, job.workerStartupMs)
