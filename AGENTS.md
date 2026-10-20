@@ -229,6 +229,13 @@ measurements, decisions and migration rollback — `docs/database.md`.
   (`db-backup-schedule`, `WTBOT_BACKUP_*`, time in `TZ`). Restore only with the
   service stopped: check the backup, save the current database as
   `.pre-restore`, check a temporary copy, then replace `DB_PATH`.
+- Offsite: the compose service `offsite` (profile `offsite`, `offsite/offsite.sh`,
+  settings in `.env.offsite`, never committed) snapshots the whole project
+  directory nightly with restic to Google Drive through rclone. Host label
+  `wtbot` and path `/project` stay the same on any machine, so the snapshot line
+  survives a move (README, «Backup and restore»); `offsite/exclude` keeps the
+  live database (a copy could catch a write half done; `backups/` holds checked
+  copies), caches and the browser profile out.
 
 ## 5. Workers
 

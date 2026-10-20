@@ -157,6 +157,27 @@ SQLite `:memory:` and temporary files. CI runs the same on Linux and Windows
 - Restore: stop the bot, check the copy with `quick_check`, rename the current
   `wtbot.db` to `wtbot.db.pre-restore`, put the copy at `DB_PATH`, start the
   bot without `WTBOT_ALLOW_NEW_DB` and check `/health`.
+- Offsite (`offsite/`; on with `COMPOSE_PROFILES=offsite` in `.env`, settings
+  in `.env.offsite` after `offsite/env.example`): nightly at `OFFSITE_TIME`
+  (after the copy above), or as soon after as it runs, the `offsite` container
+  makes an encrypted restic snapshot of the project directory on Google Drive
+  through rclone: the code with its git history, the `.env` files, `data/` and
+  `./backups`, without caches, the live database and the browser profile
+  (`offsite/exclude`). It keeps 7 daily, 4 weekly and 6 monthly snapshots and
+  reads a 31st of the stored data back each night. Snapshots are labelled
+  `wtbot` and `/project` on any host, so they go on after a move.
+  `docker compose ps` shows it unhealthy after 36 hours without a success;
+  `OFFSITE_DISCORD_WEBHOOK` adds a Discord message. By hand:
+  `docker compose run --rm offsite now` (or `snapshots`, `init`). Keep the
+  password of `.env.offsite` off this host too: without it the backup cannot
+  be read.
+- Moving to another host: first `docker compose down` here (one `TOKEN`, one
+  running bot). Then copy the directory with the bot stopped (`rsync -a`), or
+  restore it into an empty directory: in a `git clone` holding `.env.offsite`,
+  `docker compose run --rm -v /srv/wtbot:/restore offsite restore /restore`
+  (the newest snapshot; its newest `./backups` copy becomes `data/wtbot.db`).
+  Then `docker compose up -d --build` there, sign the browser in to Gaijin
+  again (step 5 above) and point the reverse proxy or tunnel at the new host.
 
 Replay parts live on the CDN for about two weeks: battles from a longer
 downtime cannot be collected any more.

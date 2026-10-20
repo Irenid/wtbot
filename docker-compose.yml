@@ -72,3 +72,36 @@ services:
       # Держите копии на другом диске хоста, если он есть.
       - ./backups:/backups
     stop_grace_period: 10m
+
+  # Offsite backup (offsite/offsite.sh): encrypted restic snapshots of this project on Google Drive,
+  # nightly. On with COMPOSE_PROFILES=offsite in .env; settings in .env.offsite (offsite/env.example).
+  offsite:
+    build: ./offsite
+    image: wtbot-offsite:latest
+    profiles: [offsite]
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - path: .env.offsite
+        required: false
+    environment:
+      OFFSITE_NAME: wtbot
+      # A restore makes the newest nightly copy (the backup service above) the live database.
+      OFFSITE_DB: data/wtbot.db
+      OFFSITE_DB_COPIES: backups/wtbot-*.db
+    volumes:
+      - .:/project:ro
+      - offsite-state:/state
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/offsite", "health"]
+      interval: 15m
+      start_period: 12h
+    stop_grace_period: 1m
+
+volumes:
+  offsite-state:

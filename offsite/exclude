@@ -1,0 +1,19 @@
+# What the offsite backup leaves out (offsite.sh): restic patterns, absolute in its container.
+# Dependencies and builds: the image makes them again.
+/project/node_modules
+/project/frontend/node_modules
+/project/dist
+/project/frontend/dist
+/project/coverage
+/project/.idea
+/project/.tmpcheck
+# The live database and its lock: backups/ holds the nightly checked copies (the `backup` service).
+/project/data/wtbot.db
+/project/data/wtbot.db-*
+/project/data/wtbot.db.*
+# Caches the bot fills again, and an old copy folder.
+/project/data/replays
+/project/data/battles
+/project/data/backups
+# The browser profile is not moved (README, «Production in Docker»): a new host signs in to Gaijin again.
+/project/data/wt-browser-profile
