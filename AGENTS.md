@@ -711,6 +711,9 @@ Data:
   asset after a deploy is never HTML). `/app/*`, the SPA's address until
   2026-10-04, redirects 301 to the same path at the root (`legacySpaTarget`
   collapses leading slashes: no open redirect).
+- Responses over 1 KiB leave compressed (brotli 4 or gzip 6) with a weak ETag
+  (`src/web/index.ts`); a route that compresses its own body sets
+  `Content-Encoding` (the battle scene). Request bodies are never inflated.
 - A new route goes to `src/web/routes/`, dependencies through an explicit
   `WebDeps`, no hidden singletons; APIs have a schema, bounded limits and a
   rate limit (site routes: `passRateLimit`, 60 weight units per IP and 240 in
@@ -855,7 +858,7 @@ npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.t
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
-**2026-10-20**: all gates pass, **548 pass, 0 fail**, corpus — 6 scenarios
+**2026-10-20**: all gates pass, **551 pass, 0 fail**, corpus — 6 scenarios
 (including 2.59), the SPA 27 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`

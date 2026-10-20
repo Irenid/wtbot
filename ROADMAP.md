@@ -104,8 +104,6 @@ full texts are in Git (commit `46b6950` and earlier).
   `battle_players`; warm — 1–5 ms, and since the blob conversion the whole
   database fits in the OS cache). If it becomes noticeable — a covering index
   `battle_players (user_id, session_id, …)`, ~+35 MiB.
-- Web: `@fastify/compress` for large JSON (`/api/vehicles` — 226 KB, 43 KB
-  gzipped), ETag for immutable responses.
 - Dashboard `/`: ~1,000 lines of untyped inline script in
   `src/web/routes/pages.ts` — move it to a `.ts` built by `tsc`.
 - SPA accessibility: timeline markers and event-feed rows in `ScenePlayer.tsx`

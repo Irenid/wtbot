@@ -1,4 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
+import { constants as zlibConstants } from 'node:zlib'
+import fastifyCompress from '@fastify/compress'
+import fastifyEtag from '@fastify/etag'
 import fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import type { WebDeps } from './types.js'
 import { apiRoutes } from './routes/api.js'
@@ -202,6 +205,19 @@ export function buildServer(
     })
   }
 
+  // Weak ETags first: their onSend hashes the body before compression turns
+  // it into a stream, so a repeat GET of unchanged JSON gets 304 in any encoding.
+  app.register(fastifyEtag, { weak: true })
+  // Bodies over 1 KiB go out compressed, zlib on the libuv pool (2026-10-20:
+  // /api/vehicles 255 → 46 KB, /api/clans 48 → 8.7 KB with gzip). A reply that
+  // sets its own Content-Encoding (the battle scene) is sent as is; request
+  // bodies are never inflated.
+  app.register(fastifyCompress, {
+    threshold: 1024,
+    globalDecompression: false,
+    brotliOptions: { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } },
+    zlibOptions: { level: 6 },
+  })
   app.register(pageRoutes)
   app.register(apiRoutes, { deps })
   app.register(playerStatsRoutes, { deps })
