@@ -120,6 +120,24 @@ warm range ~271 MiB — no plateau; graceful shutdown 2.14 s, port 3000 freed.
 Conclusion: exact on admits and runs better, but stays off until RSS is
 explained and a long exact-off control run is done.
 
+### Announcement latency (2026-10-20)
+
+From stored timestamps over the 7 days to 2026-10-20 (7,881 battles the
+announcer resolved: `items.first_seen_at`, `battle_ingest.updated_at`,
+`announce_state.updated_at`, whole seconds) and the 16 posts of that day's
+log:
+
+| Step | p50 | p90 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| battle end → discovery | 20 s | 31 s | 38 s | 544 s |
+| discovery → commit | 6 s | 15 s | 228 s | 1,005 s |
+| commit → announcer | 1 s | 2 s | 5 s | 12 s |
+| battle end → resolved | 29 s | 44 s | 249 s | 1,010 s |
+
+Posted battles: commit → post 1.2–4.8 s (render and Discord included),
+battle end → post 11–34 s, one 232 s (its parts were not on the CDN yet). The
+tail is the replay upload (`PART_UPLOAD_GRACE_MS`), not the bot.
+
 ## Bottlenecks
 
 1. **CDN and network.** On 429 AIMD reliably drops the actual concurrency to
@@ -129,8 +147,6 @@ explained and a long exact-off control run is done.
    broken down by component.
 3. **WRPL packet decoding** — the largest offline CPU phase, but not the live
    limit.
-4. **Discord delivery latency** — the runs deliberately published nothing, so
-   discovery → commit → post is not measured live.
 
 No longer bottlenecks: the worst-case replay budget wait, `recordParseResult`,
 the player board publication write, repeated known-replay lookups, the ready
@@ -144,10 +160,6 @@ non-empty backlog. Compare not only the slope but also the warm range,
 external/ArrayBuffer, worker peaks and RSS after graceful shutdown. Exact on by
 default only with ≥ 10% more throughput, 429 < 2% and a proven plateau or an
 explained bounded RSS.
-
-**P1 — Discord latency.** Timestamps discovery → commit → post (preliminary
-messages are no longer sent); a short run only in a dedicated test channel.
-Gate: commit → post p95 < 5 s, zero duplicates after a restart.
 
 **P2 — parsing, only under CPU pressure.** GMSync and packet decoding — if the
 live parse queue p95 exceeds 100 ms or CPU workers stay saturated;

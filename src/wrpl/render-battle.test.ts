@@ -321,3 +321,66 @@ test('every slot gets a row: slots the AI drove and a bot that filled an empty p
     [['a', 'ai'], ['absent', 'b', 'gone']],
   )
 })
+
+test('a 16-vs-16 battle: rows by score, the stronger team first, every value drawn inside the image', () => {
+  const players: ReplayPlayerResult[] = []
+  for (let i = 0; i < 16; i += 1) {
+    players.push({
+      ...player,
+      userId: String(1_000 + i),
+      name: i === 3 ? `Console${i}@psn` : `Alpha${i}`,
+      clanTag: '╔xGAFx╕',
+      team: 1,
+      kills: i % 4,
+      groundKills: (i % 5) + 1,
+      assists: i % 3,
+      captureZone: i % 2,
+      deaths: 1 + (i % 3),
+      score: 100 + ((i * 37) % 500),
+      vehicles: [i % 4 === 0 ? 'test_plane' : 'test_tank'],
+    })
+    // Team 2 scores more in total, so its roster comes first.
+    players.push({
+      ...player,
+      userId: String(2_000 + i),
+      name: `Bravo${i}`,
+      clanTag: '-TWO-',
+      team: 2,
+      kills: (i % 3) + 1,
+      groundKills: i % 4,
+      assists: (i % 2) + 1,
+      captureZone: (i + 1) % 2,
+      deaths: i % 4,
+      score: 400 + ((i * 53) % 400),
+      vehicles: ['test_tank'],
+    })
+  }
+  const results: ReplayResults = { status: 'success', timePlayed: 1_200, players }
+
+  const rosters = buildRosters(results)
+  assert.deepEqual(rosters.map((roster) => [roster.length, roster[0]!.team]), [[16, 2], [16, 1]])
+  for (const roster of rosters) {
+    assert.deepEqual(roster.map((row) => row.score), roster.map((row) => row.score).sort((a, b) => b - a))
+  }
+
+  const teams = summarizeTeams(results, vehicleDict)
+  assert.deepEqual(teams.map((team) => team.rawTag), ['-TWO-', '╔xGAFx╕'])
+  assert.equal(teams[0]!.composition, '16T')
+  assert.match(teams[1]!.composition, /^(4F\/12T|12T\/4F)$/)
+  assert.equal(teams[1]!.players.length, 16)
+  assert.ok(teams[1]!.players.includes('Console3'), 'the platform suffix is not part of the name')
+
+  const psr = new Map(players.map((row, index) => [row.userId, { psr: 1_000 + index * 10, change: index % 2 === 0 ? 16 : -16 }]))
+  const svg = buildBattleSvg(
+    { missionName: '[Domination] Test', header, results, dict: vehicleDict, psr, winnerTeam: 2 },
+    { unitIcons: new Map(), mapImage: null, gameFont: false },
+  )
+  for (const row of players) assert.ok(svg.includes(row.name.replace(/@psn$/, '')), `${row.name} is drawn`)
+  for (const entry of psr.values()) assert.ok(svg.includes(`>${entry.psr}<`), `PSR ${entry.psr} is drawn`)
+  assert.doesNotMatch(svg, /NaN|undefined|Infinity/)
+  const height = Number(/<svg[^>]*\bheight="(\d+)"/.exec(svg)?.[1])
+  assert.ok(height > 16 * 88, `the image holds 16 rows (height ${height})`)
+  const ys = [...svg.matchAll(/\by="(-?[\d.]+)"/g)].map((match) => Number(match[1]))
+  assert.ok(ys.length > 32 * 4)
+  assert.ok(Math.max(...ys) < height, `every element starts inside the image (max y ${Math.max(...ys)} of ${height})`)
+})

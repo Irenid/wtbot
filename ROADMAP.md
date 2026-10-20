@@ -92,18 +92,11 @@ full texts are in Git (commit `46b6950` and earlier).
 - Large functions: `buildHeatmapSvg` (~710 lines), `extractReplayEventsProfiled`
   (~240), `src/db/index.ts` (~6,700 lines) — split once things settle.
 
-## Tests
-
-- WRPL/ECS/GMSync fuzzing and decompression edge cases.
-- Render fixtures with many players: non-zero values, sorting, 32 players.
-- `src/player-stats/service.ts` — smoke scripts only.
-
 ## Performance
 
 Measurements, gates and rollback — [docs/performance.md](docs/performance.md).
 Open: prove or disprove the RSS plateau for
-`WT_REPLAY_EXACT_RESERVATION_ENABLED`, measure announcement latency
-(discovery → commit → post), profile under Docker/Linux.
+`WT_REPLAY_EXACT_RESERVATION_ENABLED`, profile under Docker/Linux.
 
 ## Collecting and showing statistics (started 2026-09-29)
 
