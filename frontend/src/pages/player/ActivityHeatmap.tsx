@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { localeTag, t, tp } from '../../i18n'
 
-/** Понедельник первым: 2024-01-01 — понедельник. */
+/** Monday first: 2024-01-01 is a Monday. */
 function weekdayNames(): string[] {
   return Array.from({ length: 7 }, (_, index) =>
     new Date(Date.UTC(2024, 0, 1 + index)).toLocaleDateString(localeTag(), { weekday: 'short', timeZone: 'UTC' }))
@@ -10,9 +10,9 @@ function weekdayNames(): string[] {
 const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`
 
 /**
- * Когда игрок играет: бои по дням недели и часам в поясе браузера. Одна
- * последовательная шкала (яркость акцента), точные числа — в подсказке ячейки
- * и в строке пика, поэтому цвет не единственный носитель значения.
+ * When the player plays: battles by weekday and hour in the browser's time zone.
+ * One sequential scale (accent brightness); exact numbers are in the cell tooltip
+ * and the peak line, so colour is not the only carrier of the value.
  */
 export function ActivityHeatmap({ starts }: { starts: readonly number[] }) {
   const { grid, max, peak } = useMemo(() => {

@@ -6,12 +6,12 @@ import { battleVersusLabel, fmtDateTime, fmtDuration, fmtInt, modeLabel, modeSho
 import { Chip, ErrorNotice, Loading, ResultBadge, SegControl } from '../components/ui'
 import { t, tp, useLocale } from '../i18n'
 
-/** Столько боёв приходит за один запрос (предел API — 100). */
+/** Battles per request (the API's limit is 100). */
 const PAGE_SIZE = 50
 
 /*
- * Плитка режима реализма: АБ/РБ/СБ. Род войск по game_mode определить нельзя —
- * это уровень реализма, а клановые бои в собранных данных наземные с авиацией.
+ * The realism tile: AB/RB/SB. game_mode cannot tell the branch: it is the
+ * realism level, and the collected squadron battles are ground with aircraft.
  */
 function ModeTile({ gameMode }: { gameMode: string | null }) {
   const known = gameMode !== null
@@ -43,7 +43,7 @@ export function BattlesPage() {
   const [clans, setClans] = useState<ClanListEntry[]>([])
   const [outcome, setOutcome] = useState<'all' | 'w' | 'l'>('all')
   const [error, setError] = useState<unknown>(null)
-  // Поколение запросов: ответ «показать ещё» по старым фильтрам отбрасывается.
+  // Request generation: a "show more" answer for old filters is dropped.
   const generation = useRef(0)
 
   const OUTCOMES = useMemo(() => [
@@ -71,7 +71,7 @@ export function BattlesPage() {
 
   useEffect(() => {
     let cancelled = false
-    // Быстрые ссылки на кланы — вспомогательные: без них фильтр по клану доступен из URL.
+    // Quick squadron links are a convenience: without them the squadron filter still works from the URL.
     fetchClans().then((body) => { if (!cancelled) setClans(body.clans.slice(0, 3)) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
@@ -97,7 +97,7 @@ export function BattlesPage() {
       .finally(() => { if (current === generation.current) setLoadingMore(false) })
   }
 
-  // Исход известен из личного результата (player=) или стороны клана (clan=).
+  // The outcome comes from the player's own result (player=) or the squadron's side (clan=).
   const outcomeAvailable = Boolean(player || clan)
   const filtered = useMemo(() => {
     if (battles === null) return null

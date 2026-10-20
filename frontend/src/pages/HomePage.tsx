@@ -38,7 +38,7 @@ function niceActivityTickStep(maxValue: number): number {
   return Math.max(1, Math.ceil(niceFactor * magnitude))
 }
 
-/* Недельная активность: читаемая шкала и семь адаптивных столбцов. */
+/* Weekly activity: a readable scale and seven adaptive columns. */
 function WeekActivity({ stats }: { stats: SiteStats }) {
   const battlesByDay = new Map(stats.byDay.map((point) => [point.day, point.battles]))
   const days: { day: string; battles: number }[] = []
@@ -145,11 +145,11 @@ export function HomePage() {
   const [recentError, setRecentError] = useState<unknown>(null)
   const [stats, setStats] = useState<SiteStats | null>(null)
   const [statsError, setStatsError] = useState<unknown>(null)
-  // Номер поколения запросов подсказок: устаревшие ответы отбрасываются.
+  // Suggestion request generation: stale answers are dropped.
   const suggestSeq = useRef(0)
 
-  // Каждая карточка показывает свою ошибку: без этого отказ выглядел как
-  // вечная загрузка или молча убирал плитки статистики.
+  // Each card shows its own error: otherwise a failure looked like
+  // endless loading or silently removed the statistics tiles.
   useEffect(() => {
     let cancelled = false
     fetchClans()
@@ -164,7 +164,7 @@ export function HomePage() {
     return () => { cancelled = true }
   }, [])
 
-  // Живые подсказки из макета: топ-5 совпадений через 300 мс после ввода.
+  // Live suggestions from the mock-up: the top 5 matches 300 ms after typing.
   useEffect(() => {
     const normalized = query.trim()
     const seq = ++suggestSeq.current
@@ -191,7 +191,7 @@ export function HomePage() {
     try {
       const body = await searchPlayers(normalized)
       setResults(body.players)
-      // Единственное точное совпадение открываем сразу — меньше кликов.
+      // A single exact match opens at once: fewer clicks.
       const exact = body.players.filter((entry) => entry.nick.toLowerCase() === normalized.toLowerCase())
       const single = exact.length === 1 ? exact[0] : body.players.length === 1 ? body.players[0] : undefined
       if (single) {

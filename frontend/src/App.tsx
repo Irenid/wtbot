@@ -15,10 +15,10 @@ const BattlePage = lazy(() => import('./pages/BattlePage').then((module) => ({ d
 const GuidesPage = lazy(() => import('./pages/GuidesPage').then((module) => ({ default: module.GuidesPage })))
 const GuidePage = lazy(() => import('./pages/GuidesPage').then((module) => ({ default: module.GuidePage })))
 
-/** Репозиторий исходного кода: AGPL-3.0 требует предложить его пользователям сети. */
+/** The source repository: AGPL-3.0 requires offering it to network users. */
 const SOURCE_URL = 'https://github.com/Irenid/wtbot'
 
-/** Новая страница открывается сверху, а не с прокруткой предыдущей. */
+/** A new page opens at the top, not at the previous page's scroll. */
 function ScrollToTop() {
   const { pathname } = useLocation()
   useEffect(() => {

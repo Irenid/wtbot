@@ -1,19 +1,18 @@
 import type { FastifyPluginAsync } from 'fastify'
 
-// Дашборд без сборщика и фреймворка: одна страница на vanilla JS. Компактный
-// /api/dashboard обновляется раз в 15 секунд, тяжёлые site-агрегаты — раз в
-// минуту, а скрытая вкладка polling не выполняет. Статистика игрока строится
-// из POST /api/player-stats. Пользовательские данные вставляются только через
-// DOM textContent.
+// The dashboard without a bundler or framework: one page of vanilla JS. The
+// compact /api/dashboard refreshes every 15 seconds, the heavy site aggregates
+// once a minute, and a hidden tab does not poll. Player statistics come from
+// POST /api/player-stats. User data goes in only through DOM textContent.
 //
-// Цвета серий графиков (воздух/земля/флот) проверены валидатором палитры на
-// тёмной поверхности карточек: контраст >= 3:1, разделимость при дальтонизме.
+// The chart series colours (air/ground/naval) passed the palette validator on
+// the cards' dark surface: contrast >= 3:1, separable with colour blindness.
 const dashboardHtml = `<!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wtbot — панель</title>
+<title>wtbot — dashboard</title>
 <style>
   /* One theme with the site: warm black and a gold accent. */
   :root {
@@ -69,7 +68,7 @@ const dashboardHtml = `<!doctype html>
   .player-link:hover { text-decoration: underline; }
   .notice { padding: 10px 12px; border-radius: 8px; background: var(--inset); margin-top: 10px; }
 
-  /* Статистика игрока */
+  /* Player statistics */
   .player-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin: 14px 0 4px; }
   .player-name { font-size: 24px; font-weight: 600; }
   .chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px;
@@ -132,20 +131,20 @@ const dashboardHtml = `<!doctype html>
 <body>
 <div class="wrap">
   <h1>wt<span>bot</span></h1>
-  <div class="sub">Полная телеметрия проекта · адаптивное обновление без тяжёлого polling · <a href="/">сайт →</a></div>
+  <div class="sub">Full project telemetry · adaptive refresh without heavy polling · <a href="/">site →</a></div>
   <div class="grid">
     <div class="card full">
       <div class="status-line">
         <div>
-          <h2>Состояние системы</h2>
-          <div class="big"><span id="bot-dot" class="dot off"></span><span id="bot-tag">загрузка…</span></div>
+          <h2>System state</h2>
+          <div class="big"><span id="bot-dot" class="dot off"></span><span id="bot-tag">loading…</span></div>
         </div>
-        <div id="dashboard-freshness" class="muted small">Первый снимок…</div>
+        <div id="dashboard-freshness" class="muted small">First snapshot…</div>
       </div>
       <div id="overview-metrics" class="metric-grid" style="margin-top:14px"></div>
     </div>
     <div class="card full">
-      <h2>Процесс и ресурсы</h2>
+      <h2>Process and resources</h2>
       <div id="runtime-metrics" class="metric-grid"></div>
       <div class="split-grid">
         <div>
@@ -157,18 +156,18 @@ const dashboardHtml = `<!doctype html>
           <div id="ingest-detail"></div>
         </div>
       </div>
-      <div class="section-title">Нагрузки worker pool</div>
-      <div id="worker-workloads" class="muted small">Загрузка…</div>
-      <div class="section-title">Очереди статистики игроков</div>
-      <div id="player-stats-services" class="muted small">Загрузка…</div>
+      <div class="section-title">Worker pool workloads</div>
+      <div id="worker-workloads" class="muted small">Loading…</div>
+      <div class="section-title">Player statistics queues</div>
+      <div id="player-stats-services" class="muted small">Loading…</div>
     </div>
     <div class="card">
-      <h2>Команды Discord</h2>
+      <h2>Discord commands</h2>
       <div class="big" id="cmd-total">—</div>
       <div id="cmd-list"></div>
     </div>
     <div class="card">
-      <h2>Источники данных</h2>
+      <h2>Data sources</h2>
       <div class="big" id="items-total">—</div>
       <div id="items-by-source"></div>
     </div>
@@ -178,49 +177,49 @@ const dashboardHtml = `<!doctype html>
       <div id="transport-detail"></div>
     </div>
     <div class="card">
-      <h2>Данные сайта</h2>
+      <h2>Site data</h2>
       <div class="big" id="site-battles">—</div>
       <div id="site-detail"></div>
     </div>
     <div class="card full">
-      <h2>Активность боёв за 7 дней</h2>
-      <div id="site-activity" class="activity muted">Загрузка…</div>
+      <h2>Battle activity over 7 days</h2>
+      <div id="site-activity" class="activity muted">Loading…</div>
     </div>
     <div class="card full" id="player-stats-card">
-      <h2>Статистика игрока War Thunder</h2>
+      <h2>War Thunder player statistics</h2>
       <form id="player-stats-form" class="player-form">
         <input id="player-stats-query" class="input" name="player" maxlength="64"
-               autocomplete="off" placeholder="Точный ник или WT user id" required>
-        <select id="player-stats-period" class="select" aria-label="Период локальных реплеев">
-          <option value="0">Все реплеи</option>
-          <option value="7">7 дней</option>
-          <option value="30">30 дней</option>
-          <option value="90">90 дней</option>
+               autocomplete="off" placeholder="Exact nickname or WT user id" required>
+        <select id="player-stats-period" class="select" aria-label="Period of local replays">
+          <option value="0">All replays</option>
+          <option value="7">7 days</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
         </select>
-        <button id="player-stats-submit" class="btn" type="submit">Получить</button>
+        <button id="player-stats-submit" class="btn" type="submit">Fetch</button>
       </form>
-      <div id="player-stats-status" class="muted small">Игрок должен уже встречаться в реплеях, voice-снимке или рейтингах.</div>
+      <div id="player-stats-status" class="muted small">The player must already appear in replays, the voice snapshot or the ratings.</div>
       <div id="player-stats-result"></div>
     </div>
     <div class="card full">
-      <h2 class="head-row">В голосовых каналах <button id="voice-refresh" class="btn">Обновить</button></h2>
+      <h2 class="head-row">In voice channels <button id="voice-refresh" class="btn">Refresh</button></h2>
       <div id="season-status" class="muted small">Season: loading…</div>
-      <div id="voice-list" class="muted">Загрузка…</div>
+      <div id="voice-list" class="muted">Loading…</div>
     </div>
     <div class="card full">
-      <h2>Парсеры</h2>
-      <div id="parser-list" class="muted">Загрузка…</div>
+      <h2>Parsers</h2>
+      <div id="parser-list" class="muted">Loading…</div>
     </div>
     <div class="card full">
-      <h2>Последние записи источников</h2>
-      <div id="item-list" class="muted">Загрузка…</div>
+      <h2>Latest source items</h2>
+      <div id="item-list" class="muted">Loading…</div>
     </div>
   </div>
 </div>
 <script>
 function fmtUptime(s) {
   const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-  return (d ? d + 'д ' : '') + (h ? h + 'ч ' : '') + m + 'м';
+  return (d ? d + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm';
 }
 function row(left, right, cls) {
   const div = document.createElement('div');
@@ -230,23 +229,23 @@ function row(left, right, cls) {
   div.append(l, r);
   return div;
 }
-// Строка игрока в голосовом канале: «WTНик (Имя)» + статистика War Thunder
+// A player row of a voice channel: "WTNick (Name)" + War Thunder statistics
 function voicePlayerRow(p) {
   const div = document.createElement('div');
   div.className = 'row';
   const left = document.createElement('span');
   left.textContent = p.displayName.includes('(') ? p.displayName : p.wtNick;
   left.className = 'player-link';
-  left.title = 'Открыть статистику ' + p.wtNick;
+  left.title = 'Open the statistics of ' + p.wtNick;
   left.addEventListener('click', function () { beginPlayerLookup(p.wtNick); });
   const right = document.createElement('span');
   right.className = 'muted';
   if (p.rating !== null) {
     const delta = p.delta ? ' (' + (p.delta > 0 ? '+' : '') + p.delta + ')' : '';
-    const battles = p.battles ? ' · боёв: ' + p.battles : '';
-    right.textContent = (p.clanTag ? p.clanTag + ' · ' : '') + 'ЛПР ' + p.rating + delta + battles;
+    const battles = p.battles ? ' · battles: ' + p.battles : '';
+    right.textContent = (p.clanTag ? p.clanTag + ' · ' : '') + 'PSR ' + p.rating + delta + battles;
   } else {
-    right.textContent = p.battles ? 'боёв: ' + p.battles : 'нет данных WT';
+    right.textContent = p.battles ? 'battles: ' + p.battles : 'no WT data';
   }
   div.append(left, right);
   return div;
@@ -259,7 +258,7 @@ function voiceChannelBlock(ch) {
   name.textContent = '🔊 ' + ch.channelName;
   const guild = document.createElement('span');
   guild.className = 'muted';
-  guild.textContent = ch.guildName + ' · ' + ch.players.length + ' чел.';
+  guild.textContent = ch.guildName + ' · ' + ch.players.length + ' people';
   head.append(name, guild);
   wrap.appendChild(head);
   ch.players.forEach(function (p) { wrap.appendChild(voicePlayerRow(p)); });
@@ -273,7 +272,7 @@ function itemRow(it) {
   if (it.analysis || it.analyzed) {
     const a = document.createElement('div');
     a.className = 'muted small';
-    a.textContent = it.analysis ? 'AI: ' + it.analysis : 'AI-анализ сохранён';
+    a.textContent = it.analysis ? 'AI: ' + it.analysis : 'AI analysis saved';
     left.appendChild(a);
   }
   const right = document.createElement('span');
@@ -283,35 +282,35 @@ function itemRow(it) {
   return div;
 }
 function fmtTimestamp(value) {
-  return value === null ? '—' : new Date(value * 1000).toLocaleString('ru');
+  return value === null ? '—' : new Date(value * 1000).toLocaleString('en-GB');
 }
 function fmtPercent(value) {
   return value === null || value === undefined ? '—' : (value * 100).toFixed(1) + '%';
 }
 function fmtMetric(value) {
-  return value === null || value === undefined ? '—' : Number(value).toLocaleString('ru');
+  return value === null || value === undefined ? '—' : Number(value).toLocaleString('en-GB');
 }
 function fmtBytes(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   const bytes = Math.max(0, Number(value));
-  if (bytes < 1024) return Math.round(bytes) + ' Б';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' КиБ';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' МиБ';
-  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' ГиБ';
+  if (bytes < 1024) return Math.round(bytes) + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MiB';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GiB';
 }
 function fmtMs(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   const ms = Math.max(0, Number(value));
-  return ms >= 1000 ? (ms / 1000).toFixed(1) + ' с' : ms.toFixed(ms < 10 ? 1 : 0) + ' мс';
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms.toFixed(ms < 10 ? 1 : 0) + ' ms';
 }
 function fmtHours(value) {
-  return value === null || value === undefined ? '—' : Math.round(value / 3600).toLocaleString('ru') + ' ч';
+  return value === null || value === undefined ? '—' : Math.round(value / 3600).toLocaleString('en-GB') + ' h';
 }
 function accountStateLabel(state) {
   const labels = {
-    fresh: 'свежий кэш', stale: 'устаревший кэш', pending: 'загрузка', empty: 'нет снимка',
-    disabled: 'отключено', disabled_cached: 'отключено, показан кэш', private: 'профиль закрыт',
-    not_found: 'не найден', rate_limited: 'лимит provider-а', schema_error: 'изменилась схема', error: 'ошибка'
+    fresh: 'fresh cache', stale: 'stale cache', pending: 'loading', empty: 'no snapshot',
+    disabled: 'disabled', disabled_cached: 'disabled, cache shown', private: 'private profile',
+    not_found: 'not found', rate_limited: 'provider rate limit', schema_error: 'schema changed', error: 'error'
   };
   return labels[state] || state;
 }
@@ -322,7 +321,7 @@ function stateChipClass(state) {
   return '';
 }
 
-// --- Примитивы построения DOM (только textContent, без разметки строками) ---
+// --- DOM building primitives (textContent only, no markup strings) ---
 function el(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -334,7 +333,7 @@ function chipEl(text, cls) {
 }
 function deltaChip(value, suffix) {
   if (value === null || value === undefined || value === 0) return null;
-  const text = (value > 0 ? '+' : '') + value.toLocaleString('ru') + (suffix || '');
+  const text = (value > 0 ? '+' : '') + value.toLocaleString('en-GB') + (suffix || '');
   return el('span', 'delta', text);
 }
 function kpiTile(label, value, sub) {
@@ -409,17 +408,17 @@ function numCell(value, delta) {
   return td;
 }
 
-// --- Извлечение данных из нормализованных totals/vehicles ---
-const MODE_LABELS = { arcade: 'Аркадные', realistic: 'Реалистичные', simulation: 'Симуляторные', simulator: 'Симуляторные' };
+// --- Data from the normalized totals/vehicles ---
+const MODE_LABELS = { arcade: 'Arcade', realistic: 'Realistic', simulation: 'Simulator', simulator: 'Simulator' };
 const KILL_PARTS = [
-  { key: 'airKills', label: 'воздух', color: 'var(--air)' },
-  { key: 'groundKills', label: 'земля', color: 'var(--ground)' },
-  { key: 'navalKills', label: 'флот', color: 'var(--naval)' }
+  { key: 'airKills', label: 'air', color: 'var(--air)' },
+  { key: 'groundKills', label: 'ground', color: 'var(--ground)' },
+  { key: 'navalKills', label: 'naval', color: 'var(--naval)' }
 ];
 const BRANCH_META = {
-  air: { label: 'Авиация', color: 'var(--air)' },
-  ground: { label: 'Наземная техника', color: 'var(--ground)' },
-  naval: { label: 'Флот', color: 'var(--naval)' }
+  air: { label: 'Aircraft', color: 'var(--air)' },
+  ground: { label: 'Ground vehicles', color: 'var(--ground)' },
+  naval: { label: 'Naval', color: 'var(--naval)' }
 };
 function aggregateTotal(account) {
   if (!account || !Array.isArray(account.totals)) return null;
@@ -427,8 +426,8 @@ function aggregateTotal(account) {
     return t.gameType === null && t.mode === null && t.category === null;
   }) || null;
 }
-// Строки по режимам: у official-profile это (gameType=null, category='all'),
-// у StatShark — (gameType='all', category='pvp'); ветки техники не подходят.
+// Per-mode rows: (gameType=null, category='all') for official-profile,
+// (gameType='all', category='pvp') for StatShark; vehicle branches do not qualify.
 function modeTotals(account) {
   const rows = [];
   const seen = {};
@@ -460,37 +459,37 @@ function kdOf(t) {
   return kills / t.deaths;
 }
 
-// --- Блоки статистики игрока ---
+// --- Player statistics blocks ---
 function playerHeader(stats) {
   const head = el('div', 'player-head');
   head.appendChild(el('span', 'player-name', stats.player.nick));
   if (stats.player.wtUserId) head.appendChild(chipEl('ID ' + stats.player.wtUserId));
   if (stats.player.platform) head.appendChild(chipEl(stats.player.platform));
   if (stats.period && stats.period.from !== null) {
-    head.appendChild(chipEl('реплеи с ' + new Date(stats.period.from * 1000).toLocaleDateString('ru')));
+    head.appendChild(chipEl('replays since ' + new Date(stats.period.from * 1000).toLocaleDateString('en-GB')));
   }
   return head;
 }
 function accountKpis(account, total) {
-  const sec = panel('Аккаунт · ' + account.source,
-    'снимок источника' + (account.sourceUpdatedAt ? ' от ' + fmtTimestamp(account.sourceUpdatedAt) : ''));
+  const sec = panel('Account · ' + account.source,
+    'source snapshot' + (account.sourceUpdatedAt ? ' of ' + fmtTimestamp(account.sourceUpdatedAt) : ''));
   const kpis = el('div', 'kpis');
   const rate = winRateOf(total);
-  kpis.appendChild(kpiTile('Бои', fmtMetric(total.battles)));
-  const rateTile = kpiTile('Винрейт', fmtPercent(rate),
-    fmtMetric(total.victories) + ' побед · ' + fmtMetric(total.defeats) + ' поражений');
-  if (rate !== null) rateTile.appendChild(barTrack(rate, 'var(--air)', 'винрейт ' + fmtPercent(rate)));
+  kpis.appendChild(kpiTile('Battles', fmtMetric(total.battles)));
+  const rateTile = kpiTile('Win rate', fmtPercent(rate),
+    fmtMetric(total.victories) + ' wins · ' + fmtMetric(total.defeats) + ' losses');
+  if (rate !== null) rateTile.appendChild(barTrack(rate, 'var(--air)', 'win rate ' + fmtPercent(rate)));
   kpis.appendChild(rateTile);
   const kd = kdOf(total);
-  kpis.appendChild(kpiTile('Фраги/смерть', kd === null ? '—' : kd.toFixed(2),
-    fmtMetric(sumKills(total)) + ' фрагов · ' + fmtMetric(total.deaths) + ' смертей'));
-  kpis.appendChild(kpiTile('Время в бою', fmtHours(total.timePlayedSec)));
+  kpis.appendChild(kpiTile('K/D', kd === null ? '—' : kd.toFixed(2),
+    fmtMetric(sumKills(total)) + ' kills · ' + fmtMetric(total.deaths) + ' deaths'));
+  kpis.appendChild(kpiTile('Time in battle', fmtHours(total.timePlayedSec)));
   sec.appendChild(kpis);
   const kills = killsBlock(total);
   if (kills) sec.appendChild(kills);
   return sec;
 }
-// Состав фрагов воздух/земля/флот: пропорциональный стек + легенда со значениями
+// Kills by air/ground/naval: a proportional stack + a legend with the values
 function killsBlock(total) {
   const values = KILL_PARTS.map(function (p) { return total ? total[p.key] : null; });
   const known = values.filter(function (v) { return v !== null && v !== undefined; });
@@ -526,11 +525,11 @@ function killsBlock(total) {
 function modeTablePanel(account, deltaByTotal) {
   const rows = modeTotals(account);
   if (!rows.length) return null;
-  const sec = panel('По режимам', account.source);
+  const sec = panel('By mode', account.source);
   const table = tableEl([
-    { label: 'Режим' }, { label: 'Бои', num: true }, { label: 'Победы', num: true },
-    { label: 'Смерти', num: true }, { label: 'Время', num: true },
-    { label: 'Фраги в/н/ф', num: true }, { label: 'Винрейт' }
+    { label: 'Mode' }, { label: 'Battles', num: true }, { label: 'Wins', num: true },
+    { label: 'Deaths', num: true }, { label: 'Time', num: true },
+    { label: 'Kills a/g/n', num: true }, { label: 'Win rate' }
   ]);
   rows.forEach(function (t) {
     const tr = el('tr');
@@ -549,7 +548,7 @@ function modeTablePanel(account, deltaByTotal) {
     const rateWrap = el('div', 'bar-row');
     rateWrap.style.gridTemplateColumns = '1fr 52px';
     rateWrap.style.padding = '0';
-    rateWrap.appendChild(barTrack(rate, 'var(--air)', 'винрейт ' + fmtPercent(rate)));
+    rateWrap.appendChild(barTrack(rate, 'var(--air)', 'win rate ' + fmtPercent(rate)));
     rateWrap.appendChild(el('span', 'bar-value small', fmtPercent(rate)));
     rateCell.appendChild(rateWrap);
     tr.appendChild(rateCell);
@@ -558,8 +557,8 @@ function modeTablePanel(account, deltaByTotal) {
   sec.appendChild(table.root);
   return sec;
 }
-// Выходы на задания по веткам техники (только official-profile). Это спавны,
-// НЕ бои: в одном бою игрок может и летать, и ездить — суммировать с боями нельзя.
+// Sorties by vehicle branch (official-profile only). These are spawns, NOT
+// battles: one battle can have flying and driving, so they never add up to battles.
 function branchSpawnsPanel(sources) {
   const perBranch = {};
   sources.forEach(function (account) {
@@ -573,7 +572,7 @@ function branchSpawnsPanel(sources) {
   const keys = Object.keys(perBranch);
   if (!keys.length) return null;
   const max = keys.reduce(function (m, k) { return Math.max(m, perBranch[k]); }, 0);
-  const sec = panel('Выходы на задания по веткам', 'спавны, не бои — не суммируются с боями');
+  const sec = panel('Sorties by branch', 'spawns, not battles: they do not add up to battles');
   keys.forEach(function (k) {
     sec.appendChild(barRow(BRANCH_META[k].label, max > 0 ? perBranch[k] / max : 0,
       fmtMetric(perBranch[k]), BRANCH_META[k].color));
@@ -587,22 +586,22 @@ function sourceCard(account) {
   const chips = el('span');
   chips.appendChild(chipEl(accountStateLabel(account.state), stateChipClass(account.state)));
   if (account.refreshQueued) chips.appendChild(document.createTextNode(' '));
-  if (account.refreshQueued) chips.appendChild(chipEl('обновляется…'));
+  if (account.refreshQueued) chips.appendChild(chipEl('refreshing…'));
   head.appendChild(chips);
   card.appendChild(head);
   const aggregate = aggregateTotal(account) || (account.totals && account.totals[0]) || null;
-  card.appendChild(row('Бои / победы', aggregate
+  card.appendChild(row('Battles / wins', aggregate
     ? fmtMetric(aggregate.battles) + ' / ' + fmtMetric(aggregate.victories)
     : '—'));
-  card.appendChild(row('Винрейт', fmtPercent(winRateOf(aggregate))));
-  card.appendChild(row('Строк техники', String(account.vehicleCount)));
-  card.appendChild(row('Проверено', fmtTimestamp(account.checkedAt)));
-  card.appendChild(row('Обновлено источником', fmtTimestamp(account.sourceUpdatedAt)));
-  if (account.delta) card.appendChild(row('Дельта с', fmtTimestamp(account.delta.fromCheckedAt)));
+  card.appendChild(row('Win rate', fmtPercent(winRateOf(aggregate))));
+  card.appendChild(row('Vehicle rows', String(account.vehicleCount)));
+  card.appendChild(row('Checked', fmtTimestamp(account.checkedAt)));
+  card.appendChild(row('Updated by the source', fmtTimestamp(account.sourceUpdatedAt)));
+  if (account.delta) card.appendChild(row('Delta since', fmtTimestamp(account.delta.fromCheckedAt)));
   return card;
 }
 function sourcesPanel(sources) {
-  const sec = panel('Источники аккаунта', 'кэш до 24 часов, обновление в фоне');
+  const sec = panel('Account sources', 'cached up to 24 hours, refreshed in the background');
   const grid = el('div', 'src-grid');
   sources.forEach(function (account) { grid.appendChild(sourceCard(account)); });
   sec.appendChild(grid);
@@ -617,13 +616,13 @@ function vehiclesPanel(account) {
       deltaByVehicle.set(JSON.stringify([vehicle.gameType, vehicle.mode, vehicle.vehicleId]), vehicle);
     });
   }
-  const sec = panel('Топ техники · ' + account.source,
-    'по вылетам' + (account.vehiclesTruncated || account.vehicleCount > vehicles.length
-      ? ', показано ' + vehicles.length + ' из ' + account.vehicleCount : ''));
+  const sec = panel('Top vehicles · ' + account.source,
+    'by sorties' + (account.vehiclesTruncated || account.vehicleCount > vehicles.length
+      ? ', showing ' + vehicles.length + ' of ' + account.vehicleCount : ''));
   const table = tableEl([
-    { label: 'Техника' }, { label: 'Тип' }, { label: 'Режим' },
-    { label: 'Вылеты', num: true }, { label: 'Победы', num: true },
-    { label: 'Смерти', num: true }, { label: 'Фраги', num: true }, { label: 'Поб/вылет' }
+    { label: 'Vehicle' }, { label: 'Type' }, { label: 'Mode' },
+    { label: 'Sorties', num: true }, { label: 'Wins', num: true },
+    { label: 'Deaths', num: true }, { label: 'Kills', num: true }, { label: 'Wins/sortie' }
   ]);
   vehicles.forEach(function (v) {
     const tr = el('tr');
@@ -642,7 +641,7 @@ function vehiclesPanel(account) {
     const rateWrap = el('div', 'bar-row');
     rateWrap.style.gridTemplateColumns = '1fr 52px';
     rateWrap.style.padding = '0';
-    rateWrap.appendChild(barTrack(rate, 'var(--air)', 'побед на вылет: ' + fmtPercent(rate)));
+    rateWrap.appendChild(barTrack(rate, 'var(--air)', 'wins per sortie: ' + fmtPercent(rate)));
     rateWrap.appendChild(el('span', 'bar-value small', fmtPercent(rate)));
     rateCell.appendChild(rateWrap);
     tr.appendChild(rateCell);
@@ -652,81 +651,81 @@ function vehiclesPanel(account) {
   return sec;
 }
 function replayPanel(replay) {
-  const sec = panel('Локальные WRPL-реплеи', 'только бои, собранные ботом');
+  const sec = panel('Local WRPL replays', 'only battles the bot collected');
   if (!replay.stats) {
-    sec.appendChild(el('div', 'muted small', 'WT user id ещё не определён — replay-статистика недоступна.'));
+    sec.appendChild(el('div', 'muted small', 'No WT user id yet: replay statistics are unavailable.'));
     return sec;
   }
   const r = replay.stats;
   const kpis = el('div', 'kpis');
-  kpis.appendChild(kpiTile('Бои', fmtMetric(r.battles),
-    fmtMetric(r.wins) + ' побед · ' + fmtMetric(r.losses) + ' поражений'));
-  const rateTile = kpiTile('Винрейт', fmtPercent(r.winRate), 'без учёта ' + fmtMetric(r.unknownResults) + ' неизвестных исходов');
-  if (r.winRate !== null) rateTile.appendChild(barTrack(r.winRate, 'var(--air)', 'винрейт ' + fmtPercent(r.winRate)));
+  kpis.appendChild(kpiTile('Battles', fmtMetric(r.battles),
+    fmtMetric(r.wins) + ' wins · ' + fmtMetric(r.losses) + ' losses'));
+  const rateTile = kpiTile('Win rate', fmtPercent(r.winRate), 'without ' + fmtMetric(r.unknownResults) + ' unknown results');
+  if (r.winRate !== null) rateTile.appendChild(barTrack(r.winRate, 'var(--air)', 'win rate ' + fmtPercent(r.winRate)));
   kpis.appendChild(rateTile);
   const kills = sumKills(r);
-  kpis.appendChild(kpiTile('Фраги/смерть', r.deaths ? (kills / r.deaths).toFixed(2) : '—',
-    fmtMetric(kills) + ' фрагов · ' + fmtMetric(r.deaths) + ' смертей'));
-  kpis.appendChild(kpiTile('Очки', fmtMetric(r.score), 'ассистов ' + fmtMetric(r.assists)));
+  kpis.appendChild(kpiTile('K/D', r.deaths ? (kills / r.deaths).toFixed(2) : '—',
+    fmtMetric(kills) + ' kills · ' + fmtMetric(r.deaths) + ' deaths'));
+  kpis.appendChild(kpiTile('Score', fmtMetric(r.score), 'assists ' + fmtMetric(r.assists)));
   sec.appendChild(kpis);
   const killsSplit = killsBlock(r);
   if (killsSplit) sec.appendChild(killsSplit);
   const details = el('div');
   details.style.marginTop = '10px';
-  details.appendChild(row('ИИ воздух / земля', fmtMetric(r.aiAirKills) + ' / ' + fmtMetric(r.aiGroundKills)));
-  details.appendChild(row('Тимкиллы', fmtMetric(r.teamKills)));
-  details.appendChild(row('Наблюдаемое время', fmtUptime(r.observedBattleTimeSec)));
-  details.appendChild(row('Покрытие', fmtMetric(r.coverageBattles) + ' локальных реплеев'));
-  details.appendChild(row('Первый / последний бой', fmtTimestamp(r.firstBattleAt) + ' / ' + fmtTimestamp(r.lastBattleAt)));
+  details.appendChild(row('AI air / ground', fmtMetric(r.aiAirKills) + ' / ' + fmtMetric(r.aiGroundKills)));
+  details.appendChild(row('Team kills', fmtMetric(r.teamKills)));
+  details.appendChild(row('Observed time', fmtUptime(r.observedBattleTimeSec)));
+  details.appendChild(row('Coverage', fmtMetric(r.coverageBattles) + ' local replays'));
+  details.appendChild(row('First / last battle', fmtTimestamp(r.firstBattleAt) + ' / ' + fmtTimestamp(r.lastBattleAt)));
   sec.appendChild(details);
   if (Array.isArray(r.vehicles) && r.vehicles.length) {
     const top = r.vehicles.slice(0, 8);
     const max = top.reduce(function (m, v) { return Math.max(m, v.battles || 0); }, 0);
     const list = el('div');
     list.style.marginTop = '10px';
-    list.appendChild(el('div', 'muted small', 'Техника в локальных реплеях'));
+    list.appendChild(el('div', 'muted small', 'Vehicles in local replays'));
     top.forEach(function (v) {
       list.appendChild(barRow(v.vehicleId, max > 0 ? (v.battles || 0) / max : 0,
-        fmtMetric(v.battles) + ' боёв', 'var(--ground)'));
+        fmtMetric(v.battles) + ' battles', 'var(--ground)'));
     });
     if (replay.vehiclesTruncated || replay.vehicleCount > top.length) {
       list.appendChild(el('div', 'muted small',
-        'показано ' + top.length + ' из ' + fmtMetric(replay.vehicleCount)));
+        'showing ' + top.length + ' of ' + fmtMetric(replay.vehicleCount)));
     }
     sec.appendChild(list);
   }
   return sec;
 }
-// accountSource — имя основного источника: comparison.accountWinRate считается
-// сервером только по нему, а KPI-блок может строиться по другому источнику
+// accountSource is the primary source's name: the server computes
+// comparison.accountWinRate from it alone, while the KPI block may use another source
 function comparisonPanel(comparison, accountSource) {
-  const sec = panel('Аккаунт vs локальные реплеи',
-    'аккаунт по источнику ' + accountSource + ' · напрямую не сравниваются');
-  sec.appendChild(barRow('Аккаунт', comparison.accountWinRate, fmtPercent(comparison.accountWinRate), 'var(--air)'));
+  const sec = panel('Account vs local replays',
+    'account from ' + accountSource + ' · not directly comparable');
+  sec.appendChild(barRow('Account', comparison.accountWinRate, fmtPercent(comparison.accountWinRate), 'var(--air)'));
   sec.appendChild(barRow('WRPL', comparison.replayWinRate, fmtPercent(comparison.replayWinRate), 'var(--air)'));
   const rows = el('div');
   rows.style.marginTop = '6px';
-  rows.appendChild(row('Ориентировочная разница', comparison.indicativeWinRateDifference === null
+  rows.appendChild(row('Indicative difference', comparison.indicativeWinRateDifference === null
     ? '—'
-    : (comparison.indicativeWinRateDifference * 100).toFixed(1) + ' п.п.'));
-  rows.appendChild(row('Совпавшая техника', fmtMetric(comparison.vehicleOverlapCount)));
+    : (comparison.indicativeWinRateDifference * 100).toFixed(1) + ' pp'));
+  rows.appendChild(row('Vehicles in both', fmtMetric(comparison.vehicleOverlapCount)));
   sec.appendChild(rows);
   sec.appendChild(el('div', 'muted small', comparison.note));
   return sec;
 }
-// Запасной вывод, если структура totals не распознана (например, новая схема источника)
+// The fallback when the totals structure is not recognized (a new source schema, say)
 function rawTotalsPanel(account) {
   if (!account.totals || !account.totals.length) return null;
-  const sec = panel('Итоги · ' + account.source, 'неструктурированные строки');
+  const sec = panel('Totals · ' + account.source, 'unstructured rows');
   account.totals.slice(0, 10).forEach(function (t) {
-    const label = [t.gameType, t.mode, t.category].filter(Boolean).join(' / ') || 'аккаунт';
+    const label = [t.gameType, t.mode, t.category].filter(Boolean).join(' / ') || 'account';
     const counters = t.battles === null && t.victories === null
-      ? 'выходов ' + fmtMetric(t.respawns)
-      : 'бои ' + fmtMetric(t.battles) + ' · победы ' + fmtMetric(t.victories)
-        + ' · смерти ' + fmtMetric(t.deaths);
-    sec.appendChild(row(label, counters + ' · время ' + fmtHours(t.timePlayedSec)));
+      ? 'sorties ' + fmtMetric(t.respawns)
+      : 'battles ' + fmtMetric(t.battles) + ' · wins ' + fmtMetric(t.victories)
+        + ' · deaths ' + fmtMetric(t.deaths);
+    sec.appendChild(row(label, counters + ' · time ' + fmtHours(t.timePlayedSec)));
   });
-  if (account.totalsTruncated) sec.appendChild(row('итоги', 'показаны первые 100 строк'));
+  if (account.totalsTruncated) sec.appendChild(row('totals', 'the first 100 rows shown'));
   return sec;
 }
 function renderPlayerStats(stats) {
@@ -738,7 +737,7 @@ function renderPlayerStats(stats) {
     ? stats.accountSources
     : [stats.account];
 
-  // KPI и таблица режимов строятся по первому источнику с агрегатной строкой
+  // The KPIs and the mode table use the first source with an aggregate row
   let kpiAccount = null, kpiTotal = null;
   sources.forEach(function (account) {
     if (kpiTotal) return;
@@ -767,7 +766,7 @@ function renderPlayerStats(stats) {
 
   frag.appendChild(sourcesPanel(sources));
 
-  // Техника есть только у StatShark; берём первый источник с непустым списком
+  // Only StatShark has vehicles; the first source with a non-empty list is taken
   const vehicleSource = sources.find(function (a) { return Array.isArray(a.vehicles) && a.vehicles.length; });
   if (vehicleSource) {
     const vehicles = vehiclesPanel(vehicleSource);
@@ -800,11 +799,11 @@ async function loadPlayerStats(input, token, attempt) {
     if (token !== playerLookupToken) return;
     if (!response.ok) {
       status.className = 'fail small';
-      status.textContent = payload.error || 'Не удалось получить статистику';
+      status.textContent = payload.error || 'Could not get the statistics';
       result.replaceChildren();
       if (Array.isArray(payload.candidates)) {
         payload.candidates.forEach(function (candidate) {
-          result.appendChild(row(candidate.nick, candidate.wtUserId || 'без WT user id'));
+          result.appendChild(row(candidate.nick, candidate.wtUserId || 'no WT user id'));
         });
       }
       return;
@@ -819,23 +818,23 @@ async function loadPlayerStats(input, token, attempt) {
     });
     if (refreshQueued && attempt < 9) {
       status.className = 'muted small';
-      status.textContent = 'Локальные WRPL готовы; внешний snapshot обновляется…';
+      status.textContent = 'Local WRPL ready; the external snapshot is refreshing…';
       window.setTimeout(function () { loadPlayerStats(input, token, attempt + 1); }, 2500);
     } else if (refreshQueued) {
       status.className = 'muted small';
-      status.textContent = 'Внешнее обновление ещё выполняется; повторите поиск через несколько секунд.';
+      status.textContent = 'The external refresh is still running; search again in a few seconds.';
     } else if (failedAccount) {
       status.className = 'fail small';
-      status.textContent = 'Локальные WRPL получены, внешний snapshot недоступен: '
+      status.textContent = 'Local WRPL received, the external snapshot is unavailable: '
         + failedAccount.source + ' — ' + accountStateLabel(failedAccount.state) + '.';
     } else {
       status.className = 'ok small';
-      status.textContent = 'Статистика получена. Account и replay coverage показаны раздельно.';
+      status.textContent = 'Statistics received. Account and replay coverage are shown separately.';
     }
   } catch (error) {
     if (token !== playerLookupToken) return;
     status.className = 'fail small';
-    status.textContent = 'Ошибка запроса статистики: ' + String(error);
+    status.textContent = 'Statistics request failed: ' + String(error);
   }
 }
 async function beginPlayerLookup(player) {
@@ -854,7 +853,7 @@ async function beginPlayerLookup(player) {
   }
   const token = ++playerLookupToken;
   status.className = 'muted small';
-  status.textContent = 'Читаю локальную статистику…';
+  status.textContent = 'Reading local statistics…';
   button.disabled = true;
   await loadPlayerStats(input, token, 0);
   if (token === playerLookupToken) button.disabled = false;
@@ -886,7 +885,7 @@ function renderRuntime(runtime) {
   const workloadsRoot = document.getElementById('worker-workloads');
   const playerServicesRoot = document.getElementById('player-stats-services');
   if (!runtime) {
-    metrics.replaceChildren(el('div', 'muted small', 'Runtime-телеметрия недоступна в этом режиме запуска.'));
+    metrics.replaceChildren(el('div', 'muted small', 'Runtime telemetry is unavailable in this run mode.'));
     workerDetail.replaceChildren();
     ingestDetail.replaceChildren();
     workloadsRoot.replaceChildren();
@@ -898,36 +897,36 @@ function renderRuntime(runtime) {
   const workers = runtime.workers;
   const liveIngest = runtime.ingest;
   metrics.replaceChildren(
-    metricBox('RSS процесса', fmtBytes(process.rssBytes),
+    metricBox('Process RSS', fmtBytes(process.rssBytes),
       'heap ' + fmtBytes(process.heapUsedBytes) + ' / ' + fmtBytes(process.heapTotalBytes),
       runtime.resources.totalMemoryMb > 0 ? process.rssBytes / (runtime.resources.totalMemoryMb * 1024 * 1024) : null),
-    metricBox('CPU процесса', process.cpuPercent.toFixed(1) + '%',
+    metricBox('Process CPU', process.cpuPercent.toFixed(1) + '%',
       'Node ' + process.node + ' · PID ' + process.pid, Math.min(1, process.cpuPercent / 100)),
     metricBox('Event loop', fmtMs(runtime.eventLoop.currentLagMs),
-      'максимум ' + fmtMs(runtime.eventLoop.maxLagMs),
+      'max ' + fmtMs(runtime.eventLoop.maxLagMs),
       Math.min(1, runtime.eventLoop.currentLagMs / 500),
       runtime.eventLoop.currentLagMs > 100 ? 'var(--fail)' : 'var(--ok)'),
     metricBox('CPU workers', workers.busy + ' / ' + workers.configured,
-      workers.ready + ' ready · ' + workers.queued + ' в очереди',
+      workers.ready + ' ready · ' + workers.queued + ' queued',
       workers.configured ? workers.busy / workers.configured : 0),
-    metricBox('Ingest', liveIngest.battlesPerMinute.toFixed(1) + ' боёв/мин',
+    metricBox('Ingest', liveIngest.battlesPerMinute.toFixed(1) + ' battles/min',
       'concurrency ' + (liveIngest.admission ? liveIngest.admission.currentConcurrency : runtime.resources.ingestConcurrency)),
     metricBox('Replay budget', fmtBytes(liveIngest.processBudget.usedBytes),
-      'из ' + fmtBytes(liveIngest.processBudget.limitBytes) + ' · waiters ' + liveIngest.processBudget.queuedCount,
+      'of ' + fmtBytes(liveIngest.processBudget.limitBytes) + ' · waiters ' + liveIngest.processBudget.queuedCount,
       liveIngest.processBudget.limitBytes ? liveIngest.processBudget.usedBytes / liveIngest.processBudget.limitBytes : 0)
   );
 
   const workerSuccessRate = workers.completed > 0 ? workers.succeeded / workers.completed : null;
   workerDetail.replaceChildren(
-    row('слоты live / ready', workers.live + ' / ' + workers.ready),
+    row('slots live / ready', workers.live + ' / ' + workers.ready),
     row('busy / queued', workers.busy + ' / ' + workers.queued, workers.queued ? 'fail' : 'ok'),
-    row('задачи завершены', fmtMetric(workers.completed)),
-    row('успех', workerSuccessRate === null ? '—' : fmtPercent(workerSuccessRate)),
-    row('ошибки / отклонено', fmtMetric(workers.failed) + ' / ' + fmtMetric(workers.rejected),
+    row('tasks completed', fmtMetric(workers.completed)),
+    row('success', workerSuccessRate === null ? '—' : fmtPercent(workerSuccessRate)),
+    row('failed / rejected', fmtMetric(workers.failed) + ' / ' + fmtMetric(workers.rejected),
       workers.failed || workers.rejected ? 'fail' : 'muted'),
     row('queue avg / max', fmtMs(workers.queueMsAvg) + ' / ' + fmtMs(workers.queueMsMax)),
     row('execution avg / max', fmtMs(workers.executionMsAvg) + ' / ' + fmtMs(workers.executionMsMax)),
-    row('буферы queued / running', fmtBytes(workers.queuedBytes) + ' / ' + fmtBytes(workers.runningBytes))
+    row('buffers queued / running', fmtBytes(workers.queuedBytes) + ' / ' + fmtBytes(workers.runningBytes))
   );
 
   const stages = liveIngest.stages;
@@ -937,34 +936,34 @@ function renderRuntime(runtime) {
   }).join(' · ');
   const oldest = liveIngest.backlog.oldestAgeMs === null ? '—' : fmtMs(liveIngest.backlog.oldestAgeMs);
   ingestDetail.replaceChildren(
-    row('очередь DB / oldest', fmtMetric(liveIngest.backlog.pending) + ' / ' + oldest,
+    row('DB queue / oldest', fmtMetric(liveIngest.backlog.pending) + ' / ' + oldest,
       liveIngest.backlog.pending ? 'fail' : 'ok'),
-    row('active / queued по этапам', stageText),
+    row('active / queued by stage', stageText),
     row('parse p95', fmtMs(stages.parse.activeP95Ms)),
     row('replay ok / fail', fmtMetric(liveIngest.replay.succeeded) + ' / ' + fmtMetric(liveIngest.replay.failed),
       liveIngest.replay.failed ? 'fail' : 'muted'),
-    row('CDN данные / retry', fmtBytes(liveIngest.replay.bytes) + ' / ' + fmtMetric(liveIngest.replay.retries)),
+    row('CDN data / retry', fmtBytes(liveIngest.replay.bytes) + ' / ' + fmtMetric(liveIngest.replay.retries)),
     row('429 / 5xx', fmtMetric(liveIngest.replay.rateLimited429) + ' / ' + fmtMetric(liveIngest.replay.server5xx),
       liveIngest.replay.rateLimited429 || liveIngest.replay.server5xx ? 'fail' : 'muted'),
     row('SQLite commits / p95', fmtMetric(liveIngest.sqlite.commits) + ' / ' + fmtMs(liveIngest.sqlite.transactionP95Ms)),
     row('budget timeout / wait max', fmtMetric(liveIngest.processBudget.timedOut) + ' / ' +
       fmtMs(liveIngest.processBudget.waitMsMax), liveIngest.processBudget.timedOut ? 'fail' : 'muted'),
-    row('fetch admission', liveIngest.fetchAdmission.currentIntervalMs + ' мс · rate limit ' +
+    row('fetch admission', liveIngest.fetchAdmission.currentIntervalMs + ' ms · rate limit ' +
       fmtMetric(liveIngest.fetchAdmission.rateLimitEvents)),
     row('AIMD', liveIngest.admission
       ? liveIngest.admission.currentConcurrency + '/' + liveIngest.admission.maxConcurrency + ' · ' + liveIngest.admission.reason
-      : 'не запущен')
+      : 'not started')
   );
 
   if (!workers.workloads.length) {
     workloadsRoot.className = 'muted small';
-    workloadsRoot.textContent = 'CPU-задачи ещё не выполнялись';
+    workloadsRoot.textContent = 'No CPU tasks have run yet';
   } else {
     workloadsRoot.className = '';
     const table = tableEl([
-      { label: 'Задача' }, { label: 'Приоритет' }, { label: 'Active', num: true },
-      { label: 'Queue', num: true }, { label: 'Готово', num: true },
-      { label: 'Ошибки', num: true }, { label: 'Queue max', num: true },
+      { label: 'Task' }, { label: 'Priority' }, { label: 'Active', num: true },
+      { label: 'Queue', num: true }, { label: 'Done', num: true },
+      { label: 'Errors', num: true }, { label: 'Queue max', num: true },
       { label: 'Exec max', num: true }
     ]);
     workers.workloads.forEach(function (workload) {
@@ -984,13 +983,13 @@ function renderRuntime(runtime) {
 
   if (!runtime.playerStats.length) {
     playerServicesRoot.className = 'muted small';
-    playerServicesRoot.textContent = 'Внешние provider-ы отключены';
+    playerServicesRoot.textContent = 'External providers are off';
   } else {
     playerServicesRoot.className = '';
     const table = tableEl([
-      { label: 'Источник' }, { label: 'Запросы', num: true }, { label: 'Поставлено', num: true },
-      { label: 'Запущено', num: true }, { label: 'Успешно', num: true },
-      { label: 'Ошибки', num: true }, { label: 'Fresh cache', num: true },
+      { label: 'Source' }, { label: 'Requests', num: true }, { label: 'Queued', num: true },
+      { label: 'Started', num: true }, { label: 'Succeeded', num: true },
+      { label: 'Errors', num: true }, { label: 'Fresh cache', num: true },
       { label: 'Backoff', num: true }
     ]);
     runtime.playerStats.forEach(function (service) {
@@ -1016,23 +1015,23 @@ function renderDashboard(data) {
   const freshness = document.getElementById('dashboard-freshness');
   freshness.className = 'muted small';
   freshness.textContent =
-    'Снимок ' + new Date(data.snapshotAt).toLocaleTimeString('ru') +
-    (snapshotAge > 1000 ? ' · возраст ' + Math.round(snapshotAge / 1000) + ' с' : '') +
-    ' · автообновление 15 с';
+    'Snapshot ' + new Date(data.snapshotAt).toLocaleTimeString('en-GB') +
+    (snapshotAge > 1000 ? ' · age ' + Math.round(snapshotAge / 1000) + ' s' : '') +
+    ' · auto-refresh 15 s';
 
   const overview = document.getElementById('overview-metrics');
   overview.replaceChildren(
     metricBox('Discord', data.bot.online ? 'online' : 'offline',
-      fmtMetric(data.bot.guilds) + ' серверов · uptime ' + fmtUptime(data.bot.uptimeSec),
+      fmtMetric(data.bot.guilds) + ' servers · uptime ' + fmtUptime(data.bot.uptimeSec),
       data.bot.online ? 1 : 0, data.bot.online ? 'var(--ok)' : 'var(--fail)'),
-    metricBox('Разобрано боёв', fmtMetric(data.ingest.ingested),
-      'ingest: ' + fmtMetric(data.ingest.pending) + ' в очереди · ' + fmtMetric(data.ingest.failed) + ' failed'),
-    metricBox('Автоанонс', fmtMetric(data.announce.pending),
-      fmtMetric(data.announce.unattempted) + ' новых · ' + fmtMetric(data.announce.retrying) + ' retry'),
-    metricBox('Участники', fmtMetric(data.ingest.players),
-      fmtMetric(data.ingest.kills) + ' убийств в датасете'),
-    metricBox('Записи источников', fmtMetric(data.items.total),
-      fmtMetric(data.items.bySource.length) + ' источников · ' + fmtMetric(data.parsers.length) + ' парсеров')
+    metricBox('Battles parsed', fmtMetric(data.ingest.ingested),
+      'ingest: ' + fmtMetric(data.ingest.pending) + ' queued · ' + fmtMetric(data.ingest.failed) + ' failed'),
+    metricBox('Announcements', fmtMetric(data.announce.pending),
+      fmtMetric(data.announce.unattempted) + ' new · ' + fmtMetric(data.announce.retrying) + ' retry'),
+    metricBox('Participants', fmtMetric(data.ingest.players),
+      fmtMetric(data.ingest.kills) + ' kills in the dataset'),
+    metricBox('Source items', fmtMetric(data.items.total),
+      fmtMetric(data.items.bySource.length) + ' sources · ' + fmtMetric(data.parsers.length) + ' parsers')
   );
 
   document.getElementById('cmd-total').textContent = fmtMetric(data.commands.total);
@@ -1055,19 +1054,19 @@ function renderDashboard(data) {
   });
   document.getElementById('transport-detail').replaceChildren.apply(document.getElementById('transport-detail'), transportRoutes.concat([
     row('browser pool', fmtMetric(transport.poolSize)),
-    row('запросы', fmtMetric(transport.requests)),
+    row('requests', fmtMetric(transport.requests)),
     row('challenge', fmtMetric(transport.challenged), transport.challenged ? 'fail' : 'muted'),
     row('transport errors', fmtMetric(transport.transportErrors), transport.transportErrors ? 'fail' : 'muted'),
     row('clearance ok / fail', fmtMetric(transport.clearances) + ' / ' + fmtMetric(transport.clearanceFailures)),
     row('clearance probes', fmtMetric(transport.clearanceProbes)),
-    row('последний clearance', transport.lastClearanceAt ? fmtTimestamp(Math.floor(transport.lastClearanceAt / 1000)) : '—')
+    row('last clearance', transport.lastClearanceAt ? fmtTimestamp(Math.floor(transport.lastClearanceAt / 1000)) : '—')
   ]));
 
   renderSeason(data.season);
   const voiceList = document.getElementById('voice-list');
   if (data.voice.channels.length === 0) {
     voiceList.classList.add('muted');
-    voiceList.textContent = 'В отслеживаемых голосовых каналах никого нет';
+    voiceList.textContent = 'Nobody in the tracked voice channels';
   } else {
     voiceList.classList.remove('muted');
     voiceList.replaceChildren.apply(voiceList, data.voice.channels.map(voiceChannelBlock));
@@ -1076,7 +1075,7 @@ function renderDashboard(data) {
   const parserList = document.getElementById('parser-list');
   if (data.parsers.length === 0) {
     parserList.className = 'muted';
-    parserList.textContent = 'Парсеры ещё не запускались';
+    parserList.textContent = 'No parser has run yet';
   } else {
     parserList.className = '';
     parserList.replaceChildren.apply(parserList, data.parsers.map(function (parser) {
@@ -1088,7 +1087,7 @@ function renderDashboard(data) {
   const itemList = document.getElementById('item-list');
   if (data.recentItems.length === 0) {
     itemList.className = 'muted';
-    itemList.textContent = 'Записей пока нет — парсеры ещё не принесли данные';
+    itemList.textContent = 'No items yet: the parsers have brought no data';
   } else {
     itemList.className = '';
     itemList.replaceChildren.apply(itemList, data.recentItems.map(itemRow));
@@ -1099,10 +1098,10 @@ function renderDashboard(data) {
 function renderSiteStats(data) {
   document.getElementById('site-battles').textContent = fmtMetric(data.battlesTotal);
   document.getElementById('site-detail').replaceChildren(
-    row('боёв за неделю', fmtMetric(data.battlesWeek)),
-    row('уникальных игроков', fmtMetric(data.players)),
-    row('полков', fmtMetric(data.clans)),
-    row('последний бой', fmtTimestamp(data.lastBattleAt))
+    row('battles this week', fmtMetric(data.battlesWeek)),
+    row('unique players', fmtMetric(data.players)),
+    row('squadrons', fmtMetric(data.clans)),
+    row('last battle', fmtTimestamp(data.lastBattleAt))
   );
   const activity = document.getElementById('site-activity');
   const byDay = new Map(data.byDay.map(function (point) { return [point.day, point.battles]; }));
@@ -1119,7 +1118,7 @@ function renderSiteStats(data) {
     const bar = el('div', 'activity-bar');
     bar.style.height = Math.max(2, Math.round(point.battles / max * 62)) + 'px';
     bar.title = point.day + ': ' + point.battles;
-    const label = el('div', null, new Date(point.day + 'T00:00:00Z').toLocaleDateString('ru', {
+    const label = el('div', null, new Date(point.day + 'T00:00:00Z').toLocaleDateString('en-GB', {
       weekday: 'short', timeZone: 'UTC'
     }));
     col.append(value, bar, label);
@@ -1148,7 +1147,7 @@ async function refreshDashboard(force) {
   } catch (error) {
     console.error(error);
     document.getElementById('dashboard-freshness').className = 'fail small';
-    document.getElementById('dashboard-freshness').textContent = 'Не удалось обновить дэшборд';
+    document.getElementById('dashboard-freshness').textContent = 'Could not refresh the dashboard';
     nextDelay = 30000;
   } finally {
     dashboardBusy = false;
@@ -1197,23 +1196,23 @@ document.getElementById('player-stats-form').addEventListener('submit', function
   beginPlayerLookup();
 });
 
-// Принудительное обновление: сервер пересканирует каналы и заново
-// запрашивает клановые рейтинги, затем страница перечитывает данные
+// A forced refresh: the server rescans the channels and reads the squadron
+// ratings again, then the page rereads its data
 document.getElementById('voice-refresh').addEventListener('click', async function () {
   const btn = this;
   btn.disabled = true;
-  btn.textContent = 'Обновляю…';
+  btn.textContent = 'Refreshing…';
   try {
     await fetch('/api/voice/refresh', { method: 'POST' });
     await refreshDashboard(true);
   } catch (e) { console.error(e); }
   btn.disabled = false;
-  btn.textContent = 'Обновить';
+  btn.textContent = 'Refresh';
 });
 </script>
 <footer class="muted" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--line);font-size:12px;text-align:center">
-  wtbot — свободное ПО на условиях <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPL-3.0-or-later</a>.
-  Исходный код: <a href="https://github.com/Irenid/wtbot">github.com/Irenid/wtbot</a>
+  wtbot is free software under the <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPL-3.0-or-later</a>.
+  Source code: <a href="https://github.com/Irenid/wtbot">github.com/Irenid/wtbot</a>
 </footer>
 </body>
 </html>`

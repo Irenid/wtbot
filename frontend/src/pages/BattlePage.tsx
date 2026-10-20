@@ -33,7 +33,7 @@ function vehicleLabel(dict: VehicleDict, player: ScoreboardPlayer): string {
   return `${name}${extra}`
 }
 
-/* Название команды для шапки: доминирующий клан-тег, иначе «Команда N». */
+/* The team's name for the header: the dominant squadron tag, else "Team N". */
 function teamLabel(players: ScoreboardPlayer[], team: number): string {
   const counts = new Map<string, number>()
   for (const player of players) {
@@ -74,7 +74,7 @@ export function BattlePage() {
         .then((body) => { if (!cancelled) setScene({ status: 'ready', scene: body }) })
         .catch((err) => {
           if (cancelled) return
-          // Сборщик сцен занят — повторяем несколько раз с паузой.
+          // The scene builder is busy: retry a few times with a pause.
           if (err instanceof SiteApiError && err.status === 503 && attempt < 5) {
             setScene({ status: 'busy' })
             window.setTimeout(() => { if (!cancelled) loadScene(attempt + 1) }, 5_000)
@@ -151,8 +151,8 @@ export function BattlePage() {
 
       <div className="grid-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))' }}>
         {teams.map((team) => (
-          // Цвет привязан к номеру команды, как в плеере сцены (1 — синяя, 2 — оранжевая),
-          // а не к порядку сортировки по счёту.
+          // The colour follows the team number, as in the scene player (1 blue, 2 orange),
+          // not the order sorted by score.
           <section className={`team-card ${team.team === 1 ? 't1' : 't2'}`} key={team.team} style={{ marginBottom: 16 }}>
             <div className="team-head">
               <span className="team-dot" style={{ background: team.team === 1 ? 'var(--team1-bright)' : 'var(--team2-bright)' }} />

@@ -9,7 +9,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   return <div className="row"><span className="muted">{label}</span><span>{children}</span></div>
 }
 
-/** Текущий клан, история кланов по StatShark и кланы из реплеев бота. */
+/** The current squadron, the squadron history from StatShark and the squadrons in the bot's replays. */
 export function PlayerClanSection({ clan, rating, squadrons, playedFor }: {
   clan: PlayerClan | null
   rating: PlayerProfile['rating']

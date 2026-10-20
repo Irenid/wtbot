@@ -6,9 +6,9 @@ export interface PageSection {
 }
 
 /**
- * Липкое оглавление длинной страницы: кнопки прокручивают к разделу, а не
- * меняют адрес — роутер не перерисовывает страницу. scroll-margin у разделов
- * (.player-section) оставляет место под шапку.
+ * The sticky contents of a long page: the buttons scroll to a section instead of
+ * changing the address, so the router does not redraw the page. The sections'
+ * scroll-margin (.player-section) leaves room for the header.
  */
 export function SectionNav({ sections }: { sections: readonly PageSection[] }) {
   if (sections.length < 2) return null

@@ -30,7 +30,7 @@ function sortValue(row: VehicleRow, key: SortKey): number {
   }
 }
 
-/** Режимы источника: realistic/simulator у StatShark, как и в modeLabel. */
+/** The source's modes: StatShark's realistic/simulator, as in modeLabel. */
 function modeOf(mode: string | null): ModeFilter | null {
   if (mode === 'arcade') return 'arcade'
   if (mode === 'realistic') return 'realistic'
@@ -39,8 +39,8 @@ function modeOf(mode: string | null): ModeFilter | null {
 }
 
 /**
- * Техника аккаунта (до 300 строк источника по вылетам): поиск, фильтры по
- * режиму, классу и нации из словаря техники, сортировка по любому столбцу.
+ * The account's vehicles (up to 300 source rows by sorties): search, filters by
+ * mode, class and nation from the vehicle dictionary, sorting by any column.
  */
 export function PlayerVehicles({ account, dict }: { account: AccountView; dict: VehicleDict }) {
   const [query, setQuery] = useState('')

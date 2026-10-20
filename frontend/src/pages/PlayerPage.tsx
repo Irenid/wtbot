@@ -79,12 +79,12 @@ function vehicleName(dict: VehicleDict, id: string): string {
   return dict[id]?.name ?? id
 }
 
-/** Самая свежая проверка источников — по ней видно, что обновление пришло. */
+/** The latest source check: it shows that the refresh arrived. */
 function checkedAtBySource(profile: PlayerProfile): Map<string, number> {
   return new Map(profile.accounts.map((account) => [account.source, account.checkedAt ?? 0]))
 }
 
-// Ключ стека фрагов → акцентный цвет «любимого класса» (подпись берётся из словаря).
+// Kill stack key → the accent colour of the "favourite class" (the label comes from the dictionary).
 const KILL_BRIGHT: Record<string, string> = {
   airKills: 'var(--team1-bright)',
   groundKills: 'var(--team2-bright)',

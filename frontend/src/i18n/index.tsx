@@ -1,5 +1,5 @@
-// Лёгкая локализация без зависимостей: словари-модули, фолбэк на русский,
-// плюрализация через Intl.PluralRules, выбор языка в localStorage.
+// Light localization without dependencies: dictionary modules, the Russian fallback,
+// plurals by Intl.PluralRules, the chosen language in localStorage.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ru, type MessageKey } from './ru'
 import { en } from './en'
@@ -17,7 +17,7 @@ export const LOCALES: readonly { value: Locale; label: string }[] = [
   { value: 'es', label: 'ES' },
 ]
 
-/** Неполный словарь допустим: отсутствующий ключ падает на русский канон. */
+/** A dictionary may be incomplete: a missing key falls back to the Russian canon. */
 const DICTS: Record<Locale, Partial<Record<MessageKey, string>>> = { ru, en, de, fr, es }
 
 const STORAGE_KEY = 'wtbot-locale'
@@ -26,16 +26,16 @@ function detectLocale(): Locale {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY)
     if (saved && LOCALES.some((entry) => entry.value === saved)) return saved as Locale
-  } catch { /* приватный режим */ }
+  } catch { /* private mode */ }
   const nav = (navigator.language || 'ru').slice(0, 2).toLowerCase()
   return LOCALES.some((entry) => entry.value === nav) ? (nav as Locale) : 'en'
 }
 
-// Модульное состояние синхронизировано с провайдером: чистые функции
-// форматирования (format.ts) читают локаль без обращения к React-контексту.
+// Module state follows the provider: the pure formatting functions
+// (format.ts) read the locale without the React context.
 let currentLocale: Locale = 'ru'
 
-/** Текущая локаль для Intl-форматирования чисел и дат. */
+/** The current locale for Intl formatting of numbers and dates. */
 export function localeTag(): string {
   return currentLocale === 'ru' ? 'ru-RU' : currentLocale
 }
@@ -48,15 +48,15 @@ function interpolate(template: string, params?: Record<string, string | number>)
   })
 }
 
-/** Перевод по ключу с подстановками {x}; неизвестный язык/ключ → русский. */
+/** The translation of a key with {x} substitutions; an unknown language or key gives Russian. */
 export function t(key: MessageKey, params?: Record<string, string | number>): string {
   const template = DICTS[currentLocale][key] ?? ru[key]
   return interpolate(template, params)
 }
 
 /**
- * Множественная форма: base + категория CLDR (one/few/many/other) c фолбэком
- * на other. Значение {n} подставляется автоматически.
+ * A plural form: base + the CLDR category (one/few/many/other), falling back
+ * to other (pluralTemplate). {n} is substituted automatically.
  */
 export function tp(base: string, n: number, params?: Record<string, string | number>): string {
   const category = new Intl.PluralRules(localeTag()).select(n)
@@ -88,15 +88,15 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     currentLocale = detected
     return detected
   })
-  // Язык документа и заголовок вкладки идут за интерфейсом — включая первый рендер,
-  // когда язык взят из localStorage или из navigator, а не из разметки index.html.
+  // The document language and the tab title follow the interface, the first render included,
+  // when the language comes from localStorage or navigator, not from index.html.
   useEffect(() => {
     document.documentElement.lang = locale
     document.title = t('app.title')
   }, [locale])
   const setLocale = useCallback((next: Locale) => {
     currentLocale = next
-    try { window.localStorage.setItem(STORAGE_KEY, next) } catch { /* приватный режим */ }
+    try { window.localStorage.setItem(STORAGE_KEY, next) } catch { /* private mode */ }
     setLocaleState(next)
   }, [])
   const value = useMemo(() => ({ locale, setLocale }), [locale, setLocale])

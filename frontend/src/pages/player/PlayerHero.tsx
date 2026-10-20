@@ -11,13 +11,13 @@ export type RefreshState = 'idle' | 'checking' | 'updating' | 'done' | 'slow' | 
 const WT_PROFILE_URL = 'https://warthunder.com/en/community/userinfo/?nick='
 const STATSHARK_PROFILE_URL = 'https://statshark.net/player/'
 
-/** Буфер обмена есть только в защищённом контексте (HTTPS или localhost). */
+/** The clipboard exists only in a secure context (HTTPS or localhost). */
 const clipboardAvailable = typeof navigator !== 'undefined' && navigator.clipboard !== undefined
 
 export function PlayerHero({ profile, clan, account, updatedAt, refresh, onRetry }: {
   profile: PlayerProfile
   clan: PlayerClan | null
-  /** Сведения об аккаунте: уровень и даты — из любого источника, где они есть. */
+  /** Account facts: level and dates from whichever source has them. */
   account: Pick<PlayerAccount, 'level' | 'title' | 'registeredAt' | 'lastOnlineAt'>
   updatedAt: number | null
   refresh: RefreshState

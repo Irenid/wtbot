@@ -4,7 +4,7 @@ import { fmtDate, fmtInt, fmtPercent, fmtPlace, rankMetricLabel, rankModeLabel }
 import { t } from '../../i18n'
 
 const METRICS: readonly PlayerRankMetric[] = ['battles', 'victories', 'winRate', 'score', 'airKills', 'groundKills']
-/** Порядок строк: общие рейтинги, затем танки, авиация, вертолёты, флот. */
+/** Row order: overall ratings, then tanks, aircraft, helicopters, ships. */
 const MODE_ORDER = [
   'historical', 'arcade', 'simulation',
   'tank_realistic', 'tank_arcade', 'tank_simulation',
@@ -17,9 +17,9 @@ function metricValue(metric: PlayerRankMetric, value: number): string {
 }
 
 /**
- * Места игрока среди всех игроков WT по данным StatShark: строки — рейтинги
- * (общие и по родам войск), колонки — метрики. Ниже — как менялось место по
- * победам (первая и последняя точка истории).
+ * The player's places among all WT players by StatShark: rows are the ratings
+ * (overall and per branch), columns the metrics. Below: how the place by wins
+ * changed (the first and last points of the history).
  */
 export function PlayerRanks({ account }: { account: PlayerAccount }) {
   const byMode = new Map<string, Map<PlayerRankMetric, { value: number; place: number }>>()

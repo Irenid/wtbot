@@ -22,12 +22,12 @@ function vehicleName(dict: VehicleDict, id: string): string {
   return dict[id]?.name ?? id
 }
 
-/** Оружие из battle_kills: словарь техники знает только часть id — остальным читаемый вид. */
+/** Weapons from battle_kills: the vehicle dictionary knows only some ids; the rest get a readable form. */
 function weaponName(dict: VehicleDict, id: string): string {
   return dict[id]?.name ?? id.replace(/_/g, ' ')
 }
 
-/** Счётчик по игрокам со ссылкой на профиль по WT user id. */
+/** A per-player counter linking the profile by WT user id. */
 function PlayerCounts({ title, rows }: { title: string; rows: PlayerInsightPlayer[] }) {
   const max = Math.max(1, ...rows.map((row) => row.count))
   return (
@@ -56,8 +56,8 @@ function VehicleCounts({ title, rows, dict }: { title: string; rows: { vehicleId
 }
 
 /**
- * Разбор локальных реплеев за период: на каких картах, на чём и против кого
- * игрок воюет, с кем в команде, чем и кого уничтожает и когда играет.
+ * The period's local replays: on which maps, in what and against whom
+ * the player fights, with whom in the team, what and whom they destroy, and when they play.
  */
 export function PlayerInsightsSection({ insights, error, days, onDays, dict }: {
   insights: PlayerInsights | null | undefined

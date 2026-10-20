@@ -115,7 +115,7 @@ export const KILL_PARTS = [
   { key: 'navalKills' as const, labelKey: 'metric.killsNaval' as const, color: 'var(--naval)' },
 ]
 
-/** Пропорциональный стек «воздух/земля/флот» с легендой и точными значениями. */
+/** A proportional air/ground/naval stack with a legend and exact values. */
 export function KillsStack(row: { airKills: number | null; groundKills: number | null; navalKills: number | null }) {
   const values = KILL_PARTS.map((part) => row[part.key])
   const known = values.filter((value): value is number => value !== null)
@@ -166,7 +166,7 @@ export function Delta({ value, invert }: { value: number | null; invert?: boolea
   )
 }
 
-/* Дельта-пилюля с тонированным фоном, как в ростерах и лентах боёв макета. */
+/* A delta pill on a tinted background, as in the mock-up's rosters and battle lists. */
 export function DeltaPill({ value }: { value: number | null }) {
   if (value === null || value === 0) return null
   const positive = value > 0
@@ -184,12 +184,12 @@ export function ResultBadge({ won }: { won: boolean | null }) {
     : <span className="result-badge loss">{t('battlePage.result.loss')}</span>
 }
 
-/* Место в рейтинге: золотая медалька для первого, нейтральная для остальных. */
+/* A ranking place: a gold medal for the first, neutral for the rest. */
 export function RankBadge({ rank }: { rank: number }) {
   return <span className={`rank-badge${rank === 1 ? ' gold' : ''}`}>{rank}</span>
 }
 
-/* Сегментированный переключатель (периоды, фильтры, скорость плеера). */
+/* A segmented switch (periods, filters, player speed). */
 /** The option a key moves a radio group's choice to (wrapping); null for other keys or no options. */
 export function segControlTarget(chosen: number, count: number, key: string): number | null {
   if (count <= 0) return null
@@ -322,7 +322,7 @@ export function Panel({ title, sub, children }: { title: string; sub?: ReactNode
   )
 }
 
-/* Заголовок секции карточки: золотой маркер + аптайтл + подсказка справа. */
+/* A card section header: a gold marker, an uptitle and a hint on the right. */
 export function SecHead({ title, hint, children }: { title: string; hint?: ReactNode; children?: ReactNode }) {
   return (
     <div className="sec-head">
@@ -337,7 +337,7 @@ export function Loading({ text }: { text?: string }) {
   return <div className="loading">{text ?? t('common.loading')}</div>
 }
 
-/** Известные коды API переводятся; текст сервера (русский) — фолбэк. */
+/** Known API codes are translated; the server's text is the fallback. */
 export function ErrorNotice({ error }: { error: unknown }) {
   let message: string
   if (error instanceof SiteApiError) {
