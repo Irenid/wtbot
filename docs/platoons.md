@@ -5,8 +5,8 @@
 and play from the rooms beside it (the voice channels of its category, made by
 the server's join-to-create hub or by hand). A post, edited in place in the
 chosen channel (the lobby's chat by default; Test pechenka: `расписание-и-сборы`,
-beside rulebot's gathering), suggests who should play where:
-the most useful for the BR that plays now, not the first to arrive. The bot
+beside rulebot's gathering), suggests who should play where,
+the most useful for the BR that plays now (the post does not say so). The bot
 moves nobody and creates no room (the owner's decision 2026-10-21: suggestions,
 not seating; the field commander decides). Measured 2026-10-21 on the backup of
 10:09 UTC: 64,290 squadron battles of 2026-07-15 – 10-21, all 8 v 8 (no

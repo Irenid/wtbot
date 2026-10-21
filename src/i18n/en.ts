@@ -141,7 +141,7 @@ export const en: BotText = {
     statsRemoved: 'The place and rating channels are deleted.',
     statsNotSet: 'This server has no place and rating channels.',
     platoonsSet: (lobby, squadron, channel) => `Platoon suggestions are on: the bot watches ${squadron} players in ${lobby} and the voice channels `
-      + `beside it and posts in ${channel} who should play where, the most useful for the current BR first. It moves nobody.`,
+      + `beside it and posts in ${channel} who should play where. It moves nobody.`,
     platoonsRemoved: 'Platoon suggestions are off; their post is deleted.',
     platoonsNotSet: 'Platoon suggestions are not set up on this server.',
     statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,
@@ -417,9 +417,7 @@ export const en: BotText = {
 
   platoons: {
     title: (squadron, cap) => `Platoons of ${squadron}${cap === null ? '' : ` · BR ${cap.toFixed(1)}`}`,
-    intro: 'Who of the players in voice should play: the most useful for this BR, not the first to come. '
-      + 'Usefulness counts wins, kills, deaths and assists in squadron battles, the battles at this BR most, and the season PSR. '
-      + 'These are suggestions: the bot moves nobody, the field commander decides.',
+    intro: 'Who of the players in voice should play where. These are suggestions: the bot moves nobody, the field commander decides.',
     room: (name, players) => `${name} · ${players}/8`,
     short: (missing) => ` · ${missing} missing`,
     newPlatoon: (index) => `New platoon${index === null ? '' : ` ${index}`} · 8/8, needs a room`,

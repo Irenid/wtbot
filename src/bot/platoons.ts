@@ -48,8 +48,8 @@ import { parseWtNick } from './voice-tracker.js'
  * from the rooms beside it (the voice channels of its category, made by the
  * server's join-to-create hub or by hand). A post, edited in place (sent anew
  * at the channel's bottom once buried, sinksPost), suggests
- * who should play where — the most useful for the BR that plays now, not the
- * first to come (src/platoons/: identify.ts who they are, strength.ts how
+ * who should play where — the most useful for the BR that plays now (the
+ * post itself never says so; src/platoons/: identify.ts who they are, strength.ts how
  * useful, plan.ts the advice for every case). The bot moves nobody and
  * creates no room: the field commander decides. Ratings are never shown.
  *

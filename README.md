@@ -75,7 +75,7 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    for every voice channel in it, join-to-create rooms included; none — all
    its readers can see), `/settings platoons set` (a post suggests who of the
    players in a voice channel and the voice channels of its category should
-   play where, the most useful for the current BR first; the bot moves nobody:
+   play where; the bot moves nobody:
    `docs/platoons.md`), `/playerboard setup`, `/language`; `/settings show`
    lists them and who can use each command. Server Settings → Integrations →
    the bot opens a command to other roles (a staff role without Manage
