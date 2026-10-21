@@ -127,8 +127,8 @@ export const en: BotText = {
       'and renames them. Or pick a category where its role has View Channel and Manage Channels.',
     statsSet: (squadron, category) =>
       (category === null
-        ? `Two locked voice channels with the place and rating of ${squadron} are at the top of the channel list ` +
-          '(Discord lists text channels outside categories above them).'
+        ? `Two voice channels with the place and rating of ${squadron} are at the top of the channel list ` +
+          '(Discord lists text channels outside categories above them): everyone sees them, nobody joins or uses them.'
         : `Two voice channels with the place and rating of ${squadron} are in ${category}, with its permissions: ` +
           'whoever sees the category sees them.') +
       ' They change within a minute of a new leaderboard reading, every 20 minutes at most. ' +

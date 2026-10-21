@@ -5,10 +5,10 @@ import { guildLocale } from './locale.js'
 
 /**
  * Two voice channels nobody joins show a squadron's leaderboard place and rating in their names
- * (/settings stats set): in a category the server picks, created bare so they copy its overwrites
- * (the server decides who sees them; the bot needs View Channel and Manage Channels there only), or
- * at the top of the channel list with overwrites of their own, which needs Manage Channels and View
- * Channel on the server: Discord lets a bot grant only permissions it holds. warthunder.com reports them at the
+ * (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
+ * needs View Channel, Manage Channels and Connect on the server: Discord lets a bot allow or deny only
+ * permissions it holds; or in a category the server picks, created bare so they copy its overwrites
+ * (the server decides who sees them; the bot needs View Channel and Manage Channels there only). warthunder.com reports them at the
  * `wt-clans` crawls (every 20 min), so a minute-long tick compares the names with the database and
  * renames a channel only when its text differs: Discord allows two renames per channel in 10
  * minutes, far above a crawl's cadence. A language change renames them within a minute too.
@@ -48,10 +48,31 @@ function names(guild: Guild, clan: string): { place: string; points: string } {
   return { place: t.statsPlaceName(figures?.place ?? null), points: t.statsPointsName(figures?.rating ?? null) }
 }
 
-/** The channels may be viewed, never joined: the bot renames them through Manage Channels. */
-const LOCKED = (guild: Guild) => [
-  { id: guild.id, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.Connect] },
-]
+/**
+ * What a channel at the top of the list denies everyone (Test pechenka's owner, 2026-10-21: nobody
+ * joins, nothing else either): a voice channel's every permission but View Channel (the names are the
+ * point), Manage Channels (an @everyone deny binds the bot too, and it renames them) and Manage
+ * Permissions (Discord sets that in a channel for administrators only). Discord lets a bot deny only
+ * permissions it holds on the server, so the bot denies those it holds; /settings requires Connect.
+ */
+const CLOSED = [
+  PermissionFlagsBits.CreateInstantInvite, PermissionFlagsBits.AddReactions, PermissionFlagsBits.PrioritySpeaker,
+  PermissionFlagsBits.Stream, PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendTTSMessages,
+  PermissionFlagsBits.ManageMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles,
+  PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.MentionEveryone, PermissionFlagsBits.UseExternalEmojis,
+  PermissionFlagsBits.Connect, PermissionFlagsBits.Speak, PermissionFlagsBits.MuteMembers, PermissionFlagsBits.DeafenMembers,
+  PermissionFlagsBits.MoveMembers, PermissionFlagsBits.UseVAD, PermissionFlagsBits.ManageWebhooks,
+  PermissionFlagsBits.UseApplicationCommands, PermissionFlagsBits.ManageEvents, PermissionFlagsBits.UseExternalStickers,
+  PermissionFlagsBits.UseEmbeddedActivities, PermissionFlagsBits.UseSoundboard, PermissionFlagsBits.CreateEvents,
+  PermissionFlagsBits.UseExternalSounds, PermissionFlagsBits.SendVoiceMessages, PermissionFlagsBits.SetVoiceChannelStatus,
+  PermissionFlagsBits.SendPolls, PermissionFlagsBits.UseExternalApps, PermissionFlagsBits.PinMessages,
+  PermissionFlagsBits.BypassSlowmode,
+].reduce((all, bit) => all | bit, 0n)
+
+/** Everyone views the channel; everything else the bot holds on the server is denied. */
+export function lockedOverwrites(guildId: string, botPermissions: bigint): { id: string; allow: bigint; deny: bigint }[] {
+  return [{ id: guildId, allow: PermissionFlagsBits.ViewChannel, deny: CLOSED & botPermissions }]
+}
 
 async function deleteChannels(guild: Guild, pair: Pair): Promise<void> {
   for (const id of [pair.placeId, pair.pointsId]) {
@@ -72,8 +93,9 @@ export async function setupSquadronStats(guild: Guild, clan: string, category: C
     await deleteChannels(guild, previous)
   }
   const text = names(guild, clan)
+  const locked = lockedOverwrites(guild.id, guild.members.me?.permissions.bitfield ?? 0n)
   const create = (name: string, position: number) => category === null
-    ? guild.channels.create({ name, type: ChannelType.GuildVoice, position, permissionOverwrites: LOCKED(guild) })
+    ? guild.channels.create({ name, type: ChannelType.GuildVoice, position, permissionOverwrites: locked })
     : category.children.create({ name, type: ChannelType.GuildVoice, position })
   const place = await create(text.place, 0)
   const points = await create(text.points, 1).catch(async (error: unknown) => {

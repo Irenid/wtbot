@@ -576,13 +576,14 @@ Data:
   squadron's leaderboard place and rating in their names; a 60 s tick (only with
   `WT_ANNOUNCE_ENABLED`: it renames channels on real servers) renames one only
   when its text differs (Discord: 2 renames per 10 min), so a crawl (20 min)
-  shows within a minute; deleting one channel removes both. In a category they
-  are created bare and copy its overwrites: the bot needs View Channel and Manage
-  Channels there only (Test pechenka: the `squadron_stats` category of
-  discordAudit's design.mjs). Without one they go to the top of the list with their own
-  overwrites (everyone views, nobody connects), which needs View Channel, Manage
-  Channels and Connect on the server: Discord lets a bot allow or deny only
-  permissions it holds there.
+  shows within a minute; deleting one channel removes both. Without a category
+  they go to the top of the list with their own overwrites: everyone views them,
+  every other channel permission the bot holds is denied (`CLOSED`: nobody joins
+  or writes), which needs View Channel, Manage Channels and Connect on the
+  server, since Discord lets a bot allow or deny only permissions it holds there
+  (Test pechenka: WLILY holds the first two server-wide, discordAudit's
+  design.mjs). In a category they are created bare and copy its overwrites: the
+  bot needs View Channel and Manage Channels there only.
 - Access (`src/bot/access.ts`): Discord's per-command permissions are the
   only gate on commands — the registered defaults (Manage Server for
   `/settings`, `/language`, `/playerboard`; everyone for the rest) plus a
