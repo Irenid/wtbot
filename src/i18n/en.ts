@@ -64,6 +64,9 @@ export const en: BotText = {
       voice: 'Voice channels the player board shows',
       voiceAdd: 'Show on the board the players of a voice channel, or of every one in a category',
       voiceRemove: 'Stop showing a voice channel or category on the board',
+      stats: 'Channels showing a squadron\'s place and rating',
+      statsSet: 'Create two channels at the top of the list with a squadron\'s place and rating',
+      statsRemove: 'Delete the place and rating channels',
       channel: 'The channel',
       squadron: 'Squadron tag or name; empty: every squadron\'s battles',
       squadronRemove: 'Only this squadron\'s posts; empty: all of the channel\'s',
@@ -116,6 +119,15 @@ export const en: BotText = {
       : `The board no longer shows ${channel}: it shows every voice channel the bot can see again, ` +
         'except those some who see the board cannot see.',
     notSet: (channel) => `${channel} was not set up for that.`,
+    statsNeedsManageChannels: 'The bot needs the Manage Channels permission: it creates the two channels and renames them.',
+    statsSet: (squadron) =>
+      `Two locked voice channels with the place and rating of ${squadron} are at the top of the channel list ` +
+      '(Discord lists text channels outside categories above them). They change within a minute of a new ' +
+      'leaderboard reading, every 20 minutes at most. Moving or renaming them is fine; deleting one removes both.',
+    statsRemoved: 'The place and rating channels are deleted.',
+    statsNotSet: 'This server has no place and rating channels.',
+    statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,
+    statsPointsName: (points) => `Squadron rating: ${points ?? '–'}`,
     show: {
       title: 'The bot on this server',
       language: 'Language',
@@ -123,6 +135,8 @@ export const en: BotText = {
       scout: 'Screenshots read in',
       voice: 'Voice channels on the board',
       playerBoard: 'Player board',
+      stats: 'Place and rating channels',
+      noStats: 'none: /settings stats set',
       access: 'Who can use the commands',
       languageValue: (name, chosen) => chosen ? name : `${name} (the default; /language changes it)`,
       everySquadron: 'every squadron',

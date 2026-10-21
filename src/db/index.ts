@@ -2879,6 +2879,32 @@ export function getSquadronLeaderboardPlace(tag: string): SquadronPlace | null {
   return { place: row.position, readAt: row.rating_at }
 }
 
+/** A squadron's leaderboard figures by tag core (src/bot/squadron-stats.ts keeps them in channel names). */
+export interface SquadronFigures {
+  rating: number
+  /** null — never read, or the last full crawl missed it (stale; see getSquadronLeaderboardPlace). */
+  place: number | null
+}
+
+/**
+ * The official rating and place of the squadron whose tag core is `core` (letters and digits,
+ * lower case); the best-rated of its decorated variants. null — no rated row. A scan of the few
+ * thousand rows of `clans`: once a minute per server.
+ */
+export function getSquadronFigures(core: string): SquadronFigures | null {
+  const rows = getDb()
+    .prepare('SELECT tag, rating, position, rating_at FROM clans WHERE rating IS NOT NULL')
+    .all() as { tag: string; rating: number; position: number | null; rating_at: number | null }[]
+  const own = rows
+    .filter((row) => row.tag.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase() === core)
+    .sort((a, b) => b.rating - a.rating)[0]
+  if (!own) return null
+  const fullCrawlAt = getLastFullClanCrawlAt()
+  const fresh = own.position !== null && own.position > 0 && own.rating_at !== null &&
+    (fullCrawlAt === null || own.rating_at >= fullCrawlAt)
+  return { rating: own.rating, place: fresh ? own.position : null }
+}
+
 /** A squadron's battles with a stored winner. */
 export interface SquadronResults {
   wins: number

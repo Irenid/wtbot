@@ -25,6 +25,8 @@ const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   'settings.scoutAdded': [['<#1>', true], ['<#1>', false]],
   'settings.voiceAdded': [['<#1>', true, false], ['<#1>', false, true]],
   'settings.voiceRemoved': [['<#1>', true], ['<#1>', false]],
+  'settings.statsPlaceName': [[12], [null]],
+  'settings.statsPointsName': [[12345], [null]],
   'settings.show.languageValue': [['English', true], ['English', false]],
 }
 

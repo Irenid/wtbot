@@ -17,6 +17,7 @@ import { squadronLabel } from '../../scout/format.js'
 import { boardAudience, describeCommandAccess } from '../access.js'
 import { addSetting, guildChannels, removeSetting } from '../guild-settings.js'
 import { chosenGuildLocale, guildLocale, userLocale } from '../locale.js'
+import { removeSquadronStats, setupSquadronStats, squadronStatsSquadron } from '../squadron-stats.js'
 import type { Command } from '../types.js'
 import { squadronChoice } from './scout.js'
 
@@ -119,6 +120,14 @@ export const settings: Command = {
           .setName('remove')
           .setDescription(c.voiceRemove)
           .addChannelOption((option) => option.setName('channel').setDescription(c.channel).addChannelTypes(...VOICE_CHANNELS).setRequired(true))))
+      .addSubcommandGroup((group) => group
+        .setName('stats')
+        .setDescription(c.stats)
+        .addSubcommand((sub) => sub
+          .setName('set')
+          .setDescription(c.statsSet)
+          .addStringOption((option) => option.setName('squadron').setDescription(c.squadron).setMaxLength(64).setAutocomplete(true).setRequired(true)))
+        .addSubcommand((sub) => sub.setName('remove').setDescription(c.statsRemove)))
   },
 
   async autocomplete(interaction) {
@@ -142,6 +151,10 @@ export const settings: Command = {
     const action = interaction.options.getSubcommand()
     if (group === null) {
       await interaction.editReply({ embeds: [await showEmbed(interaction, t)] })
+      return
+    }
+    if (group === 'stats') {
+      await executeStats(interaction, action, t)
       return
     }
     const kind = group as GuildChannelKind
@@ -213,6 +226,36 @@ export const settings: Command = {
   },
 }
 
+/** /settings stats set|remove: the locked channels with a squadron's place and rating (squadron-stats.ts). */
+async function executeStats(
+  interaction: ChatInputCommandInteraction<'cached'>,
+  action: string,
+  t: BotText['settings'],
+): Promise<void> {
+  try {
+    if (action === 'remove') {
+      await interaction.editReply((await removeSquadronStats(interaction.guild)) ? t.statsRemoved : t.statsNotSet)
+      return
+    }
+    if (interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels) !== true) {
+      await interaction.editReply(t.statsNeedsManageChannels)
+      return
+    }
+    const query = interaction.options.getString('squadron', true).trim()
+    const found = findSquadrons(query, 1)[0]
+    if (!found) {
+      await interaction.editReply(t.squadronNotFound(query.slice(0, 64)))
+      return
+    }
+    await setupSquadronStats(interaction.guild, found.core)
+    console.log(`[settings] server ${interaction.guildId}: stats channels for ${found.core} created`)
+    await interaction.editReply(t.statsSet(squadronLabel(found.displayTag, found.name)))
+  } catch (error) {
+    console.warn(`[settings] server ${interaction.guildId}: stats ${action} failed:`, error)
+    await interaction.editReply(t.statsNeedsManageChannels)
+  }
+}
+
 /** Whether the server's player board leaves the voice channel out: some who see the board cannot see it (access.ts). */
 function hiddenOnBoard(guild: Guild, channelId: string): boolean {
   const board = getPlayerStatBoard(guild.id)
@@ -272,6 +315,7 @@ async function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: 
   const scout = guildChannels('scout', guild.id)
   const voice = guildChannels('voice', guild.id)
   const board = getPlayerStatBoard(guild.id)
+  const statsClan = squadronStatsSquadron(guild.id)
   const boardSees = board !== null && board.enabled ? boardAudience(guild, board.channelId) : () => true
   const language = botText(guildLocale(guild.id, guild.preferredLocale)).languageName
   const value = (text: string): string => text.slice(0, 1024)
@@ -297,6 +341,10 @@ async function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: 
             (boardSees(row.channelId) ? '' : ` ${s.hiddenOnBoard}`))).join('\n')),
       },
       { name: s.playerBoard, value: board === null || !board.enabled ? s.noBoard : `<#${board.channelId}>` },
+      {
+        name: s.stats,
+        value: value(statsClan === null ? s.noStats : squadronName(statsClan)),
+      },
       { name: s.access, value: access },
     )
     .setFooter({ text: s.footer })

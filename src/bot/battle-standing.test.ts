@@ -7,6 +7,7 @@ import test from 'node:test'
 import {
   CLAN_FULL_CRAWL_KEY,
   closeDb,
+  getSquadronFigures,
   getSquadronLeaderboardPlace,
   getSquadronResults,
   initDb,
@@ -108,6 +109,20 @@ test('the leaderboard place is the table\'s own number, hidden once the last ful
     assert.equal(getSquadronLeaderboardPlace(WLILY)?.place, 105, 'read by the last full crawl')
     setBotState(CLAN_FULL_CRAWL_KEY, String(DAY + 20 * HOUR))
     assert.equal(getSquadronLeaderboardPlace(WLILY), null, 'missed by a later full crawl: disbanded or at zero')
+  } finally {
+    closeDb()
+  }
+})
+
+test('squadron figures are found by tag core, and the place goes stale after a later full crawl', () => {
+  initDb(':memory:')
+  try {
+    saveClanLeaderboard([{ tag: WLILY, position: 105, ...LEADERBOARD_ROW }], DAY + 14 * HOUR)
+    const rating = LEADERBOARD_ROW.rating
+    assert.deepEqual(getSquadronFigures('wlily'), { rating, place: 105 })
+    assert.equal(getSquadronFigures('nobody'), null)
+    setBotState(CLAN_FULL_CRAWL_KEY, String(DAY + 20 * HOUR))
+    assert.deepEqual(getSquadronFigures('wlily'), { rating, place: null })
   } finally {
     closeDb()
   }

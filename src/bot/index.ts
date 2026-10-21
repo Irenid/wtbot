@@ -6,6 +6,12 @@ import { startCommandSync, stopCommandSync } from './command-sync.js'
 import { commands } from './commands/index.js'
 import { handleBattleButton, stopBattlePostUpdates } from './commands/battle.js'
 import { startBattleAnnouncer, stopBattleAnnouncer } from './battle-announcer.js'
+import {
+  forgetSquadronStatsChannel,
+  forgetSquadronStatsGuild,
+  startSquadronStats,
+  stopSquadronStats,
+} from './squadron-stats.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
 import type { ScoutStatSharkSource } from '../scout/report.js'
 import { forgetGuildChannels, importEnvChannels } from './guild-settings.js'
@@ -80,6 +86,8 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
         } else {
           console.log('[announce] Battle announcements are off')
         }
+        // Renames channels on real servers, so it follows the announcements' switch.
+        if (config.announceEnabled) startSquadronStats(readyClient)
       })
   })
   client.on(Events.MessageCreate, (message) => {
@@ -91,8 +99,10 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
     if (channel.isDMBased()) return
     const removed = forgetGuildChannels({ channelId: channel.id })
     if (removed > 0) console.log(`[settings] channel ${channel.id} was deleted: ${removed} setting(s) removed`)
+    void forgetSquadronStatsChannel(channel.guild, channel.id)
   })
   client.on(Events.GuildDelete, (guild) => {
+    forgetSquadronStatsGuild(guild.id)
     const removed = forgetGuildChannels({ guildId: guild.id })
     console.log(`[bot] removed from server ${guild.id}: ${removed} channel setting(s) dropped`)
   })
@@ -195,6 +205,7 @@ export async function stopBotWork(graceMs = 10_000): Promise<void> {
   // Each call sets its stopping flag at once, so all start before the wait.
   const drain = Promise.allSettled([
     stopBattleAnnouncer(),
+    stopSquadronStats(),
     stopPlayerBoardPublisher(),
     stopBattlePostUpdates(),
     stopCommandSync(),

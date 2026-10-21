@@ -45,6 +45,9 @@ export interface BotText {
       voice: string
       voiceAdd: string
       voiceRemove: string
+      stats: string
+      statsSet: string
+      statsRemove: string
       channel: string
       squadron: string
       squadronRemove: string
@@ -86,6 +89,15 @@ export interface BotText {
     /** `othersLeft` false — the board shows every voice channel again. */
     voiceRemoved(channel: string, othersLeft: boolean): string
     notSet(channel: string): string
+    /** The bot lacks Manage Channels on the server (it creates and renames the stats channels). */
+    statsNeedsManageChannels: string
+    /** `squadron` as the game shows it. */
+    statsSet(squadron: string): string
+    statsRemoved: string
+    statsNotSet: string
+    /** Channel names (up to 100 characters); null — the squadron is not on the leaderboard. */
+    statsPlaceName(place: number | null): string
+    statsPointsName(points: number | null): string
     show: {
       title: string
       language: string
@@ -93,6 +105,8 @@ export interface BotText {
       scout: string
       voice: string
       playerBoard: string
+      stats: string
+      noStats: string
       /** The field listing who can use the commands. */
       access: string
       /** `chosen` false — the default, not a /language choice. */

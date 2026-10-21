@@ -571,6 +571,13 @@ Data:
   bot drops its rows (`ChannelDelete`, `GuildDelete`). The bot always asks for
   `GuildMessages`, and `MessageContent` only when the application has it
   (asking without it fails the login, 4014); messages are not cached.
+- `/settings stats set squadron:` (`src/bot/squadron-stats.ts`, state in `bot_state`
+  `squadron-stats:<guildId>`): two locked voice channels at the top of the list
+  carry a squadron's leaderboard place and rating in their names; a 60 s tick
+  (only with `WT_ANNOUNCE_ENABLED`: it renames channels on real servers) renames
+  one only when its text differs (Discord: 2 renames per 10 min), so a crawl
+  (20 min) shows within a minute. Needs Manage Channels; deleting one channel
+  removes both.
 - Access (`src/bot/access.ts`): Discord's per-command permissions are the
   only gate on commands — the registered defaults (Manage Server for
   `/settings`, `/language`, `/playerboard`; everyone for the rest) plus a
