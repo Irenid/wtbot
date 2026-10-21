@@ -582,8 +582,13 @@ Data:
   or writes), which needs View Channel, Manage Channels and Connect on the
   server, since Discord lets a bot allow or deny only permissions it holds there
   (Test pechenka: WLILY holds the first two server-wide, discordAudit's
-  design.mjs). In a category they are created bare and copy its overwrites: the
-  bot needs View Channel and Manage Channels there only.
+  design.mjs). The bot keeps View Channel and Connect for itself (a member
+  overwrite): Discord answers Missing Access to any change of a voice channel
+  its bot cannot connect to, and the bot cannot fix a channel's overwrites later
+  (no Manage Permissions), so a pair made without it (before 2026-10-21 12:30
+  UTC) is deleted by hand and set up again. In a category they are created bare
+  and copy its overwrites: the bot needs View Channel, Manage Channels and
+  Connect there.
 - `/settings platoons set lobby: squadron: [channel:]` (`src/bot/platoons.ts`,
   `src/platoons/`, state in `bot_state` `platoons:<guildId>`; method,
   measurements and every case: `docs/platoons.md`): a post, edited in place in

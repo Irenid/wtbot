@@ -1,4 +1,6 @@
-import { ChannelType, PermissionFlagsBits, type CategoryChannel, type Client, type Guild } from 'discord.js'
+import {
+  ChannelType, DiscordAPIError, OverwriteType, PermissionFlagsBits, RESTJSONErrorCodes, type CategoryChannel, type Client, type Guild,
+} from 'discord.js'
 import { deleteBotState, getBotState, getSquadronFigures, setBotState } from '../db/index.js'
 import { botText } from '../i18n/index.js'
 import { guildLocale } from './locale.js'
@@ -8,7 +10,9 @@ import { guildLocale } from './locale.js'
  * (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
  * needs View Channel, Manage Channels and Connect on the server: Discord lets a bot allow or deny only
  * permissions it holds; or in a category the server picks, created bare so they copy its overwrites
- * (the server decides who sees them; the bot needs View Channel and Manage Channels there only). warthunder.com reports them at the
+ * (the server decides who sees them; the bot needs View Channel, Manage Channels and Connect there:
+ * Discord answers Missing Access to any change of a voice channel its bot cannot connect to, so a
+ * channel the bot cannot connect to keeps its first name for good). warthunder.com reports them at the
  * `wt-clans` crawls (every 20 min), so a minute-long tick compares the names with the database and
  * renames a channel only when its text differs: Discord allows two renames per channel in 10
  * minutes, far above a crawl's cadence. A language change renames them within a minute too.
@@ -69,9 +73,18 @@ const CLOSED = [
   PermissionFlagsBits.BypassSlowmode,
 ].reduce((all, bit) => all | bit, 0n)
 
-/** Everyone views the channel; everything else the bot holds on the server is denied. */
-export function lockedOverwrites(guildId: string, botPermissions: bigint): { id: string; allow: bigint; deny: bigint }[] {
-  return [{ id: guildId, allow: PermissionFlagsBits.ViewChannel, deny: CLOSED & botPermissions }]
+/**
+ * Everyone views the channel; everything else the bot holds on the server is denied — except, for the bot
+ * itself, View Channel and Connect: the @everyone deny binds the bot too, and without Connect Discord
+ * refuses its renames (Test pechenka 2026-10-21: the pair made with @everyone's overwrite alone answered
+ * Missing Access to the renames of a /language change).
+ */
+export function lockedOverwrites(guildId: string, botId: string, botPermissions: bigint)
+  : { id: string; type: OverwriteType; allow: bigint; deny: bigint }[] {
+  return [
+    { id: guildId, type: OverwriteType.Role, allow: PermissionFlagsBits.ViewChannel, deny: CLOSED & botPermissions },
+    { id: botId, type: OverwriteType.Member, allow: (PermissionFlagsBits.ViewChannel | PermissionFlagsBits.Connect) & botPermissions, deny: 0n },
+  ]
 }
 
 async function deleteChannels(guild: Guild, pair: Pair): Promise<void> {
@@ -93,7 +106,7 @@ export async function setupSquadronStats(guild: Guild, clan: string, category: C
     await deleteChannels(guild, previous)
   }
   const text = names(guild, clan)
-  const locked = lockedOverwrites(guild.id, guild.members.me?.permissions.bitfield ?? 0n)
+  const locked = lockedOverwrites(guild.id, guild.client.user.id, guild.members.me?.permissions.bitfield ?? 0n)
   const create = (name: string, position: number) => category === null
     ? guild.channels.create({ name, type: ChannelType.GuildVoice, position, permissionOverwrites: locked })
     : category.children.create({ name, type: ChannelType.GuildVoice, position })
@@ -146,7 +159,10 @@ async function tick(client: Client): Promise<void> {
         await channel.setName(name, 'squadron stats changed')
         warned.delete(id)
       } catch (error) {
-        if (!warned.has(id)) console.warn(`[squadron-stats] server ${guild.id}: could not rename channel ${id}:`, error)
+        // A pair made before the bot kept Connect for itself cannot be renamed, nor changed by the bot at all.
+        const hint = error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.MissingAccess
+          ? ' (the bot cannot connect to it: delete both channels and run /settings stats set again)' : ''
+        if (!warned.has(id)) console.warn(`[squadron-stats] server ${guild.id}: could not rename channel ${id}${hint}:`, error)
         warned.add(id)
       }
     }

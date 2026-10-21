@@ -55,11 +55,12 @@ const NEEDS: Readonly<Record<GuildChannelKind, readonly PermissionKey[]>> = {
 
 /**
  * The place and rating channels (squadron-stats.ts): in a category they copy its overwrites, so the bot
- * needs to see and manage channels there; at the top of the list they carry their own (everyone sees,
- * nobody connects), and Discord lets a bot allow or deny only permissions it holds on the server.
+ * needs to see, manage and connect to channels there (Discord refuses to change a voice channel its bot
+ * cannot connect to); at the top of the list they carry their own (everyone sees, nobody but the bot
+ * connects), and Discord lets a bot allow or deny only permissions it holds on the server.
  */
 const STATS_NEEDS = {
-  category: ['view', 'manage'],
+  category: ['view', 'manage', 'connect'],
   server: ['view', 'manage', 'connect'],
 } as const satisfies Record<string, readonly PermissionKey[]>
 
