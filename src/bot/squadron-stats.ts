@@ -1,11 +1,14 @@
-import { ChannelType, PermissionFlagsBits, type Client, type Guild } from 'discord.js'
+import { ChannelType, PermissionFlagsBits, type CategoryChannel, type Client, type Guild } from 'discord.js'
 import { deleteBotState, getBotState, getSquadronFigures, setBotState } from '../db/index.js'
 import { botText } from '../i18n/index.js'
 import { guildLocale } from './locale.js'
 
 /**
- * Two locked voice channels at the top of a server's channel list show a squadron's leaderboard
- * place and rating in their names (/settings stats set). warthunder.com reports them at the
+ * Two voice channels nobody joins show a squadron's leaderboard place and rating in their names
+ * (/settings stats set): in a category the server picks, created bare so they copy its overwrites
+ * (the server decides who sees them; the bot needs View Channel and Manage Channels there only), or
+ * at the top of the channel list with overwrites of their own, which needs Manage Channels and View
+ * Channel on the server: Discord lets a bot grant only permissions it holds. warthunder.com reports them at the
  * `wt-clans` crawls (every 20 min), so a minute-long tick compares the names with the database and
  * renames a channel only when its text differs: Discord allows two renames per channel in 10
  * minutes, far above a crawl's cadence. A language change renames them within a minute too.
@@ -58,20 +61,22 @@ async function deleteChannels(guild: Guild, pair: Pair): Promise<void> {
   }
 }
 
-/** Creates the pair for squadron `clan` at the top of the list, replacing the server's previous one. */
-export async function setupSquadronStats(guild: Guild, clan: string): Promise<void> {
+/**
+ * Creates the pair for squadron `clan` in `category`, or at the top of the list without one, replacing
+ * the server's previous pair.
+ */
+export async function setupSquadronStats(guild: Guild, clan: string, category: CategoryChannel | null): Promise<void> {
   const previous = readPair(guild.id)
   if (previous) {
     deleteBotState(KEY + guild.id)
     await deleteChannels(guild, previous)
   }
   const text = names(guild, clan)
-  const place = await guild.channels.create({
-    name: text.place, type: ChannelType.GuildVoice, position: 0, permissionOverwrites: LOCKED(guild),
-  })
-  const points = await guild.channels.create({
-    name: text.points, type: ChannelType.GuildVoice, position: 1, permissionOverwrites: LOCKED(guild),
-  }).catch(async (error: unknown) => {
+  const create = (name: string, position: number) => category === null
+    ? guild.channels.create({ name, type: ChannelType.GuildVoice, position, permissionOverwrites: LOCKED(guild) })
+    : category.children.create({ name, type: ChannelType.GuildVoice, position })
+  const place = await create(text.place, 0)
+  const points = await create(text.points, 1).catch(async (error: unknown) => {
     await place.delete().catch(() => undefined)
     throw error
   })

@@ -40,6 +40,8 @@ const PERMISSION_FLAGS: Readonly<Record<PermissionKey, bigint>> = {
   attach: PermissionFlagsBits.AttachFiles,
   embed: PermissionFlagsBits.EmbedLinks,
   history: PermissionFlagsBits.ReadMessageHistory,
+  manage: PermissionFlagsBits.ManageChannels,
+  connect: PermissionFlagsBits.Connect,
 }
 
 /** What each kind needs: battle posts send a PNG; screenshot answers reply with an embed. */
@@ -48,6 +50,16 @@ const NEEDS: Readonly<Record<GuildChannelKind, readonly PermissionKey[]>> = {
   scout: ['view', 'send', 'embed', 'history'],
   voice: ['view'],
 }
+
+/**
+ * The place and rating channels (squadron-stats.ts): in a category they copy its overwrites, so the bot
+ * needs to see and manage channels there; at the top of the list they carry their own (everyone sees,
+ * nobody connects), and Discord lets a bot allow or deny only permissions it holds on the server.
+ */
+const STATS_NEEDS = {
+  category: ['view', 'manage'],
+  server: ['view', 'manage', 'connect'],
+} as const satisfies Record<string, readonly PermissionKey[]>
 
 const TEXT_CHANNELS = [ChannelType.GuildText, ChannelType.GuildAnnouncement] as const
 /** A category stands for every voice channel in it, so the board follows rooms a join-to-create bot opens there. */
@@ -126,7 +138,8 @@ export const settings: Command = {
         .addSubcommand((sub) => sub
           .setName('set')
           .setDescription(c.statsSet)
-          .addStringOption((option) => option.setName('squadron').setDescription(c.squadron).setMaxLength(64).setAutocomplete(true).setRequired(true)))
+          .addStringOption((option) => option.setName('squadron').setDescription(c.squadron).setMaxLength(64).setAutocomplete(true).setRequired(true))
+          .addChannelOption((option) => option.setName('category').setDescription(c.statsCategory).addChannelTypes(ChannelType.GuildCategory)))
         .addSubcommand((sub) => sub.setName('remove').setDescription(c.statsRemove)))
   },
 
@@ -237,8 +250,25 @@ async function executeStats(
       await interaction.editReply((await removeSquadronStats(interaction.guild)) ? t.statsRemoved : t.statsNotSet)
       return
     }
-    if (interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels) !== true) {
-      await interaction.editReply(t.statsNeedsManageChannels)
+    const picked = interaction.options.getChannel('category')
+    const chosen = picked === null ? undefined : interaction.guild.channels.cache.get(picked.id)
+    const category = chosen?.type === ChannelType.GuildCategory ? chosen : null
+    if (picked !== null && category === null) {
+      await interaction.editReply(t.badChannel)
+      return
+    }
+    const mention = category === null ? null : `<#${category.id}>`
+    // As for the other settings: a member points the bot only at what they can see themselves.
+    if (category !== null && category.permissionsFor(interaction.member)?.has(PermissionFlagsBits.ViewChannel) !== true) {
+      await interaction.editReply(t.cannotView(`<#${category.id}>`))
+      return
+    }
+    const permissions = category === null ? interaction.guild.members.me?.permissions : category.permissionsFor(interaction.client.user)
+    const missing = (category === null ? STATS_NEEDS.server : STATS_NEEDS.category)
+      .filter((key) => permissions?.has(PERMISSION_FLAGS[key]) !== true)
+      .map((key) => t.permissions[key]).join(', ')
+    if (missing !== '') {
+      await interaction.editReply(mention === null ? t.statsNeedsPermissions(missing) : t.missingPermissions(mention, missing))
       return
     }
     const query = interaction.options.getString('squadron', true).trim()
@@ -247,12 +277,12 @@ async function executeStats(
       await interaction.editReply(t.squadronNotFound(query.slice(0, 64)))
       return
     }
-    await setupSquadronStats(interaction.guild, found.core)
-    console.log(`[settings] server ${interaction.guildId}: stats channels for ${found.core} created`)
-    await interaction.editReply(t.statsSet(squadronLabel(found.displayTag, found.name)))
+    await setupSquadronStats(interaction.guild, found.core, category)
+    console.log(`[settings] server ${interaction.guildId}: stats channels for ${found.core} created${category ? ` in ${category.id}` : ''}`)
+    await interaction.editReply(t.statsSet(squadronLabel(found.displayTag, found.name), mention))
   } catch (error) {
     console.warn(`[settings] server ${interaction.guildId}: stats ${action} failed:`, error)
-    await interaction.editReply(t.statsNeedsManageChannels)
+    await interaction.editReply(botText(userLocale(interaction)).failure.command)
   }
 }
 

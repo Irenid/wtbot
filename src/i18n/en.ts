@@ -65,7 +65,8 @@ export const en: BotText = {
       voiceAdd: 'Show on the board the players of a voice channel, or of every one in a category',
       voiceRemove: 'Stop showing a voice channel or category on the board',
       stats: 'Channels showing a squadron\'s place and rating',
-      statsSet: 'Create two channels at the top of the list with a squadron\'s place and rating',
+      statsSet: 'Create two channels with a squadron\'s place and rating',
+      statsCategory: 'The category to create them in; empty: the top of the list (needs more permissions)',
       statsRemove: 'Delete the place and rating channels',
       channel: 'The channel',
       squadron: 'Squadron tag or name; empty: every squadron\'s battles',
@@ -90,6 +91,8 @@ export const en: BotText = {
       attach: 'Attach Files',
       embed: 'Embed Links',
       history: 'Read Message History',
+      manage: 'Manage Channels',
+      connect: 'Connect',
     },
     missingPermissions: (channel, permissions) =>
       `The bot lacks ${permissions} in ${channel}. Give them to its role in that channel, then run the command again.`,
@@ -119,11 +122,17 @@ export const en: BotText = {
       : `The board no longer shows ${channel}: it shows every voice channel the bot can see again, ` +
         'except those some who see the board cannot see.',
     notSet: (channel) => `${channel} was not set up for that.`,
-    statsNeedsManageChannels: 'The bot needs the Manage Channels permission: it creates the two channels and renames them.',
-    statsSet: (squadron) =>
-      `Two locked voice channels with the place and rating of ${squadron} are at the top of the channel list ` +
-      '(Discord lists text channels outside categories above them). They change within a minute of a new ' +
-      'leaderboard reading, every 20 minutes at most. Moving or renaming them is fine; deleting one removes both.',
+    statsNeedsPermissions: (permissions) =>
+      `At the top of the list the bot needs ${permissions} on the server: it creates the channels open to everyone ` +
+      'and renames them. Or pick a category where its role has View Channel and Manage Channels.',
+    statsSet: (squadron, category) =>
+      (category === null
+        ? `Two locked voice channels with the place and rating of ${squadron} are at the top of the channel list ` +
+          '(Discord lists text channels outside categories above them).'
+        : `Two voice channels with the place and rating of ${squadron} are in ${category}, with its permissions: ` +
+          'whoever sees the category sees them.') +
+      ' They change within a minute of a new leaderboard reading, every 20 minutes at most. ' +
+      'Moving or renaming them is fine; deleting one removes both.',
     statsRemoved: 'The place and rating channels are deleted.',
     statsNotSet: 'This server has no place and rating channels.',
     statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,

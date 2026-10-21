@@ -47,6 +47,7 @@ export interface BotText {
       voiceRemove: string
       stats: string
       statsSet: string
+      statsCategory: string
       statsRemove: string
       channel: string
       squadron: string
@@ -68,7 +69,7 @@ export interface BotText {
     /** The member picked a channel they cannot view (src/bot/access.ts). */
     cannotView(channel: string): string
     /** Discord's own permission names, as the server settings show them. */
-    permissions: Record<'view' | 'send' | 'attach' | 'embed' | 'history', string>
+    permissions: Record<'view' | 'send' | 'attach' | 'embed' | 'history' | 'manage' | 'connect', string>
     missingPermissions(channel: string, permissions: string): string
     squadronNotFound(query: string): string
     limit(max: number): string
@@ -89,10 +90,10 @@ export interface BotText {
     /** `othersLeft` false — the board shows every voice channel again. */
     voiceRemoved(channel: string, othersLeft: boolean): string
     notSet(channel: string): string
-    /** The bot lacks Manage Channels on the server (it creates and renames the stats channels). */
-    statsNeedsManageChannels: string
-    /** `squadron` as the game shows it. */
-    statsSet(squadron: string): string
+    /** No category picked and the bot lacks `permissions` on the server (it creates and renames the stats channels). */
+    statsNeedsPermissions(permissions: string): string
+    /** `squadron` as the game shows it; `category` — the picked category's mention, null — the top of the list. */
+    statsSet(squadron: string, category: string | null): string
     statsRemoved: string
     statsNotSet: string
     /** Channel names (up to 100 characters); null — the squadron is not on the leaderboard. */
