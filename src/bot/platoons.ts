@@ -46,7 +46,8 @@ import { parseWtNick } from './voice-tracker.js'
  * Platoon suggestions (/settings platoons set lobby: squadron: [channel:]):
  * the squadron's players gather in one voice channel, the lobby, and play
  * from the rooms beside it (the voice channels of its category, made by the
- * server's join-to-create hub or by hand). A post, edited in place, suggests
+ * server's join-to-create hub or by hand). A post, edited in place (sent anew
+ * at the channel's bottom once buried, sinksPost), suggests
  * who should play where — the most useful for the BR that plays now, not the
  * first to come (src/platoons/: identify.ts who they are, strength.ts how
  * useful, plan.ts the advice for every case). The bot moves nobody and
@@ -393,7 +394,16 @@ export interface Advice {
   nicks: ReadonlyMap<string, string>
 }
 
-/** The post: edited in place, posted anew when gone, left alone when unchanged. */
+/**
+ * Whether a changed post goes anew to the channel's bottom instead of an edit: other messages came after it
+ * (a busy channel: a gathering's replies, screenshots) while someone is in voice, so the current suggestions
+ * stand where readers look; with nobody in voice, or no last message known, it is edited where it is.
+ */
+export function sinksPost(lastMessageId: string | null, messageId: string | null, someone: boolean): boolean {
+  return someone && messageId !== null && lastMessageId !== null && lastMessageId !== messageId
+}
+
+/** The post: edited in place, sent anew at the bottom when buried (sinksPost) or gone, left alone when unchanged. */
 async function publish(guild: Guild, stored: Stored, advice: Advice): Promise<void> {
   const channel = postChannel(guild, stored.settings)
   if (channel === null) return
@@ -405,7 +415,8 @@ async function publish(guild: Guild, stored: Stored, advice: Advice): Promise<vo
   const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
   if (lastPost.get(guild.id) === hash) return
   try {
-    if (stored.messageId !== null) {
+    const buried = sinksPost(channel.lastMessageId, stored.messageId, advice.list.length > 0)
+    if (stored.messageId !== null && !buried) {
       try {
         await channel.messages.edit(stored.messageId, payload)
         lastPost.set(guild.id, hash)
@@ -419,6 +430,14 @@ async function publish(guild: Guild, stored: Stored, advice: Advice): Promise<vo
     // /settings may have moved the post meanwhile: the ID is kept for the same channel only.
     const current = read(guild.id)
     if (current !== null && (current.settings.channelId ?? current.settings.lobbyId) === channel.id) write(guild.id, { ...current, messageId: message.id })
+    // The buried one goes once the new one stands, so the channel is never without the post.
+    if (buried && stored.messageId !== null) {
+      await channel.messages.delete(stored.messageId).catch((error: unknown) => {
+        if (!(error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMessage)) {
+          console.warn(`[platoons] server ${guild.id}: the buried post was not deleted:`, error)
+        }
+      })
+    }
   } catch (error) {
     // Without the permissions the same post is not tried again until it changes.
     const denied = error instanceof DiscordAPIError

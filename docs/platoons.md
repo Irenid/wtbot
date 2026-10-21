@@ -4,7 +4,8 @@
 `src/platoons/`): a squadron's players gather in one voice channel, the lobby,
 and play from the rooms beside it (the voice channels of its category, made by
 the server's join-to-create hub or by hand). A post, edited in place in the
-chosen channel (the lobby's chat by default), suggests who should play where:
+chosen channel (the lobby's chat by default; Test pechenka: `расписание-и-сборы`,
+beside rulebot's gathering), suggests who should play where:
 the most useful for the BR that plays now, not the first to arrive. The bot
 moves nobody and creates no room (the owner's decision 2026-10-21: suggestions,
 not seating; the field commander decides). Measured 2026-10-21 on the backup of
@@ -106,6 +107,7 @@ players: the lobby's, not deafened, and a room's players beyond eight.
 | a room the bot cannot see | left out |
 | a stored battle | strengths are read again (30 s debounce) |
 | the BR stage changes (14:00 UTC) | strengths at the new cap at the next read (10 min cache) |
+| other messages came after the post (a gathering's replies, screenshots) | its next change, while someone is in voice, is sent anew at the channel's bottom and the old post deleted (`sinksPost`); with nobody in voice it is edited where it is |
 | the bot restarts | the post is edited again (its ID in bot_state); missing members are fetched before the first pass |
 | the lobby or the post's channel deleted | the suggestions switch off |
 | `/settings platoons remove` | the suggestions stop, the post goes |

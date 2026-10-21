@@ -4,7 +4,7 @@ import { closeDb, initDb, listBotStateKeys, setBotState } from '../db/index.js'
 import { botText } from '../i18n/index.js'
 import { planPlatoons, type Candidate } from '../platoons/plan.js'
 import type { RatedMember } from '../platoons/rate.js'
-import { advicePost, type Advice } from './platoons.js'
+import { advicePost, sinksPost, type Advice } from './platoons.js'
 
 const member = (userId: string, nick: string, extra: Partial<RatedMember> = {}): RatedMember => ({
   userId,
@@ -86,6 +86,14 @@ test('nobody in voice: the post says so', () => {
   const embed = advicePost(botText('en'), 'WLILY', null, advice([], new Map()), {})
   assert.match(embed.description!, /Nobody is in voice yet/)
   assert.equal(embed.fields, undefined)
+})
+
+test('a buried post goes anew to the bottom while someone is in voice; otherwise it is edited where it is', () => {
+  assert.equal(sinksPost('m2', 'm1', true), true, 'another message came after the post')
+  assert.equal(sinksPost('m1', 'm1', true), false, 'the post is the last message')
+  assert.equal(sinksPost('m2', 'm1', false), false, 'nobody in voice')
+  assert.equal(sinksPost(null, 'm1', true), false, 'no last message known')
+  assert.equal(sinksPost('m2', null, true), false, 'no post yet: it is sent anyway')
 })
 
 test('the configured servers are the bot_state keys under platoons:, no key beside them', () => {

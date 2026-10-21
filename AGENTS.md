@@ -587,7 +587,8 @@ Data:
 - `/settings platoons set lobby: squadron: [channel:]` (`src/bot/platoons.ts`,
   `src/platoons/`, state in `bot_state` `platoons:<guildId>`; method,
   measurements and every case: `docs/platoons.md`): a post, edited in place in
-  `channel` (the lobby's chat by default), suggests who of the squadron's
+  `channel` (the lobby's chat by default; sent anew at its bottom when other
+  messages came after it while someone is in voice), suggests who of the squadron's
   players in the lobby and the rooms (the voice channels of its category)
   should play where — the most useful for the cap playing now (`strength.ts`:
   weights fitted 2026-10-21, refit after a format or rules change), never a
@@ -888,7 +889,7 @@ npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.t
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
-**2026-10-21**: all gates pass, **610 pass, 0 fail**, corpus — 6 scenarios
+**2026-10-21**: all gates pass, **611 pass, 0 fail**, corpus — 6 scenarios
 (including 2.59), the SPA 34 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`
