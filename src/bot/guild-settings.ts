@@ -53,7 +53,10 @@ export function isScoutChannel(channelId: string): boolean {
   return listGuildChannels().some((row) => row.kind === 'scout' && row.channelId === channelId)
 }
 
-/** The voice channels a server's board watches; empty — every one the bot can view. */
+/**
+ * The voice channels and categories a server's board watches, a category for every voice channel in
+ * it (rooms opened later too); empty — every one the bot can view.
+ */
 export function watchedVoiceChannels(guildId: string): Set<string> {
   return new Set(guildChannels('voice', guildId).map((row) => row.channelId))
 }

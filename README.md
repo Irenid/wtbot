@@ -71,8 +71,9 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    Manage Server set it up themselves: `/settings battles add` (battle posts,
    one squadron's or every squadron's), `/settings scout add` (scoreboard
    screenshots),
-   `/settings voice add` (the player board's voice channels; none — all its
-   readers can see), `/playerboard setup`, `/language`; `/settings show`
+   `/settings voice add` (the player board's voice channels, or a category
+   for every voice channel in it, join-to-create rooms included; none — all
+   its readers can see), `/playerboard setup`, `/language`; `/settings show`
    lists them and who can use each command. Server Settings → Integrations →
    the bot opens a command to other roles (a staff role without Manage
    Server) or closes it to some roles and channels. Anyone can add the bot

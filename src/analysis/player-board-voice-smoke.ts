@@ -202,6 +202,16 @@ try {
   guild.voiceStates.cache.delete(member.id)
   const refreshed = await refreshPlayerStatBoard(discordLikeClient as never, guild.id, true)
   assert.equal(refreshed.playerCount, 0)
+
+  // A watched category takes every voice channel in it: a room a join-to-create bot opens there later
+  // counts, a room of another category does not.
+  db.addGuildChannel({ kind: 'voice', guildId: guild.id, channelId: 'category-1', clan: '' })
+  const roomState = { ...state, channelId: 'room-1', channel: { id: 'room-1', name: 'Platoon 1', parentId: 'category-1' } }
+  client.emit('voiceStateUpdate', leftState, roomState)
+  assert.equal(getVoicePresence()[0]?.channelId, 'room-1', 'a room of a watched category is tracked')
+  const otherRoomState = { ...state, channelId: 'room-2', channel: { id: 'room-2', name: 'Squad 1', parentId: 'category-2' } }
+  client.emit('voiceStateUpdate', roomState, otherRoomState)
+  assert.equal(getVoicePresence().length, 0, 'a room of another category is not')
   await tracker.stop()
 
   console.log('player-board voice smoke: OK')

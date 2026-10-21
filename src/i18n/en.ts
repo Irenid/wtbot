@@ -62,8 +62,8 @@ export const en: BotText = {
       scoutAdd: 'Read scoreboard (Tab) screenshots posted in a channel',
       scoutRemove: 'Stop reading screenshots in a channel',
       voice: 'Voice channels the player board shows',
-      voiceAdd: 'Show the players of a voice channel on the board',
-      voiceRemove: 'Stop showing a voice channel on the board',
+      voiceAdd: 'Show on the board the players of a voice channel, or of every one in a category',
+      voiceRemove: 'Stop showing a voice channel or category on the board',
       channel: 'The channel',
       squadron: 'Squadron tag or name; empty: every squadron\'s battles',
       squadronRemove: 'Only this squadron\'s posts; empty: all of the channel\'s',
@@ -104,8 +104,11 @@ export const en: BotText = {
       (mentionOnly ? ' Mention the bot in the message: without that it cannot see the picture.' : ''),
     scoutExists: (channel) => `Screenshots in ${channel} are already read.`,
     scoutRemoved: (channel) => `Screenshots in ${channel} are no longer read.`,
-    voiceAdded: (channel, hiddenOnBoard) =>
-      `The board shows the players of ${channel}, and of the other chosen voice channels only.` +
+    voiceAdded: (channel, hiddenOnBoard, category) =>
+      (category
+        ? `The board shows the players of every voice channel in ${channel}, rooms created there later included, ` +
+          'and of the other chosen channels only.'
+        : `The board shows the players of ${channel}, and of the other chosen voice channels only.`) +
       (hiddenOnBoard ? ' Some who see the board cannot see this channel, so the board leaves it out.' : ''),
     voiceExists: (channel) => `The board already shows ${channel}.`,
     voiceRemoved: (channel, othersLeft) => othersLeft
@@ -129,6 +132,7 @@ export const en: BotText = {
       noBoard: 'none: /playerboard setup',
       missing: (permissions) => `⚠ the bot lacks ${permissions}`,
       hiddenOnBoard: '⚠ some who see the board cannot see it: left off the board',
+      wholeCategory: '— every voice channel in it',
       footer:
         'Buttons under battle posts answer whoever sees the post. Screenshots are read from whoever can post ' +
         'in the channel. The board leaves out a voice channel that some who see the board cannot see.',

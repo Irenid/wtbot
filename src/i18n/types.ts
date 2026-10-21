@@ -77,8 +77,11 @@ export interface BotText {
     scoutAdded(channel: string, mentionOnly: boolean): string
     scoutExists(channel: string): string
     scoutRemoved(channel: string): string
-    /** `hiddenOnBoard` — some who see the board cannot see the channel, so the board leaves it out. */
-    voiceAdded(channel: string, hiddenOnBoard: boolean): string
+    /**
+     * `hiddenOnBoard` — some who see the board cannot see the channel, so the board leaves it out;
+     * `category` — a category: every voice channel in it, rooms created there later included.
+     */
+    voiceAdded(channel: string, hiddenOnBoard: boolean, category: boolean): string
     voiceExists(channel: string): string
     /** `othersLeft` false — the board shows every voice channel again. */
     voiceRemoved(channel: string, othersLeft: boolean): string
@@ -102,6 +105,8 @@ export interface BotText {
       missing(permissions: string): string
       /** After a chosen voice channel the board leaves out. */
       hiddenOnBoard: string
+      /** After a chosen category: it stands for every voice channel in it. */
+      wholeCategory: string
       /** Who the buttons, screenshots and the board serve: Discord's channel access, not the commands'. */
       footer: string
     }

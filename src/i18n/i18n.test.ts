@@ -23,7 +23,7 @@ const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   'settings.battlesAdded': [['<#1>', 'WLILY'], ['<#1>', null]],
   'settings.battlesExists': [['<#1>', 'WLILY'], ['<#1>', null]],
   'settings.scoutAdded': [['<#1>', true], ['<#1>', false]],
-  'settings.voiceAdded': [['<#1>', true], ['<#1>', false]],
+  'settings.voiceAdded': [['<#1>', true, false], ['<#1>', false, true]],
   'settings.voiceRemoved': [['<#1>', true], ['<#1>', false]],
   'settings.show.languageValue': [['English', true], ['English', false]],
 }

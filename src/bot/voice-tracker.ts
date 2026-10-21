@@ -17,8 +17,11 @@ import { onGuildChannelsChange, watchedVoiceChannels } from './guild-settings.js
  * «WTNick (Name)», e.g. «Venukbr (ИванЧай)»; without brackets the whole
  * nickname is the WT nick.
  *
- * Each server picks its channels with /settings voice (guild-settings.ts);
- * none picked — every voice channel the bot can view there. A channel hidden
+ * Each server picks its channels with /settings voice (guild-settings.ts); a
+ * category stands for every voice channel in it, so the rooms a join-to-create
+ * bot opens and deletes there are tracked too (rulebot's numbered platoon
+ * rooms on Test pechenka); none picked — every voice channel the bot can view
+ * there. A channel hidden
  * from the bot is never tracked; the board also leaves out one that some of
  * its readers cannot see (access.ts), since the bot may see every room.
  * Overwrite, role and setting changes re-read the snapshot.
@@ -62,10 +65,12 @@ export function startVoiceTracker(
     promise.then(() => active.delete(promise), () => active.delete(promise))
     return promise
   }
-  /** The state's channel ID while it is tracked, else null; `watched` — the server's /settings voice channels. */
+  /** The state's channel ID while it is tracked, else null; `watched` — the server's /settings voice channels and categories. */
   const trackedChannel = (state: VoiceState, watched = watchedVoiceChannels(state.guild.id)): string | null => {
     const id = state.channelId
-    if (id === null || (watched.size > 0 && !watched.has(id))) return null
+    if (id === null) return null
+    const parentId = state.channel?.parentId ?? null
+    if (watched.size > 0 && !watched.has(id) && (parentId === null || !watched.has(parentId))) return null
     // false only for a cached channel the bot lacks View Channel in.
     return state.channel?.viewable === false ? null : id
   }

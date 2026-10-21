@@ -123,7 +123,7 @@ worker-task producers have stopped.
 | `PORT`, `WEB_HOST=127.0.0.1`, `WEB_TOKEN` | loopback accepts only a loopback `Host` (DNS rebinding); non-loopback (always `0.0.0.0` in Docker) only with `WEB_TOKEN`: Bearer or HTTP Basic password |
 | `WEB_TRUST_PROXY` | `false`/`true`, or a list of IP/CIDR and `loopback`/`linklocal`/`uniquelocal`, for `X-Forwarded-For`; Fastify 5.12 has no hop count |
 | `WTBOT_API_URL`, `WTBOT_API_TOKEN` | Vite dev proxy only (`frontend/vite.config.ts`): `/api` to the production server with Bearer, POSTs included; the bot does not read them, the token never reaches the bundle |
-| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL` + `WT_CLAN_TAG`, `WT_SCOUT_CHANNEL` | imported once per value into the per-server `/settings` (`src/bot/guild-settings.ts`, table `guild_channels`), which owns them after that; a server without voice channels tracks every one the bot can view (a hidden one never: the board would show who sits in a staff room); a battles channel without a squadron gets every squadron's battles (~1,500 a day, 869–2,466 over 2026-09-24…10-11); the squadron filters publishing, not collection |
+| `WT_VOICE_CHANNELS`, `WT_BATTLES_CHANNEL` + `WT_CLAN_TAG`, `WT_SCOUT_CHANNEL` | imported once per value into the per-server `/settings` (`src/bot/guild-settings.ts`, table `guild_channels`), which owns them after that; a voice category stands for every voice channel in it, rooms a join-to-create bot opens there later included; a server without voice channels tracks every one the bot can view (a hidden one never: the board would show who sits in a staff room); a battles channel without a squadron gets every squadron's battles (~1,500 a day, 869–2,466 over 2026-09-24…10-11); the squadron filters publishing, not collection |
 | `WT_ANNOUNCE_ENABLED=true` | `false` — no battle posts anywhere: a dev run or the soak on a copy of the production database, whose `/settings` name real channels |
 | `WT_BOT_LOCALE` | the language of servers without a `/language` choice (`src/i18n`: `en`, `ru`; any other value fails startup); unset — the server's Discord language if a catalog has it, else English (section 8); CLIs draw battle images in it |
 | `WT_COMPANION_COOKIE` | separate `companion-app.warthunder.com` session; never mix with `WT_COOKIE` |
@@ -565,7 +565,7 @@ Data:
 - The bot is public-ready: what it does on a server is that server's
   `/settings` (`src/bot/commands/settings.ts`): battle-post
   channels (every squadron or one, several rows per channel post a battle
-  once), scoreboard-screenshot channels, the board's voice channels; at most
+  once), scoreboard-screenshot channels, the board's voice channels or categories; at most
   `MAX_GUILD_CHANNELS` of each. A channel is accepted only with the bot's
   permissions there (`NEEDS`); a deleted channel or a server that removed the
   bot drops its rows (`ChannelDelete`, `GuildDelete`). The bot always asks for

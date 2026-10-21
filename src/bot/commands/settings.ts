@@ -24,7 +24,7 @@ import { squadronChoice } from './scout.js'
  * /settings — what the bot does on this server, for whoever the server lets
  * use the command (Manage Server by default; access.ts): the channels of
  * battle posts (every squadron's or one squadron's), of scoreboard
- * screenshots and the voice channels of the player board (guild-settings.ts);
+ * screenshots and the voice channels or categories of the player board (guild-settings.ts);
  * `show` lists them with the language, the board and who can use each
  * command. Replies are ephemeral; a channel is accepted only once the bot has
  * what it needs there, so a public install never fails silently, and only
@@ -49,7 +49,8 @@ const NEEDS: Readonly<Record<GuildChannelKind, readonly PermissionKey[]>> = {
 }
 
 const TEXT_CHANNELS = [ChannelType.GuildText, ChannelType.GuildAnnouncement] as const
-const VOICE_CHANNELS = [ChannelType.GuildVoice, ChannelType.GuildStageVoice] as const
+/** A category stands for every voice channel in it, so the board follows rooms a join-to-create bot opens there. */
+const VOICE_CHANNELS = [ChannelType.GuildVoice, ChannelType.GuildStageVoice, ChannelType.GuildCategory] as const
 
 function missingPermissions(
   interaction: ChatInputCommandInteraction,
@@ -58,8 +59,13 @@ function missingPermissions(
   t: BotText['settings'],
 ): string | null {
   const me = interaction.client.user
-  const permissions = channel.permissionsFor(me)
-  const missing = NEEDS[kind].filter((key) => permissions === null || !permissions.has(PERMISSION_FLAGS[key]))
+  // A category is checked in its voice channels, one granting each permission enough: its own
+  // overwrites open nothing in them (only a synced channel copies them).
+  const targets = channel.type === ChannelType.GuildCategory
+    ? [...channel.children.cache.values()].filter((child) => child.isVoiceBased())
+    : [channel]
+  const missing = NEEDS[kind].filter((key) =>
+    !targets.some((target) => target.permissionsFor(me)?.has(PERMISSION_FLAGS[key]) === true))
   return missing.length === 0 ? null : missing.map((key) => t.permissions[key]).join(', ')
 }
 
@@ -200,7 +206,9 @@ export const settings: Command = {
         ? (added
           ? t.scoutAdded(mention, !interaction.client.options.intents.has(GatewayIntentBits.MessageContent))
           : t.scoutExists(mention))
-        : (added ? t.voiceAdded(mention, hiddenOnBoard(interaction.guild, channel.id)) : t.voiceExists(mention))
+        : (added
+          ? t.voiceAdded(mention, hiddenOnBoard(interaction.guild, channel.id), channel.type === ChannelType.GuildCategory)
+          : t.voiceExists(mention))
     await interaction.editReply(reply)
   },
 }
@@ -284,7 +292,9 @@ async function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: 
         name: s.voice,
         value: value(voice.length === 0
           ? s.allVoice
-          : voice.map((row) => line('voice', row.channelId, boardSees(row.channelId) ? '' : ` ${s.hiddenOnBoard}`)).join('\n')),
+          : voice.map((row) => line('voice', row.channelId,
+            (guild.channels.cache.get(row.channelId)?.type === ChannelType.GuildCategory ? ` ${s.wholeCategory}` : '') +
+            (boardSees(row.channelId) ? '' : ` ${s.hiddenOnBoard}`))).join('\n')),
       },
       { name: s.playerBoard, value: board === null || !board.enabled ? s.noBoard : `<#${board.channelId}>` },
       { name: s.access, value: access },
