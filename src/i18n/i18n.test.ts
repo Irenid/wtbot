@@ -30,6 +30,15 @@ const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   'settings.statsSet': [['WLILY', '<#1>'], ['WLILY', null]],
   'settings.statsNeedsPermissions': [['View Channel, Manage Channels, Connect']],
   'settings.show.languageValue': [['English', true], ['English', false]],
+  'settings.platoonsSet': [['<#1>', 'WLILY', '<#2>']],
+  'settings.show.platoonsValue': [['<#1>', 'WLILY', '<#2>']],
+  'platoons.title': [['WLILY', 6], ['WLILY', null]],
+  'platoons.room': [['Platoon 1', 6]],
+  'platoons.newPlatoon': [[null], [2]],
+  'platoons.swap': [['**Strong**', '**Weak**']],
+  'platoons.tags.guessed': [['Venukbr']],
+  'platoons.tags.from': [['<#1>']],
+  'platoons.tags.to': [['<#1>'], ['new platoon']],
 }
 
 /** Every text of a catalog: strings as they are, functions called with sample arguments. */

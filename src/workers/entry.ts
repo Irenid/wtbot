@@ -679,6 +679,33 @@ async function readScoutPlayers(
   }
 }
 
+/** Platoons: who the voice members are and their strength (src/platoons/rate.ts). */
+async function readPlatoonPlayers(
+  input: Extract<AnyWorkerTask, { kind: 'read-platoon-players' }>['input'],
+): Promise<{ value: WorkerTaskResult<'read-platoon-players'>; transfer: [] }> {
+  if (!existsSync(input.dbPath)) throw new Error(`Database not found: ${input.dbPath}`)
+  const [{ DatabaseSync }, db, { ratePlatoonPlayers }] = await Promise.all([
+    import('node:sqlite'),
+    import('../db/index.js'),
+    import('../platoons/rate.js'),
+  ])
+  const database = new DatabaseSync(input.dbPath, { readOnly: true })
+  try {
+    database.exec('PRAGMA busy_timeout = 5000;')
+    const { dbPath: _dbPath, ...rateInput } = input
+    const value = ratePlatoonPlayers(rateInput, {
+      roster: (clanCore) => db.getPlatoonRoster(clanCore, database),
+      accounts: (keys) => db.getPlatoonNickPlayers(keys, database),
+      rows: (userIds, fromTs, toTs) => db.getPlatoonPlayerRows(userIds, fromTs, toTs, database),
+      stages: () => db.getScoutStages(database),
+      ratings: (nicks, sinceTs) => db.getPlatoonRatings(nicks, sinceTs, database),
+    })
+    return { value, transfer: [] }
+  } finally {
+    database.close()
+  }
+}
+
 interface StoredPlayerFacts {
   user_id: string
   nick: string
@@ -1247,6 +1274,8 @@ async function execute(task: AnyWorkerTask): Promise<{ value: unknown; transfer:
       return buildClanSnapshotTask(task.input)
     case 'search-player-nicks':
       return searchPlayerNicks(task.input)
+    case 'read-platoon-players':
+      return readPlatoonPlayers(task.input)
     case 'read-scout-history':
       return readScoutHistory(task.input)
     case 'read-scoreboard-image':

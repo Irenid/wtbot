@@ -17,6 +17,7 @@ export interface WireFlagTemplates { icons: string[]; width: number; height: num
 import type { ScoreboardReadResult } from '../scout/scoreboard-read.js'
 import type { AnonymousGuess } from '../scout/anonymous.js'
 import type { ClanSnapshot } from '../web/clan-snapshot.js'
+import type { RateInput, RateOutput } from '../platoons/rate.js'
 
 /** Короткая сводка событий, которую можно вернуть без клонирования траекторий. */
 export interface BattleEventSummary {
@@ -269,6 +270,11 @@ export interface WorkerTaskMap {
       statShark: ScoutStatSharkBattles[]
       allyRows: ScoutTeamRow[]
     }
+  }
+  /** Platoons (src/bot/platoons.ts): who the voice members are and their strength now (src/platoons/rate.ts). */
+  'read-platoon-players': {
+    input: { dbPath: string } & RateInput
+    output: RateOutput
   }
   /** /scout: a squadron's player rows and the season stages (src/scout/report.ts). */
   'read-scout-history': {

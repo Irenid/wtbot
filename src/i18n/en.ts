@@ -68,6 +68,11 @@ export const en: BotText = {
       statsSet: 'Create two channels with a squadron\'s place and rating',
       statsCategory: 'The category to create them in; empty: the top of the list (needs more permissions)',
       statsRemove: 'Delete the place and rating channels',
+      platoons: 'Platoons: the bot suggests who of the players in voice should play',
+      platoonsSet: 'Suggest platoons from the players in a voice channel and the rooms beside it',
+      platoonsRemove: 'Stop suggesting platoons',
+      lobby: 'The voice channel players gather in; the rooms are the voice channels of its category',
+      platoonsChannel: 'Where to post the suggestions; empty: the chat of that voice channel',
       channel: 'The channel',
       squadron: 'Squadron tag or name; empty: every squadron\'s battles',
       squadronRemove: 'Only this squadron\'s posts; empty: all of the channel\'s',
@@ -135,6 +140,10 @@ export const en: BotText = {
       'Moving or renaming them is fine; deleting one removes both.',
     statsRemoved: 'The place and rating channels are deleted.',
     statsNotSet: 'This server has no place and rating channels.',
+    platoonsSet: (lobby, squadron, channel) => `Platoon suggestions are on: the bot watches ${squadron} players in ${lobby} and the voice channels `
+      + `beside it and posts in ${channel} who should play where, the most useful for the current BR first. It moves nobody.`,
+    platoonsRemoved: 'Platoon suggestions are off; their post is deleted.',
+    platoonsNotSet: 'Platoon suggestions are not set up on this server.',
     statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,
     statsPointsName: (points) => `Squadron rating: ${points ?? '–'}`,
     show: {
@@ -146,6 +155,9 @@ export const en: BotText = {
       playerBoard: 'Player board',
       stats: 'Place and rating channels',
       noStats: 'none: /settings stats set',
+      platoons: 'Platoons',
+      noPlatoons: 'off: /settings platoons set',
+      platoonsValue: (lobby, squadron, channel) => `${squadron} in ${lobby}, posted in ${channel}`,
       access: 'Who can use the commands',
       languageValue: (name, chosen) => chosen ? name : `${name} (the default; /language changes it)`,
       everySquadron: 'every squadron',
@@ -401,6 +413,32 @@ export const en: BotText = {
       oneSide: (squadron) =>
         `Only one team could be read (${squadron ?? 'one squadron'}). Enemies are on the right half of the scoreboard: send a screenshot with both teams.`,
     },
+  },
+
+  platoons: {
+    title: (squadron, cap) => `Platoons of ${squadron}${cap === null ? '' : ` · BR ${cap.toFixed(1)}`}`,
+    intro: 'Who of the players in voice should play: the most useful for this BR, not the first to come. '
+      + 'Usefulness counts wins, kills, deaths and assists in squadron battles, the battles at this BR most, and the season PSR. '
+      + 'These are suggestions: the bot moves nobody, the field commander decides.',
+    room: (name, players) => `${name} · ${players}/8`,
+    short: (missing) => ` · ${missing} missing`,
+    newPlatoon: (index) => `New platoon${index === null ? '' : ` ${index}`} · 8/8, needs a room`,
+    forming: (count) => `Next platoon · ${count}/8`,
+    empty: 'Nobody is in voice yet.',
+    notPlaced: 'Not placed',
+    swap: (inNick, outNick) => `${inNick} instead of ${outNick}`,
+    tags: {
+      deaf: 'deafened',
+      guest: 'not in the squadron',
+      unknown: 'nick not found',
+      guessed: (rosterNick) => `taken for ${rosterNick}`,
+      noBattles: 'no battles at this BR',
+      reserve: 'reserve',
+      from: (channel) => `from ${channel}`,
+      to: (where) => `→ ${where}`,
+      newPlatoon: 'new platoon',
+    },
+    classes: { T: 'tank', L: 'light tank', AA: 'SPAA', F: 'aircraft', H: 'helicopter' },
   },
 
   playerBoard: {

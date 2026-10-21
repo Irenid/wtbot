@@ -27,7 +27,7 @@ a glance. Behavior: the code and the SQLite schema; commands and env:
   only list of open tasks (closed items are deleted); `docs/` — measurements
   and notes (`performance.md`, `database.md`, `replay-data-quality.md`,
   `opponent-scouting.md`, `nick-search.md`, `tactical-maps.md`,
-  `squadrons.md`); `LICENSES/` — licenses of ported code; `tools/oodle-wasm/`
+  `squadrons.md`, `platoons.md`); `LICENSES/` — licenses of ported code; `tools/oodle-wasm/`
   — the source of `src/tactical-map/oodle.wasm`; skills —
   `.claude/skills/verify/` (checks, live bot),
   `.agents/skills/monorepo-debug/` (diagnostics). Do not add new plans or
@@ -584,6 +584,18 @@ Data:
   (Test pechenka: WLILY holds the first two server-wide, discordAudit's
   design.mjs). In a category they are created bare and copy its overwrites: the
   bot needs View Channel and Manage Channels there only.
+- `/settings platoons set lobby: squadron: [channel:]` (`src/bot/platoons.ts`,
+  `src/platoons/`, state in `bot_state` `platoons:<guildId>`; method,
+  measurements and every case: `docs/platoons.md`): a post, edited in place in
+  `channel` (the lobby's chat by default), suggests who of the squadron's
+  players in the lobby and the rooms (the voice channels of its category)
+  should play where — the most useful for the cap playing now (`strength.ts`:
+  weights fitted 2026-10-21, refit after a format or rules change), never a
+  rating. Suggestions only (the owner's decision 2026-10-21): the bot moves
+  nobody and creates no room; it never splits a full room (it may be in a
+  battle). Identities and strengths come from worker task
+  `read-platoon-players` (`rate.ts`), cached 10 min per member and dropped
+  after a stored battle. Posts only with `WT_ANNOUNCE_ENABLED`.
 - Access (`src/bot/access.ts`): Discord's per-command permissions are the
   only gate on commands — the registered defaults (Manage Server for
   `/settings`, `/language`, `/playerboard`; everyone for the rest) plus a
@@ -876,7 +888,7 @@ npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.t
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
-**2026-10-20**: all gates pass, **583 pass, 0 fail**, corpus — 6 scenarios
+**2026-10-21**: all gates pass, **610 pass, 0 fail**, corpus — 6 scenarios
 (including 2.59), the SPA 34 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`

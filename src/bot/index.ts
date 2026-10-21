@@ -13,6 +13,7 @@ import {
   stopSquadronStats,
 } from './squadron-stats.js'
 import { stopPlayerBoardPublisher } from './player-board.js'
+import { forgetPlatoonChannel, forgetPlatoonGuild, startPlatoons, stopPlatoons } from './platoons.js'
 import type { ScoutStatSharkSource } from '../scout/report.js'
 import { forgetGuildChannels, importEnvChannels } from './guild-settings.js'
 import { handleScoutImageMessage, scoutImagesIdle } from './scout-images.js'
@@ -88,6 +89,8 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
         }
         // Renames channels on real servers, so it follows the announcements' switch.
         if (config.announceEnabled) startSquadronStats(readyClient)
+        // Posts in real servers' channels: the same switch.
+        if (config.announceEnabled) startPlatoons(readyClient)
       })
   })
   client.on(Events.MessageCreate, (message) => {
@@ -100,9 +103,11 @@ export async function startBot(options: BotOptions = {}): Promise<Client> {
     const removed = forgetGuildChannels({ channelId: channel.id })
     if (removed > 0) console.log(`[settings] channel ${channel.id} was deleted: ${removed} setting(s) removed`)
     void forgetSquadronStatsChannel(channel.guild, channel.id)
+    forgetPlatoonChannel(channel.guild, channel.id)
   })
   client.on(Events.GuildDelete, (guild) => {
     forgetSquadronStatsGuild(guild.id)
+    forgetPlatoonGuild(guild.id)
     const removed = forgetGuildChannels({ guildId: guild.id })
     console.log(`[bot] removed from server ${guild.id}: ${removed} channel setting(s) dropped`)
   })
@@ -206,6 +211,7 @@ export async function stopBotWork(graceMs = 10_000): Promise<void> {
   const drain = Promise.allSettled([
     stopBattleAnnouncer(),
     stopSquadronStats(),
+    stopPlatoons(),
     stopPlayerBoardPublisher(),
     stopBattlePostUpdates(),
     stopCommandSync(),

@@ -18,6 +18,7 @@ import { boardAudience, describeCommandAccess } from '../access.js'
 import { addSetting, guildChannels, removeSetting } from '../guild-settings.js'
 import { chosenGuildLocale, guildLocale, userLocale } from '../locale.js'
 import { removeSquadronStats, setupSquadronStats, squadronStatsSquadron } from '../squadron-stats.js'
+import { platoonSettings, removePlatoons, setupPlatoons } from '../platoons.js'
 import type { Command } from '../types.js'
 import { squadronChoice } from './scout.js'
 
@@ -25,7 +26,8 @@ import { squadronChoice } from './scout.js'
  * /settings — what the bot does on this server, for whoever the server lets
  * use the command (Manage Server by default; access.ts): the channels of
  * battle posts (every squadron's or one squadron's), of scoreboard
- * screenshots and the voice channels or categories of the player board (guild-settings.ts);
+ * screenshots and the voice channels or categories of the player board (guild-settings.ts),
+ * the place and rating channels (squadron-stats.ts) and the platoon suggestions (platoons.ts);
  * `show` lists them with the language, the board and who can use each
  * command. Replies are ephemeral; a channel is accepted only once the bot has
  * what it needs there, so a public install never fails silently, and only
@@ -59,6 +61,12 @@ const NEEDS: Readonly<Record<GuildChannelKind, readonly PermissionKey[]>> = {
 const STATS_NEEDS = {
   category: ['view', 'manage'],
   server: ['view', 'manage', 'connect'],
+} as const satisfies Record<string, readonly PermissionKey[]>
+
+/** Platoon suggestions (platoons.ts): the bot sees the lobby and posts in the chosen channel, the lobby's chat by default. */
+const PLATOON_NEEDS = {
+  lobby: ['view'],
+  post: ['view', 'send', 'embed', 'history'],
 } as const satisfies Record<string, readonly PermissionKey[]>
 
 const TEXT_CHANNELS = [ChannelType.GuildText, ChannelType.GuildAnnouncement] as const
@@ -141,6 +149,17 @@ export const settings: Command = {
           .addStringOption((option) => option.setName('squadron').setDescription(c.squadron).setMaxLength(64).setAutocomplete(true).setRequired(true))
           .addChannelOption((option) => option.setName('category').setDescription(c.statsCategory).addChannelTypes(ChannelType.GuildCategory)))
         .addSubcommand((sub) => sub.setName('remove').setDescription(c.statsRemove)))
+      .addSubcommandGroup((group) => group
+        .setName('platoons')
+        .setDescription(c.platoons)
+        .addSubcommand((sub) => sub
+          .setName('set')
+          .setDescription(c.platoonsSet)
+          .addChannelOption((option) => option.setName('lobby').setDescription(c.lobby).addChannelTypes(ChannelType.GuildVoice).setRequired(true))
+          .addStringOption((option) => option.setName('squadron').setDescription(c.squadron).setMaxLength(64).setAutocomplete(true).setRequired(true))
+          .addChannelOption((option) => option.setName('channel').setDescription(c.platoonsChannel)
+            .addChannelTypes(...TEXT_CHANNELS, ChannelType.GuildVoice)))
+        .addSubcommand((sub) => sub.setName('remove').setDescription(c.platoonsRemove)))
   },
 
   async autocomplete(interaction) {
@@ -168,6 +187,10 @@ export const settings: Command = {
     }
     if (group === 'stats') {
       await executeStats(interaction, action, t)
+      return
+    }
+    if (group === 'platoons') {
+      await executePlatoons(interaction, action, t)
       return
     }
     const kind = group as GuildChannelKind
@@ -286,6 +309,50 @@ async function executeStats(
   }
 }
 
+/** /settings platoons set|remove: the lobby players gather in, their squadron and where the suggestions go (platoons.ts). */
+async function executePlatoons(
+  interaction: ChatInputCommandInteraction<'cached'>,
+  action: string,
+  t: BotText['settings'],
+): Promise<void> {
+  if (action === 'remove') {
+    await interaction.editReply((await removePlatoons(interaction.guild)) ? t.platoonsRemoved : t.platoonsNotSet)
+    return
+  }
+  const lobby = interaction.guild.channels.cache.get(interaction.options.getChannel('lobby', true).id)
+  const picked = interaction.options.getChannel('channel')
+  const post = picked === null ? lobby : interaction.guild.channels.cache.get(picked.id)
+  if (lobby?.type !== ChannelType.GuildVoice || (post?.type !== ChannelType.GuildText
+    && post?.type !== ChannelType.GuildAnnouncement && post?.type !== ChannelType.GuildVoice)) {
+    await interaction.editReply(t.badChannel)
+    return
+  }
+  // As for the other settings: a member points the bot only at what they can see themselves.
+  for (const channel of new Set([lobby, post])) {
+    if (channel.permissionsFor(interaction.member).has(PermissionFlagsBits.ViewChannel) !== true) {
+      await interaction.editReply(t.cannotView(`<#${channel.id}>`))
+      return
+    }
+  }
+  const lacking = (channel: GuildBasedChannel, keys: readonly PermissionKey[]) =>
+    keys.filter((key) => channel.permissionsFor(interaction.client.user)?.has(PERMISSION_FLAGS[key]) !== true)
+  for (const [channel, missing] of [[lobby, lacking(lobby, PLATOON_NEEDS.lobby)], [post, lacking(post, PLATOON_NEEDS.post)]] as const) {
+    if (missing.length > 0) {
+      await interaction.editReply(t.missingPermissions(`<#${channel.id}>`, missing.map((key) => t.permissions[key]).join(', ')))
+      return
+    }
+  }
+  const query = interaction.options.getString('squadron', true).trim()
+  const found = findSquadrons(query, 1)[0]
+  if (!found) {
+    await interaction.editReply(t.squadronNotFound(query.slice(0, 64)))
+    return
+  }
+  await setupPlatoons(interaction.guild, { lobbyId: lobby.id, clan: found.core, channelId: post.id === lobby.id ? null : post.id })
+  console.log(`[settings] server ${interaction.guildId}: platoon suggestions for ${found.core} from ${lobby.id} in ${post.id}`)
+  await interaction.editReply(t.platoonsSet(`<#${lobby.id}>`, squadronLabel(found.displayTag, found.name), `<#${post.id}>`))
+}
+
 /** Whether the server's player board leaves the voice channel out: some who see the board cannot see it (access.ts). */
 function hiddenOnBoard(guild: Guild, channelId: string): boolean {
   const board = getPlayerStatBoard(guild.id)
@@ -346,6 +413,7 @@ async function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: 
   const voice = guildChannels('voice', guild.id)
   const board = getPlayerStatBoard(guild.id)
   const statsClan = squadronStatsSquadron(guild.id)
+  const platoons = platoonSettings(guild.id)
   const boardSees = board !== null && board.enabled ? boardAudience(guild, board.channelId) : () => true
   const language = botText(guildLocale(guild.id, guild.preferredLocale)).languageName
   const value = (text: string): string => text.slice(0, 1024)
@@ -374,6 +442,11 @@ async function showEmbed(interaction: ChatInputCommandInteraction<'cached'>, t: 
       {
         name: s.stats,
         value: value(statsClan === null ? s.noStats : squadronName(statsClan)),
+      },
+      {
+        name: s.platoons,
+        value: value(platoons === null ? s.noPlatoons
+          : s.platoonsValue(`<#${platoons.lobbyId}>`, squadronName(platoons.clan), `<#${platoons.channelId ?? platoons.lobbyId}>`)),
       },
       { name: s.access, value: access },
     )

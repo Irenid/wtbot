@@ -2331,6 +2331,12 @@ export function deleteBotState(key: string): void {
   getDb().prepare('DELETE FROM bot_state WHERE key = ?').run(key)
 }
 
+/** The keys starting with `prefix`: a range of the primary key. */
+export function listBotStateKeys(prefix: string): string[] {
+  return (getDb().prepare('SELECT key FROM bot_state WHERE key >= ? AND key < ? ORDER BY key')
+    .all(prefix, `${prefix}\uffff`) as { key: string }[]).map((row) => row.key)
+}
+
 export interface ClanSeasonContext {
   season: {
     id: string
@@ -7380,6 +7386,108 @@ export function getScoutStages(database?: DatabaseSync): { startsAt: number; end
   const statement = database ? database.prepare(SITE_SQL.scoutStages) : siteStatement('scoutStages')
   return (statement.all() as { starts_at: number; ends_at: number; max_br: number }[])
     .map((row) => ({ startsAt: row.starts_at, endsAt: row.ends_at, maxBr: row.max_br }))
+}
+
+/** A squadron member on its claninfo page (clan_roster, refreshed with its PSR snapshots). */
+export interface PlatoonRosterMember {
+  nick: string
+  role: string | null
+  joinedAt: number | null
+}
+
+export function getPlatoonRoster(clanCore: string, database: DatabaseSync = getDb()): PlatoonRosterMember[] {
+  return (database.prepare('SELECT nick, role, joined_at FROM clan_roster WHERE clan_core = ?').all(clanCore) as {
+    nick: string; role: string | null; joined_at: number | null
+  }[]).map((row) => ({ nick: row.nick, role: row.role, joinedAt: row.joined_at }))
+}
+
+/** The WT account a nick last played under: its newest stored row by the search key (normalizePlayerSearchKey). */
+export interface PlatoonNickPlayer {
+  key: string
+  userId: string
+  nick: string
+  clanTag: string
+  startTime: number
+}
+
+export function getPlatoonNickPlayers(keys: readonly string[], database: DatabaseSync = getDb()): PlatoonNickPlayer[] {
+  // idx_bp_nick_search, then the battle's primary key: a regular's few hundred rows per nick.
+  const statement = database.prepare(`
+    SELECT bp.user_id, bp.nick, bp.clan_tag, b.start_time
+    FROM battle_players bp JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.nick_search = ? AND bp.user_id GLOB '[1-9]*'
+    ORDER BY b.start_time DESC LIMIT 1
+  `)
+  return [...new Set(keys)].flatMap((key) => {
+    const row = statement.get(key) as { user_id: string; nick: string; clan_tag: string; start_time: number } | undefined
+    return row ? [{ key, userId: row.user_id, nick: row.nick, clanTag: row.clan_tag, startTime: row.start_time }] : []
+  })
+}
+
+/** One squadron battle of a player, what a platoon's strength reads (src/platoons/strength.ts). */
+export interface PlatoonPlayerRow {
+  userId: string
+  startTime: number
+  /** null — no winner stored. */
+  won: boolean | null
+  clanTag: string
+  /** Air, ground and naval kills. */
+  kills: number
+  deaths: number
+  assists: number
+  vehicle: string | null
+  /** The lineup, JSON array of vehicle ids. */
+  lineup: string
+}
+
+/** Rows a player's strength reads at most: about two months of a daily regular. */
+const PLATOON_MAX_PLAYER_ROWS = 800
+
+/** Each player's battles started in [fromTs, toTs), newest first, PLATOON_MAX_PLAYER_ROWS each (idx_bp_user_id). */
+export function getPlatoonPlayerRows(
+  userIds: readonly string[],
+  fromTs: number,
+  toTs: number,
+  database: DatabaseSync = getDb(),
+): PlatoonPlayerRow[] {
+  const statement = database.prepare(`
+    SELECT bp.user_id, b.start_time, b.team_won, bp.team, bp.clan_tag,
+           bp.kills + bp.ground_kills + bp.naval_kills AS kills, bp.deaths, bp.assists, bp.vehicle, bp.vehicles
+    FROM battle_players bp JOIN battles b ON b.session_id = bp.session_id
+    WHERE bp.user_id = ? AND b.start_time >= ? AND b.start_time < ?
+    ORDER BY b.start_time DESC LIMIT ?
+  `)
+  return [...new Set(userIds.filter((id) => /^[1-9]\d{0,19}$/.test(id)))].flatMap((userId) =>
+    (statement.all(userId, fromTs, toTs, PLATOON_MAX_PLAYER_ROWS) as {
+      user_id: string; start_time: number; team_won: number; team: number; clan_tag: string
+      kills: number; deaths: number; assists: number; vehicle: string | null; vehicles: string
+    }[]).map((row) => ({
+      userId: row.user_id,
+      startTime: row.start_time,
+      won: row.team_won === 1 || row.team_won === 2 ? row.team_won === row.team : null,
+      clanTag: row.clan_tag,
+      kills: row.kills,
+      deaths: row.deaths,
+      assists: row.assists,
+      vehicle: row.vehicle,
+      lineup: row.vehicles,
+    })))
+}
+
+/** Each nick's latest PSR snapshot since `sinceTs` (the season's start), any squadron. */
+export function getPlatoonRatings(
+  nicks: readonly string[],
+  sinceTs: number,
+  database: DatabaseSync = getDb(),
+): { nick: string; clanTag: string; rating: number }[] {
+  const statement = database.prepare(`
+    SELECT clan_tag, rating FROM clan_rating_snapshots
+    WHERE nick_base = ? AND seen_at >= ? ORDER BY id DESC LIMIT 1
+  `)
+  return [...new Set(nicks)].flatMap((nick) => {
+    const row = statement.get(normalizeWtNick(nick), sinceTs) as { clan_tag: string; rating: number } | undefined
+    return row ? [{ nick, clanTag: row.clan_tag, rating: row.rating }] : []
+  })
 }
 
 /** Squadron tags for /scout lookups: every tag seen in replays and every leaderboard squadron. */

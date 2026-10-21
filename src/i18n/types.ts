@@ -49,6 +49,11 @@ export interface BotText {
       statsSet: string
       statsCategory: string
       statsRemove: string
+      platoons: string
+      platoonsSet: string
+      platoonsRemove: string
+      lobby: string
+      platoonsChannel: string
       channel: string
       squadron: string
       squadronRemove: string
@@ -96,6 +101,10 @@ export interface BotText {
     statsSet(squadron: string, category: string | null): string
     statsRemoved: string
     statsNotSet: string
+    /** `channel` — where the suggestions are posted. */
+    platoonsSet(lobby: string, squadron: string, channel: string): string
+    platoonsRemoved: string
+    platoonsNotSet: string
     /** Channel names (up to 100 characters); null — the squadron is not on the leaderboard. */
     statsPlaceName(place: number | null): string
     statsPointsName(points: number | null): string
@@ -108,6 +117,9 @@ export interface BotText {
       playerBoard: string
       stats: string
       noStats: string
+      platoons: string
+      noPlatoons: string
+      platoonsValue(lobby: string, squadron: string, channel: string): string
       /** The field listing who can use the commands. */
       access: string
       /** `chosen` false — the default, not a /language choice. */
@@ -352,6 +364,47 @@ export interface BotText {
       noPlayers: string
       oneSide(squadron: string | null): string
     }
+  }
+
+  /**
+   * Platoon suggestions (src/bot/platoons.ts): the post that says who of the players in voice should
+   * play where. Player names are nicks; no ratings are shown (who is stronger is not posted).
+   */
+  platoons: {
+    /** `cap` — the max BR now, null when unknown. */
+    title(squadron: string, cap: number | null): string
+    /** How the bot chooses, under the title. */
+    intro: string
+    /** A room's field name: the channel's name and the squadron's players in it. */
+    room(name: string, players: number): string
+    /** After the field name of a room short of players. */
+    short(missing: number): string
+    /** Eight idle players who can form a platoon of their own; `index` from 1 when there are several. */
+    newPlatoon(index: number | null): string
+    /** Idle players left, fewer than eight: who would form the next platoon. */
+    forming(count: number): string
+    /** Nobody in the lobby or the rooms. */
+    empty: string
+    /** Who sits in the lobby but is not placed, and why. */
+    notPlaced: string
+    /** A swap into a full room; both nicks come bold. */
+    swap(inNick: string, outNick: string): string
+    tags: {
+      deaf: string
+      guest: string
+      unknown: string
+      /** The nick was matched with a typo tolerance. */
+      guessed(rosterNick: string): string
+      noBattles: string
+      /** In a room beyond its eight. */
+      reserve: string
+      /** Called from a channel (a mention). */
+      from(channel: string): string
+      /** A room's player suggested elsewhere: a room (a mention) or `newPlatoon`. */
+      to(where: string): string
+      newPlatoon: string
+    }
+    classes: Record<ScoutClass, string>
   }
 
   playerBoard: {
