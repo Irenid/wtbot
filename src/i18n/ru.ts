@@ -151,7 +151,7 @@ export const ru: BotText = {
     platoonsRemoved: 'Подсказки по взводам выключены, их сообщение удалено.',
     platoonsNotSet: 'Подсказки по взводам на этом сервере не настроены.',
     statsPlaceName: (place) => `🏆 Место полка: ${place ?? '–'}`,
-    statsMembersName: (members) => `👥 Игроков в полку: ${members ?? '–'}`,
+    statsMembersName: (members) => `🧑‍🤝‍🧑 Игроков в полку: ${members ?? '–'}`,
     statsRatingName: (rating) => `📈 Средний ЛПР: ${rating ?? '–'}`,
     show: {
       title: 'Бот на этом сервере',
