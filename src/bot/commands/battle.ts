@@ -204,18 +204,20 @@ export async function renderBattlePost(
       ? battlePsr({ sessionId, startTime: header.startTime, duration: results.timePlayed, players: results.players, winnerTeam })
       : new Map()
 
-  // The text next to the image: Match ID, then each team's squadron, composition and players,
-  // and under them, in Discord's small grey subtext (-#), its place and the day's record.
+  // The text next to the image: Match ID and cap, then each squadron's tag with its place and the
+  // day's record, then each team's squadron, composition and players.
   const buildContent = (): string => {
+    const standings = teams.flatMap((team) => {
+      const standing = team.rawTag ? squadronStanding(team.rawTag, header.startTime, t) : null
+      return team.rawTag && standing !== null ? [` · ${escapeMarkdown(team.rawTag)} ${standing}`] : []
+    })
     const text =
-      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}\n` +
+      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}${standings.join('')}\n` +
       teams
         .map((team, i) => {
           const clan = escapeMarkdown(team.clan ?? t.battle.team(i + 1))
           const players = team.players.map((n) => escapeMarkdown(n)).join(', ')
-          const line = `**${clan}** (${team.composition}): ${players}`
-          const standing = team.rawTag ? squadronStanding(team.rawTag, header.startTime, t) : null
-          return standing === null ? line : `${line}\n-# ${standing}`
+          return `**${clan}** (${team.composition}): ${players}`
         })
         .join('\n')
     return text.length > 1990 ? text.slice(0, 1990) + '…' : text
@@ -384,7 +386,7 @@ const PLACE_MAX_SHIFT_SEC = 12 * 60 * 60
 const DAY_SEC = 86_400
 
 /**
- * The line under a squadron's players: its leaderboard place and its battles won and lost on the
+ * A squadron's standing in the post's first line, after its tag: its leaderboard place and its battles won and lost on the
  * battle's UTC day up to this one (both squadron-battle windows, 01–07 and 14–22 UTC, lie within
  * one UTC day). Two indexed reads on the main thread, 1–2 ms on the 2026-10-14 copy.
  */
@@ -396,12 +398,12 @@ export function squadronStanding(tag: string, startTime: number, t: BotText): st
   return standingText(place, getSquadronResults(tag, startTime - (startTime % DAY_SEC), startTime), t)
 }
 
-/** The standing line: the place, then the day's record once a battle of it has a winner; null — neither. */
+/** The standing: the place, then the day's record once a battle of it has a winner; null — neither. */
 export function standingText(place: number | null, results: SquadronResults, t: BotText): string | null {
   const parts: string[] = []
   if (place !== null) parts.push(t.battle.place(place))
   if (results.wins + results.losses > 0) parts.push(t.battle.dayRecord(results.wins, results.losses))
-  return parts.length > 0 ? parts.join(' · ') : null
+  return parts.length > 0 ? parts.join(' ') : null
 }
 
 /** Applies the post's PSR, then the stored winner and flags, then the squadron lookup, in order. */

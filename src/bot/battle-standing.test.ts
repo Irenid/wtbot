@@ -136,25 +136,25 @@ test('the standing line shows the place near the battle and the day\'s record up
     saveBattle(squadronBattle('23', DAY + 16 * HOUR, 1, WLILY, 1))
 
     const en = botText('en')
-    assert.equal(squadronStanding(WLILY, DAY + 15 * HOUR, en), 'Place 37 in the ranking · 1 win and 1 loss that day')
-    assert.equal(squadronStanding(WLILY, DAY + 16 * HOUR, en), 'Place 37 in the ranking · 2 wins and 1 loss that day')
+    assert.equal(squadronStanding(WLILY, DAY + 15 * HOUR, en), '#37 1W 1L')
+    assert.equal(squadronStanding(WLILY, DAY + 16 * HOUR, en), '#37 2W 1L')
     // Two days later: today's place says nothing about that battle, the record still does.
     saveBattle(squadronBattle('24', DAY + 2 * 86_400 + 14 * HOUR, 1, WLILY, 1))
-    assert.equal(squadronStanding(WLILY, DAY + 2 * 86_400 + 14 * HOUR, en), '1 win and 0 losses that day')
+    assert.equal(squadronStanding(WLILY, DAY + 2 * 86_400 + 14 * HOUR, en), '1W 0L')
     assert.equal(squadronStanding(NATOE, DAY + 13 * HOUR, en), null, 'no place, no decided battle yet')
   } finally {
     closeDb()
   }
 })
 
-test('the standing line\'s words and plurals', () => {
+test('the standing\'s format', () => {
   const en = botText('en')
   const ru = botText('ru')
-  assert.equal(standingText(37, { wins: 8, losses: 3 }, en), 'Place 37 in the ranking · 8 wins and 3 losses that day')
-  assert.equal(standingText(null, { wins: 1, losses: 1 }, en), '1 win and 1 loss that day')
-  assert.equal(standingText(5, { wins: 0, losses: 0 }, en), 'Place 5 in the ranking')
+  assert.equal(standingText(37, { wins: 8, losses: 3 }, en), '#37 8W 3L')
+  assert.equal(standingText(null, { wins: 1, losses: 1 }, en), '1W 1L')
+  assert.equal(standingText(5, { wins: 0, losses: 0 }, en), '#5')
   assert.equal(standingText(null, { wins: 0, losses: 0 }, en), null)
-  assert.equal(standingText(1, { wins: 21, losses: 5 }, ru), '1-е место в рейтинге · 21 победа и 5 поражений за день')
-  assert.equal(standingText(null, { wins: 2, losses: 0 }, ru), '2 победы и 0 поражений за день')
-  assert.equal(standingText(null, { wins: 11, losses: 22 }, ru), '11 побед и 22 поражения за день')
+  assert.equal(standingText(1, { wins: 21, losses: 5 }, ru), '#1 21В 5П')
+  assert.equal(standingText(null, { wins: 2, losses: 0 }, ru), '2В 0П')
+  assert.equal(standingText(null, { wins: 11, losses: 22 }, ru), '11В 22П')
 })
