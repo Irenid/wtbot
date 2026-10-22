@@ -165,7 +165,8 @@ export async function cachedBattleHeatmap2x(
 // 51: texts from the WT_BOT_LOCALE catalog (src/i18n), English by default.
 // 52: one artifact per language: servers and users read the bot in their own (src/bot/locale.ts).
 // 53: heatmaps: a colour family per team, named tracks, a muted map, fewer and smaller markers.
-const BATTLE_MEDIA_VERSION = 53
+// 54: vehicle icons cut by the datamine's tile fade out at the cut (unit-icon-edges.ts).
+const BATTLE_MEDIA_VERSION = 54
 /** What the artifacts depend on beyond the version and their language: a changed heatmap option redraws them. */
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')

@@ -4,6 +4,7 @@ import { parentPort } from 'node:worker_threads'
 import { formatBattleChat } from '../wrpl/battle-chat.js'
 import { battleEventRows, decodeEventsBlob, decodeEventsBlobProfiled, parseBattleParts, summarizeEvents } from '../wrpl/battle-transform.js'
 import { decodeEventsPayload, encodeEventsJson, isColumnarEventsBlob, isZstdEventsBlob } from '../wrpl/events-codec.js'
+import { fadeCutEdges } from '../wrpl/unit-icon-edges.js'
 import { repairStoredEvents, type EventsRepairCounts } from '../wrpl/events-repair.js'
 import { botSlotOwners, creditBotSlots, derivePlayerEventFacts } from '../wrpl/player-events.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
@@ -189,8 +190,8 @@ function exactArrayBuffer(data: Uint8Array): ArrayBuffer {
   return owned.buffer
 }
 
-function dataUri(mime: string, data: ArrayBuffer): string {
-  return `data:${mime};base64,${Buffer.from(data).toString('base64')}`
+function dataUri(mime: string, data: ArrayBuffer | Buffer): string {
+  return `data:${mime};base64,${(Buffer.isBuffer(data) ? data : Buffer.from(data)).toString('base64')}`
 }
 
 /** Только фирменный шрифт рамок клан-тегов. */
@@ -976,7 +977,7 @@ async function readSiteDashboardStats(
 
 async function renderScoreboard(input: Extract<AnyWorkerTask, { kind: 'render-scoreboard' }>['input']) {
   const svg = buildBattleSvg(input.input, {
-    unitIcons: new Map(input.assets.unitIcons.map(([id, data]) => [id, dataUri('image/png', data)])),
+    unitIcons: new Map(input.assets.unitIcons.map(([id, data]) => [id, dataUri('image/png', fadeCutEdges(Buffer.from(data)))])),
     mapImage: input.assets.mapImage ? dataUri(input.assets.mapImage.mime, input.assets.mapImage.data) : null,
     gameFlags: new Map(input.assets.gameFlags),
     gameFont: input.assets.gameFont,
