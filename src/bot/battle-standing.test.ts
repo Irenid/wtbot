@@ -118,10 +118,10 @@ test('squadron figures are found by tag core, and the place goes stale after a l
   initDb(':memory:')
   try {
     saveClanLeaderboard([{ tag: WLILY, position: 105, ...LEADERBOARD_ROW }], DAY + 14 * HOUR)
-    assert.deepEqual(getSquadronFigures('wlily'), { members: LEADERBOARD_ROW.members, place: 105 })
+    assert.deepEqual(getSquadronFigures('wlily'), { members: LEADERBOARD_ROW.members, place: 105, averageRating: null })
     assert.equal(getSquadronFigures('nobody'), null)
     setBotState(CLAN_FULL_CRAWL_KEY, String(DAY + 20 * HOUR))
-    assert.deepEqual(getSquadronFigures('wlily'), { members: LEADERBOARD_ROW.members, place: null })
+    assert.deepEqual(getSquadronFigures('wlily'), { members: LEADERBOARD_ROW.members, place: null, averageRating: null })
   } finally {
     closeDb()
   }

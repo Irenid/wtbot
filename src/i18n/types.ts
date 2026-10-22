@@ -108,6 +108,7 @@ export interface BotText {
     /** Channel names (up to 100 characters); null — the squadron is not on the leaderboard. */
     statsPlaceName(place: number | null): string
     statsMembersName(members: number | null): string
+    statsRatingName(rating: number | null): string
     show: {
       title: string
       language: string

@@ -6,7 +6,7 @@ import { botText } from '../i18n/index.js'
 import { guildLocale } from './locale.js'
 
 /**
- * Two voice channels nobody joins show a squadron's leaderboard place and player count in their names
+ * Three voice channels nobody joins show a squadron's leaderboard place, player count and average PSR in their names
  * (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
  * needs View Channel, Manage Channels and Connect on the server: Discord lets a bot allow or deny only
  * permissions it holds; or in a category the server picks, created bare so they copy its overwrites
@@ -27,6 +27,8 @@ interface Pair {
   clan: string
   placeId: string
   pointsId: string
+  /** Added later: a pair made before it has none until /settings stats set runs again. */
+  ratingId?: string | undefined
 }
 
 function readPair(guildId: string): Pair | null {
@@ -35,7 +37,7 @@ function readPair(guildId: string): Pair | null {
   try {
     const value = JSON.parse(raw) as Partial<Pair>
     return typeof value.clan === 'string' && typeof value.placeId === 'string' && typeof value.pointsId === 'string'
-      ? { clan: value.clan, placeId: value.placeId, pointsId: value.pointsId }
+      ? { clan: value.clan, placeId: value.placeId, pointsId: value.pointsId, ratingId: typeof value.ratingId === 'string' ? value.ratingId : undefined }
       : null
   } catch {
     return null
@@ -46,10 +48,10 @@ export function squadronStatsSquadron(guildId: string): string | null {
   return readPair(guildId)?.clan ?? null
 }
 
-function names(guild: Guild, clan: string): { place: string; points: string } {
+function names(guild: Guild, clan: string): { place: string; points: string; rating: string } {
   const t = botText(guildLocale(guild.id, guild.preferredLocale)).settings
   const figures = getSquadronFigures(clan)
-  return { place: t.statsPlaceName(figures?.place ?? null), points: t.statsMembersName(figures?.members ?? null) }
+  return { place: t.statsPlaceName(figures?.place ?? null), points: t.statsMembersName(figures?.members ?? null), rating: t.statsRatingName(figures?.averageRating ?? null) }
 }
 
 /**
@@ -88,7 +90,7 @@ export function lockedOverwrites(guildId: string, botId: string, botPermissions:
 }
 
 async function deleteChannels(guild: Guild, pair: Pair): Promise<void> {
-  for (const id of [pair.placeId, pair.pointsId]) {
+  for (const id of [pair.placeId, pair.pointsId, ...(pair.ratingId ? [pair.ratingId] : [])]) {
     await guild.channels.cache.get(id)?.delete('squadron stats removed').catch((error: unknown) => {
       console.warn(`[squadron-stats] server ${guild.id}: could not delete channel ${id}:`, error)
     })
@@ -115,7 +117,12 @@ export async function setupSquadronStats(guild: Guild, clan: string, category: C
     await place.delete().catch(() => undefined)
     throw error
   })
-  setBotState(KEY + guild.id, JSON.stringify({ clan, placeId: place.id, pointsId: points.id } satisfies Pair))
+  const rating = await create(text.rating, 2).catch(async (error: unknown) => {
+    await place.delete().catch(() => undefined)
+    await points.delete().catch(() => undefined)
+    throw error
+  })
+  setBotState(KEY + guild.id, JSON.stringify({ clan, placeId: place.id, pointsId: points.id, ratingId: rating.id } satisfies Pair))
 }
 
 /** Deletes the pair; false — the server had none. */
@@ -130,7 +137,7 @@ export async function removeSquadronStats(guild: Guild): Promise<boolean> {
 /** A server's channel was deleted by hand: the pair is gone, so its other channel goes too. */
 export async function forgetSquadronStatsChannel(guild: Guild, channelId: string): Promise<void> {
   const pair = readPair(guild.id)
-  if (!pair || (pair.placeId !== channelId && pair.pointsId !== channelId)) return
+  if (!pair || (pair.placeId !== channelId && pair.pointsId !== channelId && pair.ratingId !== channelId)) return
   deleteBotState(KEY + guild.id)
   console.log(`[squadron-stats] server ${guild.id}: channel ${channelId} was deleted, the pair is removed`)
   await deleteChannels(guild, pair)
@@ -152,7 +159,9 @@ async function tick(client: Client): Promise<void> {
     const pair = readPair(guild.id)
     if (!pair) continue
     const text = names(guild, pair.clan)
-    for (const [id, name] of [[pair.placeId, text.place], [pair.pointsId, text.points]] as const) {
+    const targets: (readonly [string, string])[] = [[pair.placeId, text.place], [pair.pointsId, text.points]]
+    if (pair.ratingId) targets.push([pair.ratingId, text.rating])
+    for (const [id, name] of targets) {
       const channel = guild.channels.cache.get(id)
       if (!channel || channel.name === name) continue
       try {
