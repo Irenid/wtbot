@@ -48,7 +48,7 @@ import {
 } from '../../wrpl/battle-psr.js'
 import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fakeNamesFromItem, fetchReplayResults, listedUserIdsFromItem, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
-import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
+import { clanDisplayName, psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { fillSquadronTags } from '../../wrpl/squadron-tags.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 import { isWorkerPoolSchedulingError, type WorkerPriority } from '../../workers/pool.js'
@@ -209,7 +209,7 @@ export async function renderBattlePost(
   const buildContent = (): string => {
     const standings = teams.flatMap((team) => {
       const standing = team.rawTag ? squadronStanding(team.rawTag, header.startTime, t) : null
-      return team.rawTag && standing !== null ? [` · ${escapeMarkdown(team.rawTag)} ${standing}`] : []
+      return team.rawTag && standing !== null ? [` · ${escapeMarkdown(clanDisplayName(team.rawTag))} ${standing}`] : []
     })
     const text =
       `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}${standings.join('')}\n` +
