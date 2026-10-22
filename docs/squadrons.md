@@ -34,6 +34,11 @@ file keeps the stored fields, the reasons and the measurements.
 
 - After a crawl, the claninfo rosters of 5 leaders whose roster is older than
   a day: otherwise only clans from drawn battles would have rosters and PSR.
+- The squadrons servers follow (a battles channel's squadron, the stats
+  channels', the platoon suggestions') every 15 min
+  (`src/bot/followed-rosters.ts`, claninfo's own cache): a member who left
+  between sessions would otherwise stay listed until the squadron's next
+  battle. `/api/clans/:coreTag` gives the last read as `clan.rosterReadAt`.
   Per member: role (the deputy's cell reads the untranslated key
   `clan/deputy`), join date, activity; an unknown cell value becomes `NULL`.
 - `clan_roster` is the last non-empty roster, keyed by the core tag (a

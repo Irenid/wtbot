@@ -293,7 +293,10 @@ Sources (constants live in their files under `src/parsers/sources/`):
   and name stay as they are (keys of battles and claninfo); `_id` survives tag
   changes; the founding date is the leaderboard's `cdate` (claninfo shows
   1970). Then the claninfo rosters of 5 leaders whose roster is older than a
-  day. Stored fields, history and the season check: `docs/squadrons.md`.
+  day; the squadrons a server's `/settings` follow are read every 15 min
+  (`followed-rosters.ts`: rulebot tells departures from `/api/clans/:coreTag`,
+  its `clan.rosterReadAt`). Stored fields, history and the season check:
+  `docs/squadrons.md`.
 - `wt-clan-season` — every 6 h the first post of
   `forum.warthunder.ru/raw/2509/1` (not warthunder.com: no Cloudflare, a plain
   bounded fetch) → seasons `forum-YYYY-MM-DD` in `clan_seasons`.
@@ -903,7 +906,7 @@ npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.t
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
-**2026-10-21**: all gates pass, **611 pass, 0 fail**, corpus — 6 scenarios
+**2026-10-22**: all gates pass, **629 pass, 0 fail**, corpus — 6 scenarios
 (including 2.59), the SPA 34 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`

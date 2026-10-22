@@ -9,6 +9,7 @@ import { startBot, stopBotWork } from './bot/index.js'
 import type { ScoutStatSharkSource } from './scout/report.js'
 import { startVoiceTracker } from './bot/voice-tracker.js'
 import { requestPlayerBoardRefresh, startPlayerBoardPublisher } from './bot/player-board.js'
+import { startFollowedRosters, stopFollowedRosters } from './bot/followed-rosters.js'
 import { buildServer } from './web/index.js'
 import { DASHBOARD_PATH } from './web/routes/pages.js'
 import type { RuntimeStats } from './web/types.js'
@@ -412,6 +413,8 @@ async function startServices(): Promise<void> {
   if (shuttingDown) return
   startWtCookieRefresh()
   startParsers()
+  // The rosters of squadrons servers follow, read every 15 min (bot/followed-rosters.ts).
+  startFollowedRosters()
   // A squadron tag missing from the clans dictionary (it began playing after
   // the last full crawl) is looked up by an out-of-schedule full crawl.
   setClanTagLookup((tags) => {
@@ -469,6 +472,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
     playerIdLookup?.stop() ?? Promise.resolve(),
     ingestStopped,
     stopPsrPageReader(),
+    stopFollowedRosters(),
     maintenanceStopped,
   ])
   let drainTimer: NodeJS.Timeout | undefined

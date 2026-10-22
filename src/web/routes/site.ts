@@ -27,6 +27,7 @@ import {
   getSiteClanProfile,
   getSiteFirstBattleAt,
   getSiteClanRosterDetails,
+  getSiteClanRosterReadAt,
   getSiteExternalAggregateHistory,
   getSiteRatingHistory,
   getSiteReplayNick,
@@ -1180,6 +1181,8 @@ export const siteRoutes: FastifyPluginAsync<{ site?: SiteRoutesOptions }> = asyn
         recentBattles: group.recentBattles,
         leaderboard: status,
         rosterKnown: group.rosterKnown,
+        // The roster's last claninfo read: a member missing from it has left (rulebot tells departures by it).
+        rosterReadAt: getSiteClanRosterReadAt(group.coreTag),
         official: group.official !== null,
       },
       roster,

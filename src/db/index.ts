@@ -6108,6 +6108,10 @@ export const SITE_SQL = {
   clanRosterDetails: `
     SELECT nick, role, joined_at, activity FROM clan_roster WHERE clan_core = ?
   `,
+  // Every read stamps each present member (saveClanRatingSnapshots): the latest stamp is the last read.
+  clanRosterReadAt: `
+    SELECT MAX(last_present_at) AS read_at FROM clan_roster WHERE clan_core = ?
+  `,
   clanProfile: `
     SELECT clan_id, description, announcement, requirements, status, auto_accept, plain_tag, regalia
     FROM clans
@@ -6987,6 +6991,12 @@ export function getSiteClanRosterDetails(clanCore: string): Map<string, SiteClan
     activity: number | null
   }[]
   return new Map(rows.map((row) => [row.nick, { role: row.role, joinedAt: row.joined_at, activity: row.activity }]))
+}
+
+/** When the squadron's claninfo roster was last read, Unix seconds; null — never. */
+export function getSiteClanRosterReadAt(clanCore: string): number | null {
+  const row = siteStatement('clanRosterReadAt').get(clanCore) as { read_at: number | null } | undefined
+  return row?.read_at ?? null
 }
 
 /** Описание, условия вступления и прочий профиль клана из лидерборда. */
