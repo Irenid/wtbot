@@ -146,7 +146,7 @@ export const en: BotText = {
     platoonsNotSet: 'Platoon suggestions are not set up on this server.',
     statsPlaceName: (place) => `🏆 Squadron place: ${place ?? '–'}`,
     statsMembersName: (members) => `🍰 Squadron players: ${members ?? '–'}`,
-    statsRatingName: (rating) => `Average PSR: ${rating ?? '–'}💹`,
+    statsRatingName: (rating) => `💹 Average PSR: ${rating ?? '–'}`,
     show: {
       title: 'The bot on this server',
       language: 'Language',
