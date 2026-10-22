@@ -147,11 +147,32 @@ export function forgetSquadronStatsGuild(guildId: string): void {
   deleteBotState(KEY + guildId)
 }
 
+/** Failures already logged, so a persistent one (a missing permission) does not repeat every minute. */
+const warned = new Set<string>()
+
+/**
+ * A pair made before the third channel gets it from the tick: same category and overwrites as the
+ * player-count channel, right below it, so nobody has to run /settings stats set again.
+ */
+async function addRatingChannel(guild: Guild, pair: Pair, name: string): Promise<void> {
+  const points = guild.channels.cache.get(pair.pointsId)
+  if (!points || points.type !== ChannelType.GuildVoice) return
+  try {
+    const rating = await guild.channels.create({
+      name, type: ChannelType.GuildVoice, parent: points.parentId, position: points.position + 1,
+      permissionOverwrites: points.permissionOverwrites.cache.map((o) => ({ id: o.id, type: o.type, allow: o.allow, deny: o.deny })),
+    })
+    setBotState(KEY + guild.id, JSON.stringify({ ...pair, ratingId: rating.id } satisfies Pair))
+    pair.ratingId = rating.id
+  } catch (error) {
+    if (!warned.has(pair.pointsId)) console.warn(`[squadron-stats] server ${guild.id}: could not add the rating channel:`, error)
+    warned.add(pair.pointsId)
+  }
+}
+
 let timer: NodeJS.Timeout | null = null
 let activeTick: Promise<void> = Promise.resolve()
 let stopping = false
-/** Failures already logged, so a persistent one (a missing permission) does not repeat every minute. */
-const warned = new Set<string>()
 
 async function tick(client: Client): Promise<void> {
   for (const guild of client.guilds.cache.values()) {
@@ -159,6 +180,7 @@ async function tick(client: Client): Promise<void> {
     const pair = readPair(guild.id)
     if (!pair) continue
     const text = names(guild, pair.clan)
+    if (!pair.ratingId) await addRatingChannel(guild, pair, text.rating)
     const targets: (readonly [string, string])[] = [[pair.placeId, text.place], [pair.pointsId, text.points]]
     if (pair.ratingId) targets.push([pair.ratingId, text.rating])
     for (const [id, name] of targets) {
