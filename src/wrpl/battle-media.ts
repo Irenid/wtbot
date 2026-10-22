@@ -169,7 +169,8 @@ export async function cachedBattleHeatmap2x(
 // 55: ground maps: brighter spawn detection outlines and out-of-bounds hatch (TACTICAL_MAP_VERSION 5).
 // 56: detection outlines without the grey halo, thinner (TACTICAL_MAP_VERSION 6).
 // 57: the ground heatmap draws no kill line for a plane's or helicopter's kill.
-const BATTLE_MEDIA_VERSION = 57
+// 58: heatmap track colours from the static per-team-size table (heatmap-palette.ts).
+const BATTLE_MEDIA_VERSION = 58
 /** What the artifacts depend on beyond the version and their language: a changed heatmap option redraws them. */
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')

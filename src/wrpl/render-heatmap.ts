@@ -4,6 +4,7 @@ import type { MissionInfo } from './mission-info.js'
 import type { ReplayEvents, ReplayKill, ReplayUnitPath, SpaceTime } from './replay-events.js'
 import type { ReplayResults, WrplHeader } from './replay.js'
 import { buildRosters, clanDisplayName, shownName, tagMarkup } from './render-battle.js'
+import { heatmapPalette } from './heatmap-palette.js'
 import { vehicleInfo, type VehicleDict } from './vehicles.js'
 
 /**
@@ -15,7 +16,8 @@ import { vehicleInfo, type VehicleDict } from './vehicles.js'
  * none: its kill line shows it); dashed kill lines from killer to victim; long
  * stops with their duration; dots at the survivors' last positions; minute
  * marks along the tracks where they collide with nothing. Colours come in two
- * families (TEAM_ROUTE_COLORS), so a track's team reads from its hue, over a
+ * families (heatmap-palette.ts: cool for the image's own team, warm for the
+ * other, static sets per pair of team sizes), over a
  * muted map (MAP_SATURATION). On the right an information panel: map, mode and
  * date, the teams in the order of their sides on the map (winner, players with
  * kills and deaths, vehicles, score and time of death) and the legend.
@@ -47,19 +49,6 @@ const MAP_W = HEATMAP_MAP_SIZE
 /** The information panel's width, right of the map. */
 const PANEL_W = 480
 
-/**
- * Track colours, one family per team, so a track's team reads from its hue:
- * the image's own team (teamIndex ?? 0, whose spawn the game map draws blue)
- * takes the cool family, the other team the warm one. Picked by greedy max-min
- * OKLab ΔE within a family (the labels name the players) while every
- * cool/warm pair keeps ΔE ≥ 0.12 also under protan and deutan simulation
- * (Machado 2009); olive yellows and dark teals vanish on the khaki map. The
- * most distinct come first: they go to the top scorers.
- */
-const TEAM_ROUTE_COLORS = [
-  ['#457CFD', '#32D3EE', '#A57AFE', '#1C98A0', '#E1CDFE', '#93ADFE', '#05A3E9', '#A94BFC'],
-  ['#FD2B33', '#FFD404', '#FD8706', '#FFE7C7', '#AD7C1D', '#FDAD97', '#DC631A', '#F3B01D'],
-] as const
 /** The saturation left to the map image: muted, it stays behind the tracks. */
 const MAP_SATURATION = 0.5
 const TEAM_SPAWN_COLORS = ['#17e6ec', '#fa2028'] as const
@@ -540,9 +529,12 @@ export function buildHeatmapSvg(
   } = scene
   const players = teamIndex === undefined ? allPlayers : (playersByTeam[teamIndex] ?? [])
   const ownTeam = teamIndex ?? 0
+  // Track colours: the image's own team (whose spawn the game map draws blue) takes cool hues, the other team warm ones;
+  // the set depends on how many players each team has in this mode (heatmap-palette.ts), so a small team's colours are far apart.
+  const palette = heatmapPalette(playersByTeam[ownTeam]?.length ?? 0, playersByTeam[1 - ownTeam]?.length ?? 0)
   const colorOf = (player: PlayerPaths): string => {
-    const family = TEAM_ROUTE_COLORS[player.team === ownTeam ? 0 : 1]
-    return family[player.slot % family.length]!
+    const colours = palette[player.team === ownTeam ? 0 : 1]
+    return colours[player.slot % colours.length]!
   }
   const clanUavs = mode === 'ground' && teamIndex !== undefined
     ? (clanUavsByTeam[teamIndex] ?? [])
