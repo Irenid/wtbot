@@ -682,8 +682,8 @@ Data:
   there stays indexed or moves to a worker. A falling `psrFormulaCheck()`
   (`/api/stats` → `psrFormula`; a log warning under 90% once 300 of the last
   1,000 checks exist) means Gaijin changed the rule.
-- In the post's first line, after Match ID and the cap, each squadron's tag
-  is followed by a standing, e.g. `-P0LAR- #31 10W 5L`
+- Switched off in the post (owner, 2026-10-22; the first line was `Match ID · Max BR ·
+  EPRO #31 10W 5L · …`): each squadron's standing
   (`squadronStanding()`, `commands/battle.ts`): the leaderboard's own place
   (`clans.position` by the replay's decorated tag; only a row read since the
   last full crawl and within `PLACE_MAX_SHIFT_SEC`, 12 h, of the battle) and

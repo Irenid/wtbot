@@ -48,7 +48,7 @@ import {
 } from '../../wrpl/battle-psr.js'
 import { fetchRatingsForTags, lookupUnknownClanTags, unknownClanTags } from '../../wrpl/clan-info.js'
 import { applyRealNames, fakeNamesFromItem, fetchReplayResults, listedUserIdsFromItem, normalizeSessionId, realNamesFromItem, replayPartUrls, type ReplayResults, type WrplHeader } from '../../wrpl/replay.js'
-import { clanDisplayName, psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
+import { psrLabel, renderBattleImage, stripClanDecorators, summarizeTeams } from '../../wrpl/render-battle.js'
 import { fillSquadronTags } from '../../wrpl/squadron-tags.js'
 import { ensureVehicleDict } from '../../wrpl/vehicles.js'
 import { isWorkerPoolSchedulingError, type WorkerPriority } from '../../workers/pool.js'
@@ -204,15 +204,11 @@ export async function renderBattlePost(
       ? battlePsr({ sessionId, startTime: header.startTime, duration: results.timePlayed, players: results.players, winnerTeam })
       : new Map()
 
-  // The text next to the image: Match ID and cap, then each squadron's tag with its place and the
-  // day's record, then each team's squadron, composition and players.
+  // The text next to the image: Match ID and cap, then each team's squadron, composition and players.
+  // squadronStanding() (place and the day's record) is switched off on the owner's request, 2026-10-22.
   const buildContent = (): string => {
-    const standings = teams.flatMap((team) => {
-      const standing = team.rawTag ? squadronStanding(team.rawTag, header.startTime, t) : null
-      return team.rawTag && standing !== null ? [` · ${escapeMarkdown(clanDisplayName(team.rawTag))} ${standing}`] : []
-    })
     const text =
-      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}${standings.join('')}\n` +
+      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}\n` +
       teams
         .map((team, i) => {
           const clan = escapeMarkdown(team.clan ?? t.battle.team(i + 1))
