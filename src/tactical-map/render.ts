@@ -46,7 +46,7 @@ export interface TacticalMapStyle {
   ownColor: string
   enemyColor: string
   /** Spawn detection zones: a dashed outline in the spawning team's colour (not the game's style: it outlines them only near a player). */
-  detection: { width: number; dash: [number, number]; opacity: number; haloWidth: number; haloOpacity: number }
+  detection: { width: number; dash: [number, number]; opacity: number }
   zoneIcon: number
   spawnIcons: Record<Exclude<SpawnKind, 'other'>, SpawnIconStyle>
   spawnOutlineOpacity: number
@@ -77,7 +77,7 @@ export const GAME_MAP_STYLE: TacticalMapStyle = {
   rowBaseline: 7.6,
   ownColor: '#054afb',
   enemyColor: '#f61914',
-  detection: { width: 2.5, dash: [8, 4], opacity: 1, haloWidth: 7, haloOpacity: 0.3 },
+  detection: { width: 1.5, dash: [8, 4], opacity: 1 },
   zoneIcon: 21,
   spawnIcons: {
     tank: { icon: 'objective_tank', outline: 'objective_tank_outline', width: 36, height: 36 },
@@ -353,10 +353,8 @@ export function tacticalMapOverlaySvg(spec: MapOverlaySpec, geometry: RenderGeom
     const shapes = spec.areas?.[revealed].detection ?? []
     const d = shapes.length > 0 ? unionOutline(shapes.map(toPixels), 0.25) : ''
     if (!d) continue
-    const { width, dash, opacity, haloWidth, haloOpacity } = style.detection
+    const { width, dash, opacity } = style.detection
     const stroke = colorOf(revealed === 'A' ? 'B' : 'A')
-    // The open outline cannot be filled; a wide faint line under the dashes makes the zone readable on bright terrain.
-    parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-opacity="${r2(haloOpacity)}" stroke-width="${r2(haloWidth * k)}"/>`)
     parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-opacity="${r2(opacity)}" ` +
       `stroke-width="${r2(width * k)}" stroke-dasharray="${dash.map((n) => r2(n * k)).join(' ')}"/>`)
   }

@@ -15,9 +15,10 @@ export const LABEL_FONT_FILE = 'pt_sans-web-regular-reducedheight.ttf'
  * 2: the HQ textures (content.hq, 2048²), air maps, every base kind in the meta.
  * 3: imports by rank, difficulty and parameter; squadron battles' runway and bomber spawns.
  * 4: spawn detection zones outlined; cylinder and sphere footprints as the game tests them.
- * 5: detection outlines thicker, opaque, with a faint halo; out-of-bounds hatch brighter.
+ * 5: detection outlines opaque; out-of-bounds hatch brighter.
+ * 6: detection outlines without the grey halo, thinner.
  */
-export const TACTICAL_MAP_VERSION = 5
+export const TACTICAL_MAP_VERSION = 6
 
 /**
  * A map without its texture's pixels: what composeTacticalMap (build.ts) draws
