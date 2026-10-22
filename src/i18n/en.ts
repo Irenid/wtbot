@@ -144,9 +144,9 @@ export const en: BotText = {
       + `beside it and, while someone is there, posts in ${channel} who should play where. It moves nobody.`,
     platoonsRemoved: 'Platoon suggestions are off; their post is deleted.',
     platoonsNotSet: 'Platoon suggestions are not set up on this server.',
-    statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,
-    statsMembersName: (members) => `Squadron players: ${members ?? '–'}`,
-    statsRatingName: (rating) => `Squadron average rating: ${rating ?? '–'}`,
+    statsPlaceName: (place) => `🏆 Squadron place: ${place ?? '–'}`,
+    statsMembersName: (members) => `👥 Squadron players: ${members ?? '–'}`,
+    statsRatingName: (rating) => `📈 Average PSR: ${rating ?? '–'}`,
     show: {
       title: 'The bot on this server',
       language: 'Language',

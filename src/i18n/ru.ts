@@ -150,9 +150,9 @@ export const ru: BotText = {
       + `рядом с ним и, пока там есть игроки, пишет в ${channel}, кому где лучше играть. Никого не перемещает.`,
     platoonsRemoved: 'Подсказки по взводам выключены, их сообщение удалено.',
     platoonsNotSet: 'Подсказки по взводам на этом сервере не настроены.',
-    statsPlaceName: (place) => `Место полка: ${place ?? '–'}`,
-    statsMembersName: (members) => `Игроков в полку: ${members ?? '–'}`,
-    statsRatingName: (rating) => `Средний рейтинг полка: ${rating ?? '–'}`,
+    statsPlaceName: (place) => `🏆 Место полка: ${place ?? '–'}`,
+    statsMembersName: (members) => `👥 Игроков в полку: ${members ?? '–'}`,
+    statsRatingName: (rating) => `📈 Средний ЛПР: ${rating ?? '–'}`,
     show: {
       title: 'Бот на этом сервере',
       language: 'Язык',
