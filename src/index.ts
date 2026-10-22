@@ -16,6 +16,7 @@ import { runParserNow, startParsers, stopParsers } from './parsers/index.js'
 import { requestFullClanCrawl } from './parsers/sources/wt-clans.js'
 import { setClanTagLookup } from './wrpl/clan-info.js'
 import { getIngestTelemetrySnapshot, startIngestWorker, stopIngestWorker } from './wrpl/ingest.js'
+import { startPsrPageReader, stopPsrPageReader } from './wrpl/psr-page-reader.js'
 import { configureReplayFetchAdmission } from './wrpl/replay-cache.js'
 import { configureReplayProcessBudget } from './wrpl/replay-events.js'
 import { configureReplayUrlPolicy } from './wrpl/replay-url-policy.js'
@@ -427,6 +428,7 @@ async function startServices(): Promise<void> {
       config.ingestAdaptiveAdmissionEnabled,
       config.ingestPipelineEnabled,
     )
+    startPsrPageReader()
   } else {
     console.log('[ingest] Фоновая загрузка и разбор боёв отключены')
   }
@@ -466,6 +468,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
     playerStats?.stop() ?? Promise.resolve(),
     playerIdLookup?.stop() ?? Promise.resolve(),
     ingestStopped,
+    stopPsrPageReader(),
     maintenanceStopped,
   ])
   let drainTimer: NodeJS.Timeout | undefined

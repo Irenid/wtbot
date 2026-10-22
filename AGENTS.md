@@ -414,6 +414,12 @@ Access:
   rows and events blob. `battle-lifecycle.ts` listeners are synchronous:
   parsers emit `discovered` (wakes ingest), ingest emits `committed` (the
   announcer).
+- After `committed`, `psr-page-reader.ts` reads the squadron pages of the
+  battle's teams (battles that ended within 30 min; ≤ 64 queued squadrons;
+  the 2 min per-squadron cooldown of `fetchRatingsForTags` applies), whether
+  or not a server publishes the battle: the PSR column needs a reading near
+  the battle, and a squadron filter on the battles channel must not starve
+  the others of one (~190 squadrons, ≤ ~1,900 reads a day, 2026-10-22).
 - Every path that parses a battle passes the Replay API item's user ids
   (`listedUserIdsFromItem`): without them `battleParticipants` keeps phantom
   bot rows.

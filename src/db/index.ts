@@ -5274,6 +5274,14 @@ export function hasBattleChat(sessionId: string): boolean {
   return getDb().prepare('SELECT 1 FROM battle_chat WHERE session_id = ? LIMIT 1').get(sessionId) !== undefined
 }
 
+/** The end of a stored battle, unix s; null — not stored. */
+export function getBattleEndSec(sessionId: string): number | null {
+  const row = getDb()
+    .prepare('SELECT start_time + duration_sec AS end_at FROM battles WHERE session_id = ?')
+    .get(sessionId) as { end_at: number } | undefined
+  return row?.end_at ?? null
+}
+
 /** Клан-теги (сырые, с украшениями) участников боя — для фильтра автоанонса */
 export function getBattleClanTags(sessionId: string): string[] {
   const rows = getDb()
