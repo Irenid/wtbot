@@ -372,9 +372,7 @@ export interface BotText {
    */
   platoons: {
     /** `cap` — the max BR now, null when unknown. */
-    title(squadron: string, cap: number | null): string
-    /** How the bot chooses, under the title. */
-    intro: string
+    title(cap: number | null): string
     /** A room's field name: the channel's name and the squadron's players in it. */
     room(name: string, players: number): string
     /** After the field name of a room short of players. */

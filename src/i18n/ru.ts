@@ -426,8 +426,7 @@ export const ru: BotText = {
   },
 
   platoons: {
-    title: (squadron, cap) => `Взводы ${squadron}${cap === null ? '' : ` · БР ${cap.toFixed(1)}`}`,
-    intro: 'Кому из игроков в голосовых где играть. Это подсказки: бот никого не перемещает, решает полевой командир.',
+    title: (cap) => `Рекомендованные сетапы${cap === null ? '' : ` · БР ${cap.toFixed(1)}`}`,
     room: (name, players) => `${name} · ${players}/8`,
     short: (missing) => ` · не хватает ${missing}`,
     newPlatoon: (index) => `Новый взвод${index === null ? '' : ` ${index}`} · 8/8, нужна комната`,

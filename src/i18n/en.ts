@@ -416,8 +416,7 @@ export const en: BotText = {
   },
 
   platoons: {
-    title: (squadron, cap) => `Platoons of ${squadron}${cap === null ? '' : ` · BR ${cap.toFixed(1)}`}`,
-    intro: 'Who of the players in voice should play where. These are suggestions: the bot moves nobody, the field commander decides.',
+    title: (cap) => `Recommended setups${cap === null ? '' : ` · BR ${cap.toFixed(1)}`}`,
     room: (name, players) => `${name} · ${players}/8`,
     short: (missing) => ` · ${missing} missing`,
     newPlatoon: (index) => `New platoon${index === null ? '' : ` ${index}`} · 8/8, needs a room`,

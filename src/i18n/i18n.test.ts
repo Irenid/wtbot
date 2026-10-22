@@ -32,7 +32,7 @@ const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   'settings.show.languageValue': [['English', true], ['English', false]],
   'settings.platoonsSet': [['<#1>', 'WLILY', '<#2>']],
   'settings.show.platoonsValue': [['<#1>', 'WLILY', '<#2>']],
-  'platoons.title': [['WLILY', 6], ['WLILY', null]],
+  'platoons.title': [[6], [null]],
   'platoons.room': [['Platoon 1', 6]],
   'platoons.newPlatoon': [[null], [2]],
   'platoons.swap': [['**Strong**', '**Weak**']],

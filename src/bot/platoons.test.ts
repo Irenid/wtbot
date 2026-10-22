@@ -45,8 +45,9 @@ test('a short room lists its players by role, whom to call in and from where, it
   ])
   const list = [candidate('a', 'r1'), candidate('b', 'r1'), candidate('g', 'r1', { standing: 'guest' }),
     candidate('w', null), candidate('d', null, { deaf: true }), candidate('x', null, { standing: 'guest' }), candidate('n', null, { strength: 0 })]
-  const embed = advicePost(botText('ru'), 'WLILY', 6, advice(list, ratings, [['r1', '1 взвод']]), vehicles)
-  assert.equal(embed.title, 'Взводы WLILY · БР 6.0')
+  const embed = advicePost(botText('ru'), 6, advice(list, ratings, [['r1', '1 взвод']]), vehicles)
+  assert.equal(embed.title, 'Рекомендованные сетапы · БР 6.0')
+  assert.equal(embed.description, undefined, 'no explanation line')
   const [room, notPlaced] = embed.fields!
   assert.equal(room!.name, '1 взвод · 2/8 · не хватает 6')
   assert.deepEqual(room!.value.split('\n'), [
@@ -72,8 +73,8 @@ test('idle players beyond a full room form a new platoon; the one left over is o
     list.push(candidate(`p${index}`, null, { strength: 1 + index / 10 }))
     ratings.set(`p${index}`, { member: member(`p${index}`, `Lobby${index}`) })
   }
-  const embed = advicePost(botText('en'), 'WLILY', null, advice(list, ratings, [['r1', 'Platoon 1']]), vehicles)
-  assert.equal(embed.title, 'Platoons of WLILY')
+  const embed = advicePost(botText('en'), null, advice(list, ratings, [['r1', 'Platoon 1']]), vehicles)
+  assert.equal(embed.title, 'Recommended setups')
   const [room, platoon, ...rest] = embed.fields!
   assert.equal(room!.name, 'Platoon 1 · 8/8')
   assert.equal(room!.value.split('\n').at(-1), '🔁 **Lobby0** instead of **Room0**')
@@ -83,7 +84,7 @@ test('idle players beyond a full room form a new platoon; the one left over is o
 })
 
 test('nobody in voice: the post says so', () => {
-  const embed = advicePost(botText('en'), 'WLILY', null, advice([], new Map()), {})
+  const embed = advicePost(botText('en'), null, advice([], new Map()), {})
   assert.match(embed.description!, /Nobody is in voice yet/)
   assert.equal(embed.fields, undefined)
 })

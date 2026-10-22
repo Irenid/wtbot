@@ -34,7 +34,6 @@ import { botText, type BotText } from '../i18n/index.js'
 import { PLATOON_SIZE, planPlatoons, type Candidate, type PlanResult } from '../platoons/plan.js'
 import { ratePlatoonPlayers, type RatedMember, type RateInput, type RateOutput } from '../platoons/rate.js'
 import { findSquadrons } from '../scout/report.js'
-import { squadronLabel } from '../scout/format.js'
 import type { ScoutClass } from '../scout/model.js'
 import { fetchRatingsForTags } from '../wrpl/clan-info.js'
 import { ensureVehicleDict, type VehicleDict } from '../wrpl/vehicles.js'
@@ -455,9 +454,7 @@ async function publish(guild: Guild, stored: Stored, advice: Advice): Promise<vo
   }
   const t = botText(guildLocale(guild.id, guild.preferredLocale))
   const vehicles = await ensureVehicleDict().catch(() => ({} as VehicleDict))
-  const squadron = findSquadrons(stored.settings.clan, 1)[0]
-  const label = squadron?.core === stored.settings.clan ? squadronLabel(squadron.displayTag, squadron.name) : stored.settings.clan.toUpperCase()
-  const payload = { content: '', embeds: [advicePost(t, label, caps.get(guild.id) ?? null, advice, vehicles)], components: [], allowedMentions: { parse: [] } }
+  const payload = { content: '', embeds: [advicePost(t, caps.get(guild.id) ?? null, advice, vehicles)], components: [], allowedMentions: { parse: [] } }
   const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
   if (lastPost.get(guild.id) === hash) return
   try {
@@ -496,7 +493,7 @@ async function publish(guild: Guild, stored: Stored, advice: Advice): Promise<vo
 const CLASS_ORDER: readonly ScoutClass[] = ['T', 'L', 'AA', 'F', 'H']
 
 /** The suggestions' embed: a field per room with someone in it, the new platoons, the waiting and the unplaced. */
-export function advicePost(t: BotText, squadron: string, cap: number | null, advice: Advice, vehicles: VehicleDict): APIEmbed {
+export function advicePost(t: BotText, cap: number | null, advice: Advice, vehicles: VehicleDict): APIEmbed {
   const p = t.platoons
   const { plan, list, ratings } = advice
   const nick = (userId: string) => {
@@ -567,9 +564,11 @@ export function advicePost(t: BotText, squadron: string, cap: number | null, adv
     fields.push({ name: p.notPlaced, value: notPlaced.map((item) => line(item.userId, [item.standing === 'guest' ? p.tags.guest : p.tags.deaf])).join('\n') })
   }
 
-  const title = p.title(squadron, cap)
-  const description = (list.length === 0 ? `${p.intro}\n\n${p.empty}` : p.intro).slice(0, 4096)
-  const embed = new EmbedBuilder().setTitle(title).setColor(0x2e86c1).setDescription(description)
+  // Titled «Рекомендованные сетапы» (the owner, 2026-10-22): no squadron name, no explanation line; suggestions only.
+  const title = p.title(cap)
+  const description = list.length === 0 ? p.empty : ''
+  const embed = new EmbedBuilder().setTitle(title).setColor(0x2e86c1)
+  if (description) embed.setDescription(description)
   let budget = EMBED_MAX - title.length - description.length
   for (const field of fields.slice(0, 25)) {
     const name = field.name.slice(0, 256)
