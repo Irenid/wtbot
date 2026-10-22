@@ -6,7 +6,7 @@ import { botText } from '../i18n/index.js'
 import { guildLocale } from './locale.js'
 
 /**
- * Two voice channels nobody joins show a squadron's leaderboard place and rating in their names
+ * Two voice channels nobody joins show a squadron's leaderboard place and player count in their names
  * (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
  * needs View Channel, Manage Channels and Connect on the server: Discord lets a bot allow or deny only
  * permissions it holds; or in a category the server picks, created bare so they copy its overwrites
@@ -49,7 +49,7 @@ export function squadronStatsSquadron(guildId: string): string | null {
 function names(guild: Guild, clan: string): { place: string; points: string } {
   const t = botText(guildLocale(guild.id, guild.preferredLocale)).settings
   const figures = getSquadronFigures(clan)
-  return { place: t.statsPlaceName(figures?.place ?? null), points: t.statsPointsName(figures?.rating ?? null) }
+  return { place: t.statsPlaceName(figures?.place ?? null), points: t.statsMembersName(figures?.members ?? null) }
 }
 
 /**

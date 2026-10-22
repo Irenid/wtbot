@@ -64,10 +64,10 @@ export const en: BotText = {
       voice: 'Voice channels the player board shows',
       voiceAdd: 'Show on the board the players of a voice channel, or of every one in a category',
       voiceRemove: 'Stop showing a voice channel or category on the board',
-      stats: 'Channels showing a squadron\'s place and rating',
-      statsSet: 'Create two channels with a squadron\'s place and rating',
+      stats: 'Channels showing a squadron\'s place and player count',
+      statsSet: 'Create two channels with a squadron\'s place and player count',
       statsCategory: 'The category to create them in; empty: the top of the list (needs more permissions)',
-      statsRemove: 'Delete the place and rating channels',
+      statsRemove: 'Delete the place and player count channels',
       platoons: 'Platoons: the bot suggests who of the players in voice should play',
       platoonsSet: 'Suggest platoons from the players in a voice channel and the rooms beside it',
       platoonsRemove: 'Stop suggesting platoons',
@@ -132,20 +132,20 @@ export const en: BotText = {
       'and renames them. Or pick a category where its role has View Channel and Manage Channels.',
     statsSet: (squadron, category) =>
       (category === null
-        ? `Two voice channels with the place and rating of ${squadron} are at the top of the channel list ` +
+        ? `Two voice channels with the place and player count of ${squadron} are at the top of the channel list ` +
           '(Discord lists text channels outside categories above them): everyone sees them, nobody joins or uses them.'
-        : `Two voice channels with the place and rating of ${squadron} are in ${category}, with its permissions: ` +
+        : `Two voice channels with the place and player count of ${squadron} are in ${category}, with its permissions: ` +
           'whoever sees the category sees them.') +
       ' They change within a minute of a new leaderboard reading, every 20 minutes at most. ' +
       'Moving or renaming them is fine; deleting one removes both.',
-    statsRemoved: 'The place and rating channels are deleted.',
-    statsNotSet: 'This server has no place and rating channels.',
+    statsRemoved: 'The place and player count channels are deleted.',
+    statsNotSet: 'This server has no place and player count channels.',
     platoonsSet: (lobby, squadron, channel) => `Platoon suggestions are on: the bot watches ${squadron} players in ${lobby} and the voice channels `
       + `beside it and posts in ${channel} who should play where. It moves nobody.`,
     platoonsRemoved: 'Platoon suggestions are off; their post is deleted.',
     platoonsNotSet: 'Platoon suggestions are not set up on this server.',
     statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,
-    statsPointsName: (points) => `Squadron rating: ${points ?? '–'}`,
+    statsMembersName: (members) => `Squadron players: ${members ?? '–'}`,
     show: {
       title: 'The bot on this server',
       language: 'Language',

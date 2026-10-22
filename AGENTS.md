@@ -573,7 +573,7 @@ Data:
   (asking without it fails the login, 4014); messages are not cached.
 - `/settings stats set squadron: [category:]` (`src/bot/squadron-stats.ts`, state
   in `bot_state` `squadron-stats:<guildId>`): two voice channels carry a
-  squadron's leaderboard place and rating in their names; a 60 s tick (only with
+  squadron's leaderboard place and player count in their names; a 60 s tick (only with
   `WT_ANNOUNCE_ENABLED`: it renames channels on real servers) renames one only
   when its text differs (Discord: 2 renames per 10 min), so a crawl (20 min)
   shows within a minute; deleting one channel removes both. Without a category

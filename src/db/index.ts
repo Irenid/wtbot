@@ -2887,7 +2887,8 @@ export function getSquadronLeaderboardPlace(tag: string): SquadronPlace | null {
 
 /** A squadron's leaderboard figures by tag core (src/bot/squadron-stats.ts keeps them in channel names). */
 export interface SquadronFigures {
-  rating: number
+  /** Members on the leaderboard row; null — the row has no count. */
+  members: number | null
   /** null — never read, or the last full crawl missed it (stale; see getSquadronLeaderboardPlace). */
   place: number | null
 }
@@ -2899,8 +2900,8 @@ export interface SquadronFigures {
  */
 export function getSquadronFigures(core: string): SquadronFigures | null {
   const rows = getDb()
-    .prepare('SELECT tag, rating, position, rating_at FROM clans WHERE rating IS NOT NULL')
-    .all() as { tag: string; rating: number; position: number | null; rating_at: number | null }[]
+    .prepare('SELECT tag, rating, members, position, rating_at FROM clans WHERE rating IS NOT NULL')
+    .all() as { tag: string; rating: number; members: number | null; position: number | null; rating_at: number | null }[]
   const own = rows
     .filter((row) => row.tag.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase() === core)
     .sort((a, b) => b.rating - a.rating)[0]
@@ -2908,7 +2909,7 @@ export function getSquadronFigures(core: string): SquadronFigures | null {
   const fullCrawlAt = getLastFullClanCrawlAt()
   const fresh = own.position !== null && own.position > 0 && own.rating_at !== null &&
     (fullCrawlAt === null || own.rating_at >= fullCrawlAt)
-  return { rating: own.rating, place: fresh ? own.position : null }
+  return { members: own.members, place: fresh ? own.position : null }
 }
 
 /** A squadron's battles with a stored winner. */

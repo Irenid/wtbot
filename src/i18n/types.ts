@@ -107,7 +107,7 @@ export interface BotText {
     platoonsNotSet: string
     /** Channel names (up to 100 characters); null — the squadron is not on the leaderboard. */
     statsPlaceName(place: number | null): string
-    statsPointsName(points: number | null): string
+    statsMembersName(members: number | null): string
     show: {
       title: string
       language: string

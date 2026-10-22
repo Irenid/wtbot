@@ -27,7 +27,7 @@ import { squadronChoice } from './scout.js'
  * use the command (Manage Server by default; access.ts): the channels of
  * battle posts (every squadron's or one squadron's), of scoreboard
  * screenshots and the voice channels or categories of the player board (guild-settings.ts),
- * the place and rating channels (squadron-stats.ts) and the platoon suggestions (platoons.ts);
+ * the place and player count channels (squadron-stats.ts) and the platoon suggestions (platoons.ts);
  * `show` lists them with the language, the board and who can use each
  * command. Replies are ephemeral; a channel is accepted only once the bot has
  * what it needs there, so a public install never fails silently, and only
@@ -54,7 +54,7 @@ const NEEDS: Readonly<Record<GuildChannelKind, readonly PermissionKey[]>> = {
 }
 
 /**
- * The place and rating channels (squadron-stats.ts): in a category they copy its overwrites, so the bot
+ * The place and player count channels (squadron-stats.ts): in a category they copy its overwrites, so the bot
  * needs to see, manage and connect to channels there (Discord refuses to change a voice channel its bot
  * cannot connect to); at the top of the list they carry their own (everyone sees, nobody but the bot
  * connects), and Discord lets a bot allow or deny only permissions it holds on the server.
@@ -263,7 +263,7 @@ export const settings: Command = {
   },
 }
 
-/** /settings stats set|remove: the locked channels with a squadron's place and rating (squadron-stats.ts). */
+/** /settings stats set|remove: the locked channels with a squadron's place and player count (squadron-stats.ts). */
 async function executeStats(
   interaction: ChatInputCommandInteraction<'cached'>,
   action: string,

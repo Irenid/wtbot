@@ -26,7 +26,7 @@ const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   'settings.voiceAdded': [['<#1>', true, false], ['<#1>', false, true]],
   'settings.voiceRemoved': [['<#1>', true], ['<#1>', false]],
   'settings.statsPlaceName': [[12], [null]],
-  'settings.statsPointsName': [[12345], [null]],
+  'settings.statsMembersName': [[12], [null]],
   'settings.statsSet': [['WLILY', '<#1>'], ['WLILY', null]],
   'settings.statsNeedsPermissions': [['View Channel, Manage Channels, Connect']],
   'settings.show.languageValue': [['English', true], ['English', false]],
