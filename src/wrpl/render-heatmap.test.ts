@@ -6,6 +6,7 @@ import type { MapImageViewport } from './battle-assets.js'
 import type { VehicleDict } from './vehicles.js'
 import { clanDisplayName, stripClanDecorators } from './render-battle.js'
 import { buildHeatmapSvg, prepareHeatmapScene, type HeatmapRenderOptions } from './render-heatmap.js'
+import { heatmapPalette } from './heatmap-palette.js'
 
 const header: WrplHeader = {
   version: 1,
@@ -109,6 +110,9 @@ function renderAt(
     ...(heatmapOptions ? { heatmapOptions } : {}),
   }, false, tacticalMap, fallbackMap, fallbackMapViewport, mapIconFont, capturedMapRendering)
 }
+
+/** The fixtures draw one player per team in a mode: the 1 v 1 colours, cool for the image's own team. */
+const [[COOL], [WARM]] = heatmapPalette(1, 1)
 
 test('подготовка heatmap сохраняет оригинальные Unicode-символы в никах', () => {
   const harald = { ...player, userId: 'harald', name: 'Haraldツ', team: 1 }
@@ -543,10 +547,10 @@ test('a squadron map keeps the overview colours and hides the other team\'s rout
   const clanAir = buildHeatmapSvg({ ...input, mode: 'air', teamIndex: 0 })
   const russian = buildHeatmapSvg({ ...input, teamIndex: 0, locale: 'ru' })
 
-  assert.ok(overview.includes('stroke="#4C99F8"'))
-  assert.ok(clan.includes('stroke="#4C99F8"'))
-  assert.ok(overview.includes('stroke="#F56600"'))
-  assert.ok(!clan.includes('stroke="#F56600"'))
+  assert.ok(overview.includes(`stroke="${COOL}"`))
+  assert.ok(clan.includes(`stroke="${COOL}"`))
+  assert.ok(overview.includes(`stroke="${WARM}"`))
+  assert.ok(!clan.includes(`stroke="${WARM}"`))
   assert.ok(clan.includes('>Player</text>'))
   assert.ok(clan.includes('>Enemy</text>'))
   assert.ok(clan.includes('routes: AAA'))
@@ -561,8 +565,8 @@ test('a squadron map keeps the overview colours and hides the other team\'s rout
   assert.ok(clan.includes('data-route-layer="color"'))
   assert.match(clan, /data-direction-arrows="[1-9]/)
   assert.ok(clan.includes('stroke="#10130d" stroke-opacity="0.55" stroke-width="5.4"'))
-  assert.ok(clan.includes('stroke="#4C99F8" stroke-width="3"'))
-  assert.ok(!clan.includes('stroke="#4C99F8" stroke-opacity="0.72"'))
+  assert.ok(clan.includes(`stroke="${COOL}" stroke-width="3"`))
+  assert.ok(!clan.includes(`stroke="${COOL}" stroke-opacity="0.72"`))
   const outline = /<path data-route-layer="outline" data-direction-arrows="([1-9]\d*)" d="([^"]+)"/.exec(clan)
   const color = /<path data-route-layer="color" data-direction-arrows="([1-9]\d*)" d="([^"]+)"/.exec(clan)
   assert.ok(outline && color)
@@ -571,18 +575,18 @@ test('a squadron map keeps the overview colours and hides the other team\'s rout
   assert.ok((outline[2]!.match(/M/g)?.length ?? 0) > 1)
   assert.ok(clan.lastIndexOf('data-spawn-label=') < clan.indexOf('data-route-layer="outline"'))
   assert.ok(clan.includes('data-marker-leader="1"'))
-  assert.ok(clan.includes('fill="#F56600" stroke="#15181c"'))
-  assert.ok(clan.includes('stroke="#4C99F8" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"'))
+  assert.ok(clan.includes(`fill="${WARM}" stroke="#15181c"`))
+  assert.ok(clan.includes(`stroke="${COOL}" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"`))
   assert.ok(!clan.includes('target: vehicles'))
-  assert.ok(overviewAir.includes('stroke="#4C99F8"'))
-  assert.ok(clanAir.includes('stroke="#4C99F8"'))
-  assert.ok(overviewAir.includes('stroke="#F56600"'))
-  assert.ok(!clanAir.includes('stroke="#F56600"'))
+  assert.ok(overviewAir.includes(`stroke="${COOL}"`))
+  assert.ok(clanAir.includes(`stroke="${COOL}"`))
+  assert.ok(overviewAir.includes(`stroke="${WARM}"`))
+  assert.ok(!clanAir.includes(`stroke="${WARM}"`))
   // The other squadron's map draws that squadron cool, as the game draws its own spawn blue.
   const otherClan = buildHeatmapSvg({ ...input, teamIndex: 1 })
-  assert.ok(otherClan.includes('stroke="#4C99F8" stroke-width="3"'))
-  assert.ok(otherClan.includes('fill="#4C99F8" stroke="#15181c"'))
-  assert.ok(otherClan.includes('stroke="#F56600" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"'))
+  assert.ok(otherClan.includes(`stroke="${COOL}" stroke-width="3"`))
+  assert.ok(otherClan.includes(`fill="${COOL}" stroke="#15181c"`))
+  assert.ok(otherClan.includes(`stroke="${WARM}" stroke-width="1.8" stroke-opacity="0.8" stroke-dasharray="7 6"`))
 })
 
 test('each life\'s track is named, and the ground map badges only kills not made by a tank', () => {
@@ -656,8 +660,8 @@ test('each life\'s track is named, and the ground map badges only kills not made
   assert.equal(ground.match(/data-route-label="1"/g)?.length, 2)
   assert.equal(ground.match(/data-route-label="2"/g)?.length, 1)
   assert.ok(!ground.includes('data-route-label="3"'))
-  assert.match(ground, /data-route-label="1"[^>]* fill="#4C99F8"[^>]*>Player<\/text>/)
-  assert.match(ground, /data-route-label="2"[^>]* fill="#F56600"[^>]*>Enemy<\/text>/)
+  assert.match(ground, new RegExp(`data-route-label="1"[^>]* fill="${COOL}"[^>]*>Player</text>`))
+  assert.match(ground, new RegExp(`data-route-label="2"[^>]* fill="${WARM}"[^>]*>Enemy</text>`))
   assert.ok(ground.indexOf('<g data-map-layer="24-route-labels">') > ground.indexOf('<g data-map-layer="23-killer-labels">'))
   assert.match(air, /data-route-label="3"[^>]*>LongNickname_12…<\/text>/)
 
@@ -777,7 +781,7 @@ test('a drone shows only on its squadron\'s ground map, in its owner\'s colour',
   assert.ok(ownClan.includes('<g data-map-layer="11-uav-routes">'))
   assert.ok(ownClan.includes('<g data-map-layer="12-uav-starts">'))
   assert.ok(ownClan.includes('data-uav-owner="1"'))
-  assert.ok(ownClan.includes('stroke="#4C99F8" stroke-width="2"'))
+  assert.ok(ownClan.includes(`stroke="${COOL}" stroke-width="2"`))
   assert.ok(ownClan.includes('data-uav-observation="1"'))
   assert.ok(!enemyClan.includes('data-uav-route='))
   assert.ok(!airClan.includes('data-uav-route='))

@@ -1,43 +1,101 @@
 import { writeFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { Worker, isMainThread, parentPort } from 'node:worker_threads'
 
 /**
  * Generates the heatmap track palette (src/wrpl/heatmap-palette.ts): for every
  * pair (own players, enemy players), 1..8 each, the colours of both teams.
  *
- *   npx tsx src/analysis/heatmap-palette.ts [--write] [--report]
+ *   npx tsx src/analysis/heatmap-palette.ts [--report] [--write] [--pairs=4-8]
  *
- * Method (the table is static; rerun only when the rules below change):
- * - candidates: an OKLCH grid kept only if every map colour of the dark khaki
- *   heatmap (MAP_BACKGROUNDS, k-means of 42 cached heatmaps, 2026-10-22) is
- *   at least MIN_MAP_DELTA away, so no track vanishes into the map;
- * - the hue circle is split in two arcs: the image's own team takes the cool
- *   one, the other team the warm one, so a track's team reads from its hue.
- *   The two cuts (green and magenta) move with the team sizes: the bigger
- *   team gets the wider arc, the smaller one is squeezed (8 v 4);
- * - inside an arc a team of k players gets the k colours with the largest
- *   smallest pairwise distance (farthest-point starts + swap search), a set of
- *   its own for every k: nothing nests, so a third player may change the
- *   colours of the first two;
- * - distance: OKLab ΔE, also under protan and deutan simulation (Machado
- *   2009, severity 1) weighted CVD_WEIGHT; every cross-team pair keeps
- *   MIN_CROSS_DELTA under all three vision types;
- * - a split scores min over the teams of min(smallest distance, DISTANCE_CAP),
- *   so a team that is distinct enough stops claiming hue range.
+ * Method (the table is static; rerun only when a rule below changes):
+ * - candidates: an OKLCH grid (hue HUE_STEP, lightness MIN_LIGHTNESS to
+ *   MAX_LIGHTNESS, chroma from the sRGB edge down) that the map cannot swallow:
+ *   at least MIN_MAP_DELTA from every MAP_COLOURS entry, dark colours vivid
+ *   (minChroma), yellows bright (KHAKI_HUES: dark ones are the maps' olive);
+ * - team families by hue, as the game map draws the spawns: the image's own
+ *   team cool (cyan, blue, violet, purple), the other team warm (pink, red,
+ *   orange, yellow). The families meet at two cuts, in the greens and in the
+ *   magentas, and keep half a gap clear of each (GREEN_GAP, MAGENTA_GAP), so
+ *   balanced teams use no green or magenta and a track's team reads from its
+ *   hue. A cut moves CUT_SHIFT per player of difference toward the smaller
+ *   team (cutRanges): the bigger team takes greens or magentas (8 v 4), the
+ *   smaller one keeps its core;
+ * - per pair, the a + b colours maximise the smallest distance in the whole
+ *   picture: inside a team OKLab ΔE, and protan and deutan ΔE (Machado 2009,
+ *   severity 1) times CVD_WEIGHT; across the teams the smallest of the three.
+ *   Distances count up to DISTANCE_CAP (past it colours are unmistakable and
+ *   the hues nearest the team anchors win); ties go to a soft minimum over
+ *   every pair (ENERGY_SCALE), which pushes the next closest pairs apart.
+ *   Every pair is searched on its own: a third player may move the first two;
+ * - search: CHAINS seeded chains per pair, each a local search (every colour
+ *   swapped for its team's best candidate) restarted from PERTURBATIONS random
+ *   kicks; (pair, chain) tasks spread over one worker per core, so the table
+ *   is reproducible on any machine.
  */
 
-export type Lab = [number, number, number]
+type Lab = [number, number, number]
 
-const MAP_BACKGROUNDS = ['#595444', '#3a3b34', '#494838', '#727370', '#5c5f64', '#676351', '#87847e', '#4a4c4f', '#2a2a26', '#9a9998']
+/**
+ * The map under the tracks: k-means (24) of the 96 cached game-client ground
+ * maps after the renderer's saturate(0.5) and readability shade, 2026-10-22;
+ * a pixel lies within 0.03 ΔE of its centroid (p99).
+ */
+const MAP_COLOURS = [
+  '#1F2020', '#2A2924', '#313028', '#32363A', '#37362C', '#3D3C35', '#434239', '#49493D', '#47484C', '#504F44', '#624F46', '#535454',
+  '#545748', '#605A4E', '#5D5E61', '#656356', '#67696B', '#6F6D5F', '#747473', '#827D77', '#898786', '#929292', '#9C9B9C', '#A9A8A8',
+]
 const MIN_MAP_DELTA = 0.15
-const MIN_CROSS_DELTA = 0.12
+/** Below it a track fades on the darkest maps (L 0.25) even with its dark outline. */
+const MIN_LIGHTNESS = 0.6
+const MAX_LIGHTNESS = 0.96
+/** Paler colours turn whitish on a 3 px line and lose their team's hue; a darker colour needs VIVID_SLOPE more per unit below VIVID_LIGHTNESS. */
+const MIN_CHROMA = 0.11
+const VIVID_LIGHTNESS = 0.75
+const VIVID_SLOPE = 0.4
+/** Dark yellows are olive and mustard, the maps' own khaki: amber to yellow-green hues need KHAKI_MIN_LIGHTNESS. */
+const KHAKI_HUES = [75, 135] as const
+const KHAKI_MIN_LIGHTNESS = 0.8
+const HUE_STEP = 2.5
+const LIGHTNESS_STEP = 0.02
+const CHROMA_STEPS = [0, 0.035, 0.07]
+/**
+ * Colour-blind distances count three times: dichromats keep a third of the
+ * separation, normal vision loses 4% of it (CVD_WEIGHT 2 cost 15%, 2026-10-22).
+ */
+const CVD_WEIGHT = 3
 const DISTANCE_CAP = 0.3
-const CVD_WEIGHT = 2
-const ENERGY_SCALE = 0.02
-const ANCHOR_WEIGHT = 2e-7
+const ENERGY_SCALE = 0.015
 const MAX_PLAYERS = 8
+
+/**
+ * OKLCH hue degrees. Balanced teams meet at these cuts: the green one between
+ * yellow (110°) and aquamarine (166°), the magenta one between purple (313°)
+ * and rose (344°). Half a gap on either side stays empty (warm ≤ 112°, cool
+ * 168°..310°, warm ≥ 350°): lime, green and spring green read as neither team.
+ */
+const GREEN_CUT = 140
+const MAGENTA_CUT = 330
+const GREEN_GAP = 56
+const MAGENTA_GAP = 40
+/** A cut moves CUT_SLACK either way, and CUT_SHIFT per player of difference toward the smaller team, CUT_LIMIT at most. */
+const CUT_SLACK = 3
+const CUT_SHIFT = 5
+const CUT_LIMIT = 30
+/** Single players and ties take the hues nearest these: azure for the own team, red-orange for the other. */
+const COOL_ANCHOR = 235
+const WARM_ANCHOR = 35
+
+/**
+ * Search effort per pair. A sixth of it (16 chains × 120 kicks) found the same
+ * palettes for 21 of the 25 ground pairs 4..8 and at most 0.0045 less for the
+ * rest (2026-10-22).
+ */
+const CHAINS = 64
+const PERTURBATIONS = 300
+/** Near candidates per colour: half the kicks move a colour to one of them. */
+const NEARBY = 32
 
 const PROTAN = [[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216], [-0.003882, -0.048116, 1.051998]] as const
 const DEUTAN = [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413], [-0.01182, 0.04294, 0.968881]] as const
@@ -45,12 +103,12 @@ const DEUTAN = [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413],
 const toLinear = (c: number): number => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
 const fromLinear = (c: number): number => (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055)
 
-export function hexToLinear(hex: string): [number, number, number] {
+function hexToLinear(hex: string): [number, number, number] {
   const n = Number.parseInt(hex.slice(1), 16)
   return [toLinear(((n >> 16) & 255) / 255), toLinear(((n >> 8) & 255) / 255), toLinear((n & 255) / 255)]
 }
 
-export function linearToLab([r, g, b]: readonly [number, number, number]): Lab {
+function linearToLab([r, g, b]: readonly [number, number, number]): Lab {
   const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
   const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
   const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
@@ -85,10 +143,13 @@ const simulate = (m: readonly (readonly number[])[], [r, g, b]: readonly [number
 ]
 
 const delta = (a: Lab, b: Lab): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+const minChroma = (lightness: number): number => MIN_CHROMA + VIVID_SLOPE * Math.max(0, VIVID_LIGHTNESS - lightness)
 
 export interface Swatch {
   hex: string
+  /** OKLCH hue, degrees. */
   hue: number
+  lightness: number
   chroma: number
   normal: Lab
   protan: Lab
@@ -98,11 +159,11 @@ export interface Swatch {
 export function swatch(hex: string): Swatch {
   const lin = hexToLinear(hex)
   const normal = linearToLab(lin)
-  const chroma = Math.hypot(normal[1], normal[2])
   return {
     hex: hex.toUpperCase(),
     hue: ((Math.atan2(normal[2], normal[1]) * 180) / Math.PI + 360) % 360,
-    chroma,
+    lightness: normal[0],
+    chroma: Math.hypot(normal[1], normal[2]),
     normal,
     protan: linearToLab(simulate(PROTAN, lin)),
     deutan: linearToLab(simulate(DEUTAN, lin)),
@@ -110,19 +171,28 @@ export function swatch(hex: string): Swatch {
 }
 
 /** The distance that tells two tracks of one team apart: ΔE, and ΔE under colour blindness weighted. */
-export function teamDistance(a: Swatch, b: Swatch): number {
+function teamDistance(a: Swatch, b: Swatch): number {
   return Math.min(delta(a.normal, b.normal), CVD_WEIGHT * Math.min(delta(a.protan, b.protan), delta(a.deutan, b.deutan)))
 }
 
 /** The distance between the teams' colours: the smallest over all three vision types. */
-export function crossDistance(a: Swatch, b: Swatch): number {
+function crossDistance(a: Swatch, b: Swatch): number {
   return Math.min(delta(a.normal, b.normal), delta(a.protan, b.protan), delta(a.deutan, b.deutan))
 }
 
+/** The smallest within-team distance (teamDistance) of a team's colours. */
 export function smallestDistance(colours: readonly string[]): number {
   const sw = colours.map(swatch)
   let min = Infinity
   for (let i = 0; i < sw.length; i++) for (let j = i + 1; j < sw.length; j++) min = Math.min(min, teamDistance(sw[i]!, sw[j]!))
+  return min
+}
+
+/** The smallest plain ΔE inside a team: what a viewer with normal colour vision tells apart. */
+export function smallestNormalDistance(colours: readonly string[]): number {
+  const sw = colours.map(swatch)
+  let min = Infinity
+  for (let i = 0; i < sw.length; i++) for (let j = i + 1; j < sw.length; j++) min = Math.min(min, delta(sw[i]!.normal, sw[j]!.normal))
   return min
 }
 
@@ -133,268 +203,351 @@ export function smallestCrossDistance(a: readonly string[], b: readonly string[]
 }
 
 export function smallestMapDistance(colours: readonly string[]): number {
-  const bg = MAP_BACKGROUNDS.map((hex) => linearToLab(hexToLinear(hex)))
-  return Math.min(...colours.flatMap((hex) => bg.map((b) => delta(swatch(hex).normal, b))))
+  const map = MAP_COLOURS.map((hex) => linearToLab(hexToLinear(hex)))
+  return Math.min(...colours.flatMap((hex) => map.map((m) => delta(swatch(hex).normal, m))))
+}
+
+/** A warm hue unrolled past 0° on the green side (−180..180) and on the magenta side (180..540). */
+const warmGreenSide = (hue: number): number => (hue >= 180 ? hue - 360 : hue)
+const warmMagentaSide = (hue: number): number => (hue < 180 ? hue + 360 : hue)
+
+/** Where the two cuts may lie for a pair of team sizes, [low, high] each. */
+export interface CutRanges {
+  green: [number, number]
+  magenta: [number, number]
+}
+
+/**
+ * The bigger team's side grows by CUT_SHIFT per player of difference: the
+ * cool side's green edge moves down and its magenta edge up, the warm side's
+ * the other way; the smaller team keeps its core hues (8 v 4: 20°).
+ */
+export function cutRanges(own: number, enemy: number): CutRanges {
+  const shift = Math.min(CUT_LIMIT, CUT_SHIFT * Math.abs(own - enemy))
+  const cool = own > enemy ? shift : 0
+  const warm = enemy > own ? shift : 0
+  return {
+    green: [GREEN_CUT - CUT_SLACK - cool, GREEN_CUT + CUT_SLACK + warm],
+    magenta: [MAGENTA_CUT - CUT_SLACK - warm, MAGENTA_CUT + CUT_SLACK + cool],
+  }
+}
+
+/** Whether a hue may belong to the own (cool) team under these ranges. */
+function isCoolHue(hue: number, ranges: CutRanges): boolean {
+  return hue >= ranges.green[0] + GREEN_GAP / 2 && hue <= ranges.magenta[1] - MAGENTA_GAP / 2
+}
+
+/** Whether a hue may belong to the other (warm) team under these ranges. */
+function isWarmHue(hue: number, ranges: CutRanges): boolean {
+  const unrolled = warmMagentaSide(hue)
+  return unrolled >= ranges.magenta[0] + MAGENTA_GAP / 2 && unrolled <= ranges.green[1] - GREEN_GAP / 2 + 360
+}
+
+/**
+ * The cuts that keep both teams on their sides, or null: the green cut lies
+ * half a gap past the warm team's greenest hue and short of the cool team's,
+ * the magenta cut likewise, each inside its range.
+ */
+export function cutsFor(own: readonly number[], enemy: readonly number[], ranges: CutRanges): CutRanges | null {
+  const greenLow = Math.max(ranges.green[0], Math.max(...enemy.map(warmGreenSide)) + GREEN_GAP / 2)
+  const greenHigh = Math.min(ranges.green[1], Math.min(...own) - GREEN_GAP / 2)
+  const magentaLow = Math.max(ranges.magenta[0], Math.max(...own) + MAGENTA_GAP / 2)
+  const magentaHigh = Math.min(ranges.magenta[1], Math.min(...enemy.map(warmMagentaSide)) - MAGENTA_GAP / 2)
+  if (greenLow > greenHigh + 1e-9 || magentaLow > magentaHigh + 1e-9) return null
+  return { green: [greenLow, greenHigh], magenta: [magentaLow, magentaHigh] }
 }
 
 function candidatePool(): Swatch[] {
-  const bg = MAP_BACKGROUNDS.map((hex) => linearToLab(hexToLinear(hex)))
+  const map = MAP_COLOURS.map((hex) => linearToLab(hexToLinear(hex)))
   const byHex = new Map<string, Swatch>()
-  const add = (rgb: [number, number, number]): void => {
-    if (!inGamut(rgb)) return
-    const s = swatch(toHex(rgb))
-    if (bg.some((b) => delta(s.normal, b) < MIN_MAP_DELTA)) return
-    byHex.set(s.hex, s)
-  }
-  for (let h = 0; h < 360; h += 5) {
-    for (const L of [0.68, 0.76, 0.84, 0.92]) {
-      for (const C of [0.1, 0.16, 0.22]) add(oklchToLinear(L, C, h))
+  for (let h = 0; h < 360; h += HUE_STEP) {
+    for (let L = MIN_LIGHTNESS; L <= MAX_LIGHTNESS + 1e-9; L += LIGHTNESS_STEP) {
       // The most saturated colour that fits sRGB at this lightness and hue.
-      let lo = 0.1
+      let lo = 0
       let hi = 0.4
-      for (let i = 0; i < 24; i++) {
+      for (let i = 0; i < 30; i++) {
         const mid = (lo + hi) / 2
         if (inGamut(oklchToLinear(L, mid, h))) lo = mid
         else hi = mid
       }
-      add(oklchToLinear(L, lo, h))
+      for (const step of CHROMA_STEPS) {
+        const C = lo - step
+        if (C < MIN_CHROMA) continue
+        const s = swatch(toHex(oklchToLinear(L, C, h)))
+        if (s.chroma < minChroma(s.lightness) || s.lightness < MIN_LIGHTNESS - 0.005) continue
+        if (s.hue >= KHAKI_HUES[0] && s.hue <= KHAKI_HUES[1] && s.lightness < KHAKI_MIN_LIGHTNESS) continue
+        if (map.some((m) => delta(s.normal, m) < MIN_MAP_DELTA)) continue
+        byHex.set(s.hex, s)
+      }
     }
   }
-  // Near-white, for the largest teams: hueless, so it belongs to either arc.
-  for (const hex of ['#FFFFFF', '#FFE9C9', '#E6E0FF', '#D7F3F5']) byHex.set(hex, swatch(hex))
   return [...byHex.values()].sort((a, b) => a.hex.localeCompare(b.hex))
 }
 
-const inArc = (hue: number, from: number, to: number): boolean => {
-  const span = (((to - from) % 360) + 360) % 360
-  const at = (((hue - from) % 360) + 360) % 360
-  return at <= span
+/** A seeded PRNG (mulberry32): the same chain always runs the same search. */
+function random(seed: number): () => number {
+  let t = seed >>> 0
+  return () => {
+    t = (t + 0x6d2b79f5) >>> 0
+    let r = Math.imul(t ^ (t >>> 15), 1 | t)
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296
+  }
 }
 
-/**
- * The hue circle in OKLCH degrees. Balanced teams keep their own gamut: cool
- * hues (blue, cyan, purple: from the green cut up to the magenta cut) for the
- * image's own team, warm ones (red, orange, yellow) for the other, with the
- * green and the magenta unused between them (a gap of BALANCED_GAP degrees).
- * A lopsided pair (8 v 4) moves the cuts by CUT_MOVE_PER_PLAYER degrees per
- * player of difference and narrows the gaps down to MIN_GAP, so the bigger
- * team spreads over more of the circle and the smaller one is squeezed.
- * The warm anchor is orange-red, the cool one blue: a small team takes the
- * hues nearest its anchor that are still distinct enough.
- */
-const BALANCED_GAP = 60
-const MIN_GAP = 10
-const GAP_SHRINK_PER_PLAYER = 8
-/** A crowded team needs more of the circle: the gap shrinks with every player beyond CROWD_FROM. */
-const GAP_SHRINK_PER_CROWD = 12
-const CROWD_FROM = 3
-const CUT_MOVE_PER_PLAYER = 10
-const BALANCED_CUT_MOVE = 30
-const DEFAULT_CUTS = { green: 150, magenta: 350 }
-const GREEN_RANGE = [110, 190] as const
-const MAGENTA_RANGE = [320, 380] as const
-const COOL_ANCHOR = 255
-const WARM_ANCHOR = 45
-/** Hueless colours (white, cream) help only the largest teams. */
-const HUELESS_FROM_PLAYERS = 6
-
-interface Arc {
-  from: number
-  to: number
+const hueGap = (a: number, b: number): number => {
+  const d = Math.abs(a - b) % 360
+  return Math.min(d, 360 - d)
 }
 
-const hueGap = (a: number, b: number): number => Math.min(Math.abs(a - b) % 360, 360 - (Math.abs(a - b) % 360))
-
-function allPairs(): [number, number][] {
-  return Array.from({ length: MAX_PLAYERS * MAX_PLAYERS }, (_, i): [number, number] => [Math.floor(i / MAX_PLAYERS) + 1, (i % MAX_PLAYERS) + 1])
-}
-
-export interface Palettes {
+interface Palettes {
   own: string[]
   enemy: string[]
 }
 
-export function generatePalettes(pairs: [number, number][] = allPairs()): Map<string, Palettes> {
-  const pool = candidatePool()
+interface Score {
+  /** The smallest distance anywhere in the picture, capped at DISTANCE_CAP. */
+  smallest: number
+  /** Σ exp(−d / ENERGY_SCALE) over every pair: the next closest pairs. */
+  energy: number
+  /** Hue distance from the team anchors, for ties. */
+  anchor: number
+}
+
+/** Lexicographic: the smallest distance, then the soft minimum, then the anchors. */
+function betterScore(a: Score, b: Score): boolean {
+  if (a.smallest > b.smallest + 1e-9) return true
+  if (a.smallest < b.smallest - 1e-9) return false
+  const scale = Math.max(a.energy, b.energy, 1e-300)
+  if (a.energy < b.energy - scale * 1e-9) return true
+  if (a.energy > b.energy + scale * 1e-9) return false
+  return a.anchor < b.anchor - 1e-12
+}
+
+const anchorOf = (hue: number, team: number): number => hueGap(hue, team === 0 ? COOL_ANCHOR : WARM_ANCHOR) / 180
+
+/** A palette's score from its hex colours: every thread computes the same. */
+function paletteScore({ own, enemy }: Palettes): Score {
+  const sw = [...own, ...enemy].map(swatch)
+  let smallest = DISTANCE_CAP
+  let energy = 0
+  let anchor = 0
+  for (let p = 0; p < sw.length; p++) {
+    anchor += anchorOf(sw[p]!.hue, p < own.length ? 0 : 1)
+    for (let q = p + 1; q < sw.length; q++) {
+      const same = (p < own.length) === (q < own.length)
+      const d = Math.min(DISTANCE_CAP, same ? teamDistance(sw[p]!, sw[q]!) : crossDistance(sw[p]!, sw[q]!))
+      smallest = Math.min(smallest, d)
+      energy += Math.exp(-d / ENERGY_SCALE)
+    }
+  }
+  return { smallest, energy, anchor }
+}
+
+/** One search chain of a pair, seeded by (own, enemy, chain): a random start, then local search from random kicks. */
+function searchChain(own: number, enemy: number, chain: number, pool: readonly Swatch[]): Palettes {
   const n = pool.length
-  const within = new Float32Array(n * n)
-  const cross = new Float32Array(n * n)
-  for (let i = 0; i < n; i++) {
-    for (let j = i; j < n; j++) {
-      const d = Math.min(DISTANCE_CAP, teamDistance(pool[i]!, pool[j]!))
-      const c = crossDistance(pool[i]!, pool[j]!)
-      within[i * n + j] = within[j * n + i] = d
-      cross[i * n + j] = cross[j * n + i] = c
-    }
+  const lab = new Float64Array(n * 9)
+  pool.forEach((s, i) => lab.set([...s.normal, ...s.protan, ...s.deutan], i * 9))
+  const hue = pool.map((s) => s.hue)
+  // Math.hypot is several times slower than the plain root: this is the search's inner loop.
+  const distance = (i: number, j: number, sameTeam: boolean): number => {
+    const x = i * 9
+    const y = j * 9
+    let u = lab[x]! - lab[y]!
+    let v = lab[x + 1]! - lab[y + 1]!
+    let w = lab[x + 2]! - lab[y + 2]!
+    const dn = Math.sqrt(u * u + v * v + w * w)
+    u = lab[x + 3]! - lab[y + 3]!
+    v = lab[x + 4]! - lab[y + 4]!
+    w = lab[x + 5]! - lab[y + 5]!
+    const dp = Math.sqrt(u * u + v * v + w * w)
+    u = lab[x + 6]! - lab[y + 6]!
+    v = lab[x + 7]! - lab[y + 7]!
+    w = lab[x + 8]! - lab[y + 8]!
+    const dd = Math.sqrt(u * u + v * v + w * w)
+    return Math.min(DISTANCE_CAP, sameTeam ? Math.min(dn, CVD_WEIGHT * Math.min(dp, dd)) : Math.min(dn, dp, dd))
   }
-  const hueless = (i: number): boolean => pool[i]!.chroma < 0.05
-  const arcMembers = (arc: Arc, k: number): number[] =>
-    pool.flatMap((sw, i) => (hueless(i) ? (k >= HUELESS_FROM_PLAYERS ? [i] : []) : inArc(sw.hue, arc.from % 360, arc.to % 360) ? [i] : []))
+  const ranges = cutRanges(own, enemy)
+  const pools = [
+    pool.flatMap((s, i) => (isCoolHue(s.hue, ranges) ? [i] : [])),
+    pool.flatMap((s, i) => (isWarmHue(s.hue, ranges) ? [i] : [])),
+  ]
+  // The cores: hues no cut can reach, so any start drawn from them is feasible.
+  const cores = [
+    pools[0]!.filter((i) => hue[i]! >= ranges.green[1] + GREEN_GAP / 2 && hue[i]! <= ranges.magenta[0] - MAGENTA_GAP / 2),
+    pools[1]!.filter((i) => warmMagentaSide(hue[i]!) >= ranges.magenta[1] + MAGENTA_GAP / 2 && warmMagentaSide(hue[i]!) <= ranges.green[0] - GREEN_GAP / 2 + 360),
+  ]
+  const near = nearbyCandidates(pool, ranges, pools)
+  const k = own + enemy
+  const team = Array.from({ length: k }, (_, i) => (i < own ? 0 : 1))
+  const next = random(Math.imul((own * 31 + enemy) * 1009 + chain, 2654435761))
 
-  const smallest = (set: number[]): number => {
-    let m = Infinity
-    for (let a = 0; a < set.length; a++) for (let b = a + 1; b < set.length; b++) m = Math.min(m, within[set[a]! * n + set[b]!]!)
-    return m
-  }
-  const preference = (i: number, anchor: number): number => (hueless(i) ? 1 : hueGap(pool[i]!.hue, anchor) / 180)
-  const meanPreference = (set: number[], anchor: number): number => set.reduce((sum, i) => sum + preference(i, anchor), 0) / Math.max(1, set.length)
-
-  /** A soft minimum over the pairs: close pairs dominate, so reducing the smallest distance always pays. */
-  const energyOf = (i: number, set: number[]): number => set.reduce((sum, o) => sum + Math.exp(-within[i * n + o]! / ENERGY_SCALE), 0)
-  const setEnergy = (set: number[]): number => set.reduce((sum, i, idx) => sum + energyOf(i, set.slice(idx + 1)), 0)
-
-  /**
-   * The k colours of `allowed` with the largest smallest distance (a soft
-   * minimum, distances capped at DISTANCE_CAP); a set that is distinct enough
-   * everywhere takes the hues nearest the team's anchor.
-   */
-  const solve = (k: number, allowed: number[], anchor: number): number[] => {
-    if (allowed.length <= k) return allowed.slice()
-    const cost = (set: number[]): number => setEnergy(set) + ANCHOR_WEIGHT * set.reduce((sum, i) => sum + preference(i, anchor), 0)
-    const byPreference = allowed.slice().sort((a, b) => preference(a, anchor) - preference(b, anchor) || a - b)
-    const seeds = [...new Set([...byPreference.slice(0, 24), ...allowed.filter((_, idx) => idx % 9 === 0)])]
-    let best: number[] = []
-    let bestCost = Infinity
-    let bestSmallest = -1
-    for (const seed of seeds) {
-      const set = [seed]
-      while (set.length < k) {
-        let pick = -1
-        let pickCost = Infinity
-        for (const i of allowed) {
-          if (set.includes(i)) continue
-          const c = energyOf(i, set) + ANCHOR_WEIGHT * preference(i, anchor)
-          if (c < pickCost) { pickCost = c; pick = i }
-        }
-        set.push(pick)
-      }
-      let current = cost(set)
-      let improved = true
-      while (improved) {
-        improved = false
-        for (let p = 0; p < k; p++) {
-          const rest = set.filter((_, idx) => idx !== p)
-          let swapTo = -1
-          for (const i of allowed) {
-            if (set.includes(i)) continue
-            const c = cost([...rest, i])
-            if (c < current - 1e-12) { current = c; swapTo = i }
-          }
-          if (swapTo >= 0) { set[p] = swapTo; improved = true }
-        }
-      }
-      // The smallest distance decides between seeds; the soft cost breaks ties.
-      const smallestHere = smallest(set)
-      if (smallestHere > bestSmallest + 1e-6 || (smallestHere > bestSmallest - 1e-6 && current < bestCost - 1e-12)) {
-        bestSmallest = smallestHere
-        bestCost = current
-        best = set.slice()
+  const score = (set: readonly number[]): Score => {
+    let smallest = DISTANCE_CAP
+    let energy = 0
+    let anchor = 0
+    for (let p = 0; p < k; p++) {
+      anchor += anchorOf(hue[set[p]!]!, team[p]!)
+      for (let q = p + 1; q < k; q++) {
+        const d = distance(set[p]!, set[q]!, team[p] === team[q])
+        smallest = Math.min(smallest, d)
+        energy += Math.exp(-d / ENERGY_SCALE)
       }
     }
-    return best
+    return { smallest, energy, anchor }
   }
 
-  const crossOk = (i: number, others: number[]): boolean => others.every((o) => cross[i * n + o]! >= MIN_CROSS_DELTA)
-
-  const splitsFor = (difference: number, largest: number): { green: number; magenta: number; cool: Arc; warm: Arc }[] => {
-    const gap = Math.max(MIN_GAP, BALANCED_GAP - GAP_SHRINK_PER_PLAYER * difference - GAP_SHRINK_PER_CROWD * Math.max(0, largest - CROWD_FROM))
-    const reach = BALANCED_CUT_MOVE + CUT_MOVE_PER_PLAYER * difference
-    const cuts = (centre: number, [low, high]: readonly [number, number]): number[] => {
-      const out: number[] = []
-      for (let cut = Math.max(low, centre - reach); cut <= Math.min(high, centre + reach); cut += 10) out.push(cut)
-      return out
-    }
-    return cuts(DEFAULT_CUTS.green, GREEN_RANGE).flatMap((green) => cuts(DEFAULT_CUTS.magenta, MAGENTA_RANGE).map((magenta) => ({
-      green,
-      magenta,
-      cool: { from: green + gap / 2, to: magenta - gap / 2 },
-      warm: { from: magenta + gap / 2, to: green - gap / 2 + 360 },
-    })))
-  }
-  const splitCost = (split: { green: number; magenta: number }): number =>
-    (Math.abs(split.green - DEFAULT_CUTS.green) + Math.abs(split.magenta - DEFAULT_CUTS.magenta)) / 10
-
-  const solved = new Map<string, number[]>()
-  const solveCached = (cool: boolean, arc: Arc, k: number): number[] => {
-    const key = `${cool ? 'c' : 'w'}/${arc.from}/${arc.to}/${k}`
-    let set = solved.get(key)
-    if (!set) {
-      set = solve(k, arcMembers(arc, k), cool ? COOL_ANCHOR : WARM_ANCHOR)
-      solved.set(key, set)
-    }
-    return set
-  }
-
-  const order = (set: number[]): string[] => {
-    // Farthest-point order: the first colours are the most distinct, so the top scorers get them.
-    const rest = set.slice()
-    let first = rest[0]!
-    let firstMean = -1
-    for (const i of rest) {
-      const mean = rest.reduce((sum, o) => sum + (o === i ? 0 : within[i * n + o]!), 0) / Math.max(1, rest.length - 1)
-      if (mean > firstMean) { firstMean = mean; first = i }
-    }
-    const out = [first]
-    rest.splice(rest.indexOf(first), 1)
-    while (rest.length > 0) {
-      let pick = rest[0]!
-      let pickScore = -1
-      for (const i of rest) {
-        const s = Math.min(...out.map((o) => within[i * n + o]!))
-        if (s > pickScore) { pickScore = s; pick = i }
+  /** Whether the set stays on its sides with candidate c in place of colour p (p = −1: as it is). */
+  const feasibleWith = (set: readonly number[], p: number, c: number): boolean => {
+    let ownLow = Infinity
+    let ownHigh = -Infinity
+    let warmGreen = -Infinity
+    let warmMagenta = Infinity
+    for (let x = 0; x < k; x++) {
+      const h = hue[x === p ? c : set[x]!]!
+      if (x < own) {
+        ownLow = Math.min(ownLow, h)
+        ownHigh = Math.max(ownHigh, h)
+      } else {
+        warmGreen = Math.max(warmGreen, warmGreenSide(h))
+        warmMagenta = Math.min(warmMagenta, warmMagentaSide(h))
       }
-      out.push(pick)
-      rest.splice(rest.indexOf(pick), 1)
     }
-    return out.map((i) => pool[i]!.hex)
+    return Math.max(ranges.green[0], warmGreen + GREEN_GAP / 2) <= Math.min(ranges.green[1], ownLow - GREEN_GAP / 2) + 1e-9 &&
+      Math.max(ranges.magenta[0], ownHigh + MAGENTA_GAP / 2) <= Math.min(ranges.magenta[1], warmMagenta - MAGENTA_GAP / 2) + 1e-9
   }
 
-  const table = new Map<string, Palettes>()
-  {
-    for (const [a, b] of pairs) {
-      let chosen: Palettes | null = null
-      let chosenScore = -Infinity
-      for (const split of splitsFor(Math.abs(a - b), Math.max(a, b))) {
-        const own0 = solveCached(true, split.cool, a)
-        const enemy0 = solveCached(false, split.warm, b)
-        const options: [number[], number[]][] = [[own0, enemy0]]
-        if (!own0.every((i) => crossOk(i, enemy0))) {
-          // The arcs touch at a cut: re-solve one team clear of the other, either way round.
-          options.length = 0
-          for (const ownFirst of [true, false]) {
-            let own = own0
-            let enemy = enemy0
-            for (let round = 0; round < 3 && !own.every((i) => crossOk(i, enemy)); round++) {
-              if (ownFirst) {
-                enemy = solve(b, arcMembers(split.warm, b).filter((i) => crossOk(i, own)), WARM_ANCHOR)
-                if (enemy.length < b) break
-              } else {
-                own = solve(a, arcMembers(split.cool, a).filter((i) => crossOk(i, enemy)), COOL_ANCHOR)
-                if (own.length < a) break
-              }
-              if (!own.every((i) => crossOk(i, enemy))) {
-                if (ownFirst) own = solve(a, arcMembers(split.cool, a).filter((i) => crossOk(i, enemy)), COOL_ANCHOR)
-                else enemy = solve(b, arcMembers(split.warm, b).filter((i) => crossOk(i, own)), WARM_ANCHOR)
-              }
-            }
-            options.push([own, enemy])
+  /** Swaps each colour for the best candidate of its team until no swap helps. */
+  const improve = (set: number[]): Score => {
+    let current = score(set)
+    let changed = true
+    while (changed) {
+      changed = false
+      for (let p = 0; p < k; p++) {
+        // The picture without colour p: its smallest pair, energy and anchor cost.
+        let restSmallest = DISTANCE_CAP
+        let restEnergy = 0
+        let restAnchor = 0
+        for (let x = 0; x < k; x++) {
+          if (x === p) continue
+          restAnchor += anchorOf(hue[set[x]!]!, team[x]!)
+          for (let y = x + 1; y < k; y++) {
+            if (y === p) continue
+            const d = distance(set[x]!, set[y]!, team[x] === team[y])
+            restSmallest = Math.min(restSmallest, d)
+            restEnergy += Math.exp(-d / ENERGY_SCALE)
           }
         }
-        for (const [own, enemy] of options) {
-          if (own.length < a || enemy.length < b || !own.every((i) => crossOk(i, enemy))) continue
-          const sa = smallest(own)
-          const sb = smallest(enemy)
-          // The smaller distance first, the sum second; leaving the default cuts costs a little.
-          const score = Math.min(sa, sb) + 0.1 * (sa + sb) - 0.004 * splitCost(split) -
-            0.01 * (meanPreference(own, COOL_ANCHOR) + meanPreference(enemy, WARM_ANCHOR))
-          if (score > chosenScore) { chosenScore = score; chosen = { own: order(own), enemy: order(enemy) } }
+        let bestCandidate = -1
+        let bestScore = current
+        for (const c of pools[team[p]!]!) {
+          if (set.includes(c)) continue
+          // The smallest distance first: most candidates fail it, and only survivors pay for the energy.
+          let smallest = restSmallest
+          for (let x = 0; x < k && smallest > bestScore.smallest - 1e-9; x++) {
+            if (x !== p) smallest = Math.min(smallest, distance(c, set[x]!, team[x] === team[p]))
+          }
+          if (smallest < bestScore.smallest - 1e-9) continue
+          let energy = restEnergy
+          for (let x = 0; x < k; x++) if (x !== p) energy += Math.exp(-distance(c, set[x]!, team[x] === team[p]) / ENERGY_SCALE)
+          const candidate = { smallest, energy, anchor: restAnchor + anchorOf(hue[c]!, team[p]!) }
+          if (!betterScore(candidate, bestScore) || !feasibleWith(set, p, c)) continue
+          bestScore = candidate
+          bestCandidate = c
+        }
+        if (bestCandidate >= 0) {
+          set[p] = bestCandidate
+          current = bestScore
+          changed = true
         }
       }
-      if (!chosen) throw new Error(`no palette for ${a} v ${b}`)
-      table.set(`${a}/${b}`, chosen)
+    }
+    return current
+  }
+
+  /** A new candidate for colour p: half the time one of its near neighbours, else any of its team's. */
+  const kick = (set: readonly number[], p: number): number => {
+    const local = near[set[p]!]!
+    const side = pools[team[p]!]!
+    for (;;) {
+      const c = next() < 0.5 && local.length > 0 ? local[Math.floor(next() * local.length)]! : side[Math.floor(next() * side.length)]!
+      if (!set.includes(c)) return c
     }
   }
-  return table
+
+  let best: number[] = []
+  for (let p = 0; p < k; p++) {
+    const core = cores[team[p]!]!
+    let pick = core[Math.floor(next() * core.length)]!
+    while (best.includes(pick)) pick = core[Math.floor(next() * core.length)]!
+    best.push(pick)
+  }
+  let bestScore = improve(best)
+  for (let round = 0; round < PERTURBATIONS; round++) {
+    const trial = best.slice()
+    const moves = 1 + Math.floor(next() * Math.min(3, k))
+    for (let m = 0; m < moves; m++) {
+      const p = Math.floor(next() * k)
+      trial[p] = kick(trial, p)
+    }
+    if (!feasibleWith(trial, -1, -1)) continue
+    const trialScore = improve(trial)
+    if (betterScore(trialScore, bestScore)) {
+      best = trial
+      bestScore = trialScore
+    }
+  }
+  return { own: best.slice(0, own).map((i) => pool[i]!.hex), enemy: best.slice(own).map((i) => pool[i]!.hex) }
+}
+
+const nearbyCache = new WeakMap<readonly Swatch[], Map<string, Int32Array[]>>()
+
+/** Each candidate's NEARBY closest candidates (plain ΔE) on each side it belongs to, per cut ranges. */
+function nearbyCandidates(pool: readonly Swatch[], ranges: CutRanges, pools: readonly (readonly number[])[]): Int32Array[] {
+  const byRanges = nearbyCache.get(pool) ?? new Map<string, Int32Array[]>()
+  nearbyCache.set(pool, byRanges)
+  const key = JSON.stringify(ranges)
+  const cached = byRanges.get(key)
+  if (cached) return cached
+  const lists: Int32Array[] = Array.from({ length: pool.length }, () => new Int32Array(0))
+  for (const members of pools) {
+    for (const i of members) {
+      const byDistance = members.filter((j) => j !== i).map((j) => [j, delta(pool[i]!.normal, pool[j]!.normal)] as const)
+      byDistance.sort((a, b) => a[1] - b[1])
+      const merged = new Int32Array(lists[i]!.length + Math.min(NEARBY, byDistance.length))
+      merged.set(lists[i]!)
+      merged.set(byDistance.slice(0, NEARBY).map(([j]) => j), lists[i]!.length)
+      lists[i] = merged
+    }
+  }
+  byRanges.set(key, lists)
+  return lists
+}
+
+/** Farthest-point order: the colour farthest from its team's others first, so the top scorers get the most distinct. */
+function order(colours: readonly string[]): string[] {
+  const sw = new Map(colours.map((hex) => [hex, swatch(hex)]))
+  const nearest = (hex: string, among: readonly string[]): number =>
+    Math.min(Infinity, ...among.filter((o) => o !== hex).map((o) => teamDistance(sw.get(hex)!, sw.get(o)!)))
+  const rest = colours.slice()
+  let first = rest[0]!
+  for (const hex of rest) if (nearest(hex, rest) > nearest(first, rest) + 1e-12) first = hex
+  const out = [first]
+  rest.splice(rest.indexOf(first), 1)
+  while (rest.length > 0) {
+    let pick = rest[0]!
+    for (const hex of rest) if (nearest(hex, out) > nearest(pick, out) + 1e-12) pick = hex
+    out.push(pick)
+    rest.splice(rest.indexOf(pick), 1)
+  }
+  return out
+}
+
+function allPairs(low = 1, high = MAX_PLAYERS): [number, number][] {
+  const pairs: [number, number][] = []
+  for (let a = low; a <= high; a++) for (let b = low; b <= high; b++) pairs.push([a, b])
+  return pairs
 }
 
 function render(table: Map<string, Palettes>): string {
@@ -427,29 +580,62 @@ export function heatmapPalette(own: number, enemy: number): Palette {
 `
 }
 
-/** Every pair runs independently: one worker thread per core takes its share of the 64 pairs. */
-async function generateInParallel(): Promise<Map<string, Palettes>> {
-  const pairs = allPairs()
-  const threads = Math.max(1, Math.min(pairs.length, availableParallelism()))
-  const shares = Array.from({ length: threads }, (_, t) => pairs.filter((_, i) => i % threads === t))
-  const parts = await Promise.all(shares.map((share) => new Promise<[string, Palettes][]>((resolve, reject) => {
-    const worker = new Worker(new URL(import.meta.url), { workerData: share })
-    worker.once('message', resolve)
+/**
+ * Every (pair, chain) is a task for a pool of one worker per core, the largest
+ * pairs first; a pair keeps its best chain (equal scores: the lower chain), so
+ * the table does not depend on the thread count.
+ */
+async function generateInParallel(pairs: readonly [number, number][]): Promise<Map<string, Palettes>> {
+  const tasks = pairs.flatMap(([a, b]) => Array.from({ length: CHAINS }, (_, c): [number, number, number] => [a, b, c]))
+    .sort((x, y) => y[0] + y[1] - (x[0] + x[1]))
+  const best = new Map<string, { palettes: Palettes; score: Score; chain: number }>()
+  const threads = Math.max(1, Math.min(tasks.length, availableParallelism()))
+  await Promise.all(Array.from({ length: threads }, () => new Promise<void>((resolve, reject) => {
+    const worker = new Worker(new URL(import.meta.url))
+    const feed = (): void => {
+      const task = tasks.shift()
+      if (task) worker.postMessage(task)
+      else void worker.terminate().then(() => resolve())
+    }
+    worker.on('message', ([a, b, chain, palettes]: [number, number, number, Palettes]) => {
+      const key = `${a}/${b}`
+      const score = paletteScore(palettes)
+      const held = best.get(key)
+      if (!held || betterScore(score, held.score) || (!betterScore(held.score, score) && chain < held.chain)) best.set(key, { palettes, score, chain })
+      feed()
+    })
     worker.once('error', reject)
+    feed()
   })))
-  return new Map(parts.flat().sort(([x], [y]) => x.localeCompare(y, undefined, { numeric: true })))
+  return new Map([...best]
+    .sort(([x], [y]) => x.localeCompare(y, undefined, { numeric: true }))
+    .map(([key, { palettes }]) => [key, { own: order(palettes.own), enemy: order(palettes.enemy) }]))
 }
 
 if (!isMainThread) {
-  parentPort!.postMessage([...generatePalettes(workerData as [number, number][])])
+  const pool = candidatePool()
+  parentPort!.on('message', ([own, enemy, chain]: [number, number, number]) => {
+    parentPort!.postMessage([own, enemy, chain, searchChain(own, enemy, chain, pool)])
+  })
 } else if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const started = Date.now()
-  const table = await generateInParallel()
+  const range = /^--pairs=(\d)-(\d)$/.exec(process.argv.find((arg) => arg.startsWith('--pairs=')) ?? '')
+  if (range && process.argv.includes('--write')) throw new Error('--write needs the whole table: drop --pairs')
+  const table = await generateInParallel(range ? allPairs(Number(range[1]), Number(range[2])) : allPairs())
   if (process.argv.includes('--report')) {
-    for (const [key, p] of table) {
-      console.log(key.padEnd(4), 'own', smallestDistance(p.own).toFixed(3), 'enemy', smallestDistance(p.enemy).toFixed(3),
-        'cross', smallestCrossDistance(p.own, p.enemy).toFixed(3), 'map', Math.min(smallestMapDistance(p.own), smallestMapDistance(p.enemy)).toFixed(3),
-        p.own.join(' '), '|', p.enemy.join(' '))
+    // From the best picture to the worst: the smallest distance anywhere in it.
+    const rows = [...table].map(([key, p]) => {
+      const own = p.own.length > 1 ? smallestNormalDistance(p.own) : Infinity
+      const enemy = p.enemy.length > 1 ? smallestNormalDistance(p.enemy) : Infinity
+      const cross = smallestCrossDistance(p.own, p.enemy)
+      const cuts = cutsFor(p.own.map((h) => swatch(h).hue), p.enemy.map((h) => swatch(h).hue), cutRanges(p.own.length, p.enemy.length))
+      return { key, own, enemy, cross, smallest: paletteScore(p).smallest, p, cuts }
+    }).sort((x, y) => y.smallest - x.smallest)
+    for (const r of rows) {
+      console.log(r.key.padEnd(4), 'smallest', r.smallest.toFixed(3), 'own ΔE', r.own.toFixed(3), 'enemy ΔE', r.enemy.toFixed(3), 'cross', r.cross.toFixed(3),
+        'map', Math.min(smallestMapDistance(r.p.own), smallestMapDistance(r.p.enemy)).toFixed(3),
+        'cuts', r.cuts ? `${r.cuts.green.map((v) => v.toFixed(0)).join('-')}/${r.cuts.magenta.map((v) => v.toFixed(0)).join('-')}` : 'none',
+        r.p.own.join(' '), '|', r.p.enemy.join(' '))
     }
   }
   if (process.argv.includes('--write')) writeFileSync(new URL('../wrpl/heatmap-palette.ts', import.meta.url), render(table))

@@ -171,7 +171,11 @@ export async function cachedBattleHeatmap2x(
 // 57: the ground heatmap draws no kill line for a plane's or helicopter's kill.
 // 58: heatmap track colours from the static per-team-size table (heatmap-palette.ts).
 // 59: that table with wider hue arcs for crowded teams (worst pair 0.096 instead of 0.054).
-const BATTLE_MEDIA_VERSION = 60
+// 60: the out-of-bounds hatch always red, its lightness set against the map (TACTICAL_MAP_VERSION 7).
+// 61: the palette searched again: each team keeps its hue family (balanced teams no green or
+// magenta, a bigger team takes them), no dark yellows or dull darks; ground pairs 4..8 tell a
+// team's tracks apart by ΔE 0.12 at worst instead of 0.089.
+const BATTLE_MEDIA_VERSION = 61
 /** What the artifacts depend on beyond the version and their language: a changed heatmap option redraws them. */
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
