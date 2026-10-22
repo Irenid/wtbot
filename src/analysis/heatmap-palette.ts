@@ -185,7 +185,11 @@ const inArc = (hue: number, from: number, to: number): boolean => {
 const BALANCED_GAP = 60
 const MIN_GAP = 10
 const GAP_SHRINK_PER_PLAYER = 8
+/** A crowded team needs more of the circle: the gap shrinks with every player beyond CROWD_FROM. */
+const GAP_SHRINK_PER_CROWD = 12
+const CROWD_FROM = 3
 const CUT_MOVE_PER_PLAYER = 10
+const BALANCED_CUT_MOVE = 30
 const DEFAULT_CUTS = { green: 150, magenta: 350 }
 const GREEN_RANGE = [110, 190] as const
 const MAGENTA_RANGE = [320, 380] as const
@@ -292,9 +296,9 @@ export function generatePalettes(pairs: [number, number][] = allPairs()): Map<st
 
   const crossOk = (i: number, others: number[]): boolean => others.every((o) => cross[i * n + o]! >= MIN_CROSS_DELTA)
 
-  const splitsFor = (difference: number): { green: number; magenta: number; cool: Arc; warm: Arc }[] => {
-    const gap = Math.max(MIN_GAP, BALANCED_GAP - GAP_SHRINK_PER_PLAYER * difference)
-    const reach = CUT_MOVE_PER_PLAYER * difference
+  const splitsFor = (difference: number, largest: number): { green: number; magenta: number; cool: Arc; warm: Arc }[] => {
+    const gap = Math.max(MIN_GAP, BALANCED_GAP - GAP_SHRINK_PER_PLAYER * difference - GAP_SHRINK_PER_CROWD * Math.max(0, largest - CROWD_FROM))
+    const reach = BALANCED_CUT_MOVE + CUT_MOVE_PER_PLAYER * difference
     const cuts = (centre: number, [low, high]: readonly [number, number]): number[] => {
       const out: number[] = []
       for (let cut = Math.max(low, centre - reach); cut <= Math.min(high, centre + reach); cut += 10) out.push(cut)
@@ -350,7 +354,7 @@ export function generatePalettes(pairs: [number, number][] = allPairs()): Map<st
     for (const [a, b] of pairs) {
       let chosen: Palettes | null = null
       let chosenScore = -Infinity
-      for (const split of splitsFor(Math.abs(a - b))) {
+      for (const split of splitsFor(Math.abs(a - b), Math.max(a, b))) {
         const own0 = solveCached(true, split.cool, a)
         const enemy0 = solveCached(false, split.warm, b)
         const options: [number[], number[]][] = [[own0, enemy0]]

@@ -21,8 +21,8 @@ test('every pair keeps its tracks apart: within a team, between the teams, and f
   for (const own of SIZES) {
     for (const enemy of SIZES) {
       const [mine, theirs] = heatmapPalette(own, enemy)
-      assert.ok(smallestDistance(mine) >= 0.085, `own ${own} v ${enemy}: ${smallestDistance(mine)}`)
-      assert.ok(smallestDistance(theirs) >= 0.05, `enemy ${own} v ${enemy}: ${smallestDistance(theirs)}`)
+      assert.ok(smallestDistance(mine) >= 0.09, `own ${own} v ${enemy}: ${smallestDistance(mine)}`)
+      assert.ok(smallestDistance(theirs) >= 0.08, `enemy ${own} v ${enemy}: ${smallestDistance(theirs)}`)
       assert.ok(smallestCrossDistance(mine, theirs) >= 0.119, `cross ${own} v ${enemy}`)
       assert.ok(smallestMapDistance([...mine, ...theirs]) >= 0.149, `map ${own} v ${enemy}`)
     }
@@ -31,8 +31,8 @@ test('every pair keeps its tracks apart: within a team, between the teams, and f
 
 test('a small team gets colours far apart and a growing team re-picks its colours', () => {
   assert.ok(smallestDistance(heatmapPalette(2, 2)[0]) >= 0.28)
-  assert.ok(smallestDistance(heatmapPalette(3, 3)[0]) >= 0.2)
-  assert.ok(smallestDistance(heatmapPalette(4, 4)[0]) >= 0.15)
+  assert.ok(smallestDistance(heatmapPalette(3, 3)[0]) >= 0.25)
+  assert.ok(smallestDistance(heatmapPalette(4, 4)[0]) >= 0.18)
   const [three] = heatmapPalette(3, 3)
   const [four] = heatmapPalette(4, 4)
   assert.notDeepEqual(four.slice(0, 3).sort(), three.slice().sort(), 'the fourth player moves the first three')
