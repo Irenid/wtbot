@@ -208,7 +208,7 @@ export async function renderBattlePost(
   // squadronStanding() (place and the day's record) is switched off on the owner's request, 2026-10-22.
   const buildContent = (): string => {
     const text =
-      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}\n` +
+      `${t.battle.matchId}: \`${header.sessionId}\`${seasonMaxBrSuffix(battleMaxBr(header.startTime), t)}${mapNameSuffix(missionName)}\n` +
       teams
         .map((team, i) => {
           const clan = escapeMarkdown(team.clan ?? t.battle.team(i + 1))
@@ -369,6 +369,12 @@ export async function renderBattlePost(
 }
 
 /** The cap the battle played (battleMaxBr) after its Match ID; nothing outside the known stages. */
+/** The map's name last on the first line: the mission title without its leading `[mode]` tags. */
+export function mapNameSuffix(missionName: string): string {
+  const name = /^(?:\s*\[[^\]]*\])*\s*(.*?)\s*$/.exec(missionName)?.[1] ?? ''
+  return name ? ` · ${escapeMarkdown(name)}` : ''
+}
+
 export function seasonMaxBrSuffix(maxBr: number | null, t: BotText): string {
   return maxBr === null ? '' : ` · ${t.battle.maxBr(maxBr.toFixed(1))}`
 }

@@ -668,6 +668,9 @@ test('each life\'s track is named, and the ground map badges only kills not made
   assert.ok(layer(ground, '23-killer-labels').includes('>Test Plane</text>'))
   assert.ok(ground.includes('>killer if not a tank</text>'))
   assert.ok(air.includes('>killed by</text>'))
+
+  // The plane's kill has no line on the ground map: only the tank's kill keeps one.
+  assert.equal(layer(ground, '17-kill-lines').match(/<line /g)?.length, 1)
 })
 
 test('the legend stays visible with sixteen players', () => {

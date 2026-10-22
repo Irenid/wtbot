@@ -960,6 +960,8 @@ export function buildHeatmapSvg(
         // ground one): no colour names it, so its vehicle is written.
         pushKillerLabel(k.time, marker, trimTo(vehicleInfo(dict, modelId(k.killerModel)).name, 18))
       }
+      // A plane's or helicopter's kill has no ground position: the badge says it, a line would point nowhere.
+      if (mode === 'ground' && cause && 'icon' in cause && (cause.icon === 'plane' || cause.icon === 'heli')) continue
       // Позиция убийцы: точка его пути в момент фрага; если пути на этой
       // карте нет (авиация на наземной, зенитка на воздушной) — позиция
       // из события. Убийца за кадром — линия обрезается по краю карты
@@ -1030,6 +1032,7 @@ export function buildHeatmapSvg(
         skulls.push(timed(k.time, skullIcon(marker.x, marker.y, colorOf(victim))))
         const cause = deathCause(k, mode, dict, seekers, t.heatmap.causes)
         if (cause) pushCauseBadge(k.time, marker, cause, colorOf(killer))
+        if (mode === 'ground' && cause && 'icon' in cause && (cause.icon === 'plane' || cause.icon === 'heli')) continue
 
         // The dashed line as on the overview: in the squadron killer's colour.
         const from = pointAtTime(killer.paths, k.time) ?? nearestPoint(killer.paths, k.time) ?? k.killerPos

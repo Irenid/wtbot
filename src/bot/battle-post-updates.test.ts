@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   queueBattlePostRecheck,
   queueBattlePostUpdates,
+  mapNameSuffix,
   seasonMaxBrSuffix,
   type BattlePost,
   type BattlePostPayload,
@@ -199,4 +200,11 @@ test('a PSR recheck the post\'s other updates hold past the deadline is dropped'
   releaseLookup()
   await new Promise<void>((resolve) => setTimeout(resolve, 20))
   assert.deepEqual(built, ['free'])
+})
+
+test('the post ends its first line with the map name, without the mission\'s mode tags', () => {
+  assert.equal(mapNameSuffix('[realistic] [Domination] Frozen Pass'), ' · Frozen Pass')
+  assert.equal(mapNameSuffix(' [Conquest #1] Fire Arc'), ' · Fire Arc')
+  assert.equal(mapNameSuffix('Fire Arc'), ' · Fire Arc')
+  assert.equal(mapNameSuffix('[Domination]'), '')
 })

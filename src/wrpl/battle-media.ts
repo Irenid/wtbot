@@ -168,7 +168,8 @@ export async function cachedBattleHeatmap2x(
 // 54: vehicle icons cut by the datamine's tile fade out at the cut (unit-icon-edges.ts).
 // 55: ground maps: brighter spawn detection outlines and out-of-bounds hatch (TACTICAL_MAP_VERSION 5).
 // 56: detection outlines without the grey halo, thinner (TACTICAL_MAP_VERSION 6).
-const BATTLE_MEDIA_VERSION = 56
+// 57: the ground heatmap draws no kill line for a plane's or helicopter's kill.
+const BATTLE_MEDIA_VERSION = 57
 /** What the artifacts depend on beyond the version and their language: a changed heatmap option redraws them. */
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')
