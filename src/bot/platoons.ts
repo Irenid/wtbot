@@ -47,7 +47,8 @@ import { parseWtNick } from './voice-tracker.js'
  * the squadron's players gather in one voice channel, the lobby, and play
  * from the rooms beside it (the voice channels of its category, made by the
  * server's join-to-create hub or by hand). A post, edited in place (sent anew
- * at the channel's bottom once buried, sinksPost), suggests
+ * at the channel's bottom once buried, sinksPost; gone once nobody has been in
+ * voice for EMPTY_KEEP_MS, emptyVoicePost), suggests
  * who should play where — the most useful for the BR that plays now (the
  * post itself never says so; src/platoons/: identify.ts who they are, strength.ts how
  * useful, plan.ts the advice for every case). The bot moves nobody and
@@ -68,6 +69,12 @@ const BATTLE_DEBOUNCE_MS = 30_000
 const RATE_TTL_MS = 10 * 60_000
 /** The squadron's claninfo page (its roster) is reread this often while players are in voice; clan-info.ts throttles it too. */
 const ROSTER_REFRESH_MS = 10 * 60_000
+/**
+ * With nobody in voice the post stays this long (a player stepping out keeps it), then goes, and comes back
+ * at the channel's bottom with the next player: a standing «nobody is in voice» was clutter in a shared
+ * channel (the owner's «канал замусорен», 2026-10-22, Test pechenka's расписание-и-сборы).
+ */
+const EMPTY_KEEP_MS = 10 * 60_000
 const MEMBER_FETCH_CONCURRENCY = 4
 /** Discord's limit on all of an embed's text. */
 const EMBED_MAX = 6000
@@ -111,6 +118,8 @@ const caps = new Map<string, number | null>()
 const firstSeen = new Map<string, number>()
 const rosterReadAt = new Map<string, number>()
 const lastPost = new Map<string, string>()
+/** Since when nobody has been in voice, per server (Date.now ms). */
+const emptySince = new Map<string, number>()
 
 const nowSec = () => Math.floor(Date.now() / 1000)
 
@@ -139,6 +148,7 @@ function forget(guildId: string): void {
   rated.delete(guildId)
   caps.delete(guildId)
   lastPost.delete(guildId)
+  emptySince.delete(guildId)
 }
 
 export function platoonSettings(guildId: string): Settings | null {
@@ -403,10 +413,46 @@ export function sinksPost(lastMessageId: string | null, messageId: string | null
   return someone && messageId !== null && lastMessageId !== null && lastMessageId !== messageId
 }
 
-/** The post: edited in place, sent anew at the bottom when buried (sinksPost) or gone, left alone when unchanged. */
+/**
+ * The post when nobody has been in voice for `emptyForMs`: drawn empty for EMPTY_KEEP_MS (a player stepping
+ * out keeps it), then dropped; with no post, none is sent (a restart or a deploy posts nothing).
+ */
+export function emptyVoicePost(messageId: string | null, emptyForMs: number): 'draw' | 'drop' | 'skip' {
+  return messageId === null ? 'skip' : emptyForMs >= EMPTY_KEEP_MS ? 'drop' : 'draw'
+}
+
+/** The empty post goes (emptyVoicePost); a refusal other than a message already gone is tried again after another EMPTY_KEEP_MS. */
+async function dropPost(guild: Guild, channel: PostChannel, messageId: string): Promise<void> {
+  try {
+    await channel.messages.delete(messageId)
+  } catch (error) {
+    if (!(error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownMessage)) {
+      emptySince.set(guild.id, Date.now())
+      console.warn(`[platoons] server ${guild.id}: the empty post was not deleted:`, error)
+      return
+    }
+  }
+  lastPost.delete(guild.id)
+  // /settings may have moved the post meanwhile: only this post's ID is cleared.
+  const current = read(guild.id)
+  if (current !== null && current.messageId === messageId) write(guild.id, { ...current, messageId: null })
+}
+
+/**
+ * The post: edited in place, sent anew at the bottom when buried (sinksPost) or gone, left alone when
+ * unchanged, dropped once nobody has been in voice for EMPTY_KEEP_MS (emptyVoicePost).
+ */
 async function publish(guild: Guild, stored: Stored, advice: Advice): Promise<void> {
   const channel = postChannel(guild, stored.settings)
   if (channel === null) return
+  if (advice.list.length > 0) emptySince.delete(guild.id)
+  else {
+    const since = emptySince.get(guild.id) ?? Date.now()
+    emptySince.set(guild.id, since)
+    const action = emptyVoicePost(stored.messageId, Date.now() - since)
+    if (action === 'skip') return
+    if (action === 'drop' && stored.messageId !== null) return dropPost(guild, channel, stored.messageId)
+  }
   const t = botText(guildLocale(guild.id, guild.preferredLocale))
   const vehicles = await ensureVehicleDict().catch(() => ({} as VehicleDict))
   const squadron = findSquadrons(stored.settings.clan, 1)[0]

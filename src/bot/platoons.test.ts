@@ -4,7 +4,7 @@ import { closeDb, initDb, listBotStateKeys, setBotState } from '../db/index.js'
 import { botText } from '../i18n/index.js'
 import { planPlatoons, type Candidate } from '../platoons/plan.js'
 import type { RatedMember } from '../platoons/rate.js'
-import { advicePost, sinksPost, type Advice } from './platoons.js'
+import { advicePost, emptyVoicePost, sinksPost, type Advice } from './platoons.js'
 
 const member = (userId: string, nick: string, extra: Partial<RatedMember> = {}): RatedMember => ({
   userId,
@@ -94,6 +94,14 @@ test('a buried post goes anew to the bottom while someone is in voice; otherwise
   assert.equal(sinksPost('m2', 'm1', false), false, 'nobody in voice')
   assert.equal(sinksPost(null, 'm1', true), false, 'no last message known')
   assert.equal(sinksPost('m2', null, true), false, 'no post yet: it is sent anyway')
+})
+
+test('with nobody in voice the post stays ten minutes drawn empty, then goes; none is sent while nobody is there', () => {
+  assert.equal(emptyVoicePost('m1', 0), 'draw', 'the last player just left')
+  assert.equal(emptyVoicePost('m1', 10 * 60_000 - 1), 'draw', 'a player stepping out keeps it')
+  assert.equal(emptyVoicePost('m1', 10 * 60_000), 'drop')
+  assert.equal(emptyVoicePost(null, 0), 'skip', 'a restart or a deploy with nobody in voice posts nothing')
+  assert.equal(emptyVoicePost(null, 60 * 60_000), 'skip')
 })
 
 test('the configured servers are the bot_state keys under platoons:, no key beside them', () => {

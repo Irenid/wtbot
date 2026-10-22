@@ -108,6 +108,7 @@ players: the lobby's, not deafened, and a room's players beyond eight.
 | a stored battle | strengths are read again (30 s debounce) |
 | the BR stage changes (14:00 UTC) | strengths at the new cap at the next read (10 min cache) |
 | other messages came after the post (a gathering's replies, screenshots) | its next change, while someone is in voice, is sent anew at the channel's bottom and the old post deleted (`sinksPost`); with nobody in voice it is edited where it is |
+| nobody in voice | the post is drawn empty for `EMPTY_KEEP_MS` (10 min: a player stepping out keeps it), then deleted; the next player brings it back at the channel's bottom (`emptyVoicePost`). With no post and nobody in voice none is sent: a restart or a deploy posts nothing (the owner's «канал замусорен», 2026-10-22: a standing «nobody is in voice yet» in a shared channel) |
 | the bot restarts | the post is edited again (its ID in bot_state); missing members are fetched before the first pass |
 | the lobby or the post's channel deleted | the suggestions switch off |
 | `/settings platoons remove` | the suggestions stop, the post goes |

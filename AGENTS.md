@@ -593,7 +593,9 @@ Data:
   `src/platoons/`, state in `bot_state` `platoons:<guildId>`; method,
   measurements and every case: `docs/platoons.md`): a post, edited in place in
   `channel` (the lobby's chat by default; sent anew at its bottom when other
-  messages came after it while someone is in voice), suggests who of the squadron's
+  messages came after it while someone is in voice; deleted after
+  `EMPTY_KEEP_MS`, 10 min, with nobody in voice, and never sent then: a shared
+  channel keeps no standing empty post), suggests who of the squadron's
   players in the lobby and the rooms (the voice channels of its category)
   should play where — the most useful for the cap playing now (`strength.ts`:
   weights fitted 2026-10-21, refit after a format or rules change), never a

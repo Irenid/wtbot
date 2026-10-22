@@ -141,7 +141,7 @@ export const en: BotText = {
     statsRemoved: 'The place and player count channels are deleted.',
     statsNotSet: 'This server has no place and player count channels.',
     platoonsSet: (lobby, squadron, channel) => `Platoon suggestions are on: the bot watches ${squadron} players in ${lobby} and the voice channels `
-      + `beside it and posts in ${channel} who should play where. It moves nobody.`,
+      + `beside it and, while someone is there, posts in ${channel} who should play where. It moves nobody.`,
     platoonsRemoved: 'Platoon suggestions are off; their post is deleted.',
     platoonsNotSet: 'Platoon suggestions are not set up on this server.',
     statsPlaceName: (place) => `Squadron place: ${place ?? '–'}`,
