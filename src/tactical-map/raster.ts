@@ -98,6 +98,20 @@ export function applyTone(image: RgbaImage, tone: MapTone): void {
   }
 }
 
+/**
+ * The hatch colour for a map: always red, with the lightness pushed away from the map's mean
+ * lightness so the stripes read on dark and light maps alike (owner, 2026-10-22).
+ */
+export function contrastHatchColor(image: RgbaImage): [number, number, number] {
+  const { data } = image
+  let sum = 0
+  for (let i = 0; i < data.length; i += 4) sum += Math.max(data[i]!, data[i + 1]!, data[i + 2]!) + Math.min(data[i]!, data[i + 1]!, data[i + 2]!)
+  const mean = sum / (510 * (data.length / 4))
+  const l = Math.max(0.22, Math.min(0.55, mean < 0.45 ? mean + 0.4 : mean - 0.4))
+  const c = (1 - Math.abs(2 * l - 1))
+  return [Math.round(255 * (l + c / 2)), Math.round(255 * (l - c / 2)), Math.round(255 * (l - c / 2))]
+}
+
 export interface HatchStyle {
   /** RGB and alpha of the stripes (hud.blk battleAreaColorPresets, stored B,G,R,A). */
   color: [number, number, number]

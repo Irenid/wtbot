@@ -18,7 +18,7 @@ export const LABEL_FONT_FILE = 'pt_sans-web-regular-reducedheight.ttf'
  * 5: detection outlines opaque; out-of-bounds hatch brighter.
  * 6: detection outlines without the grey halo, thinner.
  */
-export const TACTICAL_MAP_VERSION = 6
+export const TACTICAL_MAP_VERSION = 7
 
 /**
  * A map without its texture's pixels: what composeTacticalMap (build.ts) draws

@@ -63,8 +63,9 @@ export const GAME_MAP_STYLE: TacticalMapStyle = {
   tone: [[0.9395, -3.54], [0.9349, -3.56], [0.9230, -1.87]],
   // battleAreaColorPresets.battleArea [0, 75, 255, 30] (B, G, R, A); the pattern texel is screen height / 1000
   // px (1.44 px at 1440p: a stripe period of 23.03 px along x on every snapshot); phase from berlin__conquest-1.
-  // Brighter than the game's [0, 75, 255, 30] so the out-of-bounds stripes read on the heatmaps (owner, 2026-10-22).
-  hatch: { color: [255, 40, 20], alpha: 0.5, texel: 1.08, phase: 16.44 },
+  // The colour is the fallback: composeTacticalMap derives it per map (contrastHatchColor); the alpha is softer than the
+  // bright red of 2026-10-22, which the owner found too loud.
+  hatch: { color: [255, 40, 20], alpha: 0.4, texel: 1.08, phase: 16.44 },
   gridColor: '#000000',
   gridOpacity: 80 / 255,
   gridWidth: 1.3,

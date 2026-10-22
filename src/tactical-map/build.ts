@@ -8,7 +8,7 @@ import type { RgbaImage } from './dxp.js'
 import { GameFiles, TACTICAL_MAP_SOURCES } from './game-files.js'
 import { buildTacticalMapModel, type MapKind, type SpawnKind, type Team, type WorldRect } from './model.js'
 import { balanceBucketRange } from './perspective.js'
-import { applyHatch, applyTone, sampleFrame } from './raster.js'
+import { applyHatch, applyTone, contrastHatchColor, sampleFrame } from './raster.js'
 import { GAME_MAP_STYLE, hatchStyle, MAP_SPAWN_KINDS, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
 import { LABEL_FONT_FILE, TACTICAL_MAP_VERSION, tacticalMapSpec, type TacticalMapMeta, type TacticalMapSpec } from './spec.js'
 
@@ -126,7 +126,7 @@ export function composeTacticalMap(spec: TacticalMapSpec, options: ComposeOption
   applyTone(base, style.tone)
   if (spec.battleAreaPreset !== null) {
     const metres = size / (geometry.view.x1 - geometry.view.x0)
-    applyHatch(base, spec.areas[options.team], (x, z) => [geometry.px(x), geometry.py(z)], metres, hatchStyle(style, geometry.k))
+    applyHatch(base, spec.areas[options.team], (x, z) => [geometry.px(x), geometry.py(z)], metres, { ...hatchStyle(style, geometry.k), color: contrastHatchColor(base) })
   }
 
   const icons = { get: (name: string) => spec.icons[name] }
