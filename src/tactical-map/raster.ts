@@ -98,28 +98,50 @@ export function applyTone(image: RgbaImage, tone: MapTone): void {
   }
 }
 
-/**
- * The hatch colour for a map: always red, with the lightness pushed away from the map's mean
- * lightness so the stripes read on dark and light maps alike (owner, 2026-10-22).
- */
-export function contrastHatchColor(image: RgbaImage): [number, number, number] {
-  const { data } = image
-  let sum = 0
-  for (let i = 0; i < data.length; i += 4) sum += Math.max(data[i]!, data[i + 1]!, data[i + 2]!) + Math.min(data[i]!, data[i + 1]!, data[i + 2]!)
-  const mean = sum / (510 * (data.length / 4))
-  const l = Math.max(0.22, Math.min(0.55, mean < 0.45 ? mean + 0.4 : mean - 0.4))
-  const c = (1 - Math.abs(2 * l - 1))
-  return [Math.round(255 * (l + c / 2)), Math.round(255 * (l - c / 2)), Math.round(255 * (l - c / 2))]
-}
-
 export interface HatchStyle {
-  /** RGB and alpha of the stripes (hud.blk battleAreaColorPresets, stored B,G,R,A). */
-  color: [number, number, number]
+  /** Line colours (RGB) over dark and over light ground; between them the colour follows the ground's lightness. */
+  onDark: [number, number, number]
+  onLight: [number, number, number]
+  /** Ground lightness (OKLab L, 0–1) up to which a line takes onDark, and from which onLight. */
+  lightness: [number, number]
   alpha: number
   /** Stripe period along x in output pixels; stripes run along x − y = const. */
   periodX: number
   /** Stripe phase: a stripe centre lies on x − y = phase (mod period). */
   phase: number
+  /** The share of a period a line covers (the game's pattern: half). */
+  duty: number
+}
+
+/** sRGB byte → linear light. */
+const LINEAR = Array.from({ length: 256 }, (_, v) => (v <= 10.31475 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4))
+
+/**
+ * The ground's lightness around each pixel: OKLab L of a grey as bright as the
+ * mean colour of blocks one stripe period wide (50 × 50 of them on a map of any
+ * size), bilinear between block centres.
+ */
+function groundLightness(image: RgbaImage, period: number): (x: number, y: number) => number {
+  const block = Math.max(1, Math.min(Math.round(period), image.width, image.height))
+  const small = boxDownscale(image, block)
+  const { width, height, data } = small
+  const lightness = new Float32Array(width * height)
+  for (let i = 0; i < lightness.length; i++) {
+    const o = i * 4
+    lightness[i] = Math.cbrt(0.2126 * LINEAR[data[o]!]! + 0.7152 * LINEAR[data[o + 1]!]! + 0.0722 * LINEAR[data[o + 2]!]!)
+  }
+  const at = (x: number, y: number): number => lightness[Math.min(height - 1, Math.max(0, y)) * width + Math.min(width - 1, Math.max(0, x))]!
+  return (x, y) => {
+    const u = x / block - 0.5
+    const v = y / block - 0.5
+    const u0 = Math.floor(u)
+    const v0 = Math.floor(v)
+    const fu = u - u0
+    const fv = v - v0
+    const top = at(u0, v0) + (at(u0 + 1, v0) - at(u0, v0)) * fu
+    const bottom = at(u0, v0 + 1) + (at(u0 + 1, v0 + 1) - at(u0, v0 + 1)) * fu
+    return top + (bottom - top) * fv
+  }
 }
 
 /** Signed distance (pixels, negative inside) from a pixel to a shape, both in output pixels. */
@@ -141,10 +163,12 @@ function signedDistance(shape: { kind: 'polygon'; points: [number, number][] } |
 }
 
 /**
- * The out-of-bounds hatch (the game's ui/map_pattern_a, 16×16 texels of
- * diagonal stripes, half opaque, tinted by the mission's battleAreaColorPreset):
- * over the view minus the team's allowed battle areas, plus its kill areas.
- * Edges are anti-aliased over one pixel.
+ * The out-of-bounds hatch: the diagonal stripes of the game's ui/map_pattern_a
+ * (16×16 texels), over the view minus the team's allowed battle areas, plus its
+ * kill areas. A line covers `duty` of a period, in red set against the ground
+ * under it (deeper over light ground, brighter over dark), so it reads on snow,
+ * sand and forest alike and the ground between the lines stays as drawn. Line
+ * and area edges are anti-aliased over one pixel.
  */
 export function applyHatch(
   image: RgbaImage,
@@ -173,7 +197,8 @@ export function applyHatch(
   const kill = areas.kill.map(project)
   if (allowed.length === 0 && kill.length === 0) return
   const { width, height, data } = image
-  const [cr, cg, cb] = style.color
+  const ground = groundLightness(image, style.periodX)
+  const [l0, l1] = style.lightness
   const coverage = (list: Projected[], x: number, y: number): number => {
     let best = 0
     for (const p of list) {
@@ -193,15 +218,17 @@ export function applyHatch(
       const inAllowed = allowed.length === 0 ? 1 : coverage(rowAllowed, x, y)
       const out = Math.max(1 - inAllowed, rowKill.length === 0 ? 0 : coverage(rowKill, x, y))
       if (out <= 0) continue
-      // Distance from the stripe centre line along x, in periods: on for |d| < 1/4.
+      // Distance from the stripe centre line along x, in periods: on for |d| < duty / 2.
       const d = (((x - y - style.phase) / style.periodX) % 1 + 1.5) % 1 - 0.5
-      const stripe = Math.min(1, Math.max(0, (0.25 - Math.abs(d)) * style.periodX * Math.SQRT1_2 + 0.5))
+      const stripe = Math.min(1, Math.max(0, (style.duty / 2 - Math.abs(d)) * style.periodX * Math.SQRT1_2 + 0.5))
       const a = style.alpha * stripe * out
       if (a <= 0) continue
+      const t = Math.min(1, Math.max(0, (ground(x, y) - l0) / (l1 - l0)))
       const o = (py * width + px) * 4
-      data[o] = Math.round(data[o]! * (1 - a) + cr * a)
-      data[o + 1] = Math.round(data[o + 1]! * (1 - a) + cg * a)
-      data[o + 2] = Math.round(data[o + 2]! * (1 - a) + cb * a)
+      for (let c = 0; c < 3; c++) {
+        const line = style.onDark[c]! + (style.onLight[c]! - style.onDark[c]!) * t
+        data[o + c] = Math.round(data[o + c]! * (1 - a) + line * a)
+      }
     }
   }
 }

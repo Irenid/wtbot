@@ -12,10 +12,10 @@ import {
 import { heatmapPalette } from './heatmap-palette.js'
 
 const SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
-/** The table's worst pairs (8 v 8): ΔE 0.123 inside a team, 0.126 across (2026-10-22). */
-const MIN_NORMAL = 0.12
-const MIN_WEIGHTED = 0.12
-const MIN_CROSS = 0.125
+/** The table's worst pairs (8 v 7, 7 v 8): ΔE 0.112 inside a team, 0.117 across, over the untinted map (2026-10-22). */
+const MIN_NORMAL = 0.11
+const MIN_WEIGHTED = 0.11
+const MIN_CROSS = 0.115
 const hues = (colours: readonly string[]): number[] => colours.map((hex) => swatch(hex).hue)
 
 test('the palette has one colour per player of each team, none repeated, for every pair of sizes', () => {

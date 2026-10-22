@@ -38,13 +38,14 @@ import { Worker, isMainThread, parentPort } from 'node:worker_threads'
 type Lab = [number, number, number]
 
 /**
- * The map under the tracks: k-means (24) of the 96 cached game-client ground
- * maps after the renderer's saturate(0.5) and readability shade, 2026-10-22;
- * a pixel lies within 0.03 ΔE of its centroid (p99).
+ * The ground under the tracks: k-means (24) of the 193 squadron ground maps as
+ * the heatmap draws them, untinted, 2026-10-22: the texture in the game's tone,
+ * without the hatch and icons (the team families take the spawns' blue and
+ * red); a pixel lies within 0.049 ΔE of its centroid (p99).
  */
 const MAP_COLOURS = [
-  '#1F2020', '#2A2924', '#313028', '#32363A', '#37362C', '#3D3C35', '#434239', '#49493D', '#47484C', '#504F44', '#624F46', '#535454',
-  '#545748', '#605A4E', '#5D5E61', '#656356', '#67696B', '#6F6D5F', '#747473', '#827D77', '#898786', '#929292', '#9C9B9C', '#A9A8A8',
+  '#24211C', '#2D3030', '#3C3621', '#3E4144', '#454227', '#514D32', '#535352', '#4A5D37', '#60573B', '#63625F', '#6B6245', '#547040',
+  '#8E5B43', '#7D6C4F', '#707374', '#717A55', '#8E795B', '#818963', '#848787', '#A59475', '#A1A1A0', '#B6A98E', '#B8B7B5', '#C9C8C7',
 ]
 const MIN_MAP_DELTA = 0.15
 /** Below it a track fades on the darkest maps (L 0.25) even with its dark outline. */

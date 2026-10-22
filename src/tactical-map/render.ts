@@ -32,7 +32,15 @@ export interface SpawnIconStyle {
 
 export interface TacticalMapStyle {
   tone: MapTone
-  hatch: { color: [number, number, number]; alpha: number; texel: number; phase: number }
+  hatch: {
+    onDark: [number, number, number]
+    onLight: [number, number, number]
+    lightness: [number, number]
+    alpha: number
+    duty: number
+    texel: number
+    phase: number
+  }
   gridColor: string
   gridOpacity: number
   gridWidth: number
@@ -61,11 +69,12 @@ export const GAME_MAP_STYLE: TacticalMapStyle = {
   // Fitted per channel on berlin__conquest-1 against the decoded texture (428k pixels, 2026-10-09); a fit
   // over 108 snapshots (R 0.972·x − 6.9) scored worse: captures differ more than the curve.
   tone: [[0.9395, -3.54], [0.9349, -3.56], [0.9230, -1.87]],
-  // battleAreaColorPresets.battleArea [0, 75, 255, 30] (B, G, R, A); the pattern texel is screen height / 1000
-  // px (1.44 px at 1440p: a stripe period of 23.03 px along x on every snapshot); phase from berlin__conquest-1.
-  // The colour is the fallback: composeTacticalMap derives it per map (contrastHatchColor); the alpha is softer than the
-  // bright red of 2026-10-22, which the owner found too loud.
-  hatch: { color: [255, 40, 20], alpha: 0.4, texel: 1.08, phase: 16.44 },
+  // The pattern texel is screen height / 1000 px (1.44 px at 1440p: a stripe period of 23.03 px along x on every
+  // snapshot); phase from berlin__conquest-1. Not the game's tint (battleAreaColorPresets.battleArea [0, 75, 255, 30],
+  // B, G, R, A, over half of each period): the owner wants red lines that read on every map and leave the ground
+  // under them readable (2026-10-22), so a line covers a fifth of the period, nearly opaque, deep red over light
+  // ground and bright red over dark (applyHatch).
+  hatch: { onDark: [245, 50, 40], onLight: [170, 15, 15], lightness: [0.45, 0.75], alpha: 0.85, duty: 0.2, texel: 1.08, phase: 16.44 },
   gridColor: '#000000',
   gridOpacity: 80 / 255,
   gridWidth: 1.3,
@@ -204,12 +213,8 @@ export function renderGeometry(frame: { view: WorldRect }, size: number): Render
 
 /** The hatch in output pixels for the raster pass. */
 export function hatchStyle(style: TacticalMapStyle, k: number): HatchStyle {
-  return {
-    color: style.hatch.color,
-    alpha: style.hatch.alpha,
-    periodX: 16 * style.hatch.texel * k,
-    phase: style.hatch.phase * k,
-  }
+  const { onDark, onLight, lightness, alpha, duty, texel, phase } = style.hatch
+  return { onDark, onLight, lightness, alpha, duty, periodX: 16 * texel * k, phase: phase * k }
 }
 
 /** A ground shape in output pixels. */

@@ -17,8 +17,10 @@ export const LABEL_FONT_FILE = 'pt_sans-web-regular-reducedheight.ttf'
  * 4: spawn detection zones outlined; cylinder and sphere footprints as the game tests them.
  * 5: detection outlines opaque; out-of-bounds hatch brighter.
  * 6: detection outlines without the grey halo, thinner.
+ * 7: out-of-bounds hatch red, lightness set against the map's mean.
+ * 8: out-of-bounds hatch as thin red lines, lightness set against the ground under each line.
  */
-export const TACTICAL_MAP_VERSION = 7
+export const TACTICAL_MAP_VERSION = 8
 
 /**
  * A map without its texture's pixels: what composeTacticalMap (build.ts) draws

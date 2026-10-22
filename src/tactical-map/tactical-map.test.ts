@@ -12,7 +12,8 @@ import { pruneStaleMaps } from './index.js'
 import { interpretMission, type MissionOptions } from './mission.js'
 import { areaRect, buildTacticalMapModel, gridLabels, gridStep, viewRect, type BlkSource, type GroundShape } from './model.js'
 import { balanceBucket, balanceBucketRange, balanceLevelOfBr, pickPerspective } from './perspective.js'
-import { GAME_MAP_STYLE, MAP_SPAWN_KINDS, mapIconNames, mergeSpawns, renderGeometry, tacticalMapOverlaySvg } from './render.js'
+import { GAME_MAP_STYLE, hatchStyle, MAP_SPAWN_KINDS, mapIconNames, mergeSpawns, renderGeometry, tacticalMapOverlaySvg, UI_MAP_WIDTH } from './render.js'
+import { applyHatch } from './raster.js'
 import { buildBattleScene, sceneAir, sceneAirView } from '../wrpl/battle-scene-core.js'
 import type { ReplayEvents } from '../wrpl/replay-events.js'
 import { oodleDecompress } from './oodle.js'
@@ -658,6 +659,35 @@ test('the overlay outlines detection areas in the spawning team\'s colour, overl
   // Equal shapes keep their outline; no areas, no outline.
   assert.match(outlines(overlay({ A: { detection: [circle(300, 500), circle(300, 500)] }, B: { detection: [] } }))[0]!.d, /^M[^M]*Z$/)
   assert.equal(outlines(overlay()).length, 0)
+})
+
+test('the out-of-bounds hatch: thin red lines, deeper over light ground, the battle area untouched', () => {
+  // A 1400 px map's line spacing; world metres are pixels here, the left half is the battle area.
+  const style = hatchStyle(GAME_MAP_STYLE, 1400 / UI_MAP_WIDTH)
+  const size = 140
+  const hatched = (grey: number) => {
+    const image = { width: size, height: size, data: Buffer.alloc(size * size * 4, grey) }
+    const allowed: GroundShape[] = [{ kind: 'polygon', points: [[0, 0], [70, 0], [70, size], [0, size]] }]
+    applyHatch(image, { allowed, kill: [], detection: [] }, (x, z) => [x, z], 1, style)
+    const pixels = Array.from({ length: size * size }, (_, i) => ({ x: i % size, rgb: [...image.data.subarray(i * 4, i * 4 + 3)] }))
+    const outside = pixels.filter((p) => p.x >= 71)
+    const line = outside.reduce((best, p) => (p.rgb[0]! - p.rgb[1]! > best.rgb[0]! - best.rgb[1]! ? p : best))
+    return {
+      inside: pixels.filter((p) => p.x < 70).every((p) => p.rgb.every((c) => c === grey)),
+      share: outside.filter((p) => p.rgb.some((c) => Math.abs(c - grey) > 2)).length / outside.length,
+      line: line.rgb,
+    }
+  }
+  const snow = hatched(230)
+  const forest = hatched(25)
+  for (const ground of [snow, forest]) {
+    assert.ok(ground.inside, 'the battle area keeps its pixels')
+    // Lines cover a fifth of each period, plus their anti-aliased edges.
+    assert.ok(ground.share > 0.15 && ground.share < 0.32, `share ${ground.share}`)
+    const [r, g, b] = ground.line
+    assert.ok(r! - g! > 100 && r! - b! > 100, `a red line: ${ground.line}`)
+  }
+  assert.ok(forest.line[0]! - snow.line[0]! > 20, `brighter over dark ground: ${forest.line} vs ${snow.line}`)
 })
 
 test('a crop of a map keeps the whole map\'s cell names and draws its icons at UI size', () => {

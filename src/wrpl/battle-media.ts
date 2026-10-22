@@ -175,7 +175,10 @@ export async function cachedBattleHeatmap2x(
 // 61: the palette searched again: each team keeps its hue family (balanced teams no green or
 // magenta, a bigger team takes them), no dark yellows or dull darks; ground pairs 4..8 tell a
 // team's tracks apart by ΔE 0.12 at worst instead of 0.089.
-const BATTLE_MEDIA_VERSION = 61
+// 62: the map keeps the game's colours (no tint or shade) and the palette is searched again against it
+// (tracks ΔE ≥ 0.15 from the ground, 0.112 apart at worst); the out-of-bounds hatch as thin red lines,
+// their lightness set against the ground under them (TACTICAL_MAP_VERSION 8).
+const BATTLE_MEDIA_VERSION = 62
 /** What the artifacts depend on beyond the version and their language: a changed heatmap option redraws them. */
 const BATTLE_MEDIA_RENDER_OPTIONS = JSON.stringify({ heatmap: config.heatmapOptions })
 const BATTLE_MEDIA_RENDER_VARIANT = createHash('sha256')

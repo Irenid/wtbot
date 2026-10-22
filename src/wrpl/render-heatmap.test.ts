@@ -243,20 +243,20 @@ test('the heatmap keeps the old layout and the new text labels', () => {
   assert.ok(svg.includes('data-team-spawn="0"'))
 })
 
-test('the raster map is muted at both scales and sharpened only at 2×', () => {
+test('the raster map keeps the game\'s colours at both scales and is sharpened only at 2×', () => {
   const map = 'data:image/png;base64,AA=='
   const standard = renderAt(-800, 0, 1, map)
   const hd = renderAt(-800, 0, 2, map)
 
   for (const svg of [standard, hd]) {
-    assert.ok(svg.includes('<filter id="map-tone"'))
-    assert.ok(svg.includes('<feColorMatrix type="saturate" values="0.5"/>'))
-    assert.ok(svg.includes(`filter="url(#map-tone)" href="${map}"`))
+    assert.ok(!svg.includes('feColorMatrix'), 'no tint')
+    assert.ok(!svg.includes('fill="#0a0e14"'), 'no shade over the map')
   }
-  assert.ok(!standard.includes('feConvolveMatrix'))
+  assert.ok(standard.includes(`preserveAspectRatio="none" href="${map}"`))
+  assert.ok(!standard.includes('<filter'))
   assert.ok(!standard.includes('image-rendering="optimizeQuality"'))
   assert.ok(hd.includes('<feConvolveMatrix '))
-  assert.ok(hd.includes('image-rendering="optimizeQuality" filter="url(#map-tone)"'))
+  assert.ok(hd.includes(`image-rendering="optimizeQuality" filter="url(#map-sharpen)" href="${map}"`))
 })
 
 test('наземная heatmap предпочитает тактическую карту авиационной подложке', () => {

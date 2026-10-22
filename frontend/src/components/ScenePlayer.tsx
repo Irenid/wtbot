@@ -194,9 +194,8 @@ export function ScenePlayer({ scene, dict, battleKey }: {
       context.fillRect(0, 0, W, H)
 
       if (mapImage) {
-        context.globalAlpha = 0.85
+        // As the game draws it: a dimmed map read too dull (owner, 2026-10-22).
         context.drawImage(mapImage, wx(x0), wz(z1), worldW * scale, worldH * scale)
-        context.globalAlpha = 1
       } else {
         // A 500 m grid for orientation without a map image (5 km over the air view's tens of km).
         const step = worldW > 10_000 ? 5_000 : 500
@@ -287,10 +286,15 @@ export function ScenePlayer({ scene, dict, battleKey }: {
         if ((focused || scale * worldW > 700) && unit.userId && !dimmed) {
           const nick = nickByUser.get(unit.userId)
           if (nick) {
-            context.fillStyle = 'rgba(242, 239, 230, 0.9)'
             context.font = `${9 * dpr}px "Segoe UI", system-ui, sans-serif`
             context.textAlign = 'left'
             context.textBaseline = 'bottom'
+            // A dark halo keeps the light name readable over snow and sand.
+            context.strokeStyle = 'rgba(15, 14, 19, 0.75)'
+            context.lineWidth = 3 * dpr
+            context.lineJoin = 'round'
+            context.strokeText(nick, ux + 6 * dpr, uy - 4 * dpr)
+            context.fillStyle = 'rgba(242, 239, 230, 0.9)'
             context.fillText(nick, ux + 6 * dpr, uy - 4 * dpr)
           }
         }

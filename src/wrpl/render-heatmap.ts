@@ -17,18 +17,19 @@ import { vehicleInfo, type VehicleDict } from './vehicles.js'
  * stops with their duration; dots at the survivors' last positions; minute
  * marks along the tracks where they collide with nothing. Colours come in two
  * families (heatmap-palette.ts: cool for the image's own team, warm for the
- * other, static sets per pair of team sizes), over a
- * muted map (MAP_SATURATION). On the right an information panel: map, mode and
- * date, the teams in the order of their sides on the map (winner, players with
- * kills and deaths, vehicles, score and time of death) and the legend.
+ * other, static sets per pair of team sizes), over the map as the game draws
+ * it, untinted (a muted map read too dim, owner 2026-10-22). On the right an
+ * information panel: map, mode and date, the teams in the order of their sides
+ * on the map (winner, players with kills and deaths, vehicles, score and time
+ * of death) and the legend.
  *
  * mode='ground': ground vehicles (GMSync); mode='air': aircraft (flight-model
  * packets). The ground map fills the frame (exactly the battle area); the air
  * view follows the tracks, with the battle area a small square in it. Without
  * the mission file the view follows the tracks.
  *
- * Strict layers, bottom to top: base → image → fallback grid → shade → battle
- * area border → spawn labels → routes → stops → stop durations → minute marks →
+ * Strict layers, bottom to top: base → image → fallback grid → battle area
+ * border → spawn labels → routes → stops → stop durations → minute marks →
  * shot lines → shooter dots → marker callouts → survivor dots → skulls → causes
  * of death → vehicle labels → track names. Element types never share a layer;
  * instances of one type are sorted by time, later ones on top.
@@ -49,8 +50,6 @@ const MAP_W = HEATMAP_MAP_SIZE
 /** The information panel's width, right of the map. */
 const PANEL_W = 480
 
-/** The saturation left to the map image: muted, it stays behind the tracks. */
-const MAP_SATURATION = 0.5
 const TEAM_SPAWN_COLORS = ['#17e6ec', '#fa2028'] as const
 /** Временный переключатель точного crop/grid из capture:map. */
 const CAPTURED_MAP_RENDERING_ENABLED = false
@@ -552,15 +551,14 @@ export function buildHeatmapSvg(
 
   const parts: string[] = []
   parts.push(`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">`)
-  // The map image is muted, so the tracks keep the strongest colours; at 2× it is also sharpened.
-  parts.push(
-    `<defs><filter id="map-tone" x="-2%" y="-2%" width="104%" height="104%" color-interpolation-filters="sRGB">` +
-      (renderScale === 2
-        ? `<feConvolveMatrix order="3" kernelMatrix="0 -0.12 0 -0.12 1.48 -0.12 0 -0.12 0" divisor="1" edgeMode="duplicate" preserveAlpha="true"/>`
-        : '') +
-      `<feColorMatrix type="saturate" values="${MAP_SATURATION}"/>` +
-      `</filter></defs>`,
-  )
+  // The map image keeps the game's colours; at 2× it is sharpened.
+  if (renderScale === 2) {
+    parts.push(
+      `<defs><filter id="map-sharpen" x="-2%" y="-2%" width="104%" height="104%" color-interpolation-filters="sRGB">` +
+        `<feConvolveMatrix order="3" kernelMatrix="0 -0.12 0 -0.12 1.48 -0.12 0 -0.12 0" divisor="1" edgeMode="duplicate" preserveAlpha="true"/>` +
+        `</filter></defs>`,
+    )
+  }
   let temporalSequence = 0
   const timed = (time: number, svg: string): TimedSvg => ({ time, sequence: temporalSequence++, svg })
   const chronological = (items: TimedSvg[]): string[] =>
@@ -575,12 +573,9 @@ export function buildHeatmapSvg(
   // On the ground the map covers the battle area. In the air the air map is the background (the
   // game's, drawn for this view, else the level map captured from port 8111), and the ground map
   // stays inset at the battle area.
-  const mapImageAttrs = renderScale === 2
-    ? ` image-rendering="optimizeQuality" filter="url(#map-tone)"`
-    : ` filter="url(#map-tone)"`
+  const mapImageAttrs = renderScale === 2 ? ` image-rendering="optimizeQuality" filter="url(#map-sharpen)"` : ''
   pushMapLayer(1, 'base', [`<rect width="${MAP_W}" height="${MAP_W}" fill="#3c4034"/>`])
   const mapImages: string[] = []
-  const shades: string[] = []
   const airMapObjects: string[] = []
   const gameAirMap = mode === 'air' ? input.airMap ?? null : null
   const airRect = gameAirMap?.rect ?? (fallbackMap ? fallbackImageWorldBounds : undefined)
@@ -592,9 +587,6 @@ export function buildHeatmapSvg(
     const imageHeight = pz(airRect.z0) - imageY
     mapImages.push(
       `<image data-map-role="${gameAirMap ? 'air-map' : 'air-background'}" x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" preserveAspectRatio="none"${mapImageAttrs} href="${gameAirMap?.href ?? fallbackMap}"/>`,
-    )
-    shades.push(
-      `<rect x="${r1(imageX)}" y="${r1(imageY)}" width="${r1(imageWidth)}" height="${r1(imageHeight)}" fill="#0a0e14" fill-opacity="0.18"/>`,
     )
     if (groundMapInset(scene, tacticalMap, mission) && mission?.area) {
       const a = mission.area
@@ -657,9 +649,6 @@ export function buildHeatmapSvg(
           `<image x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" preserveAspectRatio="none"${mapImageAttrs} href="${mapImage}"/>`,
         )
       }
-      shades.push(
-        `<rect x="${r1(ix)}" y="${r1(iy)}" width="${r1(iw)}" height="${r1(ih)}" fill="#0a0e14" fill-opacity="0.18"/>`,
-      )
       if (mapViewport?.gridStepX && mapViewport.gridStepY) {
         pushMapLayer(5, 'coordinate-grid', coordinateGrid(
           ix,
@@ -678,7 +667,6 @@ export function buildHeatmapSvg(
     }
   }
   pushMapLayer(2, 'map-image', mapImages)
-  pushMapLayer(4, 'readability-shade', shades)
   pushMapLayer(5, 'air-objects', airMapObjects)
   if (mapImages.length === 0) {
     // подложка с сеткой
