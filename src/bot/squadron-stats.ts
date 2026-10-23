@@ -6,8 +6,8 @@ import { botText } from '../i18n/index.js'
 import { guildLocale } from './locale.js'
 
 /**
- * Four voice channels nobody joins show the max BR that plays now and a squadron's leaderboard place, player count and
- * average PSR in their names
+ * Four voice channels nobody joins show a squadron's leaderboard place, player count and average PSR and the max BR
+ * that plays now in their names
  * (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
  * needs View Channel, Manage Channels and Connect on the server: Discord lets a bot allow or deny only
  * permissions it holds; or in a category the server picks, created bare so they copy its overwrites
@@ -30,7 +30,7 @@ interface Pair {
   pointsId: string
   /** Added later: a pair made before it has none until /settings stats set runs again. */
   ratingId?: string | undefined
-  /** Added later like `ratingId`; the first channel of the list. */
+  /** Added later like `ratingId`; the last channel of the group. */
   brId?: string | undefined
 }
 
@@ -128,10 +128,10 @@ export async function setupSquadronStats(guild: Guild, clan: string, category: C
       throw error
     }
   }
-  const br = await next(text.br, 0)
-  const place = await next(text.place, 1)
-  const points = await next(text.points, 2)
-  const rating = await next(text.rating, 3)
+  const place = await next(text.place, 0)
+  const points = await next(text.points, 1)
+  const rating = await next(text.rating, 2)
+  const br = await next(text.br, 3)
   setBotState(KEY + guild.id, JSON.stringify({ clan, placeId: place.id, pointsId: points.id, ratingId: rating.id, brId: br.id } satisfies Pair))
 }
 
@@ -162,15 +162,15 @@ const warned = new Set<string>()
 
 /**
  * A pair made before a later channel (rating, max BR) gets it from the tick, so nobody has to run
- * /settings stats set again: same category and overwrites as the player-count channel; the max BR one
- * takes the place channel's slot, the top of the list, the rating one goes right below the player count.
+ * /settings stats set again: same category and overwrites as the player-count channel; the rating one
+ * goes right below the player count, the max BR one right below the rating.
  */
 async function addChannel(guild: Guild, pair: Pair, field: 'ratingId' | 'brId', name: string): Promise<void> {
-  const anchor = guild.channels.cache.get(field === 'brId' ? pair.placeId : pair.pointsId)
+  const anchor = guild.channels.cache.get(field === 'brId' ? (pair.ratingId ?? pair.pointsId) : pair.pointsId)
   if (!anchor || anchor.type !== ChannelType.GuildVoice) return
   try {
     const channel = await guild.channels.create({
-      name, type: ChannelType.GuildVoice, parent: anchor.parentId, position: field === 'brId' ? anchor.position : anchor.position + 1,
+      name, type: ChannelType.GuildVoice, parent: anchor.parentId, position: anchor.position + 1,
       permissionOverwrites: anchor.permissionOverwrites.cache.map((o) => ({ id: o.id, type: o.type, allow: o.allow, deny: o.deny })),
     })
     pair[field] = channel.id
@@ -196,6 +196,15 @@ async function tick(client: Client): Promise<void> {
     const targets: (readonly [string, string])[] = [[pair.placeId, text.place], [pair.pointsId, text.points]]
     if (pair.ratingId) targets.push([pair.ratingId, text.rating])
     if (pair.brId) targets.push([pair.brId, text.br])
+    // A max BR channel made at the top of the list (before 2026-10-23) moves under the rating one.
+    const br = pair.brId ? guild.channels.cache.get(pair.brId) : undefined
+    const rating = pair.ratingId ? guild.channels.cache.get(pair.ratingId) : undefined
+    if (br?.type === ChannelType.GuildVoice && rating?.type === ChannelType.GuildVoice && br.parentId === rating.parentId && br.position < rating.position) {
+      await br.setPosition(rating.position, { reason: 'squadron stats order' }).catch((error: unknown) => {
+        if (!warned.has(br.id + 'pos')) console.warn(`[squadron-stats] server ${guild.id}: could not move channel ${br.id}:`, error)
+        warned.add(br.id + 'pos')
+      })
+    }
     for (const [id, name] of targets) {
       const channel = guild.channels.cache.get(id)
       if (!channel || channel.name === name) continue
