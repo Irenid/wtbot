@@ -17,8 +17,6 @@ import type { VehicleDict } from '../wrpl/vehicles.js'
 import {
   SCOUT_COLOR_GUESS,
   SCOUT_COLOR_SESSION,
-  compositionText,
-  flagName,
   formatScoutImageReport,
   formatScoutReport,
   percent,
@@ -129,14 +127,17 @@ test('nick keys ignore case, spaces and the platform suffix', () => {
   assert.notEqual(nickKey('ro2069'), nickKey('ro2068'))
 })
 
-test('the reply names the setup, chances and every likely player; percents never claim certainty', () => {
+test('the reply names the air chance and every likely player; percents never claim certainty', () => {
   assert.equal(percent(0.004), '<1%')
   assert.equal(percent(0.996), '>99%')
   assert.equal(percent(0.5), '50%')
-  assert.equal(compositionText({ F: 1, H: 2, T: 0, L: 1, AA: 3 }), '1 aircraft · 2 helicopters · 1 light tank · 3 anti-air')
   assert.equal(squadronLabel('╍Nrst╎', 'North_Steel'), 'Nrst North_Steel')
   assert.equal(squadronLabel('[QUEUE]', 'Queue'), 'QUEUE')
   assert.equal(squadronLabel('=ABC=', null), 'ABC')
+  // A name that starts with the tag stands alone; a longer word that only begins with it does not.
+  assert.equal(squadronLabel('-BLOB1-', 'BLOB1 CZ-SK comunity'), 'BLOB1 CZ-SK comunity')
+  assert.equal(squadronLabel('=ABC=', 'abc-Team'), 'abc-Team')
+  assert.equal(squadronLabel('=ABC=', 'ABCdef'), 'ABC ABCdef')
   assert.equal(plainVehicleName('▄M163'), 'M163')
   assert.equal(plainVehicleName('␗T-26'), 'T-26')
   assert.equal(plainVehicleName('AMX-30 (1972)'), 'AMX-30 (1972)')
@@ -168,19 +169,19 @@ test('the reply names the setup, chances and every likely player; percents never
   assert.equal(text.title, 'ABC Alpha')
   assert.equal(text.color, SCOUT_COLOR_SESSION)
   assert.match(text.description, /mid-session/)
-  assert.match(text.description, /\*\*Most likely setup\*\*\n3 aircraft · 5 tanks — \d+%/)
-  assert.match(text.description, /\*\*Air:\*\* \d\.\d expected, at least one \S+%/)
+  assert.match(text.description, /\n\n\*\*Air:\*\* at least one aircraft or helicopter — \S+%$/)
+  assert.doesNotMatch(text.description, /setup|expected/)
   assert.match(text.description, /\*\*ghost\*\* is not in their recent battles/)
   assert.deepEqual(text.fields.map((field) => field.name), ['Aircraft · 3', 'Tanks · 5'])
-  assert.match(text.fields[0]!.value, /^\\_under\\_score\\_ — \*\*Vautour IIN \d+%\*\*/m)
-  assert.match(text.fields[1]!.value, /^p3 — \*\*Leopard 1 \d+%\*\*/m)
+  assert.match(text.fields[0]!.value, /^\\_under\\_score\\_ — \*\*Vautour IIN\*\* \(\d+%\)/m)
+  assert.match(text.fields[1]!.value, /^p3 — \*\*Leopard 1\*\* \(\d+%\)/m)
   assert.equal(text.fields[1]!.value.split('\n').length, 5)
   const empty = formatScoutReport({ ...report, prediction: predictScout({ battles: [], now, stages: [], classOf: () => '?' }) })
   assert.match(empty.description, /No battles stored/)
   assert.equal(empty.color, SCOUT_COLOR_GUESS)
 })
 
-test('a screenshot reply names the flags it used and who shows none, or asks for one taken after the spawn', () => {
+test('a screenshot reply keeps the method out: a tip for a later screenshot only when no flags were read', () => {
   const vehicles: VehicleDict = { de_tank: { name: 'Leopard 2K', cls: 'T', country: 'germany', operator: 'germany_modern' } }
   const prediction: KnownTeamPrediction = {
     maxBr: 8,
@@ -191,29 +192,26 @@ test('a screenshot reply names the flags it used and who shows none, or asks for
     flags: { icons: ['germany_modern', 'usa', 'usa_modern', 'south_africa'], operatorChance: 1 },
   }
   const report: ScoutImageReport = {
-    squadron: null, allySquadron: null, prediction, recognised: 1, anonymous: null, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, killsShown: 0, vehicles, now: 0,
+    squadron: null, allySquadron: null, prediction, recognised: 1, anonymous: null, unread: ['Unknown'], enemyFlags: { read: 4, rowsWithout: 0 }, statShark: { players: 0, pending: false }, vehicles, now: 0,
   }
-  const used = formatScoutImageReport(report).description
-  assert.match(used, /battles at BR 8\.0 and the flags above their team: Germany, USA, South Africa\./)
-  assert.doesNotMatch(used, /no flag/)
-  assert.doesNotMatch(used, /destroyed or captured/)
-  assert.match(formatScoutImageReport({ ...report, killsShown: 2 }).description, /What 2 enemies have already destroyed or captured narrows their vehicles too\./)
-  const someOut = formatScoutImageReport({ ...report, enemyFlags: { read: 4, rowsWithout: 1 } }).description
-  assert.match(someOut, /1 enemy shows no flag \(not spawned yet or destroyed\): their chances rest on their battles alone\./)
+  const air = '**Air:** at least one aircraft or helicopter — <1%'
+  const used = formatScoutImageReport(report)
+  assert.equal(used.title, 'Enemy team')
+  assert.equal(used.description, air)
+  assert.deepEqual(used.fields, [{ name: 'Tanks · 1', value: 'A — **Leopard 2K** (90%)' }, { name: 'Not recognised · 1', value: '"Unknown"' }])
+  assert.equal(formatScoutImageReport({ ...report, enemyFlags: { read: 4, rowsWithout: 1 } }).description, air)
   const none = { ...report, prediction: { ...prediction, flags: null } }
+  assert.equal(formatScoutImageReport({ ...none, enemyFlags: { read: 3, rowsWithout: 0 } }).description, air)
   const nobodyIn = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: 2 } }).description
-  assert.match(nobodyIn, /No enemy is in a vehicle yet: a screenshot after they spawn shows their flags and sharpens the guess\./)
+  assert.equal(nobodyIn, `${air}\nNo enemy is in a vehicle yet: a screenshot after they spawn sharpens the guess.`)
   const lineMissed = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: 1 } }).description
-  assert.match(lineMissed, /The flags above their team were not read/)
+  assert.equal(lineMissed, `${air}\nThe flags above the enemy team were not read: a screenshot showing them sharpens the guess.`)
   const before = formatScoutImageReport({ ...none, enemyFlags: { read: 0, rowsWithout: null } }).description
-  assert.match(before, /A screenshot after they spawn shows their flags and sharpens the guess\./)
+  assert.equal(before, `${air}\nA screenshot after the enemies spawn sharpens the guess.`)
   // A player guessed behind a fake name: counted as read, marked in their line.
-  const hidden = formatScoutImageReport({ ...report, recognised: 0, anonymous: { userId: 'a', nick: 'A', fakeName: 'Abraham5625' } })
-  assert.match(hidden.description, /Read from the screenshot: 0 of 2 enemy players\./)
-  assert.match(hidden.fields.map((field) => field.value).join('\n'), /^A \(probably: hidden as Abraham5625\) — \*\*Leopard 2K 90%\*\*/m)
-  assert.equal(flagName('republic_china'), 'Republic of China')
-  assert.equal(flagName('italy_kingdom'), 'Italy')
-  assert.equal(flagName('new_zealand'), 'New Zealand')
+  const hidden = formatScoutImageReport({ ...none, recognised: 0, enemyFlags: { read: 0, rowsWithout: 2 }, anonymous: { userId: 'a', nick: 'A', fakeName: 'Abraham5625' } })
+  assert.match(hidden.description, /No enemy is in a vehicle yet/)
+  assert.match(hidden.fields.map((field) => field.value).join('\n'), /^A \(probably: hidden as Abraham5625\) — \*\*Leopard 2K\*\* \(90%\)$/m)
 })
 
 test('enemy rows as flag seats: the game\'s order is the user ids as text, the screen\'s while scores tie', () => {
@@ -229,7 +227,7 @@ test('enemy rows as flag seats: the game\'s order is the user ids as text, the s
   assert.deepEqual(scored, [{ place: 1, inVehicle: null }, { place: 0, inVehicle: null }, { place: null, inVehicle: null }])
 })
 
-test('a screenshot reply names a new player\'s likely vehicle, marks new ones and says when StatShark updates it', () => {
+test('a screenshot reply names guessed vehicles like seen ones and says when StatShark updates it', () => {
   const vehicles: VehicleDict = {
     de_tank: { name: 'Leopard I', cls: 'T', country: 'germany' },
     cn_spaa: { name: 'WZ305', cls: 'AA', country: 'china' },
@@ -244,24 +242,25 @@ test('a screenshot reply names a new player\'s likely vehicle, marks new ones an
       { userId: 'a', nick: 'Fresh', playChance: 1, battlesAtCap: 0, vehicles: [], unseenChance: 1, newVehicles: [{ vehicleId: 'cn_spaa', chance: 0.7 }, { vehicleId: 'de_tank', chance: 0.2 }], lineup: [] },
       // A regular whose new jet is likelier than their tank.
       { userId: 'b', nick: 'Regular', playChance: 1, battlesAtCap: 9, vehicles: [{ vehicleId: 'de_tank', chance: 0.35 }], unseenChance: 0.65, newVehicles: [{ vehicleId: 'fr_jet', chance: 0.5 }], lineup: [] },
+      // No battles at this BR and only a weak guess: no class, no vehicle named.
+      { userId: 'c', nick: 'Cold', playChance: 1, battlesAtCap: 0, vehicles: [], unseenChance: 1, newVehicles: [{ vehicleId: 'de_tank', chance: 0.05 }], lineup: [] },
     ],
     setup: setupFromPlayers([{ classChances: { F: 0, H: 0, T: 1, L: 0, AA: 0 } }]),
     flags: null,
   }
   const report: ScoutImageReport = {
     squadron: null, allySquadron: null, prediction, recognised: 2, anonymous: null, unread: [], enemyFlags: { read: 0, rowsWithout: null },
-    statShark: { players: 0, pending: true }, killsShown: 0, vehicles, now: 0,
+    statShark: { players: 0, pending: true }, vehicles, now: 0,
   }
   const text = formatScoutImageReport(report)
-  assert.match(text.description, /A vehicle not seen from a player at this BR \(new\) is guessed from what squadrons take at it\./)
-  assert.match(text.description, /Checking their battles on StatShark: this reply updates in a minute or two\./)
-  const antiAir = text.fields.find((field) => field.name.startsWith('Anti-air'))!
-  assert.match(antiAir.value, /^Fresh — no battles at this BR yet, likely \*\*WZ305 70%\*\* · Leopard I 20%$/m)
-  const air = text.fields.find((field) => field.name.startsWith('Aircraft'))!
-  assert.match(air.value, /^Regular — \*\*Vautour IIN\(C\) \(new\) 50%\*\* · Leopard I 35% · other new vehicle 15%$/m)
+  assert.match(text.description, /\nChecking the players' battles on StatShark: this reply updates in a minute or two\.$/)
+  assert.deepEqual(text.fields, [
+    { name: 'Aircraft · 1', value: 'Regular — **Vautour IIN(C)** (50%) · Leopard I (35%)' },
+    { name: 'Anti-air · 1', value: 'Fresh — **WZ305** (70%) · Leopard I (20%)' },
+    { name: 'Unclear · 1', value: 'Cold — no battles at this BR yet' },
+  ])
   const updated = formatScoutImageReport({ ...report, statShark: { players: 2, pending: false } }).description
-  assert.match(updated, /and their battles on StatShark \(2 players\)\./)
-  assert.doesNotMatch(updated, /Checking/)
+  assert.doesNotMatch(updated, /StatShark/)
   // The record keeps each player's three likeliest, new ones marked, for scoring against the battle later.
   const record = scoutPredictionRecord(report) as { model: string; players: { userId: string; options: { vehicleId: string; chance: number; new: boolean }[] }[] }
   assert.match(record.model, /^[0-9a-f]{12}$/)

@@ -14,15 +14,6 @@ const timeFormat = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '
 const count = (value: number, one: string, other: string): string => `${value} ${plural(value, { one, other })}`
 const atBr = (br: string | null): string => (br === null ? '' : ` at BR ${br}`)
 
-const FLAGS: Record<string, string> = {
-  usa: 'USA',
-  ussr: 'USSR',
-  britain: 'Great Britain',
-  gdr: 'East Germany',
-  republic_china: 'Republic of China',
-  uae: 'UAE',
-}
-
 export const en: BotText = {
   intl: 'en-GB',
   number: (value) => numberFormat.format(value),
@@ -342,31 +333,16 @@ export const en: BotText = {
   },
 
   scout: {
-    classCount: (cls, value) => {
-      switch (cls) {
-        case 'F': return `${value} aircraft`
-        case 'H': return count(value, 'helicopter', 'helicopters')
-        case 'T': return count(value, 'tank', 'tanks')
-        case 'L': return count(value, 'light tank', 'light tanks')
-        case 'AA': return `${value} anti-air`
-      }
-    },
-    nobody: 'nobody',
     groups: {
       F: 'Aircraft',
       H: 'Helicopters',
       T: 'Tanks',
       L: 'Light tanks',
       AA: 'Anti-air',
-      unknown: 'Vehicle unknown',
+      unknown: 'Unclear',
     },
-    flag: (base) => FLAGS[base] ?? base.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
     plays: (chance) => `plays ${chance}`,
     noBattlesAtBr: 'no battles at this BR yet',
-    likely: (vehicles) => `no battles at this BR yet, likely ${vehicles}`,
-    newMark: 'new',
-    newVehicle: (chance) => `new vehicle ${chance}`,
-    otherNewVehicle: (chance) => `other new vehicle ${chance}`,
     nothingStored: 'No battles stored in the last two weeks, so there is nothing to predict from.',
     lastBattleSession: (time) => `Last battle ${time}, mid-session: the same players will most likely play.`,
     lastBattleGuess: (time, minutes) =>
@@ -377,29 +353,12 @@ export const en: BotText = {
     otherGroupTitle: 'Another group is playing at the same time',
     otherGroup: (time, nicks) =>
       `Last battle ${time}: ${nicks}.\nIf you face them, run /scout again with one of these nicks in \`player\`.`,
-    setupTitle: 'Most likely setup',
-    air: (expected, chance) => `**Air:** ${expected} expected, at least one ${chance}`,
+    air: (chance) => `**Air:** at least one aircraft or helicopter — ${chance}`,
     enemyTeam: 'Enemy team',
-    readFromScreenshot: (read, total) => `Read from the screenshot: ${read} of ${total} enemy players.`,
-    lastTogether: (time) => `Last played together ${time}.`,
-    chancesWithFlags: (br, countries) =>
-      `Vehicle chances come from each player's own battles${atBr(br)} and the flags above their team: ${countries}.`,
-    withoutFlag: (value) =>
-      `${value === 1 ? '1 enemy shows' : `${value} enemies show`} no flag (not spawned yet or destroyed): their chances rest on their battles alone.`,
-    chancesOwn: (br) => `Vehicle chances come from each player's own battles${atBr(br)}.`,
-    noneSpawned: (br) =>
-      `Vehicle chances come from each player's own battles${atBr(br)}. No enemy is in a vehicle yet: a screenshot after they spawn shows their flags and sharpens the guess.`,
-    flagsUnread: (br) =>
-      `Vehicle chances come from each player's own battles${atBr(br)}. The flags above their team were not read: a screenshot showing them sharpens the guess.`,
-    spawnFirst: (br) =>
-      `Vehicle chances come from each player's own battles${atBr(br)}. A screenshot after they spawn shows their flags and sharpens the guess.`,
-    killsNarrow: (value) =>
-      `What ${value === 1 ? '1 enemy has' : `${value} enemies have`} already destroyed or captured narrows their vehicles too.`,
-    newGuessed: (players) =>
-      `A vehicle not seen from a player at this BR (new) is guessed from what squadrons take at it${
-        players > 0 ? ` and their battles on StatShark (${count(players, 'player', 'players')})` : ''
-      }.`,
-    statSharkPending: 'Checking their battles on StatShark: this reply updates in a minute or two.',
+    noneSpawned: 'No enemy is in a vehicle yet: a screenshot after they spawn sharpens the guess.',
+    flagsUnread: 'The flags above the enemy team were not read: a screenshot showing them sharpens the guess.',
+    spawnFirst: 'A screenshot after the enemies spawn sharpens the guess.',
+    statSharkPending: 'Checking the players\' battles on StatShark: this reply updates in a minute or two.',
     notRecognised: (value) => `Not recognised · ${value}`,
     anonymousGuess: (nick, fakeName) => `${nick} (probably: hidden as ${fakeName})`,
     choicePlace: (place) => `place ${place}`,

@@ -1,5 +1,4 @@
 import { pluralizer } from './plural.js'
-import { regionName } from './regions.js'
 import type { BotText } from './types.js'
 
 /**
@@ -10,23 +9,10 @@ const plural = pluralizer('ru-RU')
 const numberFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 })
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
 const timeFormat = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' })
-const regions = new Intl.DisplayNames('ru-RU', { type: 'region' })
 
 const count = (value: number, one: string, few: string, many: string): string =>
   `${value} ${plural(value, { one, few, many, other: few })}`
 const atBr = (br: string | null): string => (br === null ? '' : ` на БР ${br}`)
-const chancesOwn = (br: string | null): string => `Шансы техники — по собственным боям каждого игрока${atBr(br)}.`
-
-const FLAGS: Record<string, string> = {
-  usa: 'США',
-  ussr: 'СССР',
-  britain: 'Великобритания',
-  gdr: 'ГДР',
-  republic_china: 'Китайская Республика',
-  south_vietnam: 'Южный Вьетнам',
-  uae: 'ОАЭ',
-  north_korea: 'КНДР',
-}
 
 export const ru: BotText = {
   intl: 'ru-RU',
@@ -349,33 +335,16 @@ export const ru: BotText = {
   },
 
   scout: {
-    classCount: (cls, value) => {
-      switch (cls) {
-        case 'F': return count(value, 'самолёт', 'самолёта', 'самолётов')
-        case 'H': return count(value, 'вертолёт', 'вертолёта', 'вертолётов')
-        case 'T': return count(value, 'танк', 'танка', 'танков')
-        case 'L': return count(value, 'лёгкий танк', 'лёгких танка', 'лёгких танков')
-        case 'AA': return `${value} ЗСУ`
-      }
-    },
-    nobody: 'никого',
     groups: {
       F: 'Самолёты',
       H: 'Вертолёты',
       T: 'Танки',
       L: 'Лёгкие танки',
       AA: 'ЗСУ',
-      unknown: 'Техника неизвестна',
+      unknown: 'Неясно',
     },
-    flag: (base) =>
-      FLAGS[base] ?? regionName(regions, base) ??
-      base.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
     plays: (chance) => `играет ${chance}`,
     noBattlesAtBr: 'ещё нет боёв на этом БР',
-    likely: (vehicles) => `ещё нет боёв на этом БР, вероятно ${vehicles}`,
-    newMark: 'новая',
-    newVehicle: (chance) => `новая техника ${chance}`,
-    otherNewVehicle: (chance) => `другая новая техника ${chance}`,
     nothingStored: 'За последние две недели боёв полка не сохранено — предсказывать не из чего.',
     lastBattleSession: (time) => `Последний бой ${time}, полк ещё играет: скорее всего, выйдут те же игроки.`,
     lastBattleGuess: (time, minutes) =>
@@ -386,30 +355,12 @@ export const ru: BotText = {
     otherGroupTitle: 'В это же время играет другая группа',
     otherGroup: (time, nicks) =>
       `Последний бой ${time}: ${nicks}.\nЕсли попали на них, повторите /scout с одним из этих ников в \`player\`.`,
-    setupTitle: 'Самый вероятный состав',
-    air: (expected, chance) => `**Авиация:** ожидается ${expected}, хотя бы одна машина ${chance}`,
+    air: (chance) => `**Авиация:** хотя бы одна машина — ${chance}`,
     enemyTeam: 'Команда противника',
-    readFromScreenshot: (read, total) => `Прочитано со скриншота: ${read} из ${total} игроков противника.`,
-    lastTogether: (time) => `Последний раз играли вместе ${time}.`,
-    chancesWithFlags: (br, countries) =>
-      `Шансы техники — по собственным боям каждого игрока${atBr(br)} и флагам над командой противника: ${countries}.`,
-    withoutFlag: (value) =>
-      `Без флага (ещё не выехали или уничтожены): ${count(value, 'противник', 'противника', 'противников')} — их шансы только по их боям.`,
-    chancesOwn,
-    noneSpawned: (br) =>
-      `${chancesOwn(br)} Никто из противников ещё не выехал: скриншот после выезда покажет их флаги и уточнит прогноз.`,
-    flagsUnread: (br) =>
-      `${chancesOwn(br)} Флаги над командой противника не прочитаны: скриншот, где они видны, уточнит прогноз.`,
-    spawnFirst: (br) => `${chancesOwn(br)} Скриншот после выезда покажет их флаги и уточнит прогноз.`,
-    killsNarrow: (value) =>
-      value === 1
-        ? 'То, что уже уничтожил или захватил 1 противник, тоже сужает выбор его техники.'
-        : `То, что уже уничтожили или захватили ${count(value, 'противник', 'противника', 'противников')}, тоже сужает выбор их техники.`,
-    newGuessed: (players) =>
-      `Техника, которую игрок ещё не брал на этом БР (новая), угадывается по тому, что на нём берут полки${
-        players > 0 ? ` и по его боям на StatShark (${count(players, 'игрок', 'игрока', 'игроков')})` : ''
-      }.`,
-    statSharkPending: 'Проверяю их бои на StatShark: ответ обновится через минуту-две.',
+    noneSpawned: 'Никто из противников ещё не выехал: скриншот после выезда уточнит прогноз.',
+    flagsUnread: 'Флаги над командой противника не прочитаны: скриншот, где они видны, уточнит прогноз.',
+    spawnFirst: 'Скриншот после выезда противников уточнит прогноз.',
+    statSharkPending: 'Проверяю бои игроков на StatShark: ответ обновится через минуту-две.',
     notRecognised: (value) => `Не распознано · ${value}`,
     anonymousGuess: (nick, fakeName) => `${nick} (вероятно: скрыт как ${fakeName})`,
     choicePlace: (place) => `место ${place}`,

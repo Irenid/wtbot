@@ -317,17 +317,10 @@ export interface BotText {
   }
 
   scout: {
-    classCount(cls: ScoutClass, count: number): string
-    nobody: string
+    /** Titles of the player groups by their likeliest vehicle's class; `unknown` — no class at even odds. */
     groups: Record<ScoutClass | 'unknown', string>
-    /** A flag's country from the game's icon id without its era suffix. */
-    flag(base: string): string
     plays(chance: string): string
     noBattlesAtBr: string
-    likely(vehicles: string): string
-    newMark: string
-    newVehicle(chance: string): string
-    otherNewVehicle(chance: string): string
     nothingStored: string
     lastBattleSession(time: string): string
     lastBattleGuess(time: string, minutes: number): string
@@ -337,19 +330,17 @@ export interface BotText {
     basedOn(battles: number, br: string | null): string
     otherGroupTitle: string
     otherGroup(time: string, nicks: string): string
-    setupTitle: string
-    air(expected: string, chance: string): string
+    /** The chance of at least one enemy aircraft or helicopter. */
+    air(chance: string): string
     enemyTeam: string
-    readFromScreenshot(read: number, total: number): string
-    lastTogether(time: string): string
-    chancesWithFlags(br: string | null, countries: string): string
-    withoutFlag(count: number): string
-    chancesOwn(br: string | null): string
-    noneSpawned(br: string | null): string
-    flagsUnread(br: string | null): string
-    spawnFirst(br: string | null): string
-    killsNarrow(count: number): string
-    newGuessed(statSharkPlayers: number): string
+    /**
+     * A screenshot's chances without the flags above the enemy team, and
+     * what to send instead: nobody is in a vehicle yet, the flags were not
+     * read, the picture has no icon column to tell.
+     */
+    noneSpawned: string
+    flagsUnread: string
+    spawnFirst: string
     statSharkPending: string
     notRecognised(count: number): string
     /** A player guessed behind the game's anonymiser name; both Markdown-escaped. */

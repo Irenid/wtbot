@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { flagName } from '../scout/format.js'
-import { SCOUT_CLASSES } from '../scout/model.js'
 import { logVerbFits } from '../wrpl/render-battle-log.js'
 import { botText, isLocale, LOCALES } from './index.js'
 
@@ -17,8 +15,6 @@ const COUNTS = [0, 1, 2, 5, 11, 21] as const
 const SAMPLES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
   ping: [[42], [null]],
   'heatmap.date': [[new Date(Date.UTC(2026, 9, 15, 12, 30))]],
-  'scout.classCount': SCOUT_CLASSES.flatMap((cls) => COUNTS.map((count) => [cls, count])),
-  'scout.flag': [['usa'], ['ussr'], ['germany'], ['south_vietnam'], ['new_country']],
   'scout.images.oneSide': [['WLILY'], [null]],
   'settings.battlesAdded': [['<#1>', 'WLILY'], ['<#1>', null]],
   'settings.battlesExists': [['<#1>', 'WLILY'], ['<#1>', null]],
@@ -96,13 +92,6 @@ test('plurals and numbers follow each language\'s rules', () => {
   assert.equal(ru.heatmap.teamSummary(11, 1, 1), '11 игроков · 1 фраг · 1 выжил')
   assert.equal(en.number(1234567.4), '1,234,567')
   assert.match(ru.number(1234567.4), /^1\s234\s567$/u)
-})
-
-test('/scout names flags in the bot language', () => {
-  assert.equal(flagName('germany_weimar_republic', botText('en')), 'Germany')
-  assert.equal(flagName('germany_weimar_republic', botText('ru')), 'Германия')
-  assert.equal(flagName('ussr', botText('ru')), 'СССР')
-  assert.equal(flagName('new_country', botText('ru')), 'New Country')
 })
 
 test('each catalog names its language in that language, once', () => {

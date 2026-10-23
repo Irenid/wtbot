@@ -769,11 +769,6 @@ export function killLikelihood(columns: KillColumns, moment: number | null, tabl
   return out
 }
 
-/** Whether a row's columns move any class (a kill shown with both kill cells read, or a capture): what the reply may say was used. */
-export function killEvidenceShown(columns: KillColumns): boolean {
-  return Object.values(killLikelihood(columns, null)).some((value) => value !== 1)
-}
-
 /** Class shares weighed by a kill likelihood: the class mix of a player's unnamed share once their row's columns are known. */
 function weighShares(shares: Readonly<Record<ScoutClass, number>>, likelihood: Readonly<Record<ScoutClass, number>>): Record<ScoutClass, number> {
   const out: Record<ScoutClass, number> = { F: 0, H: 0, T: 0, L: 0, AA: 0 }

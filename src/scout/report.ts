@@ -39,7 +39,6 @@ import {
   ROSTER_WINDOW_SEC,
   STATSHARK_FRESH_SEC,
   VEHICLE_WEIGHTS,
-  killEvidenceShown,
   opponentAir,
   playerBackground,
   predictKnownTeam,
@@ -280,8 +279,6 @@ export interface ScoutImageReport {
   enemyFlags: { read: number; rowsWithout: number | null }
   /** Enemies with StatShark battles in their new-vehicle guesses; pending — refreshes queued, the reply is updated when they end. */
   statShark: { players: number; pending: boolean }
-  /** Recognised enemies whose scoreboard row shows a kill or a capture (scoreboard-columns.ts): their classes are weighed by it. */
-  killsShown: number
   vehicles: VehicleDict
   now: number
 }
@@ -449,10 +446,6 @@ export async function scoutFromImage(
         rowsWithout: read.enemyIcons && enemyRows.filter((row) => read.enemyIcons![row]).length,
       },
       statShark: { players: shark.length, pending: false },
-      killsShown: read.enemyColumns === null ? 0 : enemies.filter((m) => {
-        const columns = read.enemyColumns![m.row]
-        return columns ? killEvidenceShown({ air: columns.air, ground: columns.ground, captures: columns.captures }) : false
-      }).length,
       vehicles,
       now: nowSec,
     }
