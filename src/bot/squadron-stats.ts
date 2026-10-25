@@ -6,32 +6,38 @@ import { botText } from '../i18n/index.js'
 import { guildLocale } from './locale.js'
 
 /**
- * Four voice channels nobody joins show a squadron's leaderboard place, player count and average PSR and the max BR
- * that plays now in their names
- * (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
+ * Three voice channels nobody joins show a squadron's leaderboard place and player count and the max BR that plays now
+ * in their names, «emoji・text» like the server's other channels (/settings stats set): at the top of the channel list with overwrites of their own (`CLOSED`), which
  * needs View Channel, Manage Channels and Connect on the server: Discord lets a bot allow or deny only
  * permissions it holds; or in a category the server picks, created bare so they copy its overwrites
  * (the server decides who sees them; the bot needs View Channel, Manage Channels and Connect there:
  * Discord answers Missing Access to any change of a voice channel its bot cannot connect to, so a
  * channel the bot cannot connect to keeps its first name for good). warthunder.com reports them at the
- * `wt-clans` crawls (every 20 min), so a minute-long tick compares the names with the database and
- * renames a channel only when its text differs: Discord allows two renames per channel in 10
- * minutes, far above a crawl's cadence. A language change renames them within a minute too.
- * State per server — bot_state `squadron-stats:<guildId>`; a deleted channel takes the pair with it.
+ * `wt-clans` crawls (top 100 every 20 min, the rest at the 12 h full crawl), so a minute-long tick
+ * compares the figures with the database and renames a channel only when its text differs from what the
+ * bot last wrote there (a manual rename stays until the figure changes), never to «–» for a place or
+ * count it lost (a full crawl that missed the squadron) and at most once per RENAME_GAP_SEC: Discord
+ * allows two renames per channel in 10 minutes and makes a third wait, which would stall the tick.
+ * State per server — bot_state `squadron-stats:<guildId>`; a deleted channel takes the group with it.
+ * The average PSR channel (2026-10-22…10-25) is deleted by the tick (his request 2026-10-25).
  */
 
 const KEY = 'squadron-stats:'
 const TICK_MS = 60_000
+/** Half of Discord's 2 renames per channel per 10 min: a rename never waits on its rate limit. */
+const RENAME_GAP_SEC = 300
 
 interface Pair {
   /** The squadron's tag core. */
   clan: string
   placeId: string
   pointsId: string
-  /** Added later: a pair made before it has none until /settings stats set runs again. */
+  /** The average PSR channel of a group made 2026-10-22…10-25: the tick deletes it. */
   ratingId?: string | undefined
-  /** Added later like `ratingId`; the last channel of the group. */
+  /** Added later: the tick adds it to a group without one; the last channel of the group. */
   brId?: string | undefined
+  /** By channel id: the name the bot last wrote and when (unix seconds). */
+  written?: Record<string, { name: string; at: number }> | undefined
 }
 
 function readPair(guildId: string): Pair | null {
@@ -39,8 +45,10 @@ function readPair(guildId: string): Pair | null {
   if (raw === null) return null
   try {
     const value = JSON.parse(raw) as Partial<Pair>
+    const written = typeof value.written === 'object' && value.written !== null ? value.written : undefined
     return typeof value.clan === 'string' && typeof value.placeId === 'string' && typeof value.pointsId === 'string'
-      ? { clan: value.clan, placeId: value.placeId, pointsId: value.pointsId, ratingId: typeof value.ratingId === 'string' ? value.ratingId : undefined, brId: typeof value.brId === 'string' ? value.brId : undefined }
+      ? { clan: value.clan, placeId: value.placeId, pointsId: value.pointsId, ratingId: typeof value.ratingId === 'string' ? value.ratingId : undefined,
+          brId: typeof value.brId === 'string' ? value.brId : undefined, written }
       : null
   } catch {
     return null
@@ -51,12 +59,16 @@ export function squadronStatsSquadron(guildId: string): string | null {
   return readPair(guildId)?.clan ?? null
 }
 
-function names(guild: Guild, clan: string): { br: string; place: string; points: string; rating: string } {
+/** The channels' names; `known` — false for a place or count the database has lost, which keeps the channel's name. */
+function names(guild: Guild, clan: string): { br: string; place: string; points: string; known: { place: boolean; points: boolean } } {
   const t = botText(guildLocale(guild.id, guild.preferredLocale)).settings
   const figures = getSquadronFigures(clan)
   // The cap that plays now (stageAt: switches at 14:00 UTC of a stage's first day); null between stages and after the season.
   const maxBr = getClanSeasonContext().currentStage?.maxBr
-  return { br: t.statsBrName(maxBr === undefined ? null : maxBr.toFixed(1)), place: t.statsPlaceName(figures?.place ?? null), points: t.statsMembersName(figures?.members ?? null), rating: t.statsRatingName(figures?.averageRating ?? null) }
+  const place = figures?.place ?? null
+  const members = figures?.members ?? null
+  return { br: t.statsBrName(maxBr === undefined ? null : maxBr.toFixed(1)), place: t.statsPlaceName(place), points: t.statsMembersName(members),
+    known: { place: place !== null, points: members !== null } }
 }
 
 /**
@@ -130,9 +142,10 @@ export async function setupSquadronStats(guild: Guild, clan: string, category: C
   }
   const place = await next(text.place, 0)
   const points = await next(text.points, 1)
-  const rating = await next(text.rating, 2)
-  const br = await next(text.br, 3)
-  setBotState(KEY + guild.id, JSON.stringify({ clan, placeId: place.id, pointsId: points.id, ratingId: rating.id, brId: br.id } satisfies Pair))
+  const br = await next(text.br, 2)
+  const at = Math.floor(Date.now() / 1000)
+  const written = { [place.id]: { name: text.place, at }, [points.id]: { name: text.points, at }, [br.id]: { name: text.br, at } }
+  setBotState(KEY + guild.id, JSON.stringify({ clan, placeId: place.id, pointsId: points.id, brId: br.id, written } satisfies Pair))
 }
 
 /** Deletes the pair; false — the server had none. */
@@ -161,12 +174,11 @@ export function forgetSquadronStatsGuild(guildId: string): void {
 const warned = new Set<string>()
 
 /**
- * A pair made before a later channel (rating, max BR) gets it from the tick, so nobody has to run
- * /settings stats set again: same category and overwrites as the player-count channel; the rating one
- * goes right below the player count, the max BR one right below the rating.
+ * A group made before the max BR channel gets it from the tick, so nobody has to run /settings stats set
+ * again: same category and overwrites as the player-count channel, right below it.
  */
-async function addChannel(guild: Guild, pair: Pair, field: 'ratingId' | 'brId', name: string): Promise<void> {
-  const anchor = guild.channels.cache.get(field === 'brId' ? (pair.ratingId ?? pair.pointsId) : pair.pointsId)
+async function addChannel(guild: Guild, pair: Pair, field: 'brId', name: string): Promise<void> {
+  const anchor = guild.channels.cache.get(pair.pointsId)
   if (!anchor || anchor.type !== ChannelType.GuildVoice) return
   try {
     const channel = await guild.channels.create({
@@ -181,6 +193,15 @@ async function addChannel(guild: Guild, pair: Pair, field: 'ratingId' | 'brId', 
   }
 }
 
+/**
+ * Whether a channel named `current` gets `name`: only when it differs from what the bot last wrote (`last`;
+ * without one, from the channel's name) and RENAME_GAP_SEC after the bot's last rename.
+ */
+export function renameDue(last: { name: string; at: number } | undefined, current: string, name: string, now: number): boolean {
+  if (!last) return current !== name
+  return last.name !== name && now - last.at >= RENAME_GAP_SEC
+}
+
 let timer: NodeJS.Timeout | null = null
 let activeTick: Promise<void> = Promise.resolve()
 let stopping = false
@@ -191,25 +212,28 @@ async function tick(client: Client): Promise<void> {
     const pair = readPair(guild.id)
     if (!pair) continue
     const text = names(guild, pair.clan)
-    if (!pair.ratingId) await addChannel(guild, pair, 'ratingId', text.rating)
-    if (!pair.brId) await addChannel(guild, pair, 'brId', text.br)
-    const targets: (readonly [string, string])[] = [[pair.placeId, text.place], [pair.pointsId, text.points]]
-    if (pair.ratingId) targets.push([pair.ratingId, text.rating])
-    if (pair.brId) targets.push([pair.brId, text.br])
-    // A max BR channel made at the top of the list (before 2026-10-23) moves under the rating one.
-    const br = pair.brId ? guild.channels.cache.get(pair.brId) : undefined
-    const rating = pair.ratingId ? guild.channels.cache.get(pair.ratingId) : undefined
-    if (br?.type === ChannelType.GuildVoice && rating?.type === ChannelType.GuildVoice && br.parentId === rating.parentId && br.position < rating.position) {
-      await br.setPosition(rating.position, { reason: 'squadron stats order' }).catch((error: unknown) => {
-        if (!warned.has(br.id + 'pos')) console.warn(`[squadron-stats] server ${guild.id}: could not move channel ${br.id}:`, error)
-        warned.add(br.id + 'pos')
+    if (pair.ratingId) {
+      // Forgotten first: its ChannelDelete would otherwise take the whole group (forgetSquadronStatsChannel).
+      const id = pair.ratingId
+      pair.ratingId = undefined
+      setBotState(KEY + guild.id, JSON.stringify(pair satisfies Pair))
+      await guild.channels.cache.get(id)?.delete('average PSR channel removed').catch((error: unknown) => {
+        console.warn(`[squadron-stats] server ${guild.id}: could not delete channel ${id}; delete it by hand:`, error)
       })
     }
+    if (!pair.brId) await addChannel(guild, pair, 'brId', text.br)
+    const targets: (readonly [string, string])[] = []
+    if (text.known.place) targets.push([pair.placeId, text.place])
+    if (text.known.points) targets.push([pair.pointsId, text.points])
+    if (pair.brId) targets.push([pair.brId, text.br])
+    const now = Math.floor(Date.now() / 1000)
     for (const [id, name] of targets) {
       const channel = guild.channels.cache.get(id)
-      if (!channel || channel.name === name) continue
+      if (!channel || !renameDue(pair.written?.[id], channel.name, name, now)) continue
       try {
         await channel.setName(name, 'squadron stats changed')
+        pair.written = { ...pair.written, [id]: { name, at: now } }
+        setBotState(KEY + guild.id, JSON.stringify(pair satisfies Pair))
         warned.delete(id)
       } catch (error) {
         // A pair made before the bot kept Connect for itself cannot be renamed, nor changed by the bot at all.

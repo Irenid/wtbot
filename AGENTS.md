@@ -581,11 +581,15 @@ Data:
   `GuildMessages`, and `MessageContent` only when the application has it
   (asking without it fails the login, 4014); messages are not cached.
 - `/settings stats set squadron: [category:]` (`src/bot/squadron-stats.ts`, state
-  in `bot_state` `squadron-stats:<guildId>`): two voice channels carry a
-  squadron's leaderboard place and player count in their names; a 60 s tick (only with
-  `WT_ANNOUNCE_ENABLED`: it renames channels on real servers) renames one only
-  when its text differs (Discord: 2 renames per 10 min), so a crawl (20 min)
-  shows within a minute; deleting one channel removes both. Without a category
+  in `bot_state` `squadron-stats:<guildId>`): three voice channels carry a
+  squadron's leaderboard place and player count and the max BR that plays now
+  in their names («🏆・…»); a 60 s tick (only with `WT_ANNOUNCE_ENABLED`: it
+  renames channels on real servers) renames one only when its text differs from
+  what the bot last wrote, never to «–» for a lost place or count, and
+  `RENAME_GAP_SEC` (5 min) after its last rename (Discord: 2 renames per 10 min;
+  a third waits and stalls the tick), so a crawl shows within a minute (outside
+  the top 100 the place changes at the 12 h full crawl); deleting one channel
+  removes all. Without a category
   they go to the top of the list with their own overwrites: everyone views them,
   every other channel permission the bot holds is denied (`CLOSED`: nobody joins
   or writes), which needs View Channel, Manage Channels and Connect on the
@@ -906,7 +910,7 @@ npm run test:web              # the SPA's Vitest suite (frontend/src/**/*.test.t
 alone for the affected subsystem. It never type-checks `frontend/`: after a
 frontend change run `build:web` and `test:web` (Vitest in Node: logic and
 components rendered with `react-dom/server`, no DOM). Baseline on
-**2026-10-23**: all gates pass, **628 pass, 0 fail**, corpus — 6 scenarios
+**2026-10-25**: all gates pass, **629 pass, 0 fail**, corpus — 6 scenarios
 (including 2.59), the SPA 34 tests. If the test
 count changes, state the new one; any new failure is a regression. After a
 game patch or a map-drawing change rerun `npm run maps:build`

@@ -109,7 +109,6 @@ export interface BotText {
     statsPlaceName(place: number | null): string
     statsMembersName(members: number | null): string
     statsBrName(br: string | null): string
-    statsRatingName(rating: number | null): string
     show: {
       title: string
       language: string

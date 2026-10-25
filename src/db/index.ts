@@ -2891,8 +2891,6 @@ export interface SquadronFigures {
   members: number | null
   /** null — never read, or the last full crawl missed it (stale; see getSquadronLeaderboardPlace). */
   place: number | null
-  /** Mean of the roster's latest PSR readings this season, rounded; null — none read. */
-  averageRating: number | null
 }
 
 /**
@@ -2911,26 +2909,7 @@ export function getSquadronFigures(core: string): SquadronFigures | null {
   const fullCrawlAt = getLastFullClanCrawlAt()
   const fresh = own.position !== null && own.position > 0 && own.rating_at !== null &&
     (fullCrawlAt === null || own.rating_at >= fullCrawlAt)
-  return { members: own.members, place: fresh ? own.position : null, averageRating: getSquadronAverageRating(core) }
-}
-
-/**
- * Mean of the latest season reading of every current roster member of squadron `core`
- * (clan_roster ⨝ clan_rating_snapshots, by the nick index); null — no readings.
- */
-function getSquadronAverageRating(core: string): number | null {
-  const rows = getDb().prepare(`
-    SELECT s.nick, s.clan_tag, s.rating FROM clan_rating_snapshots s
-    JOIN clan_roster r ON r.clan_core = ? AND r.nick = s.nick
-    WHERE s.seen_at >= ?
-    ORDER BY s.id DESC
-  `).all(core, currentClanSeasonStart()) as { nick: string; clan_tag: string; rating: number }[]
-  const latest = new Map<string, number>()
-  for (const row of rows) {
-    if (!latest.has(row.nick) && clanCoreOf(row.clan_tag) === core) latest.set(row.nick, row.rating)
-  }
-  if (latest.size === 0) return null
-  return Math.round([...latest.values()].reduce((sum, value) => sum + value, 0) / latest.size)
+  return { members: own.members, place: fresh ? own.position : null }
 }
 
 /** A squadron's battles with a stored winner. */

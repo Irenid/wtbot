@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { OverwriteType, PermissionFlagsBits as P, PermissionsBitField } from 'discord.js'
-import { lockedOverwrites } from './squadron-stats.js'
+import { lockedOverwrites, renameDue } from './squadron-stats.js'
 
 test('a stats channel at the top of the list is viewed by everyone and closed for everything else the bot can deny', () => {
   // Test pechenka's bot: @everyone's server permissions plus View Channel and Manage Channels on its role.
@@ -28,4 +28,14 @@ test('a stats channel at the top of the list is viewed by everyone and closed fo
   const all = lockedOverwrites('guild', 'bot', PermissionsBitField.All)[0]?.deny ?? 0n
   assert.ok(new PermissionsBitField(all).has([P.CreateInstantInvite, P.Connect, P.MoveMembers, P.SetVoiceChannelStatus]))
   assert.equal(all & (P.ViewChannel | P.ManageChannels | P.ManageRoles | P.Administrator), 0n)
+})
+
+test('a stats channel is renamed only when its figure changed and 5 minutes after the last rename', () => {
+  const place = '🏆・Место полка: 107'
+  assert.equal(renameDue(undefined, '🏆 Место полка: 107', place, 0), true, 'a name the bot never wrote: compared with the channel')
+  assert.equal(renameDue(undefined, place, place, 0), false)
+  const last = { name: place, at: 1000 }
+  assert.equal(renameDue(last, 'Наш рейтинг', place, 2000), false, 'renamed by hand: stays until the figure changes')
+  assert.equal(renameDue(last, place, '🏆・Место полка: 106', 1000 + 299), false, 'Discord allows 2 renames in 10 minutes')
+  assert.equal(renameDue(last, place, '🏆・Место полка: 106', 1000 + 300), true)
 })
