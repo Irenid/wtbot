@@ -62,15 +62,15 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.135.0",
+    "@anthropic-ai/sdk": "^1.1.0",
     "@fastify/compress": "^9.2.2",
     "@fastify/etag": "^6.2.1",
-    "@fastify/static": "^10.1.6",
+    "@fastify/static": "^10.1.7",
     "@resvg/resvg-js": "^2.6.2",
     "cheerio": "^1.2.0",
     "discord.js": "^14.27.0",
     "domhandler": "^6.0.1",
-    "dotenv": "^18.0.8",
+    "dotenv": "^18.0.9",
     "fastify": "^5.12.7",
     "jpeg-js": "^0.4.4",
     "playwright-core": "^1.64.1",
