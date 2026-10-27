@@ -145,9 +145,33 @@ test('every pass is searched: a nick read in one counts, the best find wins', ()
   const cyrillic: OcrRow[] = [{ words: [word('FiZZY', 300), word('gervewe55675', 350), word('-7WOLF=', 520), word('Агадх5х', 590)] }]
   const latin: OcrRow[] = [{ words: [word('FiZZY', 300), word('gervewe55675', 350), word('-7WOLF=', 520), word('Azadx5x', 590)] }]
   const indexed = indexPlayers(players)
-  assert.deepEqual(splitTeams(matchRows([cyrillic], indexed)).enemies, [])
+  // Two edits for a 7-character nick: only with its tag read exactly before it.
+  assert.deepEqual(splitTeams(matchRows([cyrillic], indexed)).enemies.map((m) => [m.nick, m.distance]), [['Azadx5x', 2]])
+  const offTag: OcrRow[] = [{ words: [word('FiZZY', 300), word('gervewe55675', 350), word('-7WOLE=', 520), word('Агадх5х', 590)] }]
+  assert.deepEqual(splitTeams(matchRows([offTag], indexed)).enemies, [])
   const split = splitTeams(matchRows([cyrillic, latin], indexed))
   assert.deepEqual(split.enemies.map((m) => [m.nick, m.distance, m.tagSeen]), [['Azadx5x', 0, true]])
+})
+
+test('the rest of a nick after a space, a tagless long nick and an anonymiser name left of the split are read', () => {
+  const known: KnownPlayer[] = [
+    ...players,
+    { userId: '30', nick: '_denis_89_', clanTag: '┾7WOLF┿' },
+    { userId: '31', nick: 'DeutscherKartoffelweitwurf', clanTag: '┾7WOLF┿' },
+  ]
+  const rows: OcrRow[] = [
+    { words: [word('FiZZY', 300), word('gervewe55675', 350), word('=7WOLF=', 520), word('GivenMoment_', 590), word('0', 950)] },
+    { words: [word('FiZZY', 300), word('Romzesi_1', 380), word('=7WOLF=', 520), word('Azadx5x', 590), word('0', 950)] },
+    // "89_" has no letters but stands a space after "denis": not a score column.
+    { words: [word('=7WOLF=', 520), word('denis', 590), word('89_', 634), word('0', 950)] },
+    // The game shows no tag before a long nick: it starts where tags do, an edit off.
+    { words: [word('DeutscherKartoffetweitwurf', 520), word('0', 950)] },
+    // The anonymiser shows no tag either: its name starts left of the split.
+    { words: [word('Makar8940', 520), word('0', 950)] },
+  ]
+  const split = splitTeams(matchRows([rows], indexPlayers(known)))
+  assert.deepEqual(split.enemies.map((m) => m.nick).sort(), ['Azadx5x', 'DeutscherKartoffelweitwurf', 'GivenMoment_', '_denis_89_'])
+  assert.deepEqual(unreadEnemyRows([rows], split), [{ row: 4, text: 'Makar8940' }])
 })
 
 test('one team only: its side is unknown, no enemies are claimed', () => {

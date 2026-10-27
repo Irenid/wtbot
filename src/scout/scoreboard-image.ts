@@ -87,7 +87,10 @@ function bandsAt(profile: readonly number[], threshold: number): Band[] {
  * The longest run of bands with one pitch (±15%) and similar heights (the own
  * highlighted row's band may be twice as tall). Up to two missing rows are
  * filled in at the expected position: a row whose text blends into its
- * background still gets read.
+ * background still gets read. The rows lie next to each other, so a run never
+ * steps over a band of its height: a Discord overlay's lines, ~2.4 rows
+ * apart, made a run of 10 through the header, every other row and the overlay
+ * (2026-10-23).
  */
 function regularRun(bands: readonly Band[]): Band[] {
   const mids = bands.map((band) => (band.y0 + band.y1) / 2)
@@ -98,6 +101,15 @@ function regularRun(bands: readonly Band[]): Band[] {
     for (let j = i + 1; j < Math.min(i + 3, bands.length); j += 1) {
       const pitch = mids[j]! - mids[i]!
       if (pitch < height * 1.05) continue
+      /** A band as tall as the run's, other than at the run's rows, between bands `from` and `to`. */
+      const skipsBand = (from: number, to: number, rowMids: readonly number[]) => {
+        for (let k = from + 1; k < to; k += 1) {
+          if ((bands[k]!.y1 - bands[k]!.y0) / height < 0.6) continue
+          if (rowMids.every((mid) => Math.abs(mids[k]! - mid) > pitch * 0.3)) return true
+        }
+        return false
+      }
+      if (skipsBand(i, j, [mids[i]!, mids[j]!])) continue
       const run: Band[] = [bands[i]!, bands[j]!]
       let last = j
       let lastMid = mids[j]!
@@ -111,9 +123,9 @@ function regularRun(bands: readonly Band[]): Band[] {
           return -1
         }
         let k = find(lastMid + pitch)
-        if (k >= 0) {
+        if (k >= 0 && !skipsBand(last, k, [lastMid, mids[k]!])) {
           run.push(bands[k]!)
-        } else if (filled < 2 && (k = find(lastMid + 2 * pitch)) >= 0) {
+        } else if (k < 0 && filled < 2 && (k = find(lastMid + 2 * pitch)) >= 0 && !skipsBand(last, k, [lastMid, lastMid + pitch, mids[k]!])) {
           const mid = lastMid + pitch
           run.push({ y0: Math.round(mid - height / 2), y1: Math.round(mid + height / 2) }, bands[k]!)
           filled += 1

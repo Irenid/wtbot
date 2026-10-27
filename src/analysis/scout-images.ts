@@ -6,7 +6,11 @@
 // A truth.json in a given folder ({"<path relative to it>": {"enemies":
 // [nicks], "allies": [nicks], "oneSide"?: true}}) scores each image: known
 // players found on the right side, misses, false finds.
-// Players are matched from DB_PATH (default data/wtbot.db), opened read-only.
+// Players are matched from DB_PATH (default data/wtbot.db), opened read-only:
+// an image the bot kept (its record <name>.json beside it) against the
+// players stored by its post, as the live matcher saw them (a player whose
+// first battle is on screen is unknown, a nick is the one of then), any other
+// image against everyone of the last 120 days.
 // SCOUT_TESSERACT="docker run -i --rm --entrypoint tesseract wtbot:latest"
 // runs OCR in the image (a host without its language data). Flags are read
 // with the templates of WT_GAME_DIR (default data/wt-game) and scored against
@@ -24,7 +28,7 @@ import { dictionaryFlagIcons } from '../scout/flag-evidence.js'
 import { renderFlagTemplates } from '../scout/flag-templates.js'
 import type { ReadFlag } from '../scout/flags.js'
 import type { RowIcon } from '../scout/row-icons.js'
-import { displayedNick, foldForMatch, indexPlayers, type NickMatch } from '../scout/nick-match.js'
+import { displayedNick, foldForMatch, indexPlayers, type IndexedPlayer, type NickMatch } from '../scout/nick-match.js'
 import { OCR_PASSES } from '../scout/ocr.js'
 import { readScoreboard, type ScoreboardReadResult } from '../scout/scoreboard-read.js'
 import { COLUMN_NAMES, type RowColumns } from '../scout/scoreboard-columns.js'
@@ -60,18 +64,54 @@ function targets(target: string): Target[] {
     .map((name) => ({ file: path.join(target, name), truth: truth[name.split(path.sep).join('/')] ?? null }))
 }
 
+const CANDIDATE_WINDOW_SEC = 120 * 86_400
 const database = new DatabaseSync(process.env['DB_PATH'] ?? 'data/wtbot.db', { readOnly: true })
-const players = indexPlayers(getScoutRecentPlayers(Math.floor(Date.now() / 1000) - 120 * 86_400, database))
-database.close()
+const everyone = indexPlayers(getScoutRecentPlayers(Math.floor(Date.now() / 1000) - CANDIDATE_WINDOW_SEC, database))
+// getScoutRecentPlayers' query bounded by the post: the battles stored by then.
+const storedBy = database.prepare(`
+  SELECT bp.user_id, COALESCE(bp.slot_nick, bp.nick) AS nick, bp.clan_tag, MAX(b.start_time) AS last_seen
+  FROM battles b
+  CROSS JOIN battle_players bp ON bp.session_id = b.session_id
+  WHERE b.start_time >= ? AND b.ingested_at <= ? AND bp.user_id NOT LIKE '-%'
+    AND (bp.slot_nick IS NOT NULL OR bp.nick NOT LIKE 'coop/%')
+  GROUP BY bp.user_id
+`)
+const postedIndexes = new Map<number, IndexedPlayer[]>()
+function playersAt(postedSec: number): IndexedPlayer[] {
+  let index = postedIndexes.get(postedSec)
+  if (!index) {
+    const rows = storedBy.all(postedSec - CANDIDATE_WINDOW_SEC, postedSec) as { user_id: string; nick: string; clan_tag: string }[]
+    index = indexPlayers(rows.map((row) => ({ userId: row.user_id, nick: row.nick, clanTag: row.clan_tag })))
+    postedIndexes.set(postedSec, index)
+  }
+  return index
+}
+/** The post of an image the bot kept (src/bot/scout-images.ts writes its record beside it). */
+function postedAt(file: string): number | null {
+  const recordFile = file.replace(/\.(png|jpe?g)$/i, '.json')
+  if (!existsSync(recordFile)) return null
+  const record = JSON.parse(readFileSync(recordFile, 'utf8')) as { postedAt?: string; receivedAt?: string }
+  const at = Date.parse(record.postedAt ?? record.receivedAt ?? '')
+  return Number.isFinite(at) ? Math.floor(at / 1000) : null
+}
 // Nick → the stored accounts it folds to (several may: "DYADYA_VLAD", "DYADYA_VLAD_").
-const byFold = new Map<string, typeof players>()
-for (const player of players) {
-  const key = player.chars.join('')
-  byFold.set(key, [...(byFold.get(key) ?? []), player])
+const foldIndexes = new WeakMap<readonly IndexedPlayer[], Map<string, IndexedPlayer[]>>()
+function byFoldOf(players: readonly IndexedPlayer[]): Map<string, IndexedPlayer[]> {
+  let byFold = foldIndexes.get(players)
+  if (!byFold) {
+    byFold = new Map()
+    for (const player of players) {
+      const key = player.chars.join('')
+      byFold.set(key, [...(byFold.get(key) ?? []), player])
+    }
+    foldIndexes.set(players, byFold)
+  }
+  return byFold
 }
 
 /** Truth nicks the bot knows; a find counts when it is the account with that exact nick (else any folding alike). */
-function score(nicks: readonly string[], finds: readonly NickMatch[]): { known: number; found: number; missed: string[]; wrong: NickMatch[] } {
+function score(players: readonly IndexedPlayer[], nicks: readonly string[], finds: readonly NickMatch[]): { known: number; found: number; missed: string[]; wrong: NickMatch[] } {
+  const byFold = byFoldOf(players)
   let known = 0
   const missed: string[] = []
   const ids = new Set<string>()
@@ -110,21 +150,24 @@ const tesseract = (process.env['SCOUT_TESSERACT'] ?? 'tesseract').split(' ').fil
 const list = (process.argv.length > 2 ? process.argv.slice(2) : ['data/scout-images']).flatMap(targets)
 // Each image runs one Tesseract process per pass (2 threads each).
 const parallel = Math.max(1, Math.floor((availableParallelism() - 2) / (OCR_PASSES.length * 2)))
-const results: { target: Target; read: ScoreboardReadResult | Error }[] = []
+const results: { target: Target; players: IndexedPlayer[]; read: ScoreboardReadResult | Error }[] = []
 let next = 0
 await Promise.all(Array.from({ length: parallel }, async () => {
   while (next < list.length) {
     const target = list[next]!
     next += 1
+    const posted = postedAt(target.file)
+    const players = posted === null ? everyone : playersAt(posted)
     const read = await readScoreboard(new Uint8Array(readFileSync(target.file)), players, tesseract, pack ? { pack, icons: flagIcons } : null)
       .catch((error: unknown) => error instanceof Error ? error : new Error(String(error)))
-    results.push({ target, read })
+    results.push({ target, players, read })
   }
 }))
+database.close()
 results.sort((a, b) => a.target.file.localeCompare(b.target.file))
 
 const totals = { enemies: 0, unread: 0, known: 0, found: 0, wrong: 0, allyKnown: 0, allyFound: 0, allyWrong: 0, flagsRight: 0, flags: 0, iconsRight: 0, icons: 0, cellsRight: 0, cells: 0 }
-for (const { target, read } of results) {
+for (const { target, players, read } of results) {
   if (read instanceof Error) {
     console.log(`${target.file}: error ${read.message}`)
     continue
@@ -177,8 +220,8 @@ for (const { target, read } of results) {
     console.log(`  truth: one side wanted, ${read.status === 'one-side' ? 'ok' : 'WRONG'}`)
     continue
   }
-  const enemies = score(truth.enemies, read.enemies)
-  const allies = score(truth.allies, read.allies)
+  const enemies = score(players, truth.enemies, read.enemies)
+  const allies = score(players, truth.allies, read.allies)
   totals.known += enemies.known
   totals.found += enemies.found
   totals.wrong += enemies.wrong.length

@@ -176,6 +176,32 @@ downscaled to 2000 px), 51 enemies the bot has battles of. Reading, rewritten
   (點/点) of a 10 px Chinese nick on a downscaled crop. 48 kana-decorated
   nicks drawn on synthetic tables (their squadrons mixed, so only tag-confirmed
   finds count): 19 without the jpn pass, 35 with it and the letters rule.
+- **Live, 2026-10-27.** `scout:outcomes` on the 34 channel screenshots of
+  2026-10-23 – 10-26 whose battles are stored: 250 of 272 enemies read, 3
+  missed without a stored battle, 19 misread — 4 under a player card the
+  screenshot opened, 4 on a picture where a Discord voice overlay's lines
+  (~2.4 table rows apart) made the row run (10 rows through the header and
+  every other row), 3 anonymiser names the anonymous guess then named right,
+  8 matcher cases. `truth.json` now holds these 34 too (51 images; on-screen
+  nicks from the stored battle, platform suffix dropped, an anonymised player
+  by the fake), and `scout:images` matches a bot-kept image against the
+  players stored by its post, as live. Fixed: a row run never steps over a
+  band of its height; a word without letters within 1.5 characters after one
+  with them is the rest of the nick (`_denis_89_` reads "denis 89_", the
+  Cyrillic pass reads `Шизойд SSS ранга` "Шизойд $5$ ранга": `$` folds to s,
+  ß to b); a nick may differ by one edit more with its stored tag read
+  exactly right before it, from weight 5, when the text there is at most one
+  character shorter (`Tilarids` read "Tilands", `Yoßнi`, `Lumпочка`; a 1-edit
+  tag had let `Millу` of 1PAW take the own tag "WLILY"); a find of weight 16+
+  an edit off counts alone (the game shows a long nick without its tag, left
+  of the column); unread rows take a word by its middle (the anonymiser's
+  name has no tag and starts left of the split, so `Makar8940` was neither
+  read nor unread and the guess never ran). Known enemies 300 → 311 of 312,
+  allies 313 → 317 of 318, false finds 3 → 3 (two are a new player one letter
+  off a squadron mate, `Mild Goose` / `Wild Goose`). With every other
+  on-screen player taken out of the candidates (their rows unknown, the rest
+  set the split), false enemy finds go 34 → 43 over ~650 such rows; live,
+  3 of 272 rows held a player without a stored battle.
 
 Candidates take each player's nick from their latest stored battle; a battle
 whose slot the AI drove gives the row's `slot_nick` (the row is named

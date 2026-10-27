@@ -32,8 +32,12 @@ export interface NickMatch extends KnownPlayer {
   squadron: string
 }
 
-/** What OCR swaps beyond the Latin look-alikes (nick-search.ts lookAlike): digits, strokes and the Cyrillic з. */
-const FOLD: Record<string, string> = { з: '3', '0': 'o', '1': 'i', l: 'i', '|': 'i', '!': 'i' }
+/**
+ * What OCR swaps beyond the Latin look-alikes (nick-search.ts lookAlike):
+ * digits, strokes, the Cyrillic з, the Cyrillic pass's "$" for a Latin S
+ * ("Шизойд $5$ ранга") and the Latin passes' "B" for ß ("YoBni").
+ */
+const FOLD: Record<string, string> = { з: '3', '0': 'o', '1': 'i', l: 'i', '|': 'i', '!': 'i', $: 's', ß: 'b' }
 
 /**
  * Letters and digits only, lower case, accents dropped, look-alikes folded:
@@ -65,6 +69,10 @@ export function allowedDistance(weight: number): number {
 
 /** A long exact find needs no other evidence. */
 const SELF_EVIDENT_WEIGHT = 8
+/** Nor does a very long one an edit off: the game drops the tag of a long nick ("DeutscherKartoffelweitwurf"), which then starts left of its column. */
+const SELF_EVIDENT_WEIGHT_ONE_EDIT = 16
+/** A find whose stored tag stands right before it, read exactly, may differ by one edit more ("Tilands" for "Tilarids"), from this weight. */
+const TAG_EXTRA_EDIT_WEIGHT = 5
 
 /** Sellers' DP: per end position j of `text`, the fewest edits of `pattern` against a substring ending at j, and its start. */
 function sellers(pattern: readonly string[], text: readonly string[]): { distances: number[]; starts: number[] } {
@@ -117,12 +125,12 @@ const TAG_GAP_CHARS = 3
  * false tags: the plane icon read "ANA" before "SIZGOY" held "nasi", one
  * edit from NASHI.
  */
-export function tagJustBefore(tag: readonly string[], text: readonly string[]): boolean {
+export function tagJustBefore(tag: readonly string[], text: readonly string[], edits = tagDistance(tag)): boolean {
   if (tag.length < 2) return false
   const window = text.slice(-(tag.length + TAG_GAP_CHARS + 2))
   const { distances } = sellers(tag, window)
   for (let j = Math.max(0, window.length - TAG_GAP_CHARS - 1); j <= window.length; j += 1) {
-    if (distances[j]! <= tagDistance(tag)) return true
+    if (distances[j]! <= edits) return true
   }
   return false
 }
@@ -202,14 +210,26 @@ interface Candidate extends NickMatch {
 
 /** Score columns: digit-only words, and words folding to o and i alone (a Cyrillic pass reads zeros as "о"). */
 const isScoreWord = (text: string): boolean => !/\p{L}/u.test(text) || [...foldForMatch(text)].every((char) => char === 'o' || char === 'i')
+const hasLetter = (text: string): boolean => /\p{L}/u.test(text)
+
+/**
+ * A word without letters this close after a word with them, in that word's
+ * character widths, is the rest of a nick ("_denis_89_" reads "denis 89_",
+ * "Шизойд SSS ранга" "Шизойд $5$ ранга"); score columns stand far apart.
+ */
+const NICK_GAP_CHARS = 1.5
 
 /** A reading as folded characters with their word's x and index, score columns left out. */
 function readingText(row: OcrRow): { chars: string[]; xs: number[]; words: number[] } {
   const chars: string[] = []
   const xs: number[] = []
   const words: number[] = []
+  let previous: OcrRow['words'][number] | null = null
   row.words.forEach((word, index) => {
-    if (isScoreWord(word.text)) return
+    const nickTail = previous !== null && hasLetter(previous.text) && !hasLetter(word.text)
+      && word.x0 - previous.x1 <= (NICK_GAP_CHARS * (previous.x1 - previous.x0)) / Math.max(1, [...previous.text].length)
+    if (isScoreWord(word.text) && !nickTail) return
+    previous = word
     const folded = [...foldForMatch(word.text)]
     folded.forEach((char, k) => {
       chars.push(char)
@@ -245,21 +265,26 @@ export function matchRows(readings: readonly (readonly OcrRow[])[], players: rea
       if (chars.length < 3) continue
       const rowBigrams = new Set(bigramsOf(chars))
       for (const player of players) {
-        let found: { nick: NickPattern; hit: ReturnType<typeof approximateFind> } | null = null
+        let found: { nick: NickPattern; hit: ReturnType<typeof approximateFind>; before: string[]; tagSeen: boolean } | null = null
         for (const nick of player.plain ? [player, player.plain] : [player]) {
           const allowed = allowedDistance(nick.weight)
+          const withTag = nick.weight >= TAG_EXTRA_EDIT_WEIGHT ? allowed + 1 : allowed
           let shared = 0
           for (const bigram of nick.bigrams) if (rowBigrams.has(bigram)) shared += 1
           // k edits break at most 2k bigrams.
-          if (shared === 0 || shared < nick.bigrams.length - 2 * allowed) continue
+          if (shared === 0 || shared < nick.bigrams.length - 2 * withTag) continue
           const hit = approximateFind(nick.chars, chars)
-          if (hit.distance > allowed) continue
-          found = { nick, hit }
+          if (hit.distance > withTag) continue
+          const before = chars.slice(Math.max(0, hit.start - BEFORE_CHARS), hit.start + 1)
+          const tagSeen = tagJustBefore(player.tagChars, before)
+          // The extra edit needs the tag read exactly ("Millу" of 1PAW took the own tag "WLILY" behind its frame read "MaW")
+          // and the text read at least as long as the nick but one ("Nurik kz" took the head of "kz nurik").
+          if (hit.distance > allowed && (!tagJustBefore(player.tagChars, before, 0) || hit.end - hit.start < nick.chars.length - 1)) continue
+          found = { nick, hit, before, tagSeen }
           break
         }
         if (!found) continue
-        const { hit } = found
-        const before = chars.slice(Math.max(0, hit.start - BEFORE_CHARS), hit.start + 1)
+        const { hit, before } = found
         const last = Math.max(hit.start, hit.end - 1)
         const candidate: Candidate = {
           userId: player.userId,
@@ -268,7 +293,7 @@ export function matchRows(readings: readonly (readonly OcrRow[])[], players: rea
           row: rowIndex,
           x: (xs[hit.start]! + xs[last]!) / 2,
           distance: hit.distance,
-          tagSeen: tagJustBefore(player.tagChars, before),
+          tagSeen: found.tagSeen,
           squadron: core(player.clanTag),
           left: xs[hit.start]!,
           right: xs[last]!,
@@ -340,9 +365,10 @@ const median = (values: readonly number[]): number => {
 }
 
 /**
- * Strong finds (their stored tag before the nick, or long and exact) set the
- * split: rows with two of them directly (left ally, right enemy), else two
- * squadrons side by side (the right one is the enemy). A find's squadron is
+ * Strong finds (their stored tag before the nick, long and exact, or very
+ * long and an edit off) set the split: rows with two of them directly (left
+ * ally, right enemy), else two squadrons side by side (the right one is the
+ * enemy). A find's squadron is
  * the tag read before it: its stored one, or one read before another nick of
  * this screenshot (players change squadrons: dennis7781's last stored battle
  * was for CH68, the screenshot shows =FTNDS=), else the stored one. Weaker
@@ -370,7 +396,8 @@ export function splitTeams(rows: readonly Candidate[][]): TeamSplit {
     }
   }
   const squadronOf = (match: Candidate): string => shown.get(match) ?? match.squadron
-  const strong = rows.map((row) => row.filter((m) => m.tagSeen || (m.distance === 0 && m.weight >= SELF_EVIDENT_WEIGHT)))
+  const strong = rows.map((row) => row.filter((m) =>
+    m.tagSeen || (m.distance === 0 && m.weight >= SELF_EVIDENT_WEIGHT) || (m.distance <= 1 && m.weight >= SELF_EVIDENT_WEIGHT_ONE_EDIT)))
   const midpoints = strong.filter((row) => row.length >= 2).map((row) => (row[0]!.x + row[row.length - 1]!.x) / 2)
   let splitX: number | null = midpoints.length > 0 ? median(midpoints) : null
   const byCore = new Map<string, number[]>()
@@ -438,9 +465,11 @@ const WIDE_GAP = /(?<=[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Scri
 
 /**
  * Text right of the split in rows where no enemy was found, from the reading
- * with the most confident words there: shown as "not recognised". The enemy
- * tag goes (the split may fall before or after it), and so do the spaces the
- * Chinese passes put between characters.
+ * with the most confident words there: shown as "not recognised". A word
+ * counts by its middle: the split lies between the finds' middles, inside the
+ * enemy tags, and a nick shown without one (the anonymiser's "Makar8940")
+ * starts left of it. The enemy tag goes (the split may fall before or after
+ * it), and so do the spaces the Chinese passes put between characters.
  */
 export function unreadEnemyRows(readings: readonly (readonly OcrRow[])[], split: TeamSplit): { row: number; text: string }[] {
   const out: { row: number; text: string }[] = []
@@ -455,7 +484,7 @@ export function unreadEnemyRows(readings: readonly (readonly OcrRow[])[], split:
     if (found) return
     let best: { text: string; confidence: number } | null = null
     for (const reading of readings) {
-      const words = (reading[index]?.words ?? []).filter((word) => word.x0 >= cut && !isScoreWord(word.text))
+      const words = (reading[index]?.words ?? []).filter((word) => (word.x0 + word.x1) / 2 >= cut && !isScoreWord(word.text))
       while (words.length > 0 && isTag(words[0]!.text)) words.shift()
       if (words.length === 0) continue
       const confidence = words.reduce((sum, word) => sum + word.confidence, 0) / words.length

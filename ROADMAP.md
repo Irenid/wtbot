@@ -123,11 +123,13 @@ Open: prove or disprove the RSS plateau for
 - **`/scout` pictures.** Screenshots pile up in `data/scout-images/` (kept
   for now): decide retention. Improve the reading on them with
   `npm run scout:images` (two of eight Chinese nicks unread on 2026-10-08:
-  try `chi_tra`, per-row OCR or a higher scale for CJK rows). Add each new
-  channel screenshot's flags, enemy row icons and enemy columns to
-  `truth.json`, and score the replies with `npm run scout:outcomes --
-  <copy.db>` once their battles are stored (the four channel records of
-  2026-10-08 were test posts of battles 18 h older).
+  try `chi_tra`, per-row OCR or a higher scale for CJK rows). `truth.json`
+  has the nicks of the channel screenshots up to 2026-10-26 (from their
+  stored battles): add newer ones, and their flags, enemy row icons and
+  columns. `scout:outcomes` takes the latest battle holding most recognised
+  enemies, so a squadron that requeued within 5 min of the post is scored on
+  its next battle (7 of 34 on 2026-10-27), and counts the anonymous guess's
+  player as misread: score the battle in progress at the post and the guess.
 - **`/scout` StatShark weights.** Counted as live reads them (the snapshot
   the reply's update has, fresh within 2 days), only 11 new-vehicle events of
   2026-07-15 – 10-09 had one, so the two StatShark weights sit near their
@@ -135,6 +137,14 @@ Open: prove or disprove the RSS plateau for
   screenshots have refreshed a few hundred enemies before their battles
   (`scout:outcomes` counts them), and check the two-fold split
   (`SCOUT_SHARK_FOLD`).
+- **`/scout` refit.** Out of sample on 2026-10-10 – 10-27 (36,764 teams of
+  8, constants of 2026-10-09) the first vehicle is right 77.3% without flags
+  and 80.8% with everyone in a vehicle (82.5% on 10-01 – 10-08); the most
+  likely setup says 47.2% and happens 51.8%, "at least one aircraft" says
+  40–55% where 51–64% happen. Refit with `--known-team --fit --split
+  2026-10-17`, compare with the shipped constants on the same teams, then
+  `--fit-all`; half of the channel screenshots come before the first spawn
+  (no flags).
 - **`/scout` air chance.** After `KNOWN_TEAM_AIR_KNOTS`, "at least one
   aircraft" with flags and everyone in a vehicle still says 55–86% where
   63–92% happen out of sample (2026-10-09; 8–16 points before): the October
