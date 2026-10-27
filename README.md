@@ -82,7 +82,7 @@ Discord bot token and an authorized warthunder.com session (`WT_COOKIE`).
    Server) or closes it to some roles and channels. Anyone can add the bot
    once the Developer Portal marks it Public Bot (Bot tab).
 4. Site — `http://127.0.0.1:3000/` on the server itself, the bot dashboard —
-   `/statistics`: any user name, password — `WEB_TOKEN`. Old `/app/…` links
+   `/statistics`: any user name, password — `WEB_TOKEN`; the site itself needs no password. Old `/app/…` links
    redirect to the same page at the root. For network access put a reverse proxy with TLS
    (nginx, caddy) in front of the bot and set `WEB_TRUST_PROXY`.
 5. Once, sign the bot's browser in to Gaijin: a warthunder.com sign-in

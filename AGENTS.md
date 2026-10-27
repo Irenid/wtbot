@@ -771,8 +771,11 @@ Data:
   rate limit (site routes: `passRateLimit`, 60 weight units per IP and 240 in
   all per minute).
 - Web listens on loopback by default; outside only through a reverse proxy and
-  `WEB_TOKEN`, which then guards every path except `/health` (judged by the
-  matched route, else the normalized path: `isProtectedRequest`). A POST with
+  `WEB_TOKEN`, which then guards every route except `/health` and the public
+  site (the SPA and the read API it calls: routes registered in the
+  `publicSite` context of `buildServer`; the dashboard, `/api/stats`, voice
+  and any new route outside that context stay private; judged by the matched
+  route: `isProtectedRequest`). A POST with
   a foreign `Origin`/`Sec-Fetch-Site` gets 403 in every mode; without these
   headers (not a browser) it passes. With a token, the `onSend` hook turns
   `public` into `private` on protected responses, so a shared proxy cache

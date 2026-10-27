@@ -10,6 +10,13 @@ import { playerStatsRoutes } from './routes/player-stats.js'
 import { siteRoutes, type SiteRoutesOptions } from './routes/site.js'
 import { legacySpaRoutes, spaDistAvailable, spaRoutes } from './routes/spa.js'
 
+declare module 'fastify' {
+  interface FastifyContextConfig {
+    /** Registered inside the public site of buildServer: open without WEB_TOKEN. */
+    publicSite?: boolean
+  }
+}
+
 export interface WebSecurityOptions {
   host?: string
   token?: string
@@ -72,51 +79,20 @@ function hasValidToken(request: { headers: Record<string, string | string[] | un
 }
 
 /**
- * With WEB_TOKEN every path is private except the health probe: the SPA serves
- * index.html for any page path at the root, and a list of protected prefixes
- * would leave every new route public.
- */
-function isProtectedPathname(pathname: string): boolean {
-  return pathname !== '/health'
-}
-
-/**
- * Нормализует сырой request-target к пути, по которому маршрутизирует Fastify:
- * снимает absolute-form (`http://host/...`, приходит через прокси или HTTP/2),
- * query и fragment, затем разово декодирует percent-escapes. Используется
- * только как fallback (см. isProtectedRequest), когда маршрут не определён.
- */
-function normalizedPathname(rawUrl: string): string {
-  let pathname = rawUrl
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(pathname)) {
-    try {
-      pathname = new URL(pathname).pathname
-    } catch {
-      // некорректный absolute URL — разбираем строку как есть
-    }
-  }
-  pathname = pathname.split('?', 1)[0] ?? pathname
-  pathname = pathname.split('#', 1)[0] ?? pathname
-  try {
-    pathname = decodeURIComponent(pathname)
-  } catch {
-    // битый percent-escape — сравниваем сырой путь
-  }
-  return pathname
-}
-
-/**
- * Требует ли запрос авторизации. Решение принимается по фактически выбранному
- * Fastify маршруту (`routeOptions.url`), а не по сырой строке `request.url`:
- * закодированный (`/%61pi/...`) или absolute-form (`http://host/api/...`) путь
- * иначе расходится с представлением роутера и обходит проверку. Если маршрут
- * не найден (routeOptions.url отсутствует), запрос до защищённого обработчика
- * не дойдёт, но на всякий случай отклоняем и по нормализованному пути.
+ * Whether WEB_TOKEN guards the request: every route except /health and the
+ * public site (the SPA and the read API it calls, flagged `publicSite` in
+ * buildServer), so the bot's own pages — the dashboard, parser internals,
+ * voice presence with Discord IDs — stay private, and so does any new route
+ * registered outside the public site. Judged by the route Fastify matched,
+ * never by the raw `request.url`: an encoded (`/%61pi/...`) or absolute-form
+ * (`http://host/api/...`) target reaches the same handler as its plain path.
+ * Without a matched route only a 404 handler answers (the SPA's index.html
+ * or a JSON 404), which holds nothing private.
  */
 function isProtectedRequest(request: FastifyRequest): boolean {
-  const routeUrl = request.routeOptions?.url
-  if (routeUrl !== undefined) return isProtectedPathname(routeUrl)
-  return isProtectedPathname(normalizedPathname(request.url))
+  const route = request.routeOptions
+  if (route?.url === undefined) return false
+  return route.url !== '/health' && route.config?.publicSite !== true
 }
 
 function isSafePostOrigin(request: FastifyRequest): boolean {
@@ -220,15 +196,21 @@ export function buildServer(
   })
   app.register(pageRoutes)
   app.register(apiRoutes, { deps })
-  app.register(playerStatsRoutes, { deps })
-  app.register(siteRoutes, site ? { site } : {})
-  app.register(legacySpaRoutes)
+  // The public site: every route registered in this context, its plugins'
+  // included, is flagged publicSite and needs no WEB_TOKEN (isProtectedRequest).
   // The SPA is served only from a built frontend/dist: without it the bot,
   // the API and the dashboard work as before, and page paths get a plain 404.
   const hasSpa = spaDistAvailable()
-  if (hasSpa) {
-    app.register(spaRoutes)
-  } else {
+  app.register(async (publicSite) => {
+    publicSite.addHook('onRoute', (route) => {
+      route.config = { ...route.config, publicSite: true }
+    })
+    publicSite.register(playerStatsRoutes, { deps })
+    publicSite.register(siteRoutes, site ? { site } : {})
+    publicSite.register(legacySpaRoutes)
+    if (hasSpa) publicSite.register(spaRoutes)
+  })
+  if (!hasSpa) {
     app.setNotFoundHandler((_request, reply) => {
       return reply.code(404).send({ ok: false, code: 'NOT_FOUND', error: 'Not found' })
     })

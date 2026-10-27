@@ -207,19 +207,19 @@ test('сетевой режим принимает HTTP Basic с паролем 
 })
 
 test('сетевой режим не отдаёт ответы за авторизацией в общий кэш', async () => {
-  const app = buildServer(
-    deps,
-    { loadVehicleDict: async () => ({}) },
-    { host: '0.0.0.0', token: 'test-secret' },
-  )
+  const app = buildServer(deps, undefined, { host: '0.0.0.0', token: 'test-secret' })
+  app.get('/api/cached', async (_request, reply) => {
+    reply.header('cache-control', 'public, max-age=60')
+    return { ok: true }
+  })
   try {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/vehicles',
+      url: '/api/cached',
       headers: { authorization: 'Bearer test-secret' },
     })
     assert.equal(response.statusCode, 200)
-    assert.equal(response.headers['cache-control'], 'private, max-age=86400')
+    assert.match(String(response.headers['cache-control']), /^private/)
   } finally {
     await app.close()
   }
@@ -257,10 +257,14 @@ test('loopback-сервер без токена не защищает и не л
   }
 })
 
-test('network mode protects every page path of the root SPA, not only /api', async () => {
+test('network mode keeps the public site open and every other route private', async () => {
   const app = buildServer(deps, undefined, { host: '0.0.0.0', token: 'test-secret' })
   try {
-    for (const url of ['/', '/clans', '/guides/psr', '/assets/index.js', '/LICENSE.txt', DASHBOARD_PATH, '/app/clans', '/nope']) {
+    for (const url of ['/', '/clans', '/guides/psr', '/assets/index.js', '/app/clans', '/nope', '/api/vehicles']) {
+      const response = await app.inject({ method: 'GET', url })
+      assert.notEqual(response.statusCode, 401, url)
+    }
+    for (const url of [DASHBOARD_PATH, '/api/stats', '/api/voice']) {
       const response = await app.inject({ method: 'GET', url })
       assert.equal(response.statusCode, 401, url)
     }
